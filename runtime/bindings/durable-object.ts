@@ -1,5 +1,12 @@
 import type { Database } from "bun:sqlite";
 
+/** Options accepted by DO storage methods — all are no-ops in dev */
+interface StorageOptions {
+  allowConcurrency?: boolean;
+  allowUnconfirmed?: boolean;
+  noCache?: boolean;
+}
+
 // --- Storage ---
 
 export class SqliteDurableObjectStorage {
@@ -13,9 +20,9 @@ export class SqliteDurableObjectStorage {
     this.id = id;
   }
 
-  async get<T = unknown>(key: string): Promise<T | undefined>;
-  async get<T = unknown>(keys: string[]): Promise<Map<string, T>>;
-  async get<T = unknown>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
+  async get<T = unknown>(key: string, options?: StorageOptions): Promise<T | undefined>;
+  async get<T = unknown>(keys: string[], options?: StorageOptions): Promise<Map<string, T>>;
+  async get<T = unknown>(keyOrKeys: string | string[], _options?: StorageOptions): Promise<T | undefined | Map<string, T>> {
     if (Array.isArray(keyOrKeys)) {
       if (keyOrKeys.length === 0) return new Map<string, T>();
       const placeholders = keyOrKeys.map(() => "?").join(", ");
@@ -35,13 +42,13 @@ export class SqliteDurableObjectStorage {
     return JSON.parse(row.value) as T;
   }
 
-  async put(key: string, value: unknown): Promise<void>;
-  async put(entries: Record<string, unknown>): Promise<void>;
-  async put(keyOrEntries: string | Record<string, unknown>, value?: unknown): Promise<void> {
+  async put(key: string, value: unknown, options?: StorageOptions): Promise<void>;
+  async put(entries: Record<string, unknown>, options?: StorageOptions): Promise<void>;
+  async put(keyOrEntries: string | Record<string, unknown>, valueOrOptions?: unknown, _options?: StorageOptions): Promise<void> {
     if (typeof keyOrEntries === "string") {
       this.db
         .query("INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)")
-        .run(this.namespace, this.id, keyOrEntries, JSON.stringify(value));
+        .run(this.namespace, this.id, keyOrEntries, JSON.stringify(valueOrOptions));
     } else {
       const stmt = this.db.query(
         "INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)",
@@ -59,9 +66,9 @@ export class SqliteDurableObjectStorage {
     }
   }
 
-  async delete(key: string): Promise<boolean>;
-  async delete(keys: string[]): Promise<number>;
-  async delete(keyOrKeys: string | string[]): Promise<boolean | number> {
+  async delete(key: string, options?: StorageOptions): Promise<boolean>;
+  async delete(keys: string[], options?: StorageOptions): Promise<number>;
+  async delete(keyOrKeys: string | string[], _options?: StorageOptions): Promise<boolean | number> {
     if (Array.isArray(keyOrKeys)) {
       if (keyOrKeys.length === 0) return 0;
       // Count existing keys first
@@ -84,7 +91,7 @@ export class SqliteDurableObjectStorage {
     return existing !== null;
   }
 
-  async deleteAll(): Promise<void> {
+  async deleteAll(_options?: StorageOptions): Promise<void> {
     this.db
       .query("DELETE FROM do_storage WHERE namespace = ? AND id = ?")
       .run(this.namespace, this.id);
@@ -152,6 +159,10 @@ export class DurableObjectIdImpl {
   toString() {
     return this.id;
   }
+
+  equals(other: DurableObjectIdImpl): boolean {
+    return this.id === other.id;
+  }
 }
 
 // --- State ---
@@ -159,10 +170,22 @@ export class DurableObjectIdImpl {
 export class DurableObjectStateImpl {
   readonly id: DurableObjectIdImpl;
   readonly storage: SqliteDurableObjectStorage;
+  private _readyPromise: Promise<void> | null = null;
 
   constructor(id: DurableObjectIdImpl, db: Database, namespace: string) {
     this.id = id;
     this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString());
+  }
+
+  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
+    const promise = callback();
+    this._readyPromise = promise.then(() => {});
+    return promise;
+  }
+
+  /** @internal Used by proxy stub to wait for blockConcurrencyWhile to complete */
+  _getReadyPromise(): Promise<void> | null {
+    return this._readyPromise;
   }
 
   waitUntil(_promise: Promise<unknown>) {
@@ -202,6 +225,10 @@ export class DurableObjectNamespaceImpl {
     this._env = env;
   }
 
+  newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
+    return new DurableObjectIdImpl(crypto.randomUUID().replace(/-/g, ""));
+  }
+
   idFromName(name: string): DurableObjectIdImpl {
     // Deterministic ID from name using simple hash
     const hasher = new Bun.CryptoHasher("sha256");
@@ -212,6 +239,10 @@ export class DurableObjectNamespaceImpl {
 
   idFromString(id: string): DurableObjectIdImpl {
     return new DurableObjectIdImpl(id);
+  }
+
+  getByName(name: string): unknown {
+    return this.get(this.idFromName(name));
   }
 
   get(id: DurableObjectIdImpl): unknown {
@@ -226,11 +257,16 @@ export class DurableObjectNamespaceImpl {
     const instance = this.instances.get(idStr)!;
 
     // Return a Proxy stub that forwards method calls (RPC semantics)
+    // Awaits blockConcurrencyWhile before forwarding any calls
     return new Proxy(instance, {
       get(target, prop, receiver) {
         const val = Reflect.get(target, prop, receiver);
         if (typeof val === "function") {
-          return (...args: unknown[]) => val.apply(target, args);
+          return async (...args: unknown[]) => {
+            const readyPromise = target.ctx._getReadyPromise();
+            if (readyPromise) await readyPromise;
+            return val.apply(target, args);
+          };
         }
         return val;
       },

@@ -198,6 +198,18 @@ describe("DurableObjectId", () => {
     const id = new DurableObjectIdImpl("abc123");
     expect(id.name).toBeUndefined();
   });
+
+  test("equals returns true for same id", () => {
+    const id1 = new DurableObjectIdImpl("abc123");
+    const id2 = new DurableObjectIdImpl("abc123");
+    expect(id1.equals(id2)).toBe(true);
+  });
+
+  test("equals returns false for different ids", () => {
+    const id1 = new DurableObjectIdImpl("abc123");
+    const id2 = new DurableObjectIdImpl("def456");
+    expect(id1.equals(id2)).toBe(false);
+  });
 });
 
 describe("DurableObjectState", () => {
@@ -211,6 +223,17 @@ describe("DurableObjectState", () => {
   test("waitUntil is no-op", () => {
     const state = new DurableObjectStateImpl(new DurableObjectIdImpl("id"), db, "TestDO");
     state.waitUntil(Promise.resolve()); // should not throw
+  });
+
+  test("blockConcurrencyWhile executes callback and returns result", async () => {
+    const id = new DurableObjectIdImpl("test-id");
+    const state = new DurableObjectStateImpl(id, db, "TestDO");
+    const result = await state.blockConcurrencyWhile(async () => {
+      await state.storage.put("initialized", true);
+      return 42;
+    });
+    expect(result).toBe(42);
+    expect(await state.storage.get<boolean>("initialized")).toBe(true);
   });
 });
 
@@ -287,6 +310,52 @@ describe("DurableObjectNamespace", () => {
     const ns2 = new DurableObjectNamespaceImpl(db, "Unwired");
     const id = new DurableObjectIdImpl("test");
     expect(() => ns2.get(id)).toThrow("not wired");
+  });
+
+  test("newUniqueId returns unique ids", () => {
+    const id1 = ns.newUniqueId();
+    const id2 = ns.newUniqueId();
+    expect(id1.toString()).not.toBe(id2.toString());
+    expect(id1.name).toBeUndefined();
+  });
+
+  test("newUniqueId accepts jurisdiction option (ignored)", () => {
+    const id = ns.newUniqueId({ jurisdiction: "eu" });
+    expect(id.toString().length).toBeGreaterThan(0);
+  });
+
+  test("getByName is shorthand for idFromName + get", async () => {
+    const stub1 = ns.getByName("counter1") as { increment(): Promise<number>; getCount(): Promise<number> };
+    await stub1.increment();
+
+    const id = ns.idFromName("counter1");
+    const stub2 = ns.get(id) as { getCount(): Promise<number> };
+    expect(await stub2.getCount()).toBe(1);
+  });
+
+  test("blockConcurrencyWhile defers proxy calls until ready", async () => {
+    const order: string[] = [];
+
+    class SlowInitDO extends DurableObjectBase {
+      constructor(ctx: DurableObjectStateImpl, env: unknown) {
+        super(ctx, env);
+        ctx.blockConcurrencyWhile(async () => {
+          await new Promise((r) => setTimeout(r, 50));
+          order.push("init-done");
+        });
+      }
+      async hello(): Promise<string> {
+        order.push("hello");
+        return "world";
+      }
+    }
+
+    const ns2 = new DurableObjectNamespaceImpl(db, "SlowInit");
+    ns2._setClass(SlowInitDO, {});
+    const stub = ns2.get(ns2.idFromName("test")) as { hello(): Promise<string> };
+    const result = await stub.hello();
+    expect(result).toBe("world");
+    expect(order).toEqual(["init-done", "hello"]);
   });
 
   test("data persists across namespace instances (same db)", async () => {
