@@ -48,6 +48,13 @@ CREATE TABLE IF NOT EXISTS workflow_instances (
 - `terminate()`: update status to `terminated` + abort execution (AbortController)
 - `restart()`: reset row, re-run `run()` from scratch
 
+## Files to update
+
+- `runtime/bindings/workflow.ts` — replace `InMemoryWorkflowBinding` with `SqliteWorkflowBinding`
+- `runtime/env.ts` — update `buildEnv()` to pass `db`, workflow name, class name to new constructor
+- `runtime/tests/workflow.test.ts` — update imports, create in-memory SQLite + init schema in `beforeEach`
+- All existing tests must still pass after migration
+
 ### On restart behavior
 
 - Workflows with status `running` at startup: mark as `errored` with message "interrupted by restart"

@@ -53,6 +53,13 @@ CREATE TABLE IF NOT EXISTS do_storage (
 - `get(id)` lazily instantiates DO — on restart, same ID gets same persisted data
 - Instance cache (`Map<string, DO>`) still in memory for the current process — storage is the persistence layer
 
+## Files to update
+
+- `runtime/bindings/durable-object.ts` — replace `InMemoryDurableObjectStorage` with `SqliteDurableObjectStorage`
+- `runtime/env.ts` — update `buildEnv()` to pass `db` to `DurableObjectNamespaceImpl`
+- `runtime/tests/durable-object.test.ts` — update imports, create in-memory SQLite + init schema in `beforeEach`
+- All existing tests must still pass after migration
+
 ## Value serialization
 
 - Use `JSON.stringify` / `JSON.parse` for values

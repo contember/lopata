@@ -36,6 +36,8 @@ Instrukce pro AI agenta implementujícího bunflare runtime.
 3. Ověř že stávající funkcionalita stále funguje (všechny testy prochází)
 ```
 
+**DŮLEŽITÉ:** Nespouštěj `bun runtime/dev.ts` pro testování — používej integrační testy. Pokud přeci jen spustíš server, vždy ho ukonči (kill) aby neblokoval port 8787.
+
 ### 4. Commitni změny
 
 Po úspěšném ověření **vždy commitni**:
@@ -132,6 +134,8 @@ test("delete removes key", async () => {
 ```
 
 Pravidla:
+- Při migraci existujícího bindingu (issues 14-17) VŽDY aktualizuj odpovídající test soubor — import, constructor, beforeEach setup
+- Když přidáváš nový binding, přidej jeho config fields do `WranglerConfig` v `runtime/config.ts`
 - Každý binding má vlastní test soubor: `runtime/tests/<binding>.test.ts`
 - Testuj přímo třídu bindingu, ne přes HTTP
 - Používej in-memory SQLite (`:memory:`) v testech pro izolaci

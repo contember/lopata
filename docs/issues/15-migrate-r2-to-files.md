@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS r2_objects (
   - `SELECT ... FROM r2_objects WHERE bucket = ? AND key LIKE ? ORDER BY key LIMIT ?`
   - Return `R2Object` instances (no body)
 
+## Files to update
+
+- `runtime/bindings/r2.ts` — replace `InMemoryR2Bucket` with `FileR2Bucket`
+- `runtime/env.ts` — update `buildEnv()` to pass `db`, bucket name, and data dir to new constructor
+- `runtime/tests/r2.test.ts` — update imports, use temp directory + in-memory SQLite in `beforeEach`, clean up in `afterEach`
+- All existing tests must still pass after migration
+
 ## File path safety
 
 - Sanitize keys to prevent path traversal — reject keys containing `..`

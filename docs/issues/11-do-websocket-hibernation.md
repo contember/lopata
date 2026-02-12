@@ -1,19 +1,19 @@
-# Durable Objects: WebSocket Hibernation
+# Durable Objects: WebSocket support
 
-Manage WebSocket connections through the Durable Object state with hibernation support.
+WebSocket management through the Durable Object state. No actual hibernation — just standard WebSocket handling.
 
 ## API to implement
 
 ### DurableObjectState methods
 
-- `acceptWebSocket(ws: WebSocket, tags?: string[]): void` — register WS with the DO, attach optional tags (max 10 per WS)
+- `acceptWebSocket(ws: WebSocket, tags?: string[]): void` — register WS with the DO, attach optional tags
 - `getWebSockets(tag?: string): WebSocket[]` — return all accepted WebSockets, optionally filtered by tag
-- `setWebSocketAutoResponse(pair?: WebSocketRequestResponsePair): void` — auto-respond to specific messages without waking DO
+- `getTags(ws: WebSocket): string[]` — return tags for a WebSocket
+- `setWebSocketAutoResponse(pair?: WebSocketRequestResponsePair): void` — auto-respond to specific messages (e.g. ping/pong)
 - `getWebSocketAutoResponse(): WebSocketRequestResponsePair | null`
 - `getWebSocketAutoResponseTimestamp(ws: WebSocket): Date | null`
-- `setHibernatableWebSocketEventTimeout(ms?: number): void`
-- `getHibernatableWebSocketEventTimeout(): number | null`
-- `getTags(ws: WebSocket): string[]`
+- `setHibernatableWebSocketEventTimeout(ms?: number): void` — no-op
+- `getHibernatableWebSocketEventTimeout(): number | null` — returns null
 
 ### WebSocketRequestResponsePair
 
@@ -24,6 +24,8 @@ class WebSocketRequestResponsePair {
   readonly response: string;
 }
 ```
+
+Export from `cloudflare:workers` plugin.
 
 ### DurableObject handler methods
 
@@ -38,9 +40,8 @@ class MyDO extends DurableObject {
 ## Implementation notes
 
 - Store accepted WebSockets in a `Set<{ ws: WebSocket, tags: string[] }>` on the DO state
-- `acceptWebSocket()` calls `ws.accept()` (if not already accepted) and registers event listeners that delegate to the DO's handler methods
-- `getWebSockets(tag)` filters the set by tag
-- Auto-response: intercept incoming messages in the WS listener — if message matches the request string, send the response string directly without calling `webSocketMessage()`
-- Hibernation: in production, DO can be evicted from memory while WebSockets stay alive. In dev, just keep everything in memory — hibernation is effectively a no-op
-- `getTags(ws)` looks up the WS in the set and returns its tags
-- `WebSocketRequestResponsePair` is a simple class exported from `cloudflare:workers` plugin
+- `acceptWebSocket()` registers event listeners on the WS that delegate to the DO's handler methods (`webSocketMessage`, `webSocketClose`, `webSocketError`)
+- Auto-response: in the message listener, if message matches `autoResponsePair.request`, send `autoResponsePair.response` directly without calling `webSocketMessage()`
+- No hibernation logic — everything stays in memory, DO instance is never evicted
+- Hibernation timeout methods are no-ops (stubs)
+- WebSockets don't survive restart (they're ephemeral connections)

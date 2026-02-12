@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS kv (
   - Filter expired entries (delete them lazily)
   - Cursor pagination: use `key > ?` for cursor-based paging
 
+## Files to update
+
+- `runtime/bindings/kv.ts` — replace `InMemoryKVNamespace` with `SqliteKVNamespace`
+- `runtime/env.ts` — update `buildEnv()` to pass `db` and binding name to new constructor
+- `runtime/tests/kv.test.ts` — update imports, create in-memory SQLite `Database` in `beforeEach`, init schema, pass to constructor
+- All existing tests must still pass after migration
+
 ## Value encoding
 
 - Store all values as BLOB in SQLite
