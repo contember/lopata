@@ -2,12 +2,12 @@ import type { WranglerConfig } from "./config";
 import { SqliteKVNamespace } from "./bindings/kv";
 import { FileR2Bucket } from "./bindings/r2";
 import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
-import { InMemoryWorkflowBinding } from "./bindings/workflow";
+import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { getDatabase, getDataDir } from "./db";
 
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
-  workflows: { bindingName: string; className: string; binding: InMemoryWorkflowBinding }[];
+  workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
 }
 
 export function buildEnv(config: WranglerConfig): { env: Record<string, unknown>; registry: ClassRegistry } {
@@ -42,7 +42,7 @@ export function buildEnv(config: WranglerConfig): { env: Record<string, unknown>
   // Workflows
   for (const wf of config.workflows ?? []) {
     console.log(`[bunflare] Workflow: ${wf.binding} -> ${wf.class_name}`);
-    const binding = new InMemoryWorkflowBinding();
+    const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name);
     env[wf.binding] = binding;
     registry.workflows.push({
       bindingName: wf.binding,
