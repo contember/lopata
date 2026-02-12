@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 1     |
-| **Pending**      | 17    |
-| **Progress**     | 6%    |
+| **Completed**    | 2     |
+| **Pending**      | 16    |
+| **Progress**     | 11%   |
 
 ## Current Focus
 
-Issue 14: Migrate KV to SQLite
+Issue 15: Migrate R2 to files
 
 ## Issues
 
@@ -20,7 +20,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | #  | Issue                        | Status  | Notes |
 | -- | ---------------------------- | ------- | ----- |
 | 00 | persistence-layer            | completed | Foundation — creates db.ts, schema, .bunflare/ dir |
-| 14 | migrate-kv-to-sqlite         | pending | Migrate existing KV from in-memory Map to SQLite |
+| 14 | migrate-kv-to-sqlite         | completed | Migrate existing KV from in-memory Map to SQLite |
 | 15 | migrate-r2-to-files          | pending | Migrate existing R2 from in-memory Map to files + SQLite metadata |
 | 16 | migrate-do-storage-to-sqlite | pending | Migrate existing DO storage from in-memory Map to SQLite |
 | 17 | migrate-workflows-to-sqlite  | pending | Migrate existing Workflow binding to SQLite |
@@ -49,6 +49,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 ## Changelog
 
 - **#00 persistence-layer**: Created `runtime/db.ts` with `getDatabase()` singleton, `runMigrations()` for all 7 tables (kv, r2_objects, do_storage, do_alarms, queue_messages, workflow_instances, cache_entries), WAL mode, auto-creation of `.bunflare/` directory structure. Added `runtime/tests/db.test.ts` with 9 tests.
+- **#14 migrate-kv-to-sqlite**: Replaced `InMemoryKVNamespace` with `SqliteKVNamespace` backed by SQLite `kv` table. Constructor takes `(db, namespace)`. Values stored as BLOB, metadata as JSON string. Expiration checked on `get()`/`getWithMetadata()`, lazily cleaned on `list()`. Cursor-based pagination in `list()`. Updated `env.ts` to pass `getDatabase()` and binding name. Added namespace isolation test and cursor pagination test. All 89 tests pass.
 
 ## Lessons Learned
 

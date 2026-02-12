@@ -1,10 +1,14 @@
 import { test, expect, beforeEach } from "bun:test";
-import { InMemoryKVNamespace } from "../bindings/kv";
+import { Database } from "bun:sqlite";
+import { runMigrations } from "../db";
+import { SqliteKVNamespace } from "../bindings/kv";
 
-let kv: InMemoryKVNamespace;
+let kv: SqliteKVNamespace;
 
 beforeEach(() => {
-  kv = new InMemoryKVNamespace();
+  const db = new Database(":memory:");
+  runMigrations(db);
+  kv = new SqliteKVNamespace(db, "TEST_KV");
 });
 
 test("get non-existent key returns null", async () => {
@@ -139,4 +143,31 @@ test("put ArrayBuffer and get as text", async () => {
   const buf = new TextEncoder().encode("binary").buffer;
   await kv.put("key", buf as ArrayBuffer);
   expect(await kv.get("key")).toBe("binary");
+});
+
+test("list with cursor pagination", async () => {
+  await kv.put("a", "1");
+  await kv.put("b", "2");
+  await kv.put("c", "3");
+  const first = await kv.list({ limit: 2 });
+  expect(first.keys).toHaveLength(2);
+  expect(first.list_complete).toBe(false);
+  expect(first.cursor).toBeTruthy();
+
+  const second = await kv.list({ cursor: first.cursor, limit: 2 });
+  expect(second.keys.map((k) => k.name)).toEqual(["c"]);
+  expect(second.list_complete).toBe(true);
+});
+
+test("namespaces are isolated", async () => {
+  const db = new Database(":memory:");
+  runMigrations(db);
+  const kv1 = new SqliteKVNamespace(db, "NS1");
+  const kv2 = new SqliteKVNamespace(db, "NS2");
+
+  await kv1.put("key", "from-ns1");
+  await kv2.put("key", "from-ns2");
+
+  expect(await kv1.get("key")).toBe("from-ns1");
+  expect(await kv2.get("key")).toBe("from-ns2");
 });

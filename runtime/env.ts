@@ -1,8 +1,9 @@
 import type { WranglerConfig } from "./config";
-import { InMemoryKVNamespace } from "./bindings/kv";
+import { SqliteKVNamespace } from "./bindings/kv";
 import { InMemoryR2Bucket } from "./bindings/r2";
 import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { InMemoryWorkflowBinding } from "./bindings/workflow";
+import { getDatabase } from "./db";
 
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
@@ -14,9 +15,10 @@ export function buildEnv(config: WranglerConfig): { env: Record<string, unknown>
   const registry: ClassRegistry = { durableObjects: [], workflows: [] };
 
   // KV namespaces
+  const db = getDatabase();
   for (const kv of config.kv_namespaces ?? []) {
     console.log(`[bunflare] KV namespace: ${kv.binding}`);
-    env[kv.binding] = new InMemoryKVNamespace();
+    env[kv.binding] = new SqliteKVNamespace(db, kv.binding);
   }
 
   // R2 buckets
