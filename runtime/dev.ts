@@ -2,6 +2,8 @@
 import "./plugin";
 import { loadConfig } from "./config";
 import { buildEnv, wireClassRefs } from "./env";
+import { QueueConsumer } from "./bindings/queue";
+import { getDatabase } from "./db";
 import path from "node:path";
 
 // 1. Parse config
@@ -26,7 +28,17 @@ if (!handler?.fetch) {
   throw new Error("Worker module must export a default object with a fetch() method");
 }
 
-// 6. Start server
+// 6. Start queue consumers
+if (registry.queueConsumers.length > 0 && workerModule.default?.queue) {
+  const db = getDatabase();
+  for (const config of registry.queueConsumers) {
+    const consumer = new QueueConsumer(db, config, workerModule.default.queue.bind(workerModule.default), env);
+    consumer.start();
+    console.log(`[bunflare] Queue consumer started: ${config.queue}`);
+  }
+}
+
+// 7. Start server
 const port = parseInt(process.env.PORT ?? "8787", 10);
 
 Bun.serve({

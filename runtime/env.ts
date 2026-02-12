@@ -4,6 +4,7 @@ import { FileR2Bucket } from "./bindings/r2";
 import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { openD1Database } from "./bindings/d1";
+import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { getDatabase, getDataDir } from "./db";
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -24,14 +25,23 @@ export function parseDevVars(content: string): Record<string, string> {
   return vars;
 }
 
+interface ConsumerConfig {
+  queue: string;
+  maxBatchSize: number;
+  maxBatchTimeout: number;
+  maxRetries: number;
+  deadLetterQueue: string | null;
+}
+
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
+  queueConsumers: ConsumerConfig[];
 }
 
 export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
-  const registry: ClassRegistry = { durableObjects: [], workflows: [] };
+  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [] };
 
   // Environment variables from config
   if (config.vars) {
@@ -93,6 +103,24 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
   for (const d1 of config.d1_databases ?? []) {
     console.log(`[bunflare] D1 database: ${d1.binding} (${d1.database_name})`);
     env[d1.binding] = openD1Database(getDataDir(), d1.database_name);
+  }
+
+  // Queue producers
+  for (const producer of config.queues?.producers ?? []) {
+    console.log(`[bunflare] Queue producer: ${producer.binding} -> ${producer.queue}`);
+    env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0);
+  }
+
+  // Queue consumers (configs — actual consumers started in dev.ts after worker import)
+  for (const consumer of config.queues?.consumers ?? []) {
+    console.log(`[bunflare] Queue consumer: ${consumer.queue}`);
+    registry.queueConsumers.push({
+      queue: consumer.queue,
+      maxBatchSize: consumer.max_batch_size ?? 10,
+      maxBatchTimeout: consumer.max_batch_timeout ?? 5,
+      maxRetries: consumer.max_retries ?? 3,
+      deadLetterQueue: consumer.dead_letter_queue ?? null,
+    });
   }
 
   return { env, registry };

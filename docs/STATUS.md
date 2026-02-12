@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 7     |
-| **Pending**      | 11    |
-| **Progress**     | 39%   |
+| **Completed**    | 8     |
+| **Pending**      | 10    |
+| **Progress**     | 44%   |
 
 ## Current Focus
 
-Issue 02: Queues
+Issue 03: Service Bindings
 
 ## Issues
 
@@ -26,7 +26,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 17 | migrate-workflows-to-sqlite  | completed | Migrate existing Workflow binding to SQLite |
 | 07 | environment-variables        | completed | Parse vars from config + .dev.vars |
 | 01 | d1-database                  | completed | |
-| 02 | queues                       | pending | |
+| 02 | queues                       | completed | |
 | 03 | service-bindings             | pending | |
 | 04 | scheduled-handler            | pending | |
 | 05 | static-assets                | pending | |
@@ -57,6 +57,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#01 d1-database**: Implemented `LocalD1Database` and `LocalD1PreparedStatement` in `runtime/bindings/d1.ts`. Each D1 binding gets its own SQLite file at `.bunflare/d1/<database_name>.sqlite`, separate from the main `data.sqlite`. `prepare()` returns a statement with `bind()`, `first()`, `run()`, `all()`, `raw()`. `batch()` wraps all statements in a BEGIN/COMMIT transaction with ROLLBACK on error. `exec()` splits multi-statement SQL on `;` and runs each. `withSession()` is a no-op returning self. `raw({ columnNames: true })` prepends column names array. Added `d1_databases` to `WranglerConfig`. Wired in `env.ts` via `openD1Database()`. Added 18 tests covering all methods, batch rollback, persistence, bind immutability. All 143 tests pass.
 
 - **#07 environment-variables**: Added `vars` field to `WranglerConfig`. Implemented `parseDevVars()` in `env.ts` to parse dotenv-style `.dev.vars` files (supports comments, quoted values, whitespace trimming). `buildEnv()` now accepts optional `devVarsPath` parameter — config `vars` are injected first, then `.dev.vars` overrides them (matching wrangler behavior). Updated `dev.ts` to pass `.dev.vars` path. Added 13 tests (8 for parser, 5 for buildEnv integration). All 125 tests pass.
+
+- **#02 queues**: Implemented `SqliteQueueProducer` and `QueueConsumer` in `runtime/bindings/queue.ts`. Producer: `send()` inserts message into `queue_messages` table with `visible_at` = now + delay, `sendBatch()` inserts multiple in a transaction. Consumer: `poll()` selects visible messages up to `maxBatchSize`, calls worker's `queue()` handler with `MessageBatch`. Messages auto-ack by default (matching CF behavior). `ack()`/`ackAll()` deletes messages, `retry()`/`retryAll()` keeps them with updated `visible_at`. After `maxRetries`, messages move to DLQ (if configured) or are discarded. Handler errors trigger retry for all messages. Added `queues` config (producers + consumers) to `WranglerConfig`. Wired producers in `env.ts`, consumers started in `dev.ts` via `setInterval` poll loop. Added 18 tests covering send, sendBatch, delay, batch size, ack/retry, DLQ, handler errors, persistence, attempts tracking. All 164 tests pass.
 
 ## Lessons Learned
 

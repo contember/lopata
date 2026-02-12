@@ -8,6 +8,10 @@ export interface WranglerConfig {
   };
   workflows?: { name: string; binding: string; class_name: string }[];
   d1_databases?: { binding: string; database_name: string; database_id: string }[];
+  queues?: {
+    producers?: { binding: string; queue: string; delivery_delay?: number }[];
+    consumers?: { queue: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number; dead_letter_queue?: string }[];
+  };
   vars?: Record<string, string>;
 }
 
