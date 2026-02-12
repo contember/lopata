@@ -99,6 +99,16 @@ export function runMigrations(db: Database): void {
 	`);
 
 	db.run(`
+		CREATE TABLE IF NOT EXISTS workflow_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			instance_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			payload TEXT,
+			created_at INTEGER NOT NULL
+		)
+	`);
+
+	db.run(`
 		CREATE TABLE IF NOT EXISTS cache_entries (
 			cache_name TEXT NOT NULL,
 			url TEXT NOT NULL,
