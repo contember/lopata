@@ -1,10 +1,25 @@
-import { test, expect, beforeEach } from "bun:test";
-import { InMemoryR2Bucket } from "../bindings/r2";
+import { test, expect, beforeEach, afterEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { runMigrations } from "../db";
+import { FileR2Bucket } from "../bindings/r2";
 
-let r2: InMemoryR2Bucket;
+let r2: FileR2Bucket;
+let db: Database;
+let tmpDir: string;
 
 beforeEach(() => {
-  r2 = new InMemoryR2Bucket();
+  tmpDir = mkdtempSync(join(tmpdir(), "r2-test-"));
+  db = new Database(":memory:");
+  runMigrations(db);
+  r2 = new FileR2Bucket(db, "test-bucket", tmpDir);
+});
+
+afterEach(() => {
+  db.close();
+  rmSync(tmpDir, { recursive: true, force: true });
 });
 
 test("get non-existent key returns null", async () => {
@@ -68,7 +83,6 @@ test("head returns metadata without body", async () => {
   expect(obj!.key).toBe("key");
   expect(obj!.size).toBe(5);
   expect(obj!.uploaded).toBeInstanceOf(Date);
-  // head result should not have body/text/arrayBuffer
   expect((obj as any).body).toBeUndefined();
 });
 
@@ -146,4 +160,49 @@ test("list empty bucket", async () => {
   const result = await r2.list();
   expect(result.objects).toEqual([]);
   expect(result.truncated).toBe(false);
+});
+
+test("nested keys with slashes", async () => {
+  await r2.put("a/b/c.txt", "nested");
+  const obj = await r2.get("a/b/c.txt");
+  expect(await obj!.text()).toBe("nested");
+});
+
+test("put returns etag", async () => {
+  const result = await r2.put("key", "hello");
+  expect(result.etag).toBeTruthy();
+  expect(typeof result.etag).toBe("string");
+});
+
+test("path traversal is rejected", async () => {
+  expect(r2.put("../escape", "bad")).rejects.toThrow("path traversal");
+});
+
+test("bucket isolation", async () => {
+  const r2b = new FileR2Bucket(db, "other-bucket", tmpDir);
+  await r2.put("key", "bucket-a");
+  await r2b.put("key", "bucket-b");
+  expect(await (await r2.get("key"))!.text()).toBe("bucket-a");
+  expect(await (await r2b.get("key"))!.text()).toBe("bucket-b");
+});
+
+test("list with cursor pagination", async () => {
+  await r2.put("a", "1");
+  await r2.put("b", "2");
+  await r2.put("c", "3");
+  const page1 = await r2.list({ limit: 2 });
+  expect(page1.objects).toHaveLength(2);
+  expect(page1.truncated).toBe(true);
+  expect(page1.cursor).toBeTruthy();
+  const page2 = await r2.list({ limit: 2, cursor: page1.cursor });
+  expect(page2.objects).toHaveLength(1);
+  expect(page2.truncated).toBe(false);
+  expect(page2.objects[0]!.key).toBe("c");
+});
+
+test("persistence across instances", async () => {
+  await r2.put("persist", "data");
+  const r2b = new FileR2Bucket(db, "test-bucket", tmpDir);
+  const obj = await r2b.get("persist");
+  expect(await obj!.text()).toBe("data");
 });

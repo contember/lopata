@@ -1,9 +1,9 @@
 import type { WranglerConfig } from "./config";
 import { SqliteKVNamespace } from "./bindings/kv";
-import { InMemoryR2Bucket } from "./bindings/r2";
+import { FileR2Bucket } from "./bindings/r2";
 import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { InMemoryWorkflowBinding } from "./bindings/workflow";
-import { getDatabase } from "./db";
+import { getDatabase, getDataDir } from "./db";
 
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
@@ -24,7 +24,7 @@ export function buildEnv(config: WranglerConfig): { env: Record<string, unknown>
   // R2 buckets
   for (const r2 of config.r2_buckets ?? []) {
     console.log(`[bunflare] R2 bucket: ${r2.binding} (${r2.bucket_name})`);
-    env[r2.binding] = new InMemoryR2Bucket();
+    env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, getDataDir());
   }
 
   // Durable Objects

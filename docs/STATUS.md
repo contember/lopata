@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 2     |
-| **Pending**      | 16    |
-| **Progress**     | 11%   |
+| **Completed**    | 3     |
+| **Pending**      | 15    |
+| **Progress**     | 17%   |
 
 ## Current Focus
 
-Issue 15: Migrate R2 to files
+Issue 16: Migrate DO storage to SQLite
 
 ## Issues
 
@@ -21,7 +21,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | -- | ---------------------------- | ------- | ----- |
 | 00 | persistence-layer            | completed | Foundation — creates db.ts, schema, .bunflare/ dir |
 | 14 | migrate-kv-to-sqlite         | completed | Migrate existing KV from in-memory Map to SQLite |
-| 15 | migrate-r2-to-files          | pending | Migrate existing R2 from in-memory Map to files + SQLite metadata |
+| 15 | migrate-r2-to-files          | completed | Migrate existing R2 from in-memory Map to files + SQLite metadata |
 | 16 | migrate-do-storage-to-sqlite | pending | Migrate existing DO storage from in-memory Map to SQLite |
 | 17 | migrate-workflows-to-sqlite  | pending | Migrate existing Workflow binding to SQLite |
 | 07 | environment-variables        | pending | Simple — parse vars from config + .dev.vars |
@@ -50,6 +50,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 
 - **#00 persistence-layer**: Created `runtime/db.ts` with `getDatabase()` singleton, `runMigrations()` for all 7 tables (kv, r2_objects, do_storage, do_alarms, queue_messages, workflow_instances, cache_entries), WAL mode, auto-creation of `.bunflare/` directory structure. Added `runtime/tests/db.test.ts` with 9 tests.
 - **#14 migrate-kv-to-sqlite**: Replaced `InMemoryKVNamespace` with `SqliteKVNamespace` backed by SQLite `kv` table. Constructor takes `(db, namespace)`. Values stored as BLOB, metadata as JSON string. Expiration checked on `get()`/`getWithMetadata()`, lazily cleaned on `list()`. Cursor-based pagination in `list()`. Updated `env.ts` to pass `getDatabase()` and binding name. Added namespace isolation test and cursor pagination test. All 89 tests pass.
+- **#15 migrate-r2-to-files**: Replaced `InMemoryR2Bucket` with `FileR2Bucket`. Blobs stored as files under `.bunflare/r2/<bucket>/<key>`, metadata in `r2_objects` SQLite table. Constructor takes `(db, bucket, dataDir)`. Etag generated via MD5 hash. Nested keys with `/` create subdirectories. Path traversal (`..`) rejected. Cursor-based pagination via OFFSET. Updated `env.ts` to pass `getDatabase()`, bucket name, and `getDataDir()`. Added tests for nested keys, etag, path traversal, bucket isolation, cursor pagination, and persistence across instances. All 95 tests pass.
 
 ## Lessons Learned
 
