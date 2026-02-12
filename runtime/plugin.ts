@@ -10,7 +10,17 @@ plugin({
         exports: {
           DurableObject: DurableObjectBase,
           WorkflowEntrypoint: WorkflowEntrypointBase,
-          WorkerEntrypoint: class {},
+          WorkerEntrypoint: class WorkerEntrypoint {
+            env: unknown;
+            ctx: unknown;
+            constructor(env?: unknown) {
+              this.env = env;
+              this.ctx = {
+                waitUntil(_promise: Promise<unknown>) {},
+                passThroughOnException() {},
+              };
+            }
+          },
           RpcTarget: class {},
         },
         loader: "object",

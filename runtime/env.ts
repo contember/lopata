@@ -5,6 +5,7 @@ import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { openD1Database } from "./bindings/d1";
 import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
+import { createServiceBinding } from "./bindings/service-binding";
 import { getDatabase, getDataDir } from "./db";
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -33,15 +34,23 @@ interface ConsumerConfig {
   deadLetterQueue: string | null;
 }
 
+interface ServiceBindingEntry {
+  bindingName: string;
+  serviceName: string;
+  entrypoint?: string;
+  proxy: Record<string, unknown>;
+}
+
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
   queueConsumers: ConsumerConfig[];
+  serviceBindings: ServiceBindingEntry[];
 }
 
 export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
-  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [] };
+  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [], serviceBindings: [] };
 
   // Environment variables from config
   if (config.vars) {
@@ -123,6 +132,19 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
     });
   }
 
+  // Service bindings
+  for (const svc of config.services ?? []) {
+    console.log(`[bunflare] Service binding: ${svc.binding} -> ${svc.service}${svc.entrypoint ? ` (${svc.entrypoint})` : ""}`);
+    const proxy = createServiceBinding(svc.service, svc.entrypoint);
+    env[svc.binding] = proxy;
+    registry.serviceBindings.push({
+      bindingName: svc.binding,
+      serviceName: svc.service,
+      entrypoint: svc.entrypoint,
+      proxy,
+    });
+  }
+
   return { env, registry };
 }
 
@@ -143,5 +165,14 @@ export function wireClassRefs(
     if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`);
     entry.binding._setClass(cls as any, env);
     console.log(`[bunflare] Wired Workflow class: ${entry.className}`);
+  }
+
+  // Wire service bindings (self-referencing same worker)
+  for (const entry of registry.serviceBindings) {
+    const wire = entry.proxy._wire as ((wm: Record<string, unknown>, e: Record<string, unknown>) => void) | undefined;
+    if (wire) {
+      wire(workerModule, env);
+      console.log(`[bunflare] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ""}`);
+    }
   }
 }
