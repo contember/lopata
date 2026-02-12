@@ -3,6 +3,7 @@ import "./plugin";
 import { loadConfig } from "./config";
 import { buildEnv, wireClassRefs } from "./env";
 import { QueueConsumer } from "./bindings/queue";
+import { createScheduledController, startCronScheduler } from "./bindings/scheduled";
 import { getDatabase } from "./db";
 import path from "node:path";
 
@@ -38,7 +39,16 @@ if (registry.queueConsumers.length > 0 && workerModule.default?.queue) {
   }
 }
 
-// 7. Start server
+// 7. Start cron scheduler
+const crons = config.triggers?.crons ?? [];
+if (crons.length > 0 && workerModule.default?.scheduled) {
+  startCronScheduler(crons, workerModule.default.scheduled.bind(workerModule.default), env);
+  for (const cron of crons) {
+    console.log(`[bunflare] Cron registered: ${cron}`);
+  }
+}
+
+// 8. Start server
 const port = parseInt(process.env.PORT ?? "8787", 10);
 
 Bun.serve({
@@ -48,6 +58,24 @@ Bun.serve({
       waitUntil(_promise: Promise<unknown>) {},
       passThroughOnException() {},
     };
+
+    // Manual trigger: GET /__scheduled?cron=<expression>
+    const url = new URL(request.url);
+    if (url.pathname === "/__scheduled") {
+      const scheduledHandler = workerModule.default?.scheduled;
+      if (!scheduledHandler) {
+        return new Response("No scheduled handler defined", { status: 404 });
+      }
+      const cronExpr = url.searchParams.get("cron") ?? "* * * * *";
+      const controller = createScheduledController(cronExpr, Date.now());
+      try {
+        await scheduledHandler.call(workerModule.default, controller, env, ctx);
+        return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 });
+      } catch (err) {
+        console.error("[bunflare] Scheduled handler error:", err);
+        return new Response("Scheduled handler error", { status: 500 });
+      }
+    }
 
     try {
       return await handler.fetch(request, env, ctx);

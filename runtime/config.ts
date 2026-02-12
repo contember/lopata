@@ -13,6 +13,7 @@ export interface WranglerConfig {
     consumers?: { queue: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number; dead_letter_queue?: string }[];
   };
   services?: { binding: string; service: string; entrypoint?: string }[];
+  triggers?: { crons?: string[] };
   vars?: Record<string, string>;
 }
 

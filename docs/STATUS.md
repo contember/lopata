@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 9     |
-| **Pending**      | 9     |
-| **Progress**     | 50%   |
+| **Completed**    | 10    |
+| **Pending**      | 8     |
+| **Progress**     | 56%   |
 
 ## Current Focus
 
-Issue 04: Scheduled Handler
+Issue 05: Static Assets
 
 ## Issues
 
@@ -28,7 +28,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 01 | d1-database                  | completed | |
 | 02 | queues                       | completed | |
 | 03 | service-bindings             | completed | |
-| 04 | scheduled-handler            | pending | |
+| 04 | scheduled-handler            | completed | |
 | 05 | static-assets                | pending | |
 | 06 | cache-api                    | pending | |
 | 08 | workflow-instance-management | pending | Depends on 17 |
@@ -59,6 +59,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#07 environment-variables**: Added `vars` field to `WranglerConfig`. Implemented `parseDevVars()` in `env.ts` to parse dotenv-style `.dev.vars` files (supports comments, quoted values, whitespace trimming). `buildEnv()` now accepts optional `devVarsPath` parameter — config `vars` are injected first, then `.dev.vars` overrides them (matching wrangler behavior). Updated `dev.ts` to pass `.dev.vars` path. Added 13 tests (8 for parser, 5 for buildEnv integration). All 125 tests pass.
 
 - **#02 queues**: Implemented `SqliteQueueProducer` and `QueueConsumer` in `runtime/bindings/queue.ts`. Producer: `send()` inserts message into `queue_messages` table with `visible_at` = now + delay, `sendBatch()` inserts multiple in a transaction. Consumer: `poll()` selects visible messages up to `maxBatchSize`, calls worker's `queue()` handler with `MessageBatch`. Messages auto-ack by default (matching CF behavior). `ack()`/`ackAll()` deletes messages, `retry()`/`retryAll()` keeps them with updated `visible_at`. After `maxRetries`, messages move to DLQ (if configured) or are discarded. Handler errors trigger retry for all messages. Added `queues` config (producers + consumers) to `WranglerConfig`. Wired producers in `env.ts`, consumers started in `dev.ts` via `setInterval` poll loop. Added 18 tests covering send, sendBatch, delay, batch size, ack/retry, DLQ, handler errors, persistence, attempts tracking. All 164 tests pass.
+
+- **#04 scheduled-handler**: Implemented `parseCron()` and `cronMatchesDate()` in `runtime/bindings/scheduled.ts` — a lightweight cron parser supporting wildcards, specific values, ranges, comma-separated values, and step values (`*/5`, `1-10/3`). `ScheduledController` provides `scheduledTime`, `cron`, and `noRetry()` (no-op in dev). `startCronScheduler()` sets up a 60-second interval that checks all cron expressions against the current time and calls the worker's `scheduled()` handler on match. Added `triggers.crons` to `WranglerConfig`. In `dev.ts`: cron scheduler starts after worker import; `GET /__scheduled?cron=<expr>` endpoint allows manual triggering (matching wrangler dev behavior). Added 18 tests covering cron parsing (wildcards, specifics, ranges, commas, steps, invalid expressions), date matching (minute, hour, day, month, weekday, every-5-min, midnight), and ScheduledController properties. All 198 tests pass.
 
 - **#03 service-bindings**: Implemented `ServiceBinding` class and `createServiceBinding()` factory in `runtime/bindings/service-binding.ts`. Binding is a Proxy that supports both HTTP mode (`.fetch()` calls target worker's fetch handler in-process) and RPC mode (any other property access returns an async function calling the method on the target). Supports named entrypoints via `entrypoint` config — instantiates the exported class with `env` and proxies method calls to it. Updated `WorkerEntrypoint` in `plugin.ts` to be a proper base class with `env` and `ctx` properties. Added `services` config to `WranglerConfig`. Wired in `env.ts` with `buildEnv()` creating proxies and `wireClassRefs()` connecting them to the loaded worker module. Added 16 tests covering fetch with Request/string/init, env passing, error cases, RPC on default export, RPC on named entrypoint, and wiring state. All 180 tests pass.
 
