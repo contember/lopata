@@ -1,29 +1,60 @@
+import type { Database } from "bun:sqlite";
+
 // --- Storage ---
 
-export class InMemoryDurableObjectStorage {
-  private store = new Map<string, unknown>();
+export class SqliteDurableObjectStorage {
+  private db: Database;
+  private namespace: string;
+  private id: string;
+
+  constructor(db: Database, namespace: string, id: string) {
+    this.db = db;
+    this.namespace = namespace;
+    this.id = id;
+  }
 
   async get<T = unknown>(key: string): Promise<T | undefined>;
   async get<T = unknown>(keys: string[]): Promise<Map<string, T>>;
   async get<T = unknown>(keyOrKeys: string | string[]): Promise<T | undefined | Map<string, T>> {
     if (Array.isArray(keyOrKeys)) {
+      if (keyOrKeys.length === 0) return new Map<string, T>();
+      const placeholders = keyOrKeys.map(() => "?").join(", ");
+      const rows = this.db
+        .query(`SELECT key, value FROM do_storage WHERE namespace = ? AND id = ? AND key IN (${placeholders})`)
+        .all(this.namespace, this.id, ...keyOrKeys) as { key: string; value: string }[];
       const result = new Map<string, T>();
-      for (const k of keyOrKeys) {
-        if (this.store.has(k)) result.set(k, this.store.get(k) as T);
+      for (const row of rows) {
+        result.set(row.key, JSON.parse(row.value) as T);
       }
       return result;
     }
-    return this.store.get(keyOrKeys) as T | undefined;
+    const row = this.db
+      .query("SELECT value FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .get(this.namespace, this.id, keyOrKeys) as { value: string } | null;
+    if (!row) return undefined;
+    return JSON.parse(row.value) as T;
   }
 
   async put(key: string, value: unknown): Promise<void>;
   async put(entries: Record<string, unknown>): Promise<void>;
   async put(keyOrEntries: string | Record<string, unknown>, value?: unknown): Promise<void> {
     if (typeof keyOrEntries === "string") {
-      this.store.set(keyOrEntries, value);
+      this.db
+        .query("INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)")
+        .run(this.namespace, this.id, keyOrEntries, JSON.stringify(value));
     } else {
-      for (const [k, v] of Object.entries(keyOrEntries)) {
-        this.store.set(k, v);
+      const stmt = this.db.query(
+        "INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)",
+      );
+      this.db.run("BEGIN");
+      try {
+        for (const [k, v] of Object.entries(keyOrEntries)) {
+          stmt.run(this.namespace, this.id, k, JSON.stringify(v));
+        }
+        this.db.run("COMMIT");
+      } catch (e) {
+        this.db.run("ROLLBACK");
+        throw e;
       }
     }
   }
@@ -32,30 +63,80 @@ export class InMemoryDurableObjectStorage {
   async delete(keys: string[]): Promise<number>;
   async delete(keyOrKeys: string | string[]): Promise<boolean | number> {
     if (Array.isArray(keyOrKeys)) {
-      let count = 0;
-      for (const k of keyOrKeys) {
-        if (this.store.delete(k)) count++;
-      }
+      if (keyOrKeys.length === 0) return 0;
+      // Count existing keys first
+      const placeholders = keyOrKeys.map(() => "?").join(", ");
+      const countRow = this.db
+        .query(`SELECT COUNT(*) as c FROM do_storage WHERE namespace = ? AND id = ? AND key IN (${placeholders})`)
+        .get(this.namespace, this.id, ...keyOrKeys) as { c: number };
+      const count = countRow.c;
+      this.db
+        .query(`DELETE FROM do_storage WHERE namespace = ? AND id = ? AND key IN (${placeholders})`)
+        .run(this.namespace, this.id, ...keyOrKeys);
       return count;
     }
-    return this.store.delete(keyOrKeys);
+    const existing = this.db
+      .query("SELECT 1 FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .get(this.namespace, this.id, keyOrKeys);
+    this.db
+      .query("DELETE FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .run(this.namespace, this.id, keyOrKeys);
+    return existing !== null;
   }
 
-  async list(options?: { prefix?: string; limit?: number }): Promise<Map<string, unknown>> {
+  async deleteAll(): Promise<void> {
+    this.db
+      .query("DELETE FROM do_storage WHERE namespace = ? AND id = ?")
+      .run(this.namespace, this.id);
+  }
+
+  async list(options?: { prefix?: string; start?: string; end?: string; limit?: number; reverse?: boolean }): Promise<Map<string, unknown>> {
     const prefix = options?.prefix ?? "";
     const limit = options?.limit ?? 1000;
+    const reverse = options?.reverse ?? false;
+
+    let sql = "SELECT key, value FROM do_storage WHERE namespace = ? AND id = ?";
+    const params: (string | number)[] = [this.namespace, this.id];
+
+    if (prefix) {
+      sql += " AND key LIKE ?";
+      // Escape % and _ in prefix for LIKE, then append %
+      const escaped = prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+      params.push(escaped + "%");
+      sql += " ESCAPE '\\'";
+    }
+
+    if (options?.start) {
+      sql += " AND key >= ?";
+      params.push(options.start);
+    }
+
+    if (options?.end) {
+      sql += " AND key < ?";
+      params.push(options.end);
+    }
+
+    sql += ` ORDER BY key ${reverse ? "DESC" : "ASC"} LIMIT ?`;
+    params.push(limit);
+
+    const rows = this.db.query(sql).all(...params) as { key: string; value: string }[];
     const result = new Map<string, unknown>();
-    for (const [k, v] of this.store) {
-      if (!k.startsWith(prefix)) continue;
-      result.set(k, v);
-      if (result.size >= limit) break;
+    for (const row of rows) {
+      result.set(row.key, JSON.parse(row.value));
     }
     return result;
   }
 
-  async transaction<T>(closure: (txn: InMemoryDurableObjectStorage) => Promise<T>): Promise<T> {
-    // In-memory: just run directly, no rollback needed for dev
-    return closure(this);
+  async transaction<T>(closure: (txn: SqliteDurableObjectStorage) => Promise<T>): Promise<T> {
+    this.db.run("BEGIN");
+    try {
+      const result = await closure(this);
+      this.db.run("COMMIT");
+      return result;
+    } catch (e) {
+      this.db.run("ROLLBACK");
+      throw e;
+    }
   }
 }
 
@@ -77,11 +158,11 @@ export class DurableObjectIdImpl {
 
 export class DurableObjectStateImpl {
   readonly id: DurableObjectIdImpl;
-  readonly storage: InMemoryDurableObjectStorage;
+  readonly storage: SqliteDurableObjectStorage;
 
-  constructor(id: DurableObjectIdImpl) {
+  constructor(id: DurableObjectIdImpl, db: Database, namespace: string) {
     this.id = id;
-    this.storage = new InMemoryDurableObjectStorage();
+    this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString());
   }
 
   waitUntil(_promise: Promise<unknown>) {
@@ -107,6 +188,13 @@ export class DurableObjectNamespaceImpl {
   private instances = new Map<string, DurableObjectBase>();
   private _class?: new (ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase;
   private _env?: unknown;
+  private db: Database;
+  private namespaceName: string;
+
+  constructor(db: Database, namespaceName: string) {
+    this.db = db;
+    this.namespaceName = namespaceName;
+  }
 
   /** Called after worker module is loaded to wire the actual class */
   _setClass(cls: new (ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown) {
@@ -130,7 +218,7 @@ export class DurableObjectNamespaceImpl {
     const idStr = id.toString();
     if (!this.instances.has(idStr)) {
       if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
-      const state = new DurableObjectStateImpl(id);
+      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName);
       const instance = new this._class(state, this._env);
       this.instances.set(idStr, instance);
     }

@@ -1,17 +1,26 @@
 import { test, expect, beforeEach, describe } from "bun:test";
+import { Database } from "bun:sqlite";
+import { runMigrations } from "../db";
 import {
-  InMemoryDurableObjectStorage,
+  SqliteDurableObjectStorage,
   DurableObjectIdImpl,
   DurableObjectStateImpl,
   DurableObjectBase,
   DurableObjectNamespaceImpl,
 } from "../bindings/durable-object";
 
+let db: Database;
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  runMigrations(db);
+});
+
 describe("DurableObjectStorage", () => {
-  let storage: InMemoryDurableObjectStorage;
+  let storage: SqliteDurableObjectStorage;
 
   beforeEach(() => {
-    storage = new InMemoryDurableObjectStorage();
+    storage = new SqliteDurableObjectStorage(db, "TestDO", "instance1");
   });
 
   test("get non-existent key returns undefined", async () => {
@@ -52,6 +61,12 @@ describe("DurableObjectStorage", () => {
     expect(result.has("missing")).toBe(false);
   });
 
+  test("get empty keys array returns empty Map", async () => {
+    const result = await storage.get([]);
+    expect(result).toBeInstanceOf(Map);
+    expect(result.size).toBe(0);
+  });
+
   test("delete single key returns boolean", async () => {
     await storage.put("key", "val");
     expect(await storage.delete("key")).toBe(true);
@@ -67,6 +82,20 @@ describe("DurableObjectStorage", () => {
     await storage.put("b", 2);
     const count = await storage.delete(["a", "b", "missing"]);
     expect(count).toBe(2);
+  });
+
+  test("delete empty keys array returns 0", async () => {
+    expect(await storage.delete([])).toBe(0);
+  });
+
+  test("deleteAll removes all keys for this instance", async () => {
+    await storage.put("a", 1);
+    await storage.put("b", 2);
+    await storage.deleteAll();
+    expect(await storage.get("a")).toBeUndefined();
+    expect(await storage.get("b")).toBeUndefined();
+    const result = await storage.list();
+    expect(result.size).toBe(0);
   });
 
   test("list all keys", async () => {
@@ -95,6 +124,30 @@ describe("DurableObjectStorage", () => {
     expect(result.size).toBe(2);
   });
 
+  test("list with start and end", async () => {
+    await storage.put("a", 1);
+    await storage.put("b", 2);
+    await storage.put("c", 3);
+    await storage.put("d", 4);
+    const result = await storage.list({ start: "b", end: "d" });
+    expect(result.size).toBe(2);
+    expect(result.has("b")).toBe(true);
+    expect(result.has("c")).toBe(true);
+    expect(result.has("a")).toBe(false);
+    expect(result.has("d")).toBe(false);
+  });
+
+  test("list with reverse", async () => {
+    await storage.put("a", 1);
+    await storage.put("b", 2);
+    await storage.put("c", 3);
+    const result = await storage.list({ reverse: true, limit: 2 });
+    expect(result.size).toBe(2);
+    const keys = [...result.keys()];
+    expect(keys[0]).toBe("c");
+    expect(keys[1]).toBe("b");
+  });
+
   test("list empty storage", async () => {
     const result = await storage.list();
     expect(result.size).toBe(0);
@@ -105,6 +158,28 @@ describe("DurableObjectStorage", () => {
       await txn.put("key", "value");
     });
     expect(await storage.get<string>("key")).toBe("value");
+  });
+
+  test("namespace isolation — different namespaces don't share data", async () => {
+    const storage2 = new SqliteDurableObjectStorage(db, "OtherDO", "instance1");
+    await storage.put("shared-key", "from-TestDO");
+    await storage2.put("shared-key", "from-OtherDO");
+    expect(await storage.get<string>("shared-key")).toBe("from-TestDO");
+    expect(await storage2.get<string>("shared-key")).toBe("from-OtherDO");
+  });
+
+  test("instance isolation — different instances don't share data", async () => {
+    const storage2 = new SqliteDurableObjectStorage(db, "TestDO", "instance2");
+    await storage.put("key", "instance1-value");
+    await storage2.put("key", "instance2-value");
+    expect(await storage.get<string>("key")).toBe("instance1-value");
+    expect(await storage2.get<string>("key")).toBe("instance2-value");
+  });
+
+  test("persistence across storage instances with same db/namespace/id", async () => {
+    await storage.put("persistent", "data");
+    const storage2 = new SqliteDurableObjectStorage(db, "TestDO", "instance1");
+    expect(await storage2.get<string>("persistent")).toBe("data");
   });
 });
 
@@ -128,13 +203,13 @@ describe("DurableObjectId", () => {
 describe("DurableObjectState", () => {
   test("has id and storage", () => {
     const id = new DurableObjectIdImpl("test-id", "test");
-    const state = new DurableObjectStateImpl(id);
+    const state = new DurableObjectStateImpl(id, db, "TestDO");
     expect(state.id).toBe(id);
-    expect(state.storage).toBeInstanceOf(InMemoryDurableObjectStorage);
+    expect(state.storage).toBeInstanceOf(SqliteDurableObjectStorage);
   });
 
   test("waitUntil is no-op", () => {
-    const state = new DurableObjectStateImpl(new DurableObjectIdImpl("id"));
+    const state = new DurableObjectStateImpl(new DurableObjectIdImpl("id"), db, "TestDO");
     state.waitUntil(Promise.resolve()); // should not throw
   });
 });
@@ -154,7 +229,7 @@ describe("DurableObjectNamespace", () => {
   let ns: DurableObjectNamespaceImpl;
 
   beforeEach(() => {
-    ns = new DurableObjectNamespaceImpl();
+    ns = new DurableObjectNamespaceImpl(db, "TestCounter");
     ns._setClass(TestCounter, {});
   });
 
@@ -209,8 +284,21 @@ describe("DurableObjectNamespace", () => {
   });
 
   test("get throws if class not wired", () => {
-    const ns2 = new DurableObjectNamespaceImpl();
+    const ns2 = new DurableObjectNamespaceImpl(db, "Unwired");
     const id = new DurableObjectIdImpl("test");
     expect(() => ns2.get(id)).toThrow("not wired");
+  });
+
+  test("data persists across namespace instances (same db)", async () => {
+    const id = ns.idFromName("counter1");
+    const stub = ns.get(id) as any;
+    await stub.increment();
+    await stub.increment();
+
+    // Create a new namespace instance pointing to same db
+    const ns2 = new DurableObjectNamespaceImpl(db, "TestCounter");
+    ns2._setClass(TestCounter, {});
+    const stub2 = ns2.get(id) as any;
+    expect(await stub2.getCount()).toBe(2);
   });
 });
