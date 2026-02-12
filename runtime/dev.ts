@@ -77,6 +77,14 @@ Bun.serve({
       }
     }
 
+    // Serve static assets before worker fetch (when no binding name is set)
+    if (registry.staticAssets && !config.assets?.binding) {
+      const assetResponse = await registry.staticAssets.fetch(request);
+      if (assetResponse.status !== 404) {
+        return assetResponse;
+      }
+    }
+
     try {
       return await handler.fetch(request, env, ctx);
     } catch (err) {

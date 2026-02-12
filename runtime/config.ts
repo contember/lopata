@@ -15,6 +15,12 @@ export interface WranglerConfig {
   services?: { binding: string; service: string; entrypoint?: string }[];
   triggers?: { crons?: string[] };
   vars?: Record<string, string>;
+  assets?: {
+    directory: string;
+    binding?: string;
+    html_handling?: "none" | "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash";
+    not_found_handling?: "none" | "404-page" | "single-page-application";
+  };
 }
 
 export async function loadConfig(path: string): Promise<WranglerConfig> {

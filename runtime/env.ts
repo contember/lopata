@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { WranglerConfig } from "./config";
 import { SqliteKVNamespace } from "./bindings/kv";
 import { FileR2Bucket } from "./bindings/r2";
@@ -6,6 +7,7 @@ import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { openD1Database } from "./bindings/d1";
 import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { createServiceBinding } from "./bindings/service-binding";
+import { StaticAssets } from "./bindings/static-assets";
 import { getDatabase, getDataDir } from "./db";
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -46,11 +48,12 @@ interface ClassRegistry {
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
   queueConsumers: ConsumerConfig[];
   serviceBindings: ServiceBindingEntry[];
+  staticAssets: StaticAssets | null;
 }
 
 export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
-  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [], serviceBindings: [] };
+  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
 
   // Environment variables from config
   if (config.vars) {
@@ -143,6 +146,19 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
       entrypoint: svc.entrypoint,
       proxy,
     });
+  }
+
+  // Static assets
+  if (config.assets) {
+    const assetsDir = path.resolve(config.assets.directory);
+    const assets = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling);
+    registry.staticAssets = assets;
+    if (config.assets.binding) {
+      console.log(`[bunflare] Static assets: ${config.assets.binding} -> ${config.assets.directory}`);
+      env[config.assets.binding] = assets;
+    } else {
+      console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`);
+    }
   }
 
   return { env, registry };
