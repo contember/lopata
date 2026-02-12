@@ -7,6 +7,7 @@ export interface WranglerConfig {
     bindings: { name: string; class_name: string }[];
   };
   workflows?: { name: string; binding: string; class_name: string }[];
+  vars?: Record<string, string>;
 }
 
 export async function loadConfig(path: string): Promise<WranglerConfig> {

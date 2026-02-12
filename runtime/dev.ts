@@ -9,8 +9,9 @@ const configPath = path.resolve(import.meta.dir, "../wrangler.jsonc");
 const config = await loadConfig(configPath);
 console.log(`[bunflare] Loaded config: ${config.name}`);
 
-// 2. Build env with in-memory bindings
-const { env, registry } = buildEnv(config);
+// 2. Build env with bindings and environment variables
+const devVarsPath = path.resolve(import.meta.dir, "../.dev.vars");
+const { env, registry } = buildEnv(config, devVarsPath);
 
 // 3. Import worker module (plugin intercepts cloudflare:workers imports)
 const workerPath = path.resolve(import.meta.dir, "..", config.main);

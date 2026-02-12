@@ -5,14 +5,51 @@ import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { getDatabase, getDataDir } from "./db";
 
+export function parseDevVars(content: string): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1) continue;
+    const key = trimmed.slice(0, eqIndex).trim();
+    let value = trimmed.slice(eqIndex + 1).trim();
+    // Strip surrounding quotes
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    vars[key] = value;
+  }
+  return vars;
+}
+
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
 }
 
-export function buildEnv(config: WranglerConfig): { env: Record<string, unknown>; registry: ClassRegistry } {
+export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
   const registry: ClassRegistry = { durableObjects: [], workflows: [] };
+
+  // Environment variables from config
+  if (config.vars) {
+    for (const [key, value] of Object.entries(config.vars)) {
+      env[key] = value;
+    }
+  }
+
+  // Override with .dev.vars file (if exists)
+  if (devVarsPath) {
+    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
+    if (existsSync(devVarsPath)) {
+      const content = readFileSync(devVarsPath, "utf-8");
+      const devVars = parseDevVars(content);
+      for (const [key, value] of Object.entries(devVars)) {
+        env[key] = value;
+      }
+    }
+  }
 
   // KV namespaces
   const db = getDatabase();
