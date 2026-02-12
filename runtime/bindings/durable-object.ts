@@ -145,6 +145,37 @@ export class SqliteDurableObjectStorage {
       throw e;
     }
   }
+
+  // --- Alarm methods ---
+
+  private _onAlarmSet?: (scheduledTime: number | null) => void;
+
+  /** @internal Register callback for when alarm is set/deleted */
+  _setAlarmCallback(cb: (scheduledTime: number | null) => void) {
+    this._onAlarmSet = cb;
+  }
+
+  async getAlarm(_options?: StorageOptions): Promise<number | null> {
+    const row = this.db
+      .query("SELECT alarm_time FROM do_alarms WHERE namespace = ? AND id = ?")
+      .get(this.namespace, this.id) as { alarm_time: number } | null;
+    return row ? row.alarm_time : null;
+  }
+
+  async setAlarm(scheduledTime: number | Date, _options?: StorageOptions): Promise<void> {
+    const time = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime;
+    this.db
+      .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
+      .run(this.namespace, this.id, time);
+    this._onAlarmSet?.(time);
+  }
+
+  async deleteAlarm(_options?: StorageOptions): Promise<void> {
+    this.db
+      .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
+      .run(this.namespace, this.id);
+    this._onAlarmSet?.(null);
+  }
 }
 
 // --- ID ---
@@ -205,6 +236,10 @@ export class DurableObjectBase {
   }
 }
 
+// --- Alarm scheduling ---
+
+const MAX_ALARM_RETRIES = 6;
+
 // --- Namespace ---
 
 export class DurableObjectNamespaceImpl {
@@ -213,6 +248,7 @@ export class DurableObjectNamespaceImpl {
   private _env?: unknown;
   private db: Database;
   private namespaceName: string;
+  private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(db: Database, namespaceName: string) {
     this.db = db;
@@ -223,6 +259,91 @@ export class DurableObjectNamespaceImpl {
   _setClass(cls: new (ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown) {
     this._class = cls;
     this._env = env;
+    // Restore persisted alarms on startup
+    this._restoreAlarms();
+  }
+
+  /** @internal Restore all persisted alarms for this namespace */
+  private _restoreAlarms() {
+    const rows = this.db
+      .query("SELECT id, alarm_time FROM do_alarms WHERE namespace = ?")
+      .all(this.namespaceName) as { id: string; alarm_time: number }[];
+    for (const row of rows) {
+      this._scheduleAlarmTimer(row.id, row.alarm_time);
+    }
+  }
+
+  /** @internal Schedule a timer for an alarm */
+  private _scheduleAlarmTimer(idStr: string, scheduledTime: number) {
+    // Clear any existing timer for this instance
+    const existing = this.alarmTimers.get(idStr);
+    if (existing) clearTimeout(existing);
+
+    const delay = Math.max(0, scheduledTime - Date.now());
+    const timer = setTimeout(() => {
+      this.alarmTimers.delete(idStr);
+      this._fireAlarm(idStr, 0);
+    }, delay);
+    this.alarmTimers.set(idStr, timer);
+  }
+
+  /** @internal Fire the alarm handler on a DO instance */
+  private async _fireAlarm(idStr: string, retryCount: number): Promise<void> {
+    // Get or create the DO instance
+    const instance = this._getOrCreateInstance(idStr);
+    if (!instance) return;
+
+    // Delete alarm from DB before calling handler (matching CF behavior)
+    this.db
+      .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
+      .run(this.namespaceName, idStr);
+
+    try {
+      const alarmFn = (instance as unknown as Record<string, unknown>).alarm;
+      if (typeof alarmFn === "function") {
+        await alarmFn.call(instance, {
+          retryCount,
+          isRetry: retryCount > 0,
+        });
+      }
+    } catch (e) {
+      if (retryCount < MAX_ALARM_RETRIES) {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+        const backoffMs = Math.pow(2, retryCount) * 1000;
+        const retryTime = Date.now() + backoffMs;
+        // Re-persist alarm for retry
+        this.db
+          .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
+          .run(this.namespaceName, idStr, retryTime);
+        const timer = setTimeout(() => {
+          this.alarmTimers.delete(idStr);
+          this._fireAlarm(idStr, retryCount + 1);
+        }, backoffMs);
+        this.alarmTimers.set(idStr, timer);
+      }
+      // After max retries, alarm is discarded
+    }
+  }
+
+  /** @internal Get or create a DO instance by id string */
+  private _getOrCreateInstance(idStr: string): DurableObjectBase | null {
+    if (this.instances.has(idStr)) return this.instances.get(idStr)!;
+    if (!this._class) return null;
+    const doId = new DurableObjectIdImpl(idStr);
+    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName);
+    const instance = new this._class(state, this._env);
+    // Wire alarm callback
+    state.storage._setAlarmCallback((time) => {
+      if (time === null) {
+        const t = this.alarmTimers.get(idStr);
+        if (t) clearTimeout(t);
+        this.alarmTimers.delete(idStr);
+      } else {
+        this._scheduleAlarmTimer(idStr, time);
+      }
+    });
+    this.instances.set(idStr, instance);
+    return instance;
   }
 
   newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
@@ -251,6 +372,16 @@ export class DurableObjectNamespaceImpl {
       if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
       const state = new DurableObjectStateImpl(id, this.db, this.namespaceName);
       const instance = new this._class(state, this._env);
+      // Wire alarm callback so setAlarm/deleteAlarm schedule/cancel timers
+      state.storage._setAlarmCallback((time) => {
+        if (time === null) {
+          const t = this.alarmTimers.get(idStr);
+          if (t) clearTimeout(t);
+          this.alarmTimers.delete(idStr);
+        } else {
+          this._scheduleAlarmTimer(idStr, time);
+        }
+      });
       this.instances.set(idStr, instance);
     }
 

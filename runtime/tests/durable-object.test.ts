@@ -371,3 +371,217 @@ describe("DurableObjectNamespace", () => {
     expect(await stub2.getCount()).toBe(2);
   });
 });
+
+describe("DurableObject Alarms", () => {
+  describe("Storage alarm methods", () => {
+    let storage: SqliteDurableObjectStorage;
+
+    beforeEach(() => {
+      storage = new SqliteDurableObjectStorage(db, "TestDO", "instance1");
+    });
+
+    test("getAlarm returns null when no alarm set", async () => {
+      expect(await storage.getAlarm()).toBeNull();
+    });
+
+    test("setAlarm and getAlarm", async () => {
+      const time = Date.now() + 60000;
+      await storage.setAlarm(time);
+      expect(await storage.getAlarm()).toBe(time);
+    });
+
+    test("setAlarm accepts Date object", async () => {
+      const date = new Date(Date.now() + 60000);
+      await storage.setAlarm(date);
+      expect(await storage.getAlarm()).toBe(date.getTime());
+    });
+
+    test("setAlarm replaces existing alarm", async () => {
+      await storage.setAlarm(Date.now() + 60000);
+      const newTime = Date.now() + 120000;
+      await storage.setAlarm(newTime);
+      expect(await storage.getAlarm()).toBe(newTime);
+    });
+
+    test("deleteAlarm removes alarm", async () => {
+      await storage.setAlarm(Date.now() + 60000);
+      await storage.deleteAlarm();
+      expect(await storage.getAlarm()).toBeNull();
+    });
+
+    test("deleteAlarm on non-existent alarm is no-op", async () => {
+      await storage.deleteAlarm(); // should not throw
+      expect(await storage.getAlarm()).toBeNull();
+    });
+
+    test("alarm isolation between instances", async () => {
+      const storage2 = new SqliteDurableObjectStorage(db, "TestDO", "instance2");
+      const time1 = Date.now() + 60000;
+      const time2 = Date.now() + 120000;
+      await storage.setAlarm(time1);
+      await storage2.setAlarm(time2);
+      expect(await storage.getAlarm()).toBe(time1);
+      expect(await storage2.getAlarm()).toBe(time2);
+    });
+  });
+
+  describe("Alarm firing via namespace", () => {
+    test("alarm fires at scheduled time", async () => {
+      const alarmCalls: { retryCount: number; isRetry: boolean }[] = [];
+
+      class AlarmDO extends DurableObjectBase {
+        async alarm(info: { retryCount: number; isRetry: boolean }) {
+          alarmCalls.push(info);
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const stub = ns.get(id) as { ctx: DurableObjectStateImpl };
+      // Access inner instance storage via the proxy
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+      await instance.ctx.storage.setAlarm(Date.now() + 10);
+
+      // Wait for alarm to fire
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(alarmCalls.length).toBe(1);
+      expect(alarmCalls[0]!.retryCount).toBe(0);
+      expect(alarmCalls[0]!.isRetry).toBe(false);
+    });
+
+    test("alarm is cleared from DB after firing", async () => {
+      class AlarmDO extends DurableObjectBase {
+        async alarm() {}
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO2");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+      await instance.ctx.storage.setAlarm(Date.now() + 10);
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(await instance.ctx.storage.getAlarm()).toBeNull();
+    });
+
+    test("setAlarm replaces previous timer", async () => {
+      let callCount = 0;
+
+      class AlarmDO extends DurableObjectBase {
+        async alarm() {
+          callCount++;
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO3");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+
+      // Set alarm far in the future
+      await instance.ctx.storage.setAlarm(Date.now() + 100000);
+      // Replace with a near alarm
+      await instance.ctx.storage.setAlarm(Date.now() + 10);
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(callCount).toBe(1);
+    });
+
+    test("deleteAlarm cancels pending timer", async () => {
+      let called = false;
+
+      class AlarmDO extends DurableObjectBase {
+        async alarm() {
+          called = true;
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO4");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+      await instance.ctx.storage.setAlarm(Date.now() + 30);
+      await instance.ctx.storage.deleteAlarm();
+
+      await new Promise((r) => setTimeout(r, 80));
+
+      expect(called).toBe(false);
+    });
+
+    test("alarm retries on error with backoff info", async () => {
+      const attempts: { retryCount: number; isRetry: boolean }[] = [];
+      let shouldFail = true;
+
+      class AlarmDO extends DurableObjectBase {
+        async alarm(info: { retryCount: number; isRetry: boolean }) {
+          attempts.push(info);
+          if (shouldFail) {
+            shouldFail = false;
+            throw new Error("Simulated failure");
+          }
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO5");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+      await instance.ctx.storage.setAlarm(Date.now() + 10);
+
+      // Wait for first fire + retry (backoff is 1s for retry 0, but we set timeout to be enough)
+      await new Promise((r) => setTimeout(r, 1200));
+
+      expect(attempts.length).toBe(2);
+      expect(attempts[0]).toEqual({ retryCount: 0, isRetry: false });
+      expect(attempts[1]).toEqual({ retryCount: 1, isRetry: true });
+    });
+
+    test("past-due alarm fires immediately on restore", async () => {
+      let fired = false;
+
+      class AlarmDO extends DurableObjectBase {
+        async alarm() {
+          fired = true;
+        }
+      }
+
+      // Insert a past-due alarm directly into DB
+      db.query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
+        .run("AlarmDO6", "past-due-id", Date.now() - 1000);
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO6");
+      ns._setClass(AlarmDO, {}); // _restoreAlarms should schedule it immediately
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(fired).toBe(true);
+    });
+
+    test("alarm persists across namespace instances", async () => {
+      class AlarmDO extends DurableObjectBase {
+        async alarm() {}
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO7");
+      ns._setClass(AlarmDO, {});
+
+      const id = ns.idFromName("test");
+      const instance = ns.get(id) as unknown as DurableObjectBase;
+      const futureTime = Date.now() + 600000;
+      await instance.ctx.storage.setAlarm(futureTime);
+
+      // Create a new storage instance pointing to same db/namespace/id
+      const storage2 = new SqliteDurableObjectStorage(db, "AlarmDO7", id.toString());
+      expect(await storage2.getAlarm()).toBe(futureTime);
+    });
+  });
+});

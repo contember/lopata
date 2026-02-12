@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 15    |
-| **Pending**      | 3     |
-| **Progress**     | 83%   |
+| **Completed**    | 16    |
+| **Pending**      | 2     |
+| **Progress**     | 89%   |
 
 ## Current Focus
 
-Issue 10: DO Alarms
+Issue 11: DO WebSocket Support
 
 ## Issues
 
@@ -34,7 +34,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 08 | workflow-instance-management | completed | Depends on 17 |
 | 09 | images-binding               | completed | |
 | 13 | do-misc                      | completed | |
-| 10 | do-alarms                    | pending | Depends on 16 |
+| 10 | do-alarms                    | completed | Depends on 16 |
 | 11 | do-websocket-support         | pending | Depends on 16 |
 | 12 | do-sql-storage               | pending | Depends on 16 |
 
@@ -73,6 +73,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#13 do-misc**: Added `DurableObjectIdImpl.equals()` for comparing IDs. Added `blockConcurrencyWhile()` to `DurableObjectStateImpl` — stores a ready promise that the proxy stub awaits before forwarding any method calls. Added `newUniqueId()` to `DurableObjectNamespaceImpl` using `crypto.randomUUID()` (jurisdiction option ignored in dev). Added `getByName()` as shorthand for `idFromName()` + `get()`. Added `StorageOptions` interface (`allowConcurrency`, `allowUnconfirmed`, `noCache`) as no-op optional parameters on all storage methods (`get`, `put`, `delete`, `deleteAll`). Added 7 new tests covering equals, blockConcurrencyWhile (both direct and via proxy deferral), newUniqueId, getByName. All 272 tests pass.
 
 - **#05 static-assets**: Implemented `StaticAssets` class in `runtime/bindings/static-assets.ts`. `fetch(request)` serves files from a configured directory using `Bun.file()`. Supports all 4 `html_handling` modes: `none` (exact match only), `auto-trailing-slash` (tries `/path`, `/path/index.html`, `/path.html`), `force-trailing-slash` (301 redirect to add `/`), `drop-trailing-slash` (301 redirect to remove `/`). Supports all 3 `not_found_handling` modes: `none` (plain 404), `404-page` (serves `/404.html` with 404 status), `single-page-application` (serves `/index.html` for all not-found paths). Path traversal prevented via `..` check and `path.resolve` validation. Content-Type set via `Bun.file().type`. Added `assets` config to `WranglerConfig`. Wired in `env.ts` — if `binding` is set, added to env; if not, stored in registry for auto-serving. In `dev.ts`, static assets served before worker fetch handler when no binding name is configured. Added 23 tests covering file serving, nested files, Content-Type, path traversal, all html_handling modes, all not_found_handling modes. All 221 tests pass.
+
+- **#10 do-alarms**: Added `getAlarm()`, `setAlarm(scheduledTime)`, and `deleteAlarm()` to `SqliteDurableObjectStorage` — backed by the `do_alarms` table. `setAlarm()` accepts `number` (ms epoch) or `Date`, upserts a single alarm row per DO instance (only one alarm at a time). `DurableObjectNamespaceImpl` manages alarm timers: `_scheduleAlarmTimer()` sets a `setTimeout`, `_fireAlarm()` calls the DO's `alarm()` handler with `{ retryCount, isRetry }`. On handler error, retries up to 6 times with exponential backoff (2^n seconds). Alarm is cleared from DB before calling handler (matching CF behavior). `_restoreAlarms()` runs on `_setClass()` to re-schedule any persisted alarms (past-due ones fire immediately). Alarm callback wired via `_setAlarmCallback()` on storage so `setAlarm`/`deleteAlarm` automatically schedule/cancel timers. Added 14 tests covering storage methods, alarm firing, replacement, cancellation, retry with backoff, past-due restoration, and persistence. All 286 tests pass.
 
 ## Lessons Learned
 
