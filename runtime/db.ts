@@ -1,0 +1,116 @@
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+
+const DATA_DIR = join(process.cwd(), ".bunflare");
+const DB_PATH = join(DATA_DIR, "data.sqlite");
+
+let instance: Database | null = null;
+
+/**
+ * Returns the shared SQLite database singleton for bunflare runtime data.
+ * Creates the .bunflare/ directory and database file on first call.
+ */
+export function getDatabase(): Database {
+	if (instance) return instance;
+
+	mkdirSync(DATA_DIR, { recursive: true });
+	mkdirSync(join(DATA_DIR, "r2"), { recursive: true });
+	mkdirSync(join(DATA_DIR, "d1"), { recursive: true });
+
+	instance = new Database(DB_PATH, { create: true });
+	instance.run("PRAGMA journal_mode=WAL");
+	runMigrations(instance);
+	return instance;
+}
+
+/**
+ * Initialize schema on the given database. Exported so tests and
+ * external callers can run migrations on an arbitrary Database instance (e.g. :memory:).
+ */
+export function runMigrations(db: Database): void {
+	db.run(`
+		CREATE TABLE IF NOT EXISTS kv (
+			namespace TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value BLOB NOT NULL,
+			metadata TEXT,
+			expiration INTEGER,
+			PRIMARY KEY (namespace, key)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS r2_objects (
+			bucket TEXT NOT NULL,
+			key TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			uploaded TEXT NOT NULL,
+			http_metadata TEXT,
+			custom_metadata TEXT,
+			PRIMARY KEY (bucket, key)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS do_storage (
+			namespace TEXT NOT NULL,
+			id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			value TEXT NOT NULL,
+			PRIMARY KEY (namespace, id, key)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS do_alarms (
+			namespace TEXT NOT NULL,
+			id TEXT NOT NULL,
+			alarm_time INTEGER NOT NULL,
+			PRIMARY KEY (namespace, id)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS queue_messages (
+			id TEXT PRIMARY KEY,
+			queue TEXT NOT NULL,
+			body TEXT NOT NULL,
+			content_type TEXT NOT NULL DEFAULT 'json',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			visible_at INTEGER NOT NULL,
+			created_at INTEGER NOT NULL
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS workflow_instances (
+			id TEXT PRIMARY KEY,
+			workflow_name TEXT NOT NULL,
+			class_name TEXT NOT NULL,
+			params TEXT,
+			status TEXT NOT NULL DEFAULT 'running',
+			output TEXT,
+			error TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS cache_entries (
+			cache_name TEXT NOT NULL,
+			url TEXT NOT NULL,
+			status INTEGER NOT NULL,
+			headers TEXT NOT NULL,
+			body BLOB NOT NULL,
+			PRIMARY KEY (cache_name, url)
+		)
+	`);
+}
+
+/** Returns the path to the .bunflare data directory. */
+export function getDataDir(): string {
+	return DATA_DIR;
+}

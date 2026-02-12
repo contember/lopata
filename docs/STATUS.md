@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 0     |
-| **Pending**      | 18    |
-| **Progress**     | 0%    |
+| **Completed**    | 1     |
+| **Pending**      | 17    |
+| **Progress**     | 6%    |
 
 ## Current Focus
 
-Issue 00: Persistence layer
+Issue 14: Migrate KV to SQLite
 
 ## Issues
 
@@ -19,7 +19,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 
 | #  | Issue                        | Status  | Notes |
 | -- | ---------------------------- | ------- | ----- |
-| 00 | persistence-layer            | pending | Foundation — creates db.ts, schema, .bunflare/ dir |
+| 00 | persistence-layer            | completed | Foundation — creates db.ts, schema, .bunflare/ dir |
 | 14 | migrate-kv-to-sqlite         | pending | Migrate existing KV from in-memory Map to SQLite |
 | 15 | migrate-r2-to-files          | pending | Migrate existing R2 from in-memory Map to files + SQLite metadata |
 | 16 | migrate-do-storage-to-sqlite | pending | Migrate existing DO storage from in-memory Map to SQLite |
@@ -48,7 +48,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 
 ## Changelog
 
-_No changes yet._
+- **#00 persistence-layer**: Created `runtime/db.ts` with `getDatabase()` singleton, `runMigrations()` for all 7 tables (kv, r2_objects, do_storage, do_alarms, queue_messages, workflow_instances, cache_entries), WAL mode, auto-creation of `.bunflare/` directory structure. Added `runtime/tests/db.test.ts` with 9 tests.
 
 ## Lessons Learned
 
