@@ -1,0 +1,184 @@
+import { test, expect, beforeEach, describe } from "bun:test";
+import { Database } from "bun:sqlite";
+import { LocalD1Database, LocalD1PreparedStatement } from "../bindings/d1";
+
+let db: Database;
+let d1: LocalD1Database;
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  d1 = new LocalD1Database(db);
+  // Create a test table
+  db.run("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT)");
+});
+
+describe("D1Database", () => {
+  describe("prepare + run", () => {
+    test("insert and return meta with changes", async () => {
+      const result = await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      expect(result.success).toBe(true);
+      expect(result.meta.changes).toBe(1);
+      expect(result.meta.last_row_id).toBe(1);
+      expect(result.meta.served_by).toBe("bunflare-d1");
+      expect(result.meta.duration).toBeGreaterThanOrEqual(0);
+    });
+
+    test("update returns correct changes count", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob").run();
+      const result = await d1.prepare("UPDATE users SET email = ?").bind("test@test.com").run();
+      expect(result.meta.changes).toBe(2);
+    });
+  });
+
+  describe("prepare + first", () => {
+    test("returns first row as object", async () => {
+      await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      const row = await d1.prepare("SELECT * FROM users WHERE name = ?").bind("Alice").first<{ id: number; name: string; email: string }>();
+      expect(row).not.toBeNull();
+      expect(row!.name).toBe("Alice");
+      expect(row!.email).toBe("alice@example.com");
+    });
+
+    test("returns single column value", async () => {
+      await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      const name = await d1.prepare("SELECT * FROM users WHERE id = ?").bind(1).first<string>("name");
+      expect(name).toBe("Alice");
+    });
+
+    test("returns null for no results", async () => {
+      const row = await d1.prepare("SELECT * FROM users WHERE id = ?").bind(999).first();
+      expect(row).toBeNull();
+    });
+
+    test("returns null for missing column on empty result", async () => {
+      const val = await d1.prepare("SELECT * FROM users WHERE id = ?").bind(999).first("name");
+      expect(val).toBeNull();
+    });
+  });
+
+  describe("prepare + all", () => {
+    test("returns all rows", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob").run();
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Charlie").run();
+
+      const result = await d1.prepare("SELECT * FROM users ORDER BY name").all<{ id: number; name: string }>();
+      expect(result.success).toBe(true);
+      expect(result.results).toHaveLength(3);
+      expect(result.results[0]!.name).toBe("Alice");
+      expect(result.results[2]!.name).toBe("Charlie");
+    });
+
+    test("returns empty results for no matches", async () => {
+      const result = await d1.prepare("SELECT * FROM users WHERE name = ?").bind("Nobody").all();
+      expect(result.success).toBe(true);
+      expect(result.results).toHaveLength(0);
+    });
+  });
+
+  describe("prepare + raw", () => {
+    test("returns rows as arrays", async () => {
+      await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      const rows = await d1.prepare("SELECT id, name, email FROM users").raw();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual([1, "Alice", "alice@example.com"]);
+    });
+
+    test("returns column names as first element with columnNames option", async () => {
+      await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      const rows = await d1.prepare("SELECT id, name, email FROM users").raw({ columnNames: true });
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toEqual(["id", "name", "email"]);
+      expect(rows[1]).toEqual([1, "Alice", "alice@example.com"]);
+    });
+  });
+
+  describe("batch", () => {
+    test("executes multiple statements in a transaction", async () => {
+      const results = await d1.batch([
+        d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice"),
+        d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob"),
+        d1.prepare("SELECT * FROM users ORDER BY name"),
+      ]);
+      expect(results).toHaveLength(3);
+      expect(results[2]!.results).toHaveLength(2);
+      expect((results[2]!.results[0] as { name: string }).name).toBe("Alice");
+    });
+
+    test("rolls back on error", async () => {
+      try {
+        await d1.batch([
+          d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice"),
+          d1.prepare("INSERT INTO nonexistent_table (x) VALUES (?)").bind("fail"),
+        ]);
+      } catch {
+        // expected
+      }
+      const result = await d1.prepare("SELECT * FROM users").all();
+      expect(result.results).toHaveLength(0);
+    });
+  });
+
+  describe("exec", () => {
+    test("executes multiple SQL statements", async () => {
+      const result = await d1.exec(`
+        INSERT INTO users (name) VALUES ('Alice');
+        INSERT INTO users (name) VALUES ('Bob');
+        INSERT INTO users (name) VALUES ('Charlie');
+      `);
+      expect(result.count).toBe(3);
+      expect(result.duration).toBeGreaterThanOrEqual(0);
+
+      const all = await d1.prepare("SELECT * FROM users").all();
+      expect(all.results).toHaveLength(3);
+    });
+
+    test("can create tables and insert data", async () => {
+      await d1.exec("CREATE TABLE posts (id INTEGER PRIMARY KEY, title TEXT)");
+      await d1.exec("INSERT INTO posts (title) VALUES ('Hello')");
+      const result = await d1.prepare("SELECT * FROM posts").all<{ title: string }>();
+      expect(result.results[0]!.title).toBe("Hello");
+    });
+  });
+
+  describe("withSession", () => {
+    test("returns self (no-op)", () => {
+      const same = d1.withSession("some-bookmark");
+      expect(same).toBe(d1);
+    });
+
+    test("returns self without bookmark", () => {
+      const same = d1.withSession();
+      expect(same).toBe(d1);
+    });
+  });
+
+  describe("bind", () => {
+    test("bind returns a new statement (immutable)", async () => {
+      const stmt = d1.prepare("INSERT INTO users (name) VALUES (?)");
+      const bound1 = stmt.bind("Alice");
+      const bound2 = stmt.bind("Bob");
+
+      await bound1.run();
+      await bound2.run();
+
+      const result = await d1.prepare("SELECT * FROM users ORDER BY name").all<{ name: string }>();
+      expect(result.results).toHaveLength(2);
+      expect(result.results[0]!.name).toBe("Alice");
+      expect(result.results[1]!.name).toBe("Bob");
+    });
+  });
+
+  describe("persistence", () => {
+    test("data persists across LocalD1Database instances sharing same Database", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+
+      // Create a new D1 instance on the same underlying database
+      const d1b = new LocalD1Database(db);
+      const result = await d1b.prepare("SELECT * FROM users").all<{ name: string }>();
+      expect(result.results).toHaveLength(1);
+      expect(result.results[0]!.name).toBe("Alice");
+    });
+  });
+});

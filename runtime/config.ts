@@ -7,6 +7,7 @@ export interface WranglerConfig {
     bindings: { name: string; class_name: string }[];
   };
   workflows?: { name: string; binding: string; class_name: string }[];
+  d1_databases?: { binding: string; database_name: string; database_id: string }[];
   vars?: Record<string, string>;
 }
 

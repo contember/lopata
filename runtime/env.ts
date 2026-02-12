@@ -3,6 +3,7 @@ import { SqliteKVNamespace } from "./bindings/kv";
 import { FileR2Bucket } from "./bindings/r2";
 import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { SqliteWorkflowBinding } from "./bindings/workflow";
+import { openD1Database } from "./bindings/d1";
 import { getDatabase, getDataDir } from "./db";
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -86,6 +87,12 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
       className: wf.class_name,
       binding,
     });
+  }
+
+  // D1 databases
+  for (const d1 of config.d1_databases ?? []) {
+    console.log(`[bunflare] D1 database: ${d1.binding} (${d1.database_name})`);
+    env[d1.binding] = openD1Database(getDataDir(), d1.database_name);
   }
 
   return { env, registry };

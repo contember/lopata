@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 6     |
-| **Pending**      | 12    |
-| **Progress**     | 33%   |
+| **Completed**    | 7     |
+| **Pending**      | 11    |
+| **Progress**     | 39%   |
 
 ## Current Focus
 
-Issue 01: D1 Database
+Issue 02: Queues
 
 ## Issues
 
@@ -25,7 +25,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 16 | migrate-do-storage-to-sqlite | completed | Migrate existing DO storage from in-memory Map to SQLite |
 | 17 | migrate-workflows-to-sqlite  | completed | Migrate existing Workflow binding to SQLite |
 | 07 | environment-variables        | completed | Parse vars from config + .dev.vars |
-| 01 | d1-database                  | pending | |
+| 01 | d1-database                  | completed | |
 | 02 | queues                       | pending | |
 | 03 | service-bindings             | pending | |
 | 04 | scheduled-handler            | pending | |
@@ -53,6 +53,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#15 migrate-r2-to-files**: Replaced `InMemoryR2Bucket` with `FileR2Bucket`. Blobs stored as files under `.bunflare/r2/<bucket>/<key>`, metadata in `r2_objects` SQLite table. Constructor takes `(db, bucket, dataDir)`. Etag generated via MD5 hash. Nested keys with `/` create subdirectories. Path traversal (`..`) rejected. Cursor-based pagination via OFFSET. Updated `env.ts` to pass `getDatabase()`, bucket name, and `getDataDir()`. Added tests for nested keys, etag, path traversal, bucket isolation, cursor pagination, and persistence across instances. All 95 tests pass.
 - **#16 migrate-do-storage-to-sqlite**: Replaced `InMemoryDurableObjectStorage` with `SqliteDurableObjectStorage` backed by `do_storage` table. Constructor takes `(db, namespace, id)`. Values stored as JSON strings. Added `deleteAll()` method and full `list()` with `prefix`, `start`, `end`, `limit`, `reverse` options. `transaction()` wraps in real SQLite BEGIN/COMMIT/ROLLBACK. `DurableObjectStateImpl` now takes `(id, db, namespace)`. `DurableObjectNamespaceImpl` takes `(db, namespaceName)`. Updated `env.ts` to pass `getDatabase()` and class name. Added tests for namespace/instance isolation, persistence across instances, `deleteAll`, `list` with `start`/`end`/`reverse`, empty arrays. All 104 tests pass.
 - **#17 migrate-workflows-to-sqlite**: Replaced `InMemoryWorkflowBinding` with `SqliteWorkflowBinding` backed by `workflow_instances` table. Constructor takes `(db, workflowName, className)`. Params/output stored as JSON. `create()` inserts row with `running` status and executes workflow in background; on completion updates to `complete` with output, on error updates to `errored` with message. Added `get(id)` to retrieve instance handle from DB. `SqliteWorkflowInstance` provides `status()`, `pause()`, `resume()`, `terminate()` (with AbortController), and `restart()`. `WorkflowStepImpl` checks abort signal before each step. Updated `env.ts` to pass `db`, workflow name, class name. Tests cover persistence, status lifecycle, terminate, pause/resume, cross-instance retrieval, custom IDs. All 112 tests pass.
+
+- **#01 d1-database**: Implemented `LocalD1Database` and `LocalD1PreparedStatement` in `runtime/bindings/d1.ts`. Each D1 binding gets its own SQLite file at `.bunflare/d1/<database_name>.sqlite`, separate from the main `data.sqlite`. `prepare()` returns a statement with `bind()`, `first()`, `run()`, `all()`, `raw()`. `batch()` wraps all statements in a BEGIN/COMMIT transaction with ROLLBACK on error. `exec()` splits multi-statement SQL on `;` and runs each. `withSession()` is a no-op returning self. `raw({ columnNames: true })` prepends column names array. Added `d1_databases` to `WranglerConfig`. Wired in `env.ts` via `openD1Database()`. Added 18 tests covering all methods, batch rollback, persistence, bind immutability. All 143 tests pass.
 
 - **#07 environment-variables**: Added `vars` field to `WranglerConfig`. Implemented `parseDevVars()` in `env.ts` to parse dotenv-style `.dev.vars` files (supports comments, quoted values, whitespace trimming). `buildEnv()` now accepts optional `devVarsPath` parameter — config `vars` are injected first, then `.dev.vars` overrides them (matching wrangler behavior). Updated `dev.ts` to pass `.dev.vars` path. Added 13 tests (8 for parser, 5 for buildEnv integration). All 125 tests pass.
 
