@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 11    |
-| **Pending**      | 7     |
-| **Progress**     | 61%   |
+| **Completed**    | 12    |
+| **Pending**      | 6     |
+| **Progress**     | 67%   |
 
 ## Current Focus
 
-Issue 06: Cache API
+Issue 08: Workflow Instance Management
 
 ## Issues
 
@@ -30,7 +30,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 03 | service-bindings             | completed | |
 | 04 | scheduled-handler            | completed | |
 | 05 | static-assets                | completed | |
-| 06 | cache-api                    | pending | |
+| 06 | cache-api                    | completed | |
 | 08 | workflow-instance-management | pending | Depends on 17 |
 | 09 | images-binding               | pending | |
 | 13 | do-misc                      | pending | Depends on 16 |
@@ -63,6 +63,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#04 scheduled-handler**: Implemented `parseCron()` and `cronMatchesDate()` in `runtime/bindings/scheduled.ts` — a lightweight cron parser supporting wildcards, specific values, ranges, comma-separated values, and step values (`*/5`, `1-10/3`). `ScheduledController` provides `scheduledTime`, `cron`, and `noRetry()` (no-op in dev). `startCronScheduler()` sets up a 60-second interval that checks all cron expressions against the current time and calls the worker's `scheduled()` handler on match. Added `triggers.crons` to `WranglerConfig`. In `dev.ts`: cron scheduler starts after worker import; `GET /__scheduled?cron=<expr>` endpoint allows manual triggering (matching wrangler dev behavior). Added 18 tests covering cron parsing (wildcards, specifics, ranges, commas, steps, invalid expressions), date matching (minute, hour, day, month, weekday, every-5-min, midnight), and ScheduledController properties. All 198 tests pass.
 
 - **#03 service-bindings**: Implemented `ServiceBinding` class and `createServiceBinding()` factory in `runtime/bindings/service-binding.ts`. Binding is a Proxy that supports both HTTP mode (`.fetch()` calls target worker's fetch handler in-process) and RPC mode (any other property access returns an async function calling the method on the target). Supports named entrypoints via `entrypoint` config — instantiates the exported class with `env` and proxies method calls to it. Updated `WorkerEntrypoint` in `plugin.ts` to be a proper base class with `env` and `ctx` properties. Added `services` config to `WranglerConfig`. Wired in `env.ts` with `buildEnv()` creating proxies and `wireClassRefs()` connecting them to the loaded worker module. Added 16 tests covering fetch with Request/string/init, env passing, error cases, RPC on default export, RPC on named entrypoint, and wiring state. All 180 tests pass.
+
+- **#06 cache-api**: Implemented `SqliteCache` and `SqliteCacheStorage` in `runtime/bindings/cache.ts`. `SqliteCache` uses the `cache_entries` table — `put()` stores response status, headers (JSON), and body (BLOB); `match()` reconstructs a `Response`; `delete()` removes the entry. Only GET requests are cacheable (unless `ignoreMethod: true`). Responses with `Set-Cookie` header are silently skipped on `put()`. `SqliteCacheStorage` exposes `default` (cache_name `"default"`) and `open(name)` for named caches. Named caches are isolated via the `cache_name` column. Global `caches` object registered in `plugin.ts` preload via `Object.defineProperty(globalThis, "caches", ...)`. Added 20 tests covering match, put, delete, ignoreMethod, Set-Cookie skip, binary body, headers preservation, named cache isolation, and persistence. All 241 tests pass.
 
 - **#05 static-assets**: Implemented `StaticAssets` class in `runtime/bindings/static-assets.ts`. `fetch(request)` serves files from a configured directory using `Bun.file()`. Supports all 4 `html_handling` modes: `none` (exact match only), `auto-trailing-slash` (tries `/path`, `/path/index.html`, `/path.html`), `force-trailing-slash` (301 redirect to add `/`), `drop-trailing-slash` (301 redirect to remove `/`). Supports all 3 `not_found_handling` modes: `none` (plain 404), `404-page` (serves `/404.html` with 404 status), `single-page-application` (serves `/index.html` for all not-found paths). Path traversal prevented via `..` check and `path.resolve` validation. Content-Type set via `Bun.file().type`. Added `assets` config to `WranglerConfig`. Wired in `env.ts` — if `binding` is set, added to env; if not, stored in registry for auto-serving. In `dev.ts`, static assets served before worker fetch handler when no binding name is configured. Added 23 tests covering file serving, nested files, Content-Type, path traversal, all html_handling modes, all not_found_handling modes. All 221 tests pass.
 
