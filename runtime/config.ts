@@ -21,6 +21,9 @@ export interface WranglerConfig {
     html_handling?: "none" | "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash";
     not_found_handling?: "none" | "404-page" | "single-page-application";
   };
+  images?: {
+    binding: string;
+  };
 }
 
 export async function loadConfig(path: string): Promise<WranglerConfig> {

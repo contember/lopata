@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 13    |
-| **Pending**      | 5     |
-| **Progress**     | 72%   |
+| **Completed**    | 14    |
+| **Pending**      | 4     |
+| **Progress**     | 78%   |
 
 ## Current Focus
 
-Issue 09: Images Binding
+Issue 13: DO Misc
 
 ## Issues
 
@@ -32,7 +32,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 05 | static-assets                | completed | |
 | 06 | cache-api                    | completed | |
 | 08 | workflow-instance-management | completed | Depends on 17 |
-| 09 | images-binding               | pending | |
+| 09 | images-binding               | completed | |
 | 13 | do-misc                      | pending | Depends on 16 |
 | 10 | do-alarms                    | pending | Depends on 16 |
 | 11 | do-websocket-support         | pending | Depends on 16 |
@@ -67,6 +67,8 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - **#06 cache-api**: Implemented `SqliteCache` and `SqliteCacheStorage` in `runtime/bindings/cache.ts`. `SqliteCache` uses the `cache_entries` table — `put()` stores response status, headers (JSON), and body (BLOB); `match()` reconstructs a `Response`; `delete()` removes the entry. Only GET requests are cacheable (unless `ignoreMethod: true`). Responses with `Set-Cookie` header are silently skipped on `put()`. `SqliteCacheStorage` exposes `default` (cache_name `"default"`) and `open(name)` for named caches. Named caches are isolated via the `cache_name` column. Global `caches` object registered in `plugin.ts` preload via `Object.defineProperty(globalThis, "caches", ...)`. Added 20 tests covering match, put, delete, ignoreMethod, Set-Cookie skip, binary body, headers preservation, named cache isolation, and persistence. All 241 tests pass.
 
 - **#08 workflow-instance-management**: Extended `SqliteWorkflowBinding` with `createBatch()` for creating multiple instances at once. Added `sleepUntil(name, timestamp)` to `WorkflowStepImpl` — calculates delay from `Date.now()` to target timestamp, resolves immediately for past timestamps. Implemented `waitForEvent(name, options)` with dual mechanism: in-memory resolver registry for real-time delivery and `workflow_events` DB table for events sent before workflow reaches `waitForEvent`. Status transitions to `waiting` during `waitForEvent`, restored to `running` on resolution. `sendEvent({ type, payload })` added to `SqliteWorkflowInstance` — resolves in-memory waiter if present, otherwise stores in DB. Added `parseDuration()` helper for timeout strings (ms/s/m/h/d). Made step execution pause-aware: `checkPaused()` polls DB for `paused` status before each step, blocking until resumed or terminated. Added `workflow_events` table to `runMigrations()`. Added 12 new tests covering createBatch, sleepUntil, waitForEvent/sendEvent (real-time, pre-stored, via get() handle, timeout, terminate during wait), and pause-aware execution. All 253 tests pass.
+
+- **#09 images-binding**: Implemented `ImagesBinding` class in `runtime/bindings/images.ts` with minimal viable approach (passthrough). `info(stream)` reads the full stream, detects format from magic bytes (PNG, JPEG, GIF, WebP, AVIF, SVG), and parses dimensions from image headers — returns `{ width, height, format, fileSize }`. `input(stream)` returns a `LazyImageTransformer` that supports chainable `transform()` and `draw()` calls (no-ops with console warning in dev mode) and `output(options)` which returns the original image data as a `ReadableStream` with the requested content-type. Added `images` config to `WranglerConfig`. Wired in `env.ts`. Added 12 tests covering PNG/JPEG/GIF/SVG info parsing, unknown format rejection, passthrough output, chainable transforms, draw compositing, and output format. All 265 tests pass.
 
 - **#05 static-assets**: Implemented `StaticAssets` class in `runtime/bindings/static-assets.ts`. `fetch(request)` serves files from a configured directory using `Bun.file()`. Supports all 4 `html_handling` modes: `none` (exact match only), `auto-trailing-slash` (tries `/path`, `/path/index.html`, `/path.html`), `force-trailing-slash` (301 redirect to add `/`), `drop-trailing-slash` (301 redirect to remove `/`). Supports all 3 `not_found_handling` modes: `none` (plain 404), `404-page` (serves `/404.html` with 404 status), `single-page-application` (serves `/index.html` for all not-found paths). Path traversal prevented via `..` check and `path.resolve` validation. Content-Type set via `Bun.file().type`. Added `assets` config to `WranglerConfig`. Wired in `env.ts` — if `binding` is set, added to env; if not, stored in registry for auto-serving. In `dev.ts`, static assets served before worker fetch handler when no binding name is configured. Added 23 tests covering file serving, nested files, Content-Type, path traversal, all html_handling modes, all not_found_handling modes. All 221 tests pass.
 

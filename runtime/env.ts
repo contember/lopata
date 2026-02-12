@@ -8,6 +8,7 @@ import { openD1Database } from "./bindings/d1";
 import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
+import { ImagesBinding } from "./bindings/images";
 import { getDatabase, getDataDir } from "./db";
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -146,6 +147,12 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
       entrypoint: svc.entrypoint,
       proxy,
     });
+  }
+
+  // Images binding
+  if (config.images) {
+    console.log(`[bunflare] Images binding: ${config.images.binding}`);
+    env[config.images.binding] = new ImagesBinding();
   }
 
   // Static assets
