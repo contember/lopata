@@ -1,4 +1,132 @@
-import type { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+
+// --- SQL Storage Cursor ---
+
+export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
+  private _rows: Record<string, unknown>[];
+  private _rawRows: unknown[][];
+  private _columnNames: string[];
+  private _rowsRead: number;
+  private _rowsWritten: number;
+  private _index = 0;
+
+  constructor(
+    rows: Record<string, unknown>[],
+    rawRows: unknown[][],
+    columnNames: string[],
+    rowsRead: number,
+    rowsWritten: number,
+  ) {
+    this._rows = rows;
+    this._rawRows = rawRows;
+    this._columnNames = columnNames;
+    this._rowsRead = rowsRead;
+    this._rowsWritten = rowsWritten;
+  }
+
+  get columnNames(): string[] {
+    return this._columnNames;
+  }
+
+  get rowsRead(): number {
+    return this._rowsRead;
+  }
+
+  get rowsWritten(): number {
+    return this._rowsWritten;
+  }
+
+  [Symbol.iterator](): Iterator<Record<string, unknown>> {
+    let i = 0;
+    const rows = this._rows;
+    return {
+      next(): IteratorResult<Record<string, unknown>> {
+        if (i < rows.length) {
+          return { done: false, value: rows[i++]! };
+        }
+        return { done: true, value: undefined };
+      },
+    };
+  }
+
+  next(): IteratorResult<Record<string, unknown>> {
+    if (this._index < this._rows.length) {
+      return { done: false, value: this._rows[this._index++]! };
+    }
+    return { done: true, value: undefined };
+  }
+
+  toArray(): Record<string, unknown>[] {
+    return [...this._rows];
+  }
+
+  one(): Record<string, unknown> {
+    if (this._rows.length !== 1) {
+      throw new Error(
+        `Expected exactly one row, got ${this._rows.length}`,
+      );
+    }
+    return this._rows[0]!;
+  }
+
+  raw(): unknown[][] {
+    return [...this._rawRows];
+  }
+}
+
+// --- SQL Storage API ---
+
+export class SqlStorage {
+  private _dbPath: string;
+  private _db: Database | null = null;
+
+  constructor(dbPath: string) {
+    this._dbPath = dbPath;
+  }
+
+  private _getDb(): Database {
+    if (!this._db) {
+      // Ensure parent directory exists
+      const dir = this._dbPath.substring(0, this._dbPath.lastIndexOf("/"));
+      mkdirSync(dir, { recursive: true });
+      this._db = new Database(this._dbPath, { create: true });
+      this._db.run("PRAGMA journal_mode=WAL");
+    }
+    return this._db;
+  }
+
+  exec(query: string, ...bindings: SQLQueryBindings[]): SqlStorageCursor {
+    const db = this._getDb();
+    const stmt = db.prepare(query);
+
+    // Determine if this is a query that returns rows
+    const trimmed = query.trim().toUpperCase();
+    const isSelect = trimmed.startsWith("SELECT") || trimmed.startsWith("WITH") || trimmed.startsWith("PRAGMA");
+
+    if (isSelect) {
+      const rows = stmt.all(...bindings) as Record<string, unknown>[];
+      const columnNames = stmt.columnNames as string[] ?? [];
+      const rawRows = rows.map((row) =>
+        columnNames.map((col) => row[col]),
+      );
+      return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, 0);
+    } else {
+      stmt.run(...bindings);
+      const changes = db.query("SELECT changes() as c").get() as { c: number };
+      return new SqlStorageCursor([], [], [], 0, changes.c);
+    }
+  }
+
+  get databaseSize(): number {
+    try {
+      return statSync(this._dbPath).size;
+    } catch {
+      return 0;
+    }
+  }
+}
 
 // --- WebSocket support ---
 
@@ -25,11 +153,25 @@ export class SqliteDurableObjectStorage {
   private db: Database;
   private namespace: string;
   private id: string;
+  private _sql: SqlStorage | null = null;
+  private _dataDir: string | null = null;
 
-  constructor(db: Database, namespace: string, id: string) {
+  constructor(db: Database, namespace: string, id: string, dataDir?: string) {
     this.db = db;
     this.namespace = namespace;
     this.id = id;
+    this._dataDir = dataDir ?? null;
+  }
+
+  get sql(): SqlStorage {
+    if (!this._sql) {
+      if (!this._dataDir) {
+        throw new Error("SQL storage not available: dataDir not configured");
+      }
+      const dbPath = join(this._dataDir, "do-sql", this.namespace, `${this.id}.sqlite`);
+      this._sql = new SqlStorage(dbPath);
+    }
+    return this._sql;
   }
 
   async get<T = unknown>(key: string, options?: StorageOptions): Promise<T | undefined>;
@@ -226,9 +368,9 @@ export class DurableObjectStateImpl {
   /** @internal Set by DurableObjectNamespaceImpl after DO is created */
   _doInstance: DurableObjectBase | null = null;
 
-  constructor(id: DurableObjectIdImpl, db: Database, namespace: string) {
+  constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string) {
     this.id = id;
-    this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString());
+    this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir);
   }
 
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
@@ -353,10 +495,12 @@ export class DurableObjectNamespaceImpl {
   private db: Database;
   private namespaceName: string;
   private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private dataDir: string | undefined;
 
-  constructor(db: Database, namespaceName: string) {
+  constructor(db: Database, namespaceName: string, dataDir?: string) {
     this.db = db;
     this.namespaceName = namespaceName;
+    this.dataDir = dataDir;
   }
 
   /** Called after worker module is loaded to wire the actual class */
@@ -434,7 +578,7 @@ export class DurableObjectNamespaceImpl {
     if (this.instances.has(idStr)) return this.instances.get(idStr)!;
     if (!this._class) return null;
     const doId = new DurableObjectIdImpl(idStr);
-    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName);
+    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName, this.dataDir);
     const instance = new this._class(state, this._env);
     // Wire DO instance reference for WebSocket handler delegation
     state._doInstance = instance;
@@ -476,7 +620,7 @@ export class DurableObjectNamespaceImpl {
     const idStr = id.toString();
     if (!this.instances.has(idStr)) {
       if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
-      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName);
+      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir);
       const instance = new this._class(state, this._env);
       // Wire DO instance reference for WebSocket handler delegation
       state._doInstance = instance;

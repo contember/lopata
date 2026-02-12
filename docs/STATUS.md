@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 17    |
-| **Pending**      | 1     |
-| **Progress**     | 94%   |
+| **Completed**    | 18    |
+| **Pending**      | 0     |
+| **Progress**     | 100%  |
 
 ## Current Focus
 
-Issue 12: DO SQL Storage
+All issues completed.
 
 ## Issues
 
@@ -36,7 +36,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 13 | do-misc                      | completed | |
 | 10 | do-alarms                    | completed | Depends on 16 |
 | 11 | do-websocket-support         | completed | Depends on 16 |
-| 12 | do-sql-storage               | pending | Depends on 16 |
+| 12 | do-sql-storage               | completed | Depends on 16 |
 
 ## Dependencies
 
@@ -86,3 +86,5 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - For workflow `waitForEvent`/`sendEvent`, use an in-memory registry of promise resolvers (per-process) combined with a `workflow_events` DB table for events sent before the workflow reaches `waitForEvent`. This handles both timing scenarios correctly.
 
 - **#11 do-websocket-support**: Added `WebSocketRequestResponsePair` class and exported from `cloudflare:workers` plugin. Added WebSocket Hibernation API methods to `DurableObjectStateImpl`: `acceptWebSocket(ws, tags?)` registers WebSocket with event listeners delegating to DO's `webSocketMessage`/`webSocketClose`/`webSocketError` handlers; `getWebSockets(tag?)` returns accepted WebSockets filtered by optional tag; `getTags(ws)` returns tags for a WebSocket; `setWebSocketAutoResponse(pair?)` / `getWebSocketAutoResponse()` for automatic ping/pong-style responses; `getWebSocketAutoResponseTimestamp(ws)` tracks last auto-response time; `setHibernatableWebSocketEventTimeout()` / `getHibernatableWebSocketEventTimeout()` are no-ops. Auto-response intercepts matching messages before handler and sends response directly. Closed WebSockets auto-removed from accepted set. `_doInstance` reference wired in `DurableObjectNamespaceImpl` for handler delegation. Added 18 tests covering all methods, tag filtering, auto-response, handler delegation, and close cleanup. All 304 tests pass.
+
+- **#12 do-sql-storage**: Implemented `SqlStorageCursor` and `SqlStorage` classes in `runtime/bindings/durable-object.ts`. `SqlStorageCursor` implements the full cursor API: iterable via `for..of`, `next()` iterator protocol, `toArray()`, `one()` (throws if not exactly 1 row), `raw()` (arrays without column names), `columnNames`, `rowsRead`, `rowsWritten`. `SqlStorage` provides `exec(query, ...bindings)` which creates a per-DO-instance SQLite file at `.bunflare/do-sql/<namespace>/<id>.sqlite` with lazy initialization and WAL mode. Distinguishes SELECT/WITH/PRAGMA (returns rows) from write statements (returns changes count). `databaseSize` returns file size via `statSync`. `SqliteDurableObjectStorage.sql` getter lazily creates `SqlStorage` when `dataDir` is configured. Extended constructor chain: `SqliteDurableObjectStorage(db, namespace, id, dataDir?)`, `DurableObjectStateImpl(id, db, namespace, dataDir?)`, `DurableObjectNamespaceImpl(db, name, dataDir?)`. Updated `env.ts` to pass `getDataDir()`. Added `migrations` field to `WranglerConfig`. Added 18 tests covering exec, columnNames, iteration, next(), one(), raw(), rowsRead/rowsWritten, databaseSize, parameter bindings, instance isolation, persistence, and namespace integration. All 322 tests pass.

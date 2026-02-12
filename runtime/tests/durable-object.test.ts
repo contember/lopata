@@ -1,6 +1,9 @@
 import { test, expect, beforeEach, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { runMigrations } from "../db";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import {
   SqliteDurableObjectStorage,
   DurableObjectIdImpl,
@@ -8,6 +11,8 @@ import {
   DurableObjectBase,
   DurableObjectNamespaceImpl,
   WebSocketRequestResponsePair,
+  SqlStorageCursor,
+  SqlStorage,
 } from "../bindings/durable-object";
 
 /** Minimal mock WebSocket for testing state.acceptWebSocket() and friends */
@@ -840,6 +845,191 @@ describe("DurableObject WebSocket Support", () => {
       await new Promise((r) => setTimeout(r, 10));
 
       expect(errorCalled).toBe(true);
+    });
+  });
+});
+
+describe("DurableObject SQL Storage", () => {
+  let dataDir: string;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), "bunflare-do-sql-"));
+  });
+
+  describe("SqlStorage", () => {
+    let sql: SqlStorage;
+
+    beforeEach(() => {
+      sql = new SqlStorage(join(dataDir, "do-sql", "TestDO", "inst1.sqlite"));
+    });
+
+    test("exec creates table and inserts data", () => {
+      sql.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)");
+      sql.exec("INSERT INTO users (id, name) VALUES (?, ?)", 1, "Alice");
+      const cursor = sql.exec("SELECT * FROM users");
+      const rows = cursor.toArray();
+      expect(rows).toEqual([{ id: 1, name: "Alice" }]);
+    });
+
+    test("exec returns cursor with columnNames", () => {
+      sql.exec("CREATE TABLE t (a TEXT, b INTEGER, c REAL)");
+      const cursor = sql.exec("SELECT * FROM t");
+      expect(cursor.columnNames).toEqual(["a", "b", "c"]);
+    });
+
+    test("cursor iteration via for..of", () => {
+      sql.exec("CREATE TABLE nums (val INTEGER)");
+      sql.exec("INSERT INTO nums VALUES (?)", 10);
+      sql.exec("INSERT INTO nums VALUES (?)", 20);
+      sql.exec("INSERT INTO nums VALUES (?)", 30);
+      const cursor = sql.exec("SELECT val FROM nums ORDER BY val");
+      const values: number[] = [];
+      for (const row of cursor) {
+        values.push(row.val as number);
+      }
+      expect(values).toEqual([10, 20, 30]);
+    });
+
+    test("cursor next() implements iterator protocol", () => {
+      sql.exec("CREATE TABLE items (x TEXT)");
+      sql.exec("INSERT INTO items VALUES (?)", "a");
+      sql.exec("INSERT INTO items VALUES (?)", "b");
+      const cursor = sql.exec("SELECT x FROM items ORDER BY x");
+      expect(cursor.next()).toEqual({ done: false, value: { x: "a" } });
+      expect(cursor.next()).toEqual({ done: false, value: { x: "b" } });
+      expect(cursor.next().done).toBe(true);
+    });
+
+    test("cursor one() returns single row", () => {
+      sql.exec("CREATE TABLE single (v INTEGER)");
+      sql.exec("INSERT INTO single VALUES (?)", 42);
+      const row = sql.exec("SELECT v FROM single").one();
+      expect(row).toEqual({ v: 42 });
+    });
+
+    test("cursor one() throws on zero rows", () => {
+      sql.exec("CREATE TABLE empty_t (v INTEGER)");
+      expect(() => sql.exec("SELECT v FROM empty_t").one()).toThrow("Expected exactly one row, got 0");
+    });
+
+    test("cursor one() throws on multiple rows", () => {
+      sql.exec("CREATE TABLE multi (v INTEGER)");
+      sql.exec("INSERT INTO multi VALUES (1)");
+      sql.exec("INSERT INTO multi VALUES (2)");
+      expect(() => sql.exec("SELECT v FROM multi").one()).toThrow("Expected exactly one row, got 2");
+    });
+
+    test("cursor raw() returns arrays without column names", () => {
+      sql.exec("CREATE TABLE raw_t (a TEXT, b INTEGER)");
+      sql.exec("INSERT INTO raw_t VALUES (?, ?)", "hello", 99);
+      const raw = sql.exec("SELECT a, b FROM raw_t").raw();
+      expect(raw).toEqual([["hello", 99]]);
+    });
+
+    test("cursor rowsRead for SELECT", () => {
+      sql.exec("CREATE TABLE rr (v INTEGER)");
+      sql.exec("INSERT INTO rr VALUES (1)");
+      sql.exec("INSERT INTO rr VALUES (2)");
+      sql.exec("INSERT INTO rr VALUES (3)");
+      const cursor = sql.exec("SELECT * FROM rr");
+      expect(cursor.rowsRead).toBe(3);
+      expect(cursor.rowsWritten).toBe(0);
+    });
+
+    test("cursor rowsWritten for INSERT/UPDATE/DELETE", () => {
+      sql.exec("CREATE TABLE rw (v INTEGER)");
+      const insert = sql.exec("INSERT INTO rw VALUES (1)");
+      expect(insert.rowsWritten).toBe(1);
+      expect(insert.rowsRead).toBe(0);
+
+      sql.exec("INSERT INTO rw VALUES (2)");
+      sql.exec("INSERT INTO rw VALUES (3)");
+      const del = sql.exec("DELETE FROM rw WHERE v > 1");
+      expect(del.rowsWritten).toBe(2);
+    });
+
+    test("databaseSize returns file size", () => {
+      sql.exec("CREATE TABLE sz (data TEXT)");
+      sql.exec("INSERT INTO sz VALUES (?)", "some data here");
+      const size = sql.databaseSize;
+      expect(size).toBeGreaterThan(0);
+    });
+
+    test("databaseSize returns 0 before any exec", () => {
+      const sql2 = new SqlStorage(join(dataDir, "do-sql", "TestDO", "nonexistent.sqlite"));
+      expect(sql2.databaseSize).toBe(0);
+    });
+
+    test("parameter bindings work correctly", () => {
+      sql.exec("CREATE TABLE params (a TEXT, b INTEGER, c REAL, d BLOB)");
+      sql.exec("INSERT INTO params VALUES (?, ?, ?, ?)", "text", 42, 3.14, null);
+      const row = sql.exec("SELECT * FROM params").one();
+      expect(row.a).toBe("text");
+      expect(row.b).toBe(42);
+      expect(row.c).toBeCloseTo(3.14);
+      expect(row.d).toBeNull();
+    });
+  });
+
+  describe("SqlStorage via DurableObjectStorage", () => {
+    test("storage.sql is accessible with dataDir", () => {
+      const storage = new SqliteDurableObjectStorage(db, "TestDO", "inst1", dataDir);
+      expect(storage.sql).toBeInstanceOf(SqlStorage);
+    });
+
+    test("storage.sql throws without dataDir", () => {
+      const storage = new SqliteDurableObjectStorage(db, "TestDO", "inst1");
+      expect(() => storage.sql).toThrow("dataDir not configured");
+    });
+
+    test("sql storage is isolated per DO instance", () => {
+      const storage1 = new SqliteDurableObjectStorage(db, "TestDO", "inst1", dataDir);
+      const storage2 = new SqliteDurableObjectStorage(db, "TestDO", "inst2", dataDir);
+
+      storage1.sql.exec("CREATE TABLE data (v TEXT)");
+      storage1.sql.exec("INSERT INTO data VALUES (?)", "from-inst1");
+
+      storage2.sql.exec("CREATE TABLE data (v TEXT)");
+      storage2.sql.exec("INSERT INTO data VALUES (?)", "from-inst2");
+
+      expect(storage1.sql.exec("SELECT v FROM data").one().v).toBe("from-inst1");
+      expect(storage2.sql.exec("SELECT v FROM data").one().v).toBe("from-inst2");
+    });
+
+    test("sql storage persists across storage instances", () => {
+      const storage1 = new SqliteDurableObjectStorage(db, "TestDO", "inst1", dataDir);
+      storage1.sql.exec("CREATE TABLE persist (v INTEGER)");
+      storage1.sql.exec("INSERT INTO persist VALUES (?)", 123);
+
+      const storage2 = new SqliteDurableObjectStorage(db, "TestDO", "inst1", dataDir);
+      const row = storage2.sql.exec("SELECT v FROM persist").one();
+      expect(row.v).toBe(123);
+    });
+  });
+
+  describe("SqlStorage via DurableObjectNamespace", () => {
+    class SqlDO extends DurableObjectBase {
+      async createTable() {
+        this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, val INTEGER)");
+      }
+      async setCounter(name: string, val: number) {
+        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO counters VALUES (?, ?)", name, val);
+      }
+      async getCounter(name: string): Promise<number | null> {
+        const cursor = this.ctx.storage.sql.exec("SELECT val FROM counters WHERE name = ?", name);
+        const rows = cursor.toArray();
+        return rows.length > 0 ? (rows[0]!.val as number) : null;
+      }
+    }
+
+    test("DO can use sql storage through namespace", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "SqlDO", dataDir);
+      ns._setClass(SqlDO, {});
+
+      const stub = ns.get(ns.idFromName("test")) as unknown as SqlDO;
+      await stub.createTable();
+      await stub.setCounter("visits", 42);
+      expect(await stub.getCounter("visits")).toBe(42);
     });
   });
 });

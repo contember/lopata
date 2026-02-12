@@ -91,7 +91,7 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
   // Durable Objects
   for (const doBinding of config.durable_objects?.bindings ?? []) {
     console.log(`[bunflare] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`);
-    const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name);
+    const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir());
     env[doBinding.name] = namespace;
     registry.durableObjects.push({
       bindingName: doBinding.name,

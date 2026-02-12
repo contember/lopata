@@ -24,6 +24,7 @@ export interface WranglerConfig {
   images?: {
     binding: string;
   };
+  migrations?: { tag: string; new_classes?: string[]; new_sqlite_classes?: string[] }[];
 }
 
 export async function loadConfig(path: string): Promise<WranglerConfig> {
