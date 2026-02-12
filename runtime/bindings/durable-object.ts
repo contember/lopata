@@ -1,5 +1,17 @@
 import type { Database } from "bun:sqlite";
 
+// --- WebSocket support ---
+
+export class WebSocketRequestResponsePair {
+  readonly request: string;
+  readonly response: string;
+
+  constructor(request: string, response: string) {
+    this.request = request;
+    this.response = response;
+  }
+}
+
 /** Options accepted by DO storage methods — all are no-ops in dev */
 interface StorageOptions {
   allowConcurrency?: boolean;
@@ -198,10 +210,21 @@ export class DurableObjectIdImpl {
 
 // --- State ---
 
+interface AcceptedWebSocket {
+  ws: WebSocket;
+  tags: string[];
+  autoResponseTimestamp: Date | null;
+}
+
 export class DurableObjectStateImpl {
   readonly id: DurableObjectIdImpl;
   readonly storage: SqliteDurableObjectStorage;
   private _readyPromise: Promise<void> | null = null;
+  private _acceptedWebSockets: Set<AcceptedWebSocket> = new Set();
+  private _autoResponsePair: WebSocketRequestResponsePair | null = null;
+  private _hibernatableTimeout: number | null = null;
+  /** @internal Set by DurableObjectNamespaceImpl after DO is created */
+  _doInstance: DurableObjectBase | null = null;
 
   constructor(id: DurableObjectIdImpl, db: Database, namespace: string) {
     this.id = id;
@@ -221,6 +244,87 @@ export class DurableObjectStateImpl {
 
   waitUntil(_promise: Promise<unknown>) {
     // no-op in dev
+  }
+
+  // --- WebSocket Hibernation API ---
+
+  acceptWebSocket(ws: WebSocket, tags?: string[]): void {
+    const entry: AcceptedWebSocket = { ws, tags: tags ?? [], autoResponseTimestamp: null };
+    this._acceptedWebSockets.add(entry);
+
+    const instance = this._doInstance;
+
+    ws.addEventListener("message", (event: MessageEvent) => {
+      const message = event.data;
+      // Check auto-response before delegating to handler
+      if (this._autoResponsePair !== null) {
+        const msgStr = typeof message === "string" ? message : null;
+        if (msgStr !== null && msgStr === this._autoResponsePair.request) {
+          ws.send(this._autoResponsePair.response);
+          entry.autoResponseTimestamp = new Date();
+          return;
+        }
+      }
+      const obj = instance as unknown as Record<string, unknown>;
+      if (instance && typeof obj.webSocketMessage === "function") {
+        (obj.webSocketMessage as (ws: WebSocket, message: string | ArrayBuffer) => Promise<void>).call(instance, ws, message);
+      }
+    });
+
+    ws.addEventListener("close", (event: CloseEvent) => {
+      this._acceptedWebSockets.delete(entry);
+      const obj = instance as unknown as Record<string, unknown>;
+      if (instance && typeof obj.webSocketClose === "function") {
+        (obj.webSocketClose as (ws: WebSocket, code: number, reason: string, wasClean: boolean) => Promise<void>).call(instance, ws, event.code, event.reason, event.wasClean);
+      }
+    });
+
+    ws.addEventListener("error", (event: Event) => {
+      const obj = instance as unknown as Record<string, unknown>;
+      if (instance && typeof obj.webSocketError === "function") {
+        (obj.webSocketError as (ws: WebSocket, error: unknown) => Promise<void>).call(instance, ws, event);
+      }
+    });
+  }
+
+  getWebSockets(tag?: string): WebSocket[] {
+    const results: WebSocket[] = [];
+    for (const entry of this._acceptedWebSockets) {
+      if (tag === undefined || entry.tags.includes(tag)) {
+        results.push(entry.ws);
+      }
+    }
+    return results;
+  }
+
+  getTags(ws: WebSocket): string[] {
+    for (const entry of this._acceptedWebSockets) {
+      if (entry.ws === ws) return entry.tags;
+    }
+    return [];
+  }
+
+  setWebSocketAutoResponse(pair?: WebSocketRequestResponsePair): void {
+    this._autoResponsePair = pair ?? null;
+  }
+
+  getWebSocketAutoResponse(): WebSocketRequestResponsePair | null {
+    return this._autoResponsePair;
+  }
+
+  getWebSocketAutoResponseTimestamp(ws: WebSocket): Date | null {
+    for (const entry of this._acceptedWebSockets) {
+      if (entry.ws === ws) return entry.autoResponseTimestamp;
+    }
+    return null;
+  }
+
+  setHibernatableWebSocketEventTimeout(_ms?: number): void {
+    // no-op in dev
+  }
+
+  getHibernatableWebSocketEventTimeout(): number | null {
+    return null;
   }
 }
 
@@ -332,6 +436,8 @@ export class DurableObjectNamespaceImpl {
     const doId = new DurableObjectIdImpl(idStr);
     const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName);
     const instance = new this._class(state, this._env);
+    // Wire DO instance reference for WebSocket handler delegation
+    state._doInstance = instance;
     // Wire alarm callback
     state.storage._setAlarmCallback((time) => {
       if (time === null) {
@@ -372,6 +478,8 @@ export class DurableObjectNamespaceImpl {
       if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
       const state = new DurableObjectStateImpl(id, this.db, this.namespaceName);
       const instance = new this._class(state, this._env);
+      // Wire DO instance reference for WebSocket handler delegation
+      state._doInstance = instance;
       // Wire alarm callback so setAlarm/deleteAlarm schedule/cancel timers
       state.storage._setAlarmCallback((time) => {
         if (time === null) {

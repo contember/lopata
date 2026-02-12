@@ -1,5 +1,5 @@
 import { plugin } from "bun";
-import { DurableObjectBase } from "./bindings/durable-object";
+import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/durable-object";
 import { WorkflowEntrypointBase } from "./bindings/workflow";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { getDatabase } from "./db";
@@ -30,6 +30,7 @@ plugin({
               };
             }
           },
+          WebSocketRequestResponsePair,
           RpcTarget: class {},
         },
         loader: "object",

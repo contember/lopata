@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 18    |
-| **Completed**    | 16    |
-| **Pending**      | 2     |
-| **Progress**     | 89%   |
+| **Completed**    | 17    |
+| **Pending**      | 1     |
+| **Progress**     | 94%   |
 
 ## Current Focus
 
-Issue 11: DO WebSocket Support
+Issue 12: DO SQL Storage
 
 ## Issues
 
@@ -35,7 +35,7 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 09 | images-binding               | completed | |
 | 13 | do-misc                      | completed | |
 | 10 | do-alarms                    | completed | Depends on 16 |
-| 11 | do-websocket-support         | pending | Depends on 16 |
+| 11 | do-websocket-support         | completed | Depends on 16 |
 | 12 | do-sql-storage               | pending | Depends on 16 |
 
 ## Dependencies
@@ -84,3 +84,5 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - When changing a binding class (rename, new constructor params), always update the corresponding test file in `runtime/tests/` AND `runtime/env.ts`
 - `runtime/config.ts` has a `WranglerConfig` interface — when adding a new binding type, extend this interface with the new config fields
 - For workflow `waitForEvent`/`sendEvent`, use an in-memory registry of promise resolvers (per-process) combined with a `workflow_events` DB table for events sent before the workflow reaches `waitForEvent`. This handles both timing scenarios correctly.
+
+- **#11 do-websocket-support**: Added `WebSocketRequestResponsePair` class and exported from `cloudflare:workers` plugin. Added WebSocket Hibernation API methods to `DurableObjectStateImpl`: `acceptWebSocket(ws, tags?)` registers WebSocket with event listeners delegating to DO's `webSocketMessage`/`webSocketClose`/`webSocketError` handlers; `getWebSockets(tag?)` returns accepted WebSockets filtered by optional tag; `getTags(ws)` returns tags for a WebSocket; `setWebSocketAutoResponse(pair?)` / `getWebSocketAutoResponse()` for automatic ping/pong-style responses; `getWebSocketAutoResponseTimestamp(ws)` tracks last auto-response time; `setHibernatableWebSocketEventTimeout()` / `getHibernatableWebSocketEventTimeout()` are no-ops. Auto-response intercepts matching messages before handler and sends response directly. Closed WebSockets auto-removed from accepted set. `_doInstance` reference wired in `DurableObjectNamespaceImpl` for handler delegation. Added 18 tests covering all methods, tag filtering, auto-response, handler delegation, and close cleanup. All 304 tests pass.

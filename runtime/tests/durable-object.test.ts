@@ -7,7 +7,33 @@ import {
   DurableObjectStateImpl,
   DurableObjectBase,
   DurableObjectNamespaceImpl,
+  WebSocketRequestResponsePair,
 } from "../bindings/durable-object";
+
+/** Minimal mock WebSocket for testing state.acceptWebSocket() and friends */
+class MockWebSocket extends EventTarget {
+  sent: (string | ArrayBuffer)[] = [];
+  readyState = 1; // OPEN
+
+  send(data: string | ArrayBuffer) {
+    this.sent.push(data);
+  }
+
+  close(_code?: number, _reason?: string) {
+    this.readyState = 3; // CLOSED
+    this.dispatchEvent(new CloseEvent("close", { code: _code ?? 1000, reason: _reason ?? "", wasClean: true }));
+  }
+
+  /** Simulate receiving a message */
+  _receiveMessage(data: string | ArrayBuffer) {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
+  /** Simulate an error */
+  _triggerError() {
+    this.dispatchEvent(new Event("error"));
+  }
+}
 
 let db: Database;
 
@@ -582,6 +608,238 @@ describe("DurableObject Alarms", () => {
       // Create a new storage instance pointing to same db/namespace/id
       const storage2 = new SqliteDurableObjectStorage(db, "AlarmDO7", id.toString());
       expect(await storage2.getAlarm()).toBe(futureTime);
+    });
+  });
+});
+
+describe("DurableObject WebSocket Support", () => {
+  describe("WebSocketRequestResponsePair", () => {
+    test("stores request and response", () => {
+      const pair = new WebSocketRequestResponsePair("ping", "pong");
+      expect(pair.request).toBe("ping");
+      expect(pair.response).toBe("pong");
+    });
+  });
+
+  describe("State WebSocket methods", () => {
+    let state: DurableObjectStateImpl;
+
+    beforeEach(() => {
+      const id = new DurableObjectIdImpl("ws-test");
+      state = new DurableObjectStateImpl(id, db, "WsDO");
+    });
+
+    test("acceptWebSocket registers a WebSocket", () => {
+      const ws = new MockWebSocket();
+      state.acceptWebSocket(ws as unknown as WebSocket);
+      expect(state.getWebSockets()).toHaveLength(1);
+      expect(state.getWebSockets()[0]).toBe(ws as unknown as WebSocket);
+    });
+
+    test("acceptWebSocket with tags", () => {
+      const ws = new MockWebSocket();
+      state.acceptWebSocket(ws as unknown as WebSocket, ["user:1", "room:lobby"]);
+      expect(state.getTags(ws as unknown as WebSocket)).toEqual(["user:1", "room:lobby"]);
+    });
+
+    test("getWebSockets filters by tag", () => {
+      const ws1 = new MockWebSocket();
+      const ws2 = new MockWebSocket();
+      const ws3 = new MockWebSocket();
+      state.acceptWebSocket(ws1 as unknown as WebSocket, ["room:a"]);
+      state.acceptWebSocket(ws2 as unknown as WebSocket, ["room:b"]);
+      state.acceptWebSocket(ws3 as unknown as WebSocket, ["room:a", "room:b"]);
+
+      const roomA = state.getWebSockets("room:a");
+      expect(roomA).toHaveLength(2);
+      expect(roomA).toContain(ws1 as unknown as WebSocket);
+      expect(roomA).toContain(ws3 as unknown as WebSocket);
+
+      const roomB = state.getWebSockets("room:b");
+      expect(roomB).toHaveLength(2);
+      expect(roomB).toContain(ws2 as unknown as WebSocket);
+      expect(roomB).toContain(ws3 as unknown as WebSocket);
+    });
+
+    test("getWebSockets without tag returns all", () => {
+      const ws1 = new MockWebSocket();
+      const ws2 = new MockWebSocket();
+      state.acceptWebSocket(ws1 as unknown as WebSocket);
+      state.acceptWebSocket(ws2 as unknown as WebSocket, ["tagged"]);
+      expect(state.getWebSockets()).toHaveLength(2);
+    });
+
+    test("getTags returns empty array for unknown ws", () => {
+      const ws = new MockWebSocket();
+      expect(state.getTags(ws as unknown as WebSocket)).toEqual([]);
+    });
+
+    test("closed WebSocket is removed from accepted set", () => {
+      const ws = new MockWebSocket();
+      state.acceptWebSocket(ws as unknown as WebSocket);
+      expect(state.getWebSockets()).toHaveLength(1);
+      ws.close();
+      expect(state.getWebSockets()).toHaveLength(0);
+    });
+
+    test("setWebSocketAutoResponse and getWebSocketAutoResponse", () => {
+      expect(state.getWebSocketAutoResponse()).toBeNull();
+      const pair = new WebSocketRequestResponsePair("ping", "pong");
+      state.setWebSocketAutoResponse(pair);
+      expect(state.getWebSocketAutoResponse()).toBe(pair);
+    });
+
+    test("setWebSocketAutoResponse with no arg clears it", () => {
+      state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+      state.setWebSocketAutoResponse();
+      expect(state.getWebSocketAutoResponse()).toBeNull();
+    });
+
+    test("auto-response sends response and skips handler", async () => {
+      const messages: (string | ArrayBuffer)[] = [];
+      class WsDO extends DurableObjectBase {
+        async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
+          messages.push(message);
+        }
+      }
+      const instance = new WsDO(state, {});
+      state._doInstance = instance;
+
+      state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+
+      const ws = new MockWebSocket();
+      state.acceptWebSocket(ws as unknown as WebSocket);
+
+      ws._receiveMessage("ping");
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Auto-response was sent
+      expect(ws.sent).toEqual(["pong"]);
+      // Handler was NOT called
+      expect(messages).toEqual([]);
+    });
+
+    test("non-matching message goes to handler", async () => {
+      const messages: (string | ArrayBuffer)[] = [];
+      class WsDO extends DurableObjectBase {
+        async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
+          messages.push(message);
+        }
+      }
+      const instance = new WsDO(state, {});
+      state._doInstance = instance;
+
+      state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+
+      const ws = new MockWebSocket();
+      state.acceptWebSocket(ws as unknown as WebSocket);
+
+      ws._receiveMessage("hello");
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(ws.sent).toEqual([]);
+      expect(messages).toEqual(["hello"]);
+    });
+
+    test("getWebSocketAutoResponseTimestamp", () => {
+      const ws = new MockWebSocket();
+      state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
+      state.acceptWebSocket(ws as unknown as WebSocket);
+
+      // Before auto-response, timestamp is null
+      expect(state.getWebSocketAutoResponseTimestamp(ws as unknown as WebSocket)).toBeNull();
+
+      ws._receiveMessage("ping");
+
+      // After auto-response, timestamp is set
+      const ts = state.getWebSocketAutoResponseTimestamp(ws as unknown as WebSocket);
+      expect(ts).toBeInstanceOf(Date);
+      expect(ts!.getTime()).toBeCloseTo(Date.now(), -2);
+    });
+
+    test("getWebSocketAutoResponseTimestamp returns null for unknown ws", () => {
+      const ws = new MockWebSocket();
+      expect(state.getWebSocketAutoResponseTimestamp(ws as unknown as WebSocket)).toBeNull();
+    });
+
+    test("setHibernatableWebSocketEventTimeout is no-op", () => {
+      state.setHibernatableWebSocketEventTimeout(5000);
+      // does not throw
+    });
+
+    test("getHibernatableWebSocketEventTimeout returns null", () => {
+      expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
+    });
+  });
+
+  describe("WebSocket handler delegation via namespace", () => {
+    test("webSocketMessage handler is called", async () => {
+      const received: { ws: unknown; msg: string | ArrayBuffer }[] = [];
+
+      class WsDO extends DurableObjectBase {
+        async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+          received.push({ ws, msg: message });
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO1");
+      ns._setClass(WsDO, {});
+
+      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const ws = new MockWebSocket();
+      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+
+      ws._receiveMessage("hello world");
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(received).toHaveLength(1);
+      expect(received[0]!.msg).toBe("hello world");
+      expect(received[0]!.ws).toBe(ws);
+    });
+
+    test("webSocketClose handler is called", async () => {
+      const closed: { code: number; reason: string }[] = [];
+
+      class WsDO extends DurableObjectBase {
+        async webSocketClose(_ws: WebSocket, code: number, reason: string, _wasClean: boolean) {
+          closed.push({ code, reason });
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO2");
+      ns._setClass(WsDO, {});
+
+      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const ws = new MockWebSocket();
+      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+
+      ws.close(1001, "going away");
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(closed).toHaveLength(1);
+      expect(closed[0]).toEqual({ code: 1001, reason: "going away" });
+    });
+
+    test("webSocketError handler is called", async () => {
+      let errorCalled = false;
+
+      class WsDO extends DurableObjectBase {
+        async webSocketError(_ws: WebSocket, _error: unknown) {
+          errorCalled = true;
+        }
+      }
+
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO3");
+      ns._setClass(WsDO, {});
+
+      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const ws = new MockWebSocket();
+      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+
+      ws._triggerError();
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(errorCalled).toBe(true);
     });
   });
 });
