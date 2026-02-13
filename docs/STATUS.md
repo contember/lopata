@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 26    |
-| **Pending**      | 4     |
-| **Progress**     | 87%   |
+| **Completed**    | 27    |
+| **Pending**      | 3     |
+| **Progress**     | 90%   |
 
 ## Current Focus
 
-Phase 2 — API completeness audit. Filling gaps identified by comparing each binding against Cloudflare documentation.
+Next: **#28 config-gaps** — wrangler.toml support, env-specific config, global env import.
 
 ## Issues
 
@@ -52,7 +52,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 26 | workflows-gaps               | completed | Step retry, checkpointing, status structure, queued, retention, concurrency |
 | 19 | r2-gaps                      | completed | Multipart, conditionals, range reads, list delimiter, validation, R2Object props |
 | 24 | static-assets-gaps           | completed | ETag, Cache-Control, _headers, run_worker_first, 307 fix, hierarchical 404 |
-| 22 | service-bindings-gaps        | pending | Stub fetch, RPC property access, async consistency |
+| 22 | service-bindings-gaps        | completed | RPC property access, async consistency, subrequest limits, TCP stub |
 | 28 | config-gaps                  | pending | wrangler.toml, env-specific config, global env import |
 | 29 | scheduled-gaps               | pending | Special cron strings (@daily), day/month names |
 | 25 | images-transforms            | pending | Basic transforms via Sharp, AVIF dimensions |
@@ -120,6 +120,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#19 r2-gaps**: Added `R2Limits` interface with configurable `maxKeySize` (1024), `maxCustomMetadataSize` (2048), `maxBatchDeleteKeys` (1000), `maxMultipartParts` (10000) — passed via constructor. Key size validation on `put()` and `createMultipartUpload()`. Custom metadata size validation after JSON serialization. Batch delete count validation. Added `version` (UUID), `httpEtag` (quoted etag), `checksums` (R2Checksums with md5 auto-generated), `storageClass` ("Standard"), `writeHttpMetadata(headers)`, and `blob()` to R2Object/R2ObjectBody. Implemented `onlyIf` conditional on `get()` (returns R2Object without body on condition failure) and `put()` (returns null on failure) — supports `etagMatches`, `etagDoesNotMatch`, `uploadedBefore`, `uploadedAfter`. Implemented range reads on `get()` with `{ offset, length }` and `{ suffix }` — returned object includes `range` property. Added `delimiter` to `list()` returning `delimitedPrefixes` for hierarchical key grouping. Added `include` option to filter `httpMetadata`/`customMetadata` in list results. Implemented multipart upload: `createMultipartUpload()`, `resumeMultipartUpload()`, `R2MultipartUpload` with `uploadPart()`, `complete()`, `abort()` — parts stored as temp files, assembled on complete. Added `r2_multipart_uploads` and `r2_multipart_parts` tables. Added `version` and `checksums` columns to `r2_objects`. Added 28 new tests (55 total R2 tests). All 442 tests pass.
 
 - **#24 static-assets-gaps**: Added `ETag` header (based on mtime+size) and `Cache-Control: public, max-age=0, must-revalidate` to all served responses. `If-None-Match` conditional requests return 304 when ETag matches. Implemented `_headers` file parsing with support for splats (`*`) and placeholders (`:name`), limited to 100 rules and 2000 chars per line via `StaticAssetsLimits`. Changed redirect status from 301 to 307 for `force-trailing-slash` and `drop-trailing-slash` modes (matching CF behavior). Added `run_worker_first` config option (boolean or array of route patterns) — when true/matching, worker fetch handler runs first with asset fallback; default remains assets-first. Implemented hierarchical `404.html` lookup in `404-page` mode — searches up the directory tree from the requested path. Added `StaticAssetsLimits` interface with configurable `maxHeaderRules` and `maxHeaderLineLength`. Added 16 new tests (39 total static-assets tests). All 458 tests pass.
+
+- **#22 service-bindings-gaps**: RPC property access now returns thenables — `await binding.prop` reads a property from the target, `await binding.method(args)` calls it. All RPC returns wrapped in `Promise.resolve()` for async consistency (matching CF behavior where everything crosses a process boundary). Added `ServiceBindingLimits` with configurable `maxSubrequests` (default 1000) and `maxRpcPayloadSize` (default 32 MiB). Subrequest count tracked across both `fetch()` and RPC calls. `connect()` stub throws with clear error. Promise protocol safety: proxy's own `then`/`catch`/`finally` return `undefined` so the proxy itself is not auto-unwrapped. Request/Response/ReadableStream pass through as RPC arguments (in-process, no serialization needed). Added 15 new tests (31 total service binding tests). All 473 tests pass.
 
 ## Lessons Learned
 

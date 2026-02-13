@@ -103,7 +103,9 @@ describe("Service Binding", () => {
       (proxy._wire as Function)(workerModule, mockEnv);
 
       const greet = proxy.greet as Function;
-      expect(greet("World")).toBe("Hello, World!");
+      // Sync methods now return Promise (async consistency)
+      const result = await greet("World");
+      expect(result).toBe("Hello, World!");
     });
 
     test("call async method on default export", async () => {
@@ -124,7 +126,7 @@ describe("Service Binding", () => {
       expect(user).toEqual({ id: 1, name: "Alice" });
     });
 
-    test("throws if method does not exist", () => {
+    test("throws if method does not exist", async () => {
       const workerModule: Record<string, unknown> = {
         default: {
           fetch: async () => new Response("ok"),
@@ -165,7 +167,9 @@ describe("Service Binding", () => {
       (proxy._wire as Function)(workerModule, mockEnv);
 
       const greet = proxy.greet as Function;
-      expect(greet("World")).toBe("Hello from entrypoint, World! Env: test");
+      // Now returns Promise (async consistency)
+      const result = await greet("World");
+      expect(result).toBe("Hello from entrypoint, World! Env: test");
     });
 
     test("async method on named entrypoint", async () => {
@@ -181,7 +185,8 @@ describe("Service Binding", () => {
       (proxy._wire as Function)(workerModule, { MY_VAR: "custom" });
 
       const greet = proxy.greet as Function;
-      expect(greet("Test")).toBe("Hello from entrypoint, Test! Env: custom");
+      const result = await greet("Test");
+      expect(result).toBe("Hello from entrypoint, Test! Env: custom");
     });
 
     test("throws if named entrypoint not found", () => {
@@ -227,6 +232,254 @@ describe("Service Binding", () => {
       const proxy = createServiceBinding("my-worker");
       (proxy._wire as Function)(mockWorkerModule, mockEnv);
       expect(proxy.isWired).toBe(true);
+    });
+  });
+
+  describe("RPC property access", () => {
+    test("await a non-function property returns its value", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          version: "1.2.3",
+          config: { debug: true, level: 5 },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const version = await proxy.version;
+      expect(version).toBe("1.2.3");
+
+      const config = await proxy.config;
+      expect(config).toEqual({ debug: true, level: 5 });
+    });
+
+    test("await a function property returns the bound function", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          greet(name: string) { return `Hi ${name}`; },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      // Awaiting a function property returns the function itself
+      const fn = await proxy.greet;
+      expect(typeof fn).toBe("function");
+    });
+
+    test("await undefined property returns undefined", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const val = await proxy.nonExistentProp;
+      expect(val).toBeUndefined();
+    });
+
+    test("property access on named entrypoint", async () => {
+      class ConfigEntrypoint {
+        env: Record<string, unknown>;
+        appName = "my-app";
+        constructor(env: Record<string, unknown>) {
+          this.env = env;
+        }
+      }
+
+      const workerModule: Record<string, unknown> = {
+        default: { fetch: async () => new Response("ok") },
+        ConfigEntrypoint,
+      };
+
+      const proxy = createServiceBinding("my-worker", "ConfigEntrypoint");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const name = await proxy.appName;
+      expect(name).toBe("my-app");
+    });
+  });
+
+  describe("Async consistency", () => {
+    test("sync method returns a Promise", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          add(a: number, b: number) { return a + b; },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const add = proxy.add as Function;
+      const result = add(3, 4);
+      // Must be a Promise
+      expect(result).toBeInstanceOf(Promise);
+      expect(await result).toBe(7);
+    });
+
+    test("async method still returns a Promise", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          async multiply(a: number, b: number) { return a * b; },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const multiply = proxy.multiply as Function;
+      const result = multiply(3, 4);
+      expect(result).toBeInstanceOf(Promise);
+      expect(await result).toBe(12);
+    });
+  });
+
+  describe("Advanced serialization (Request/Response as RPC params)", () => {
+    test("pass Request as RPC argument", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          async handleRequest(req: Request) {
+            return { url: req.url, method: req.method };
+          },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const handleRequest = proxy.handleRequest as Function;
+      const result = await handleRequest(new Request("http://example.com/api", { method: "POST" }));
+      expect(result.url).toBe("http://example.com/api");
+      expect(result.method).toBe("POST");
+    });
+
+    test("return Response from RPC method", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          async makeResponse() {
+            return new Response("rpc-response", { status: 201 });
+          },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const makeResponse = proxy.makeResponse as Function;
+      const response: Response = await makeResponse();
+      expect(response).toBeInstanceOf(Response);
+      expect(response.status).toBe(201);
+      expect(await response.text()).toBe("rpc-response");
+    });
+
+    test("pass ReadableStream as RPC argument", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          async consumeStream(stream: ReadableStream) {
+            const reader = stream.getReader();
+            const chunks: Uint8Array[] = [];
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              chunks.push(value);
+            }
+            return new TextDecoder().decode(chunks[0]);
+          },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const consumeStream = proxy.consumeStream as Function;
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("streamed-data"));
+          controller.close();
+        },
+      });
+      const result = await consumeStream(stream);
+      expect(result).toBe("streamed-data");
+    });
+  });
+
+  describe("Subrequest limits", () => {
+    test("tracks subrequest count for fetch calls", async () => {
+      const proxy = createServiceBinding("my-worker", undefined, { maxSubrequests: 3 });
+      (proxy._wire as Function)(mockWorkerModule, mockEnv);
+
+      const fetch = proxy.fetch as Function;
+      await fetch("http://localhost/1");
+      await fetch("http://localhost/2");
+      await fetch("http://localhost/3");
+      // 4th should throw
+      expect(fetch("http://localhost/4")).rejects.toThrow("subrequest limit exceeded");
+    });
+
+    test("tracks subrequest count for RPC calls", async () => {
+      const workerModule: Record<string, unknown> = {
+        default: {
+          fetch: async () => new Response("ok"),
+          noop() { return "ok"; },
+        },
+      };
+
+      const proxy = createServiceBinding("my-worker", undefined, { maxSubrequests: 2 });
+      (proxy._wire as Function)(workerModule, mockEnv);
+
+      const noop = proxy.noop as Function;
+      await noop();
+      await noop();
+      // 3rd should throw
+      expect(() => noop()).toThrow("subrequest limit exceeded");
+    });
+
+    test("subrequest count can be read", () => {
+      const proxy = createServiceBinding("my-worker", undefined, { maxSubrequests: 100 });
+      expect(proxy._subrequestCount).toBe(0);
+    });
+  });
+
+  describe("TCP connect()", () => {
+    test("connect() throws not supported error", () => {
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(mockWorkerModule, mockEnv);
+
+      const connect = proxy.connect as Function;
+      expect(() => connect("example.com:443")).toThrow("not supported in local dev mode");
+    });
+  });
+
+  describe("Promise protocol safety", () => {
+    test("proxy is not a thenable itself (then returns undefined)", () => {
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(mockWorkerModule, mockEnv);
+
+      // The proxy itself should not have a .then that makes it look like a Promise
+      // (which would cause auto-unwrapping). Direct .then access on proxy should be undefined.
+      expect((proxy as Record<string, unknown>).then).toBeUndefined();
+    });
+
+    test("can be used in Promise.resolve without auto-unwrapping", async () => {
+      const proxy = createServiceBinding("my-worker");
+      (proxy._wire as Function)(mockWorkerModule, mockEnv);
+
+      // Promise.resolve should not try to call .then on the proxy
+      const resolved = await Promise.resolve(proxy);
+      expect(resolved).toBe(proxy);
     });
   });
 });
