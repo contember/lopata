@@ -35,8 +35,7 @@ const NON_RPC_PROPS = new Set([
 ]);
 
 export class ServiceBinding {
-  private _workerModule: WorkerModule | null = null;
-  private _env: Record<string, unknown> | null = null;
+  private _resolver: (() => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) | null = null;
   private _entrypoint: string | undefined;
   private _serviceName: string;
   private _limits: Required<ServiceBindingLimits>;
@@ -48,13 +47,27 @@ export class ServiceBinding {
     this._limits = { ...SERVICE_BINDING_DEFAULTS, ...limits };
   }
 
-  _wire(workerModule: WorkerModule, env: Record<string, unknown>): void {
-    this._workerModule = workerModule;
-    this._env = env;
+  _wire(resolverOrModule: (() => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) | Record<string, unknown>, env?: Record<string, unknown>): void {
+    if (typeof resolverOrModule === "function" && env === undefined) {
+      // New API: resolver function
+      this._resolver = resolverOrModule as () => { workerModule: Record<string, unknown>; env: Record<string, unknown> };
+    } else {
+      // Legacy API: _wire(workerModule, env)
+      const workerModule = resolverOrModule as Record<string, unknown>;
+      const capturedEnv = env!;
+      this._resolver = () => ({ workerModule, env: capturedEnv });
+    }
   }
 
   get isWired(): boolean {
-    return this._workerModule !== null;
+    return this._resolver !== null;
+  }
+
+  private _resolve(): { workerModule: Record<string, unknown>; env: Record<string, unknown> } {
+    if (!this._resolver) {
+      throw new Error(`Service binding "${this._serviceName}" is not wired — target worker not loaded`);
+    }
+    return this._resolver();
   }
 
   private _checkSubrequestLimit(): void {
@@ -67,20 +80,18 @@ export class ServiceBinding {
   }
 
   private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
-    if (!this._workerModule) {
-      throw new Error(`Service binding "${this._serviceName}" is not wired — target worker not loaded`);
-    }
+    const { workerModule, env } = this._resolve();
     if (this._entrypoint) {
-      const cls = this._workerModule[this._entrypoint] as (new (...args: unknown[]) => Record<string, unknown>) | undefined;
+      const cls = workerModule[this._entrypoint] as (new (...args: unknown[]) => Record<string, unknown>) | undefined;
       if (!cls) {
         throw new Error(`Entrypoint "${this._entrypoint}" not exported from worker module`);
       }
-      return new cls(ctx ?? new ExecutionContext(), this._env);
+      return new cls(ctx ?? new ExecutionContext(), env);
     }
     // Default export: could be class-based or object-based
-    const def = this._workerModule.default;
+    const def = workerModule.default;
     if (typeof def === "function" && def.prototype && typeof def.prototype.fetch === "function") {
-      return new (def as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx ?? new ExecutionContext(), this._env);
+      return new (def as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx ?? new ExecutionContext(), env);
     }
     return def as Record<string, unknown>;
   }
@@ -96,11 +107,12 @@ export class ServiceBinding {
     const request = typeof url === "string" ? new Request(url, init) : url;
     // Class-based entrypoints receive (request) — env/ctx via constructor
     // Object-based entrypoints receive (request, env, ctx)
-    const def = this._workerModule?.default;
+    const { workerModule, env } = this._resolve();
+    const def = workerModule.default;
     const isClass = (this._entrypoint || (typeof def === "function" && def.prototype?.fetch));
     const response = isClass
       ? await (target.fetch as (r: Request) => Promise<Response>)(request)
-      : await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, this._env, ctx);
+      : await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, ctx);
     ctx._awaitAll().catch(() => {});
     return response;
   }

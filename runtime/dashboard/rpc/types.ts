@@ -152,17 +152,26 @@ export interface CacheEntry {
 }
 
 // Generations
+export interface WorkerGenerations {
+  workerName: string;
+  generations: GenerationInfo[];
+  gracePeriodMs: number;
+}
+
 export interface GenerationsData {
   generations: GenerationInfo[];
   gracePeriodMs: number;
+  workers?: WorkerGenerations[];
 }
 
 // ─── Handler context ─────────────────────────────────────────────────
 
 import type { WranglerConfig } from "../../config";
 import type { GenerationManager } from "../../generation-manager";
+import type { WorkerRegistry } from "../../worker-registry";
 
 export interface HandlerContext {
   config: WranglerConfig | null;
   manager: GenerationManager | null;
+  registry: WorkerRegistry | null;
 }

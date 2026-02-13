@@ -92,7 +92,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   const db = getDatabase();
   for (const kv of config.kv_namespaces ?? []) {
     console.log(`[bunflare] KV namespace: ${kv.binding}`);
-    env[kv.binding] = new SqliteKVNamespace(db, kv.binding);
+    env[kv.binding] = new SqliteKVNamespace(db, kv.id);
   }
 
   // R2 buckets
@@ -191,6 +191,7 @@ export function wireClassRefs(
   registry: ClassRegistry,
   workerModule: Record<string, unknown>,
   env: Record<string, unknown>,
+  workerRegistry?: import("./worker-registry").WorkerRegistry,
 ) {
   for (const entry of registry.durableObjects) {
     const cls = workerModule[entry.className];
@@ -207,11 +208,17 @@ export function wireClassRefs(
     console.log(`[bunflare] Wired Workflow class: ${entry.className}`);
   }
 
-  // Wire service bindings (self-referencing same worker)
+  // Wire service bindings
   for (const entry of registry.serviceBindings) {
-    const wire = entry.proxy._wire as ((wm: Record<string, unknown>, e: Record<string, unknown>) => void) | undefined;
+    const wire = entry.proxy._wire as ((resolver: () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void) | undefined;
     if (wire) {
-      wire(workerModule, env);
+      if (workerRegistry) {
+        // Resolve through registry (handles both self-ref and cross-worker)
+        wire(() => workerRegistry.resolveTarget(entry.serviceName));
+      } else {
+        // Backward compat: self-reference
+        wire(() => ({ workerModule, env }));
+      }
       console.log(`[bunflare] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ""}`);
     }
   }

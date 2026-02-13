@@ -1,9 +1,10 @@
 import type { WranglerConfig } from "../config";
 import type { GenerationManager } from "../generation-manager";
+import type { WorkerRegistry } from "../worker-registry";
 import type { HandlerContext } from "./rpc/types";
 import { dispatch } from "./rpc/server";
 
-const ctx: HandlerContext = { config: null, manager: null };
+const ctx: HandlerContext = { config: null, manager: null, registry: null };
 
 export function setDashboardConfig(config: WranglerConfig): void {
   ctx.config = config;
@@ -11,6 +12,10 @@ export function setDashboardConfig(config: WranglerConfig): void {
 
 export function setGenerationManager(manager: GenerationManager): void {
   ctx.manager = manager;
+}
+
+export function setWorkerRegistry(registry: WorkerRegistry): void {
+  ctx.registry = registry;
 }
 
 // Dashboard HTML — must be used in Bun.serve routes (not fetch) for proper bundling

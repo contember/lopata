@@ -38,6 +38,12 @@ export const handlers = {
       d1: d1Count,
       cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
       generations: ctx.manager ? ctx.manager.list() : [],
+      ...(ctx.registry ? {
+        workers: Array.from(ctx.registry.listManagers()).map(([name, mgr]) => ({
+          workerName: name,
+          generations: mgr.list(),
+        })),
+      } : {}),
     };
   },
 };

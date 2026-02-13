@@ -3,6 +3,7 @@ import type { WranglerConfig } from "./config";
 import { buildEnv, wireClassRefs, setGlobalEnv } from "./env";
 import { Generation, type GenerationInfo } from "./generation";
 import { ExecutionContext } from "./execution-context";
+import type { WorkerRegistry } from "./worker-registry";
 
 function isEntrypointClass(exp: unknown): exp is new (ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
   return typeof exp === "function" && exp.prototype &&
@@ -21,11 +22,17 @@ export class GenerationManager {
   readonly config: WranglerConfig;
   readonly baseDir: string;
   readonly workerPath: string;
+  readonly workerName: string | undefined;
+  readonly workerRegistry: WorkerRegistry | undefined;
+  readonly isMain: boolean;
 
-  constructor(config: WranglerConfig, baseDir: string) {
+  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean }) {
     this.config = config;
     this.baseDir = baseDir;
     this.workerPath = path.resolve(baseDir, config.main);
+    this.workerName = options?.workerName;
+    this.workerRegistry = options?.workerRegistry;
+    this.isMain = options?.isMain ?? true;
   }
 
   /** The currently active generation (receives new requests) */
@@ -71,10 +78,12 @@ export class GenerationManager {
     const { env, registry } = buildEnv(this.config, this.baseDir);
 
     // 3. Wire DO and Workflow class references
-    wireClassRefs(registry, workerModule, env);
+    wireClassRefs(registry, workerModule, env, this.workerRegistry);
 
-    // 4. Update globalEnv for cloudflare:workers env export
-    setGlobalEnv(env);
+    // 4. Update globalEnv for cloudflare:workers env export (main worker only)
+    if (this.isMain) {
+      setGlobalEnv(env);
+    }
 
     // 5. Validate default export
     const defaultExport = workerModule.default;
