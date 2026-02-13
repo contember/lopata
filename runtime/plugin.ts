@@ -5,6 +5,7 @@ import { SqliteCacheStorage } from "./bindings/cache";
 import { HTMLRewriter } from "./bindings/html-rewriter";
 import { WebSocketPair } from "./bindings/websocket-pair";
 import { IdentityTransformStream, FixedLengthStream } from "./bindings/cf-streams";
+import { patchGlobalCrypto } from "./bindings/crypto-extras";
 import { getDatabase } from "./db";
 import { globalEnv } from "./env";
 
@@ -41,6 +42,9 @@ Object.defineProperty(globalThis, "FixedLengthStream", {
   writable: false,
   configurable: true,
 });
+
+// Patch crypto with CF-specific extensions (timingSafeEqual, DigestStream)
+patchGlobalCrypto();
 
 plugin({
   name: "cloudflare-workers-shim",
