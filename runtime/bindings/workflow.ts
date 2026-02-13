@@ -177,21 +177,29 @@ class WorkflowStepImpl {
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
     this.checkDuplicateStepName(`sleep:${name}`);
 
-    // Check checkpoint — if already slept, skip
     const cached = this.getCachedStep(`sleep:${name}`);
     if (cached) {
-      console.log(`  [workflow] sleep: ${name} (cached)`);
+      // Resume: compute remaining time from the stored target timestamp
+      const { until } = JSON.parse(cached.output!) as { until: number };
+      const remaining = Math.max(0, until - Date.now());
+      if (remaining > 0) {
+        console.log(`  [workflow] sleep: ${name} (resuming, ${remaining}ms remaining)`);
+        await new Promise((r) => setTimeout(r, remaining));
+      } else {
+        console.log(`  [workflow] sleep: ${name} (cached, already elapsed)`);
+      }
       return;
     }
 
     const ms = typeof duration === "number" ? duration : parseDuration(duration);
+    const until = Date.now() + ms;
+    // Checkpoint before sleeping so resume knows the target time
+    this.cacheStep(`sleep:${name}`, { until });
+
     console.log(`  [workflow] sleep: ${name} (${duration}, ${ms}ms)`);
     if (ms > 0) {
       await new Promise((r) => setTimeout(r, ms));
     }
-
-    // Checkpoint the sleep as completed
-    this.cacheStep(`sleep:${name}`, { sleptMs: ms });
   }
 
   async sleepUntil(name: string, timestamp: Date | number) {
@@ -199,22 +207,29 @@ class WorkflowStepImpl {
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
     this.checkDuplicateStepName(`sleepUntil:${name}`);
 
-    // Check checkpoint
+    const ts = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+
     const cached = this.getCachedStep(`sleepUntil:${name}`);
     if (cached) {
-      console.log(`  [workflow] sleepUntil: ${name} (cached)`);
+      // Resume: compute remaining time
+      const remaining = Math.max(0, ts.getTime() - Date.now());
+      if (remaining > 0) {
+        console.log(`  [workflow] sleepUntil: ${name} (resuming, ${remaining}ms remaining)`);
+        await new Promise((r) => setTimeout(r, remaining));
+      } else {
+        console.log(`  [workflow] sleepUntil: ${name} (cached, already elapsed)`);
+      }
       return;
     }
 
-    const ts = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+    // Checkpoint before sleeping
+    this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
+
     const delay = Math.max(0, ts.getTime() - Date.now());
     console.log(`  [workflow] sleepUntil: ${name} (${ts.toISOString()}, ${delay}ms remaining)`);
     if (delay > 0) {
       await new Promise((r) => setTimeout(r, delay));
     }
-
-    // Checkpoint
-    this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
   }
 
   async waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: string }): Promise<{ payload: T; timestamp: Date; type: string }> {
