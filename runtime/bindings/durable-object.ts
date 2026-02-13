@@ -153,6 +153,8 @@ export interface DurableObjectLimits {
   maxTagLength?: number;
   maxConcurrentWebSockets?: number;
   maxAutoResponseLength?: number;
+  /** Eviction timeout in ms. Idle instances are evicted after this time. 0 = disabled. Default: 120000 */
+  evictionTimeoutMs?: number;
 }
 
 const DO_DEFAULTS: Required<DurableObjectLimits> = {
@@ -160,6 +162,7 @@ const DO_DEFAULTS: Required<DurableObjectLimits> = {
   maxTagLength: 256,
   maxConcurrentWebSockets: 32_768,
   maxAutoResponseLength: 2048,
+  evictionTimeoutMs: 120_000,
 };
 
 // --- Storage ---
@@ -383,13 +386,14 @@ interface AcceptedWebSocket {
 export class DurableObjectStateImpl {
   readonly id: DurableObjectIdImpl;
   readonly storage: SqliteDurableObjectStorage;
-  private _readyPromise: Promise<void> | null = null;
+  private _concurrencyGate: Promise<void> | null = null;
   private _acceptedWebSockets: Set<AcceptedWebSocket> = new Set();
   private _autoResponsePair: WebSocketRequestResponsePair | null = null;
   private _hibernatableTimeout: number | null = null;
   private _limits: Required<DurableObjectLimits>;
-  /** @internal Set by DurableObjectNamespaceImpl after DO is created */
-  _doInstance: DurableObjectBase | null = null;
+  private _instanceResolver: (() => DurableObjectBase | null) | null = null;
+  private _requestQueue: Promise<void> = Promise.resolve();
+  private _activeRequests = 0;
 
   constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
     this.id = id;
@@ -398,14 +402,53 @@ export class DurableObjectStateImpl {
   }
 
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
-    const promise = callback();
-    this._readyPromise = promise.then(() => {});
-    return promise;
+    let resolve: () => void;
+    this._concurrencyGate = new Promise<void>(r => { resolve = r; });
+    return callback().finally(() => {
+      this._concurrencyGate = null;
+      resolve!();
+    });
   }
 
-  /** @internal Used by proxy stub to wait for blockConcurrencyWhile to complete */
-  _getReadyPromise(): Promise<void> | null {
-    return this._readyPromise;
+  /** @internal Wait until blockConcurrencyWhile completes */
+  async _waitForReady(): Promise<void> {
+    while (this._concurrencyGate) {
+      await this._concurrencyGate;
+    }
+  }
+
+  /** @internal Whether blockConcurrencyWhile is active */
+  _isBlocked(): boolean {
+    return this._concurrencyGate !== null;
+  }
+
+  /** @internal Whether there are active requests in the queue */
+  _hasActiveRequests(): boolean {
+    return this._activeRequests > 0;
+  }
+
+  /** @internal Enqueue a request — ensures serial execution (E-order) */
+  _enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this._requestQueue.then(async () => {
+      this._activeRequests++;
+      try {
+        return await fn();
+      } finally {
+        this._activeRequests--;
+      }
+    });
+    this._requestQueue = result.then(() => {}, () => {}); // swallow errors for queue
+    return result;
+  }
+
+  /** @internal Set the instance resolver for WebSocket handler delegation */
+  _setInstanceResolver(resolver: () => DurableObjectBase | null) {
+    this._instanceResolver = resolver;
+  }
+
+  /** @internal Get the DO instance via resolver */
+  _resolveInstance(): DurableObjectBase | null {
+    return this._instanceResolver?.() ?? null;
   }
 
   waitUntil(_promise: Promise<unknown>) {
@@ -430,8 +473,6 @@ export class DurableObjectStateImpl {
     const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null };
     this._acceptedWebSockets.add(entry);
 
-    const instance = this._doInstance;
-
     ws.addEventListener("message", (event: MessageEvent) => {
       const message = event.data;
       // Check auto-response before delegating to handler
@@ -443,6 +484,7 @@ export class DurableObjectStateImpl {
           return;
         }
       }
+      const instance = this._resolveInstance();
       const obj = instance as unknown as Record<string, unknown>;
       if (instance && typeof obj.webSocketMessage === "function") {
         (obj.webSocketMessage as (ws: WebSocket, message: string | ArrayBuffer) => Promise<void>).call(instance, ws, message);
@@ -451,6 +493,7 @@ export class DurableObjectStateImpl {
 
     ws.addEventListener("close", (event: CloseEvent) => {
       this._acceptedWebSockets.delete(entry);
+      const instance = this._resolveInstance();
       const obj = instance as unknown as Record<string, unknown>;
       if (instance && typeof obj.webSocketClose === "function") {
         (obj.webSocketClose as (ws: WebSocket, code: number, reason: string, wasClean: boolean) => Promise<void>).call(instance, ws, event.code, event.reason, event.wasClean);
@@ -458,6 +501,7 @@ export class DurableObjectStateImpl {
     });
 
     ws.addEventListener("error", (event: Event) => {
+      const instance = this._resolveInstance();
       const obj = instance as unknown as Record<string, unknown>;
       if (instance && typeof obj.webSocketError === "function") {
         (obj.webSocketError as (ws: WebSocket, error: unknown) => Promise<void>).call(instance, ws, event);
@@ -530,10 +574,22 @@ export class DurableObjectBase {
 
 const MAX_ALARM_RETRIES = 6;
 
+// Properties that should NOT be proxied as RPC (JS internals, Promise protocol, etc.)
+const NON_RPC_PROPS = new Set<string | symbol>([
+  "then", "catch", "finally",  // Promise/thenable protocol
+  "toJSON", "valueOf", "toString",  // conversion
+  Symbol.toPrimitive, Symbol.toStringTag, Symbol.iterator, Symbol.asyncIterator,
+]);
+
+// Properties handled specially on the stub (not forwarded as RPC)
+const STUB_PROPS = new Set(["id", "name", "fetch"]);
+
 // --- Namespace ---
 
 export class DurableObjectNamespaceImpl {
   private instances = new Map<string, DurableObjectBase>();
+  private _stubs = new Map<string, unknown>();
+  private _knownIds = new Map<string, DurableObjectIdImpl>();
   private _class?: new (ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase;
   private _env?: unknown;
   private db: Database;
@@ -541,12 +597,19 @@ export class DurableObjectNamespaceImpl {
   private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private dataDir: string | undefined;
   private limits: DurableObjectLimits | undefined;
+  private _lastActivity = new Map<string, number>();
+  private _evictionTimer: ReturnType<typeof setInterval> | null = null;
+  private _evictionTimeoutMs: number;
 
   constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits) {
     this.db = db;
     this.namespaceName = namespaceName;
     this.dataDir = dataDir;
     this.limits = limits;
+    this._evictionTimeoutMs = limits?.evictionTimeoutMs ?? 120_000;
+    if (this._evictionTimeoutMs > 0) {
+      this._evictionTimer = setInterval(() => this._evictIdle(), 30_000);
+    }
   }
 
   /** Called after worker module is loaded to wire the actual class */
@@ -587,47 +650,58 @@ export class DurableObjectNamespaceImpl {
     const instance = this._getOrCreateInstance(idStr);
     if (!instance) return;
 
-    // Delete alarm from DB before calling handler (matching CF behavior)
-    this.db
-      .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
-      .run(this.namespaceName, idStr);
+    const state = instance.ctx as DurableObjectStateImpl;
 
-    try {
-      const alarmFn = (instance as unknown as Record<string, unknown>).alarm;
-      if (typeof alarmFn === "function") {
-        await alarmFn.call(instance, {
-          retryCount,
-          isRetry: retryCount > 0,
-        });
+    // Run alarm through the request queue (serialized)
+    await state._enqueue(async () => {
+      await state._waitForReady();
+
+      // Delete alarm from DB before calling handler (matching CF behavior)
+      this.db
+        .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
+        .run(this.namespaceName, idStr);
+
+      try {
+        const alarmFn = (instance as unknown as Record<string, unknown>).alarm;
+        if (typeof alarmFn === "function") {
+          await alarmFn.call(instance, {
+            retryCount,
+            isRetry: retryCount > 0,
+          });
+        }
+      } catch (e) {
+        if (retryCount < MAX_ALARM_RETRIES) {
+          // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+          const backoffMs = Math.pow(2, retryCount) * 1000;
+          const retryTime = Date.now() + backoffMs;
+          // Re-persist alarm for retry
+          this.db
+            .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
+            .run(this.namespaceName, idStr, retryTime);
+          const timer = setTimeout(() => {
+            this.alarmTimers.delete(idStr);
+            this._fireAlarm(idStr, retryCount + 1);
+          }, backoffMs);
+          this.alarmTimers.set(idStr, timer);
+        }
+        // After max retries, alarm is discarded
       }
-    } catch (e) {
-      if (retryCount < MAX_ALARM_RETRIES) {
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
-        const backoffMs = Math.pow(2, retryCount) * 1000;
-        const retryTime = Date.now() + backoffMs;
-        // Re-persist alarm for retry
-        this.db
-          .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
-          .run(this.namespaceName, idStr, retryTime);
-        const timer = setTimeout(() => {
-          this.alarmTimers.delete(idStr);
-          this._fireAlarm(idStr, retryCount + 1);
-        }, backoffMs);
-        this.alarmTimers.set(idStr, timer);
-      }
-      // After max retries, alarm is discarded
-    }
+    });
   }
 
   /** @internal Get or create a DO instance by id string */
-  private _getOrCreateInstance(idStr: string): DurableObjectBase | null {
+  private _getOrCreateInstance(idStr: string, doId?: DurableObjectIdImpl): DurableObjectBase | null {
     if (this.instances.has(idStr)) return this.instances.get(idStr)!;
     if (!this._class) return null;
-    const doId = new DurableObjectIdImpl(idStr);
-    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName, this.dataDir, this.limits);
+
+    // Use provided doId, or look up known id (preserves name after eviction), or create new
+    const id = doId ?? this._knownIds.get(idStr) ?? new DurableObjectIdImpl(idStr);
+    if (doId) this._knownIds.set(idStr, doId);
+
+    const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir, this.limits);
     const instance = new this._class(state, this._env);
-    // Wire DO instance reference for WebSocket handler delegation
-    state._doInstance = instance;
+    // Wire instance resolver for WebSocket handler delegation
+    state._setInstanceResolver(() => this.instances.get(idStr) ?? null);
     // Wire alarm callback
     state.storage._setAlarmCallback((time) => {
       if (time === null) {
@@ -639,7 +713,34 @@ export class DurableObjectNamespaceImpl {
       }
     });
     this.instances.set(idStr, instance);
+    this._lastActivity.set(idStr, Date.now());
     return instance;
+  }
+
+  /** @internal Evict idle instances */
+  private _evictIdle() {
+    const now = Date.now();
+    for (const [idStr, lastActivity] of this._lastActivity) {
+      if (now - lastActivity < this._evictionTimeoutMs) continue;
+      const instance = this.instances.get(idStr);
+      if (!instance) continue;
+      const state = instance.ctx as DurableObjectStateImpl;
+      // Skip if blockConcurrencyWhile is active
+      if (state._isBlocked()) continue;
+      // Skip if there are active requests
+      if (state._hasActiveRequests()) continue;
+      // Skip if instance has accepted WebSockets
+      if (state.getWebSockets().length > 0) continue;
+      // Evict
+      this.instances.delete(idStr);
+      this._lastActivity.delete(idStr);
+      // _knownIds and alarmTimers survive eviction
+    }
+  }
+
+  /** @internal Get a raw instance for testing (no proxy) */
+  _getInstance(idStr: string): DurableObjectBase | null {
+    return this.instances.get(idStr) ?? null;
   }
 
   newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
@@ -664,60 +765,89 @@ export class DurableObjectNamespaceImpl {
 
   get(id: DurableObjectIdImpl): unknown {
     const idStr = id.toString();
-    if (!this.instances.has(idStr)) {
-      if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
-      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir, this.limits);
-      const instance = new this._class(state, this._env);
-      // Wire DO instance reference for WebSocket handler delegation
-      state._doInstance = instance;
-      // Wire alarm callback so setAlarm/deleteAlarm schedule/cancel timers
-      state.storage._setAlarmCallback((time) => {
-        if (time === null) {
-          const t = this.alarmTimers.get(idStr);
-          if (t) clearTimeout(t);
-          this.alarmTimers.delete(idStr);
-        } else {
-          this._scheduleAlarmTimer(idStr, time);
-        }
-      });
-      this.instances.set(idStr, instance);
-    }
 
-    const instance = this.instances.get(idStr)!;
-    const doId = instance.ctx.id;
+    // Return cached stub if available — stub survives eviction
+    if (this._stubs.has(idStr)) return this._stubs.get(idStr)!;
 
-    // Return a Proxy stub that forwards method calls (RPC semantics)
-    // Awaits blockConcurrencyWhile before forwarding any calls
-    // Also exposes .id, .name, and .fetch()
-    return new Proxy(instance, {
-      get(target, prop, receiver) {
-        // Expose stub.id — returns the DurableObjectId
-        if (prop === "id") return doId;
-        // Expose stub.name — returns the name if available
-        if (prop === "name") return doId.name;
-        // Expose stub.fetch() — calls the DO's fetch() handler
+    if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
+
+    // Store the known id (preserves name)
+    this._knownIds.set(idStr, id);
+
+    // Ensure instance exists
+    this._getOrCreateInstance(idStr, id);
+
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+
+    // Return a Proxy stub that lazily resolves instances (survives eviction)
+    const stub = new Proxy({} as Record<string, unknown>, {
+      get(_target, prop: string | symbol) {
+        // Non-RPC props (Promise protocol, symbols, conversion)
+        if (NON_RPC_PROPS.has(prop)) return undefined;
+
+        // stub.id — returns the DurableObjectId
+        if (prop === "id") return id;
+        // stub.name — returns the name if available
+        if (prop === "name") return id.name;
+
+        // stub.fetch() — calls the DO's fetch() handler
         if (prop === "fetch") {
-          return async (input: RequestInfo | URL, init?: RequestInit) => {
-            const readyPromise = target.ctx._getReadyPromise();
-            if (readyPromise) await readyPromise;
-            const fetchFn = (target as unknown as Record<string, unknown>).fetch;
-            if (typeof fetchFn !== "function") {
-              throw new Error("Durable Object does not implement fetch()");
+          return (input: RequestInfo | URL, init?: RequestInit) => {
+            const instance = self._getOrCreateInstance(idStr, id)!;
+            const state = instance.ctx as DurableObjectStateImpl;
+            self._lastActivity.set(idStr, Date.now());
+            return state._enqueue(async () => {
+              await state._waitForReady();
+              const fetchFn = (instance as unknown as Record<string, unknown>).fetch;
+              if (typeof fetchFn !== "function") {
+                throw new Error("Durable Object does not implement fetch()");
+              }
+              const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+              return (fetchFn as (req: Request) => Promise<Response>).call(instance, request);
+            });
+          };
+        }
+
+        // RPC: return a callable that also acts as a thenable for property access
+        const rpcCallable = (...args: unknown[]) => {
+          const instance = self._getOrCreateInstance(idStr, id)!;
+          const state = instance.ctx as DurableObjectStateImpl;
+          self._lastActivity.set(idStr, Date.now());
+          return state._enqueue(async () => {
+            await state._waitForReady();
+            const val = (instance as unknown as Record<string, unknown>)[prop as string];
+            if (typeof val === "function") {
+              return (val as (...a: unknown[]) => unknown).call(instance, ...args);
             }
-            const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
-            return (fetchFn as (req: Request) => Promise<Response>).call(target, request);
-          };
-        }
-        const val = Reflect.get(target, prop, receiver);
-        if (typeof val === "function") {
-          return async (...args: unknown[]) => {
-            const readyPromise = target.ctx._getReadyPromise();
-            if (readyPromise) await readyPromise;
-            return val.apply(target, args);
-          };
-        }
-        return val;
+            throw new Error(`"${String(prop)}" is not a method on the Durable Object`);
+          });
+        };
+
+        // Make it thenable for property access: `await stub.myProp`
+        rpcCallable.then = (
+          onFulfilled?: ((value: unknown) => unknown) | null,
+          onRejected?: ((reason: unknown) => unknown) | null,
+        ) => {
+          const instance = self._getOrCreateInstance(idStr, id)!;
+          const state = instance.ctx as DurableObjectStateImpl;
+          self._lastActivity.set(idStr, Date.now());
+          const promise = state._enqueue(async () => {
+            await state._waitForReady();
+            const val = (instance as unknown as Record<string, unknown>)[prop as string];
+            if (typeof val === "function") {
+              return val.bind(instance);
+            }
+            return val;
+          });
+          return promise.then(onFulfilled, onRejected);
+        };
+
+        return rpcCallable;
       },
     });
+
+    this._stubs.set(idStr, stub);
+    return stub;
   }
 }

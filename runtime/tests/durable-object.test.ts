@@ -284,7 +284,7 @@ describe("DurableObjectNamespace", () => {
   let ns: DurableObjectNamespaceImpl;
 
   beforeEach(() => {
-    ns = new DurableObjectNamespaceImpl(db, "TestCounter");
+    ns = new DurableObjectNamespaceImpl(db, "TestCounter", undefined, { evictionTimeoutMs: 0 });
     ns._setClass(TestCounter, {});
   });
 
@@ -382,7 +382,7 @@ describe("DurableObjectNamespace", () => {
       }
     }
 
-    const ns2 = new DurableObjectNamespaceImpl(db, "SlowInit");
+    const ns2 = new DurableObjectNamespaceImpl(db, "SlowInit", undefined, { evictionTimeoutMs: 0 });
     ns2._setClass(SlowInitDO, {});
     const stub = ns2.get(ns2.idFromName("test")) as { hello(): Promise<string> };
     const result = await stub.hello();
@@ -397,7 +397,7 @@ describe("DurableObjectNamespace", () => {
     await stub.increment();
 
     // Create a new namespace instance pointing to same db
-    const ns2 = new DurableObjectNamespaceImpl(db, "TestCounter");
+    const ns2 = new DurableObjectNamespaceImpl(db, "TestCounter", undefined, { evictionTimeoutMs: 0 });
     ns2._setClass(TestCounter, {});
     const stub2 = ns2.get(id) as any;
     expect(await stub2.getCount()).toBe(2);
@@ -467,13 +467,12 @@ describe("DurableObject Alarms", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const stub = ns.get(id) as { ctx: DurableObjectStateImpl };
-      // Access inner instance storage via the proxy
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id); // ensure instance created
+      const instance = ns._getInstance(id.toString())!;
       await instance.ctx.storage.setAlarm(Date.now() + 10);
 
       // Wait for alarm to fire
@@ -489,11 +488,12 @@ describe("DurableObject Alarms", () => {
         async alarm() {}
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO2");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO2", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       await instance.ctx.storage.setAlarm(Date.now() + 10);
 
       await new Promise((r) => setTimeout(r, 50));
@@ -510,11 +510,12 @@ describe("DurableObject Alarms", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO3");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO3", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
 
       // Set alarm far in the future
       await instance.ctx.storage.setAlarm(Date.now() + 100000);
@@ -535,11 +536,12 @@ describe("DurableObject Alarms", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO4");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO4", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       await instance.ctx.storage.setAlarm(Date.now() + 30);
       await instance.ctx.storage.deleteAlarm();
 
@@ -562,11 +564,12 @@ describe("DurableObject Alarms", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO5");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO5", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       await instance.ctx.storage.setAlarm(Date.now() + 10);
 
       // Wait for first fire + retry (backoff is 1s for retry 0, but we set timeout to be enough)
@@ -590,7 +593,7 @@ describe("DurableObject Alarms", () => {
       db.query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
         .run("AlarmDO6", "past-due-id", Date.now() - 1000);
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO6");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO6", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {}); // _restoreAlarms should schedule it immediately
 
       await new Promise((r) => setTimeout(r, 50));
@@ -603,11 +606,12 @@ describe("DurableObject Alarms", () => {
         async alarm() {}
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO7");
+      const ns = new DurableObjectNamespaceImpl(db, "AlarmDO7", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(AlarmDO, {});
 
       const id = ns.idFromName("test");
-      const instance = ns.get(id) as unknown as DurableObjectBase;
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       const futureTime = Date.now() + 600000;
       await instance.ctx.storage.setAlarm(futureTime);
 
@@ -709,7 +713,7 @@ describe("DurableObject WebSocket Support", () => {
         }
       }
       const instance = new WsDO(state, {});
-      state._doInstance = instance;
+      state._setInstanceResolver(() => instance);
 
       state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
 
@@ -733,7 +737,7 @@ describe("DurableObject WebSocket Support", () => {
         }
       }
       const instance = new WsDO(state, {});
-      state._doInstance = instance;
+      state._setInstanceResolver(() => instance);
 
       state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
 
@@ -788,12 +792,14 @@ describe("DurableObject WebSocket Support", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "WsDO1");
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO1", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(WsDO, {});
 
-      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const id = ns.idFromName("test");
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       const ws = new MockWebSocket();
-      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+      instance.ctx.acceptWebSocket(ws as unknown as WebSocket);
 
       ws._receiveMessage("hello world");
       await new Promise((r) => setTimeout(r, 10));
@@ -812,12 +818,14 @@ describe("DurableObject WebSocket Support", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "WsDO2");
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO2", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(WsDO, {});
 
-      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const id = ns.idFromName("test");
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       const ws = new MockWebSocket();
-      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+      instance.ctx.acceptWebSocket(ws as unknown as WebSocket);
 
       ws.close(1001, "going away");
       await new Promise((r) => setTimeout(r, 10));
@@ -835,12 +843,14 @@ describe("DurableObject WebSocket Support", () => {
         }
       }
 
-      const ns = new DurableObjectNamespaceImpl(db, "WsDO3");
+      const ns = new DurableObjectNamespaceImpl(db, "WsDO3", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(WsDO, {});
 
-      const stub = ns.get(ns.idFromName("test")) as unknown as DurableObjectBase;
+      const id = ns.idFromName("test");
+      ns.get(id);
+      const instance = ns._getInstance(id.toString())!;
       const ws = new MockWebSocket();
-      stub.ctx.acceptWebSocket(ws as unknown as WebSocket);
+      instance.ctx.acceptWebSocket(ws as unknown as WebSocket);
 
       ws._triggerError();
       await new Promise((r) => setTimeout(r, 10));
@@ -1024,7 +1034,7 @@ describe("DurableObject SQL Storage", () => {
     }
 
     test("DO can use sql storage through namespace", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "SqlDO", dataDir);
+      const ns = new DurableObjectNamespaceImpl(db, "SqlDO", dataDir, { evictionTimeoutMs: 0 });
       ns._setClass(SqlDO, {});
 
       const stub = ns.get(ns.idFromName("test")) as unknown as SqlDO;
@@ -1049,7 +1059,7 @@ describe("DO Gaps - Issue #27", () => {
     }
 
     test("stub.fetch calls DO fetch handler with Request", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "FetchDO");
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(FetchDO, {});
       const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
 
@@ -1059,7 +1069,7 @@ describe("DO Gaps - Issue #27", () => {
     });
 
     test("stub.fetch with string URL and init", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "FetchDO2");
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO2", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(FetchDO, {});
       const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
 
@@ -1071,7 +1081,7 @@ describe("DO Gaps - Issue #27", () => {
       class NoFetchDO extends DurableObjectBase {
         async hello() { return "hi"; }
       }
-      const ns = new DurableObjectNamespaceImpl(db, "NoFetchDO");
+      const ns = new DurableObjectNamespaceImpl(db, "NoFetchDO", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(NoFetchDO, {});
       const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> };
 
@@ -1079,7 +1089,7 @@ describe("DO Gaps - Issue #27", () => {
     });
 
     test("stub.fetch returns 404 for unknown path", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "FetchDO3");
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO3", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(FetchDO, {});
       const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> };
 
@@ -1094,7 +1104,7 @@ describe("DO Gaps - Issue #27", () => {
     }
 
     test("stub.id returns DurableObjectId", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO");
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(SimpleDO, {});
       const id = ns.idFromName("test");
       const stub = ns.get(id) as unknown as { id: DurableObjectIdImpl };
@@ -1102,7 +1112,7 @@ describe("DO Gaps - Issue #27", () => {
     });
 
     test("stub.name returns name from id", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO2");
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO2", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(SimpleDO, {});
       const id = ns.idFromName("myname");
       const stub = ns.get(id) as unknown as { name: string | undefined };
@@ -1110,7 +1120,7 @@ describe("DO Gaps - Issue #27", () => {
     });
 
     test("stub.name is undefined for unique ids", async () => {
-      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO3");
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO3", undefined, { evictionTimeoutMs: 0 });
       ns._setClass(SimpleDO, {});
       const id = ns.newUniqueId();
       const stub = ns.get(id) as unknown as { name: string | undefined };
@@ -1239,5 +1249,222 @@ describe("DO Gaps - Issue #27", () => {
       );
       expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
     });
+  });
+});
+
+describe("DO Instance Eviction", () => {
+  class CounterDO extends DurableObjectBase {
+    constructorCount = 0;
+    constructor(ctx: DurableObjectStateImpl, env: unknown) {
+      super(ctx, env);
+      this.constructorCount++;
+    }
+    async getCount(): Promise<number> {
+      return ((await this.ctx.storage.get<number>("count")) ?? 0);
+    }
+    async increment(): Promise<number> {
+      const count = (await this.getCount()) + 1;
+      await this.ctx.storage.put("count", count);
+      return count;
+    }
+  }
+
+  test("instance is evicted after inactivity", async () => {
+    const ns = new DurableObjectNamespaceImpl(db, "EvictDO1", undefined, { evictionTimeoutMs: 50 });
+    ns._setClass(CounterDO, {});
+
+    const id = ns.idFromName("test");
+    const stub = ns.get(id) as any;
+    await stub.increment();
+    const idStr = id.toString();
+
+    expect(ns._getInstance(idStr)).not.toBeNull();
+
+    // Manually trigger eviction after timeout
+    await new Promise((r) => setTimeout(r, 80));
+    // Force eviction check (interval is 30s, so we call it manually for tests)
+    (ns as any)._evictIdle();
+
+    expect(ns._getInstance(idStr)).toBeNull();
+  });
+
+  test("re-creation after eviction preserves storage", async () => {
+    const ns = new DurableObjectNamespaceImpl(db, "EvictDO2", undefined, { evictionTimeoutMs: 50 });
+    ns._setClass(CounterDO, {});
+
+    const id = ns.idFromName("test");
+    const stub = ns.get(id) as any;
+    await stub.increment();
+    await stub.increment();
+    expect(await stub.getCount()).toBe(2);
+
+    // Evict
+    await new Promise((r) => setTimeout(r, 80));
+    (ns as any)._evictIdle();
+    expect(ns._getInstance(id.toString())).toBeNull();
+
+    // Access again — re-creates instance, storage persists
+    expect(await stub.getCount()).toBe(2);
+    expect(ns._getInstance(id.toString())).not.toBeNull();
+  });
+
+  test("stub remains valid after eviction", async () => {
+    const ns = new DurableObjectNamespaceImpl(db, "EvictDO3", undefined, { evictionTimeoutMs: 50 });
+    ns._setClass(CounterDO, {});
+
+    const id = ns.idFromName("test");
+    const stub = ns.get(id) as any;
+    await stub.increment();
+
+    // Evict
+    await new Promise((r) => setTimeout(r, 80));
+    (ns as any)._evictIdle();
+
+    // Stub still works — transparently re-creates
+    expect(await stub.increment()).toBe(2);
+  });
+
+  test("alarm wakes evicted instance", async () => {
+    let alarmFired = false;
+
+    class AlarmEvictDO extends DurableObjectBase {
+      async alarm() {
+        alarmFired = true;
+      }
+    }
+
+    const ns = new DurableObjectNamespaceImpl(db, "AlarmEvictDO", undefined, { evictionTimeoutMs: 50 });
+    ns._setClass(AlarmEvictDO, {});
+
+    const id = ns.idFromName("test");
+    ns.get(id);
+    const instance = ns._getInstance(id.toString())!;
+    await instance.ctx.storage.setAlarm(Date.now() + 200);
+
+    // Evict
+    await new Promise((r) => setTimeout(r, 80));
+    (ns as any)._evictIdle();
+    expect(ns._getInstance(id.toString())).toBeNull();
+
+    // Wait for alarm
+    await new Promise((r) => setTimeout(r, 200));
+
+    expect(alarmFired).toBe(true);
+    expect(ns._getInstance(id.toString())).not.toBeNull();
+  });
+
+  test("instance with active WebSockets is not evicted", async () => {
+    class WsEvictDO extends DurableObjectBase {}
+
+    const ns = new DurableObjectNamespaceImpl(db, "WsEvictDO", undefined, { evictionTimeoutMs: 50 });
+    ns._setClass(WsEvictDO, {});
+
+    const id = ns.idFromName("test");
+    ns.get(id);
+    const instance = ns._getInstance(id.toString())!;
+    const ws = new MockWebSocket();
+    instance.ctx.acceptWebSocket(ws as unknown as WebSocket);
+
+    await new Promise((r) => setTimeout(r, 80));
+    (ns as any)._evictIdle();
+
+    // Not evicted because of active WebSocket
+    expect(ns._getInstance(id.toString())).not.toBeNull();
+  });
+});
+
+describe("DO Request Serialization (E-order)", () => {
+  test("concurrent calls are serialized", async () => {
+    const order: number[] = [];
+
+    class SerialDO extends DurableObjectBase {
+      async slow(id: number): Promise<void> {
+        order.push(id);
+        await new Promise((r) => setTimeout(r, 30));
+        order.push(id * 10);
+      }
+    }
+
+    const ns = new DurableObjectNamespaceImpl(db, "SerialDO", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(SerialDO, {});
+    const stub = ns.get(ns.idFromName("test")) as any;
+
+    // Launch two concurrent calls
+    const p1 = stub.slow(1);
+    const p2 = stub.slow(2);
+    await Promise.all([p1, p2]);
+
+    // Should be serialized: 1, 10, 2, 20 (not interleaved)
+    expect(order).toEqual([1, 10, 2, 20]);
+  });
+
+  test("blockConcurrencyWhile actually blocks concurrent calls", async () => {
+    const order: string[] = [];
+
+    class BlockingDO extends DurableObjectBase {
+      constructor(ctx: DurableObjectStateImpl, env: unknown) {
+        super(ctx, env);
+        ctx.blockConcurrencyWhile(async () => {
+          await new Promise((r) => setTimeout(r, 50));
+          order.push("init-done");
+        });
+      }
+      async work(): Promise<void> {
+        order.push("work");
+      }
+    }
+
+    const ns = new DurableObjectNamespaceImpl(db, "BlockingDO", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(BlockingDO, {});
+
+    const stub = ns.get(ns.idFromName("test")) as any;
+    const p1 = stub.work();
+    const p2 = stub.work();
+    await Promise.all([p1, p2]);
+
+    expect(order).toEqual(["init-done", "work", "work"]);
+  });
+});
+
+describe("DO RPC Semantics", () => {
+  class RpcDO extends DurableObjectBase {
+    myProp = 42;
+    async greet(name: string): Promise<string> {
+      return `Hello, ${name}`;
+    }
+  }
+
+  test("NON_RPC_PROPS — stub.then is undefined (not thenable itself)", () => {
+    const ns = new DurableObjectNamespaceImpl(db, "RpcDO1", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(RpcDO, {});
+    const stub = ns.get(ns.idFromName("test")) as any;
+    expect(stub.then).toBeUndefined();
+    expect(stub.catch).toBeUndefined();
+    expect(stub.finally).toBeUndefined();
+  });
+
+  test("property access via thenable — await stub.myProp", async () => {
+    const ns = new DurableObjectNamespaceImpl(db, "RpcDO2", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(RpcDO, {});
+    const stub = ns.get(ns.idFromName("test")) as any;
+    const val = await stub.myProp;
+    expect(val).toBe(42);
+  });
+
+  test("method calls return Promise", async () => {
+    const ns = new DurableObjectNamespaceImpl(db, "RpcDO3", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(RpcDO, {});
+    const stub = ns.get(ns.idFromName("test")) as any;
+    const result = await stub.greet("World");
+    expect(result).toBe("Hello, World");
+  });
+
+  test("same id returns same cached stub", () => {
+    const ns = new DurableObjectNamespaceImpl(db, "RpcDO4", undefined, { evictionTimeoutMs: 0 });
+    ns._setClass(RpcDO, {});
+    const id = ns.idFromName("test");
+    const stub1 = ns.get(id);
+    const stub2 = ns.get(id);
+    expect(stub1).toBe(stub2);
   });
 });
