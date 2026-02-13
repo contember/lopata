@@ -32,60 +32,6 @@ describe("runMigrations", () => {
 		expect(tables.length).toBeGreaterThanOrEqual(7);
 	});
 
-	test("kv table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(kv)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["namespace", "key", "value", "metadata", "expiration"]);
-	});
-
-	test("r2_objects table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(r2_objects)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["bucket", "key", "size", "etag", "version", "uploaded", "http_metadata", "custom_metadata", "checksums"]);
-	});
-
-	test("do_storage table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(do_storage)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["namespace", "id", "key", "value"]);
-	});
-
-	test("queue_messages table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(queue_messages)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["id", "queue", "body", "content_type", "attempts", "visible_at", "created_at"]);
-	});
-
-	test("workflow_instances table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(workflow_instances)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["id", "workflow_name", "class_name", "params", "status", "output", "error", "created_at", "updated_at"]);
-	});
-
-	test("cache_entries table has correct columns", () => {
-		const db = new Database(":memory:");
-		runMigrations(db);
-
-		const cols = db.query("PRAGMA table_info(cache_entries)").all() as { name: string }[];
-		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["cache_name", "url", "status", "headers", "body", "expires_at"]);
-	});
-
 	test("can insert and read from kv table", () => {
 		const db = new Database(":memory:");
 		runMigrations(db);

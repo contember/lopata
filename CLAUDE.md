@@ -55,6 +55,25 @@ test("hello world", () => {
 });
 ```
 
+### What to test
+
+- Persistence — data survives across instances/restarts
+- Isolation — namespaces, instances, tenants don't leak into each other
+- Concurrency and ordering — serialization, blocking, race conditions
+- Error handling and validation — invalid inputs, limits, edge cases
+- Integration wiring — components work together end-to-end (e.g. DO accessible through namespace proxy)
+- API contract behavior — buffering, state machines, retries, idempotency
+
+### What NOT to test
+
+- Getters/setters that just store and return a value (`x.name = "foo"; expect(x.name).toBe("foo")`)
+- Hardcoded constants or static values (`expect(CONNECTING).toBe(0)`)
+- That a no-op method doesn't throw (`expect(() => noOp()).not.toThrow()`)
+- Default values of unset properties (`expect(x.field).toBeUndefined()`)
+- Object identity truisms (`expect(x.prop).toBe(x.prop)`)
+- JavaScript language features (`Object.freeze`, `typeof`, `===`)
+- DB schema column names — any functional test will catch schema issues
+
 ## Frontend
 
 Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.

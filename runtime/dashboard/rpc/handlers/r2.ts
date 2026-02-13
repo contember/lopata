@@ -1,4 +1,5 @@
 import type { HandlerContext, R2Bucket, R2Object, Paginated, OkResponse } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase, getDataDir } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
 import { join } from "node:path";
@@ -11,9 +12,11 @@ export const handlers = {
       "SELECT bucket, COUNT(*) as count, COALESCE(SUM(size),0) as total_size FROM r2_objects GROUP BY bucket ORDER BY bucket"
     ).all();
     const rowMap = new Map(rows.map(r => [r.bucket, r]));
-    for (const b of ctx.config?.r2_buckets ?? []) {
-      if (!rowMap.has(b.bucket_name)) {
-        rows.push({ bucket: b.bucket_name, count: 0, total_size: 0 });
+    for (const config of getAllConfigs(ctx)) {
+      for (const b of config.r2_buckets ?? []) {
+        if (!rowMap.has(b.bucket_name)) {
+          rows.push({ bucket: b.bucket_name, count: 0, total_size: 0 });
+        }
       }
     }
     rows.sort((a, b) => a.bucket.localeCompare(b.bucket));

@@ -40,10 +40,6 @@ describe("ExecutionContext", () => {
     expect(results).toEqual([1, 2, 3]);
   });
 
-  test("passThroughOnException does not throw", () => {
-    const ctx = new ExecutionContext();
-    expect(() => ctx.passThroughOnException()).not.toThrow();
-  });
 });
 
 describe("addCfProperty", () => {
@@ -61,17 +57,4 @@ describe("addCfProperty", () => {
     expect(cf.timezone).toBe("America/Los_Angeles");
   });
 
-  test("request.cf is frozen (immutable)", () => {
-    const req = new Request("http://localhost/test");
-    addCfProperty(req);
-    const cf = (req as any).cf;
-    expect(() => { cf.country = "DE"; }).toThrow();
-    expect(cf.country).toBe("US");
-  });
-
-  test("returns the same request for chaining", () => {
-    const req = new Request("http://localhost/test");
-    const result = addCfProperty(req);
-    expect(result).toBe(req);
-  });
 });

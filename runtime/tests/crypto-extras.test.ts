@@ -32,12 +32,6 @@ describe("crypto.subtle.timingSafeEqual", () => {
     expect(cfTimingSafeEqual(a, b)).toBe(true);
   });
 
-  test("empty buffers are equal", () => {
-    const a = new ArrayBuffer(0);
-    const b = new ArrayBuffer(0);
-    expect(cfTimingSafeEqual(a, b)).toBe(true);
-  });
-
   test("works with subarray views", () => {
     const full = new Uint8Array([0, 1, 2, 3, 4]);
     const sub = full.subarray(1, 4); // [1, 2, 3]

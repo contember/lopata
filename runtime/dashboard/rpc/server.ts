@@ -8,6 +8,7 @@ import { handlers as workflows } from "./handlers/workflows";
 import { handlers as d1 } from "./handlers/d1";
 import { handlers as cache } from "./handlers/cache";
 import { handlers as generations } from "./handlers/generations";
+import { handlers as workers } from "./handlers/workers";
 
 const allHandlers = {
   ...overview,
@@ -19,6 +20,7 @@ const allHandlers = {
   ...d1,
   ...cache,
   ...generations,
+  ...workers,
 };
 
 export type Procedures = {

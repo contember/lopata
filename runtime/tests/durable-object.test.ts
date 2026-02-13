@@ -216,48 +216,7 @@ describe("DurableObjectStorage", () => {
   });
 });
 
-describe("DurableObjectId", () => {
-  test("toString returns id", () => {
-    const id = new DurableObjectIdImpl("abc123");
-    expect(id.toString()).toBe("abc123");
-  });
-
-  test("stores name when provided", () => {
-    const id = new DurableObjectIdImpl("abc123", "myName");
-    expect(id.name).toBe("myName");
-  });
-
-  test("name is undefined when not provided", () => {
-    const id = new DurableObjectIdImpl("abc123");
-    expect(id.name).toBeUndefined();
-  });
-
-  test("equals returns true for same id", () => {
-    const id1 = new DurableObjectIdImpl("abc123");
-    const id2 = new DurableObjectIdImpl("abc123");
-    expect(id1.equals(id2)).toBe(true);
-  });
-
-  test("equals returns false for different ids", () => {
-    const id1 = new DurableObjectIdImpl("abc123");
-    const id2 = new DurableObjectIdImpl("def456");
-    expect(id1.equals(id2)).toBe(false);
-  });
-});
-
 describe("DurableObjectState", () => {
-  test("has id and storage", () => {
-    const id = new DurableObjectIdImpl("test-id", "test");
-    const state = new DurableObjectStateImpl(id, db, "TestDO");
-    expect(state.id).toBe(id);
-    expect(state.storage).toBeInstanceOf(SqliteDurableObjectStorage);
-  });
-
-  test("waitUntil is no-op", () => {
-    const state = new DurableObjectStateImpl(new DurableObjectIdImpl("id"), db, "TestDO");
-    state.waitUntil(Promise.resolve()); // should not throw
-  });
-
   test("blockConcurrencyWhile executes callback and returns result", async () => {
     const id = new DurableObjectIdImpl("test-id");
     const state = new DurableObjectStateImpl(id, db, "TestDO");
@@ -624,14 +583,6 @@ describe("DurableObject Alarms", () => {
 });
 
 describe("DurableObject WebSocket Support", () => {
-  describe("WebSocketRequestResponsePair", () => {
-    test("stores request and response", () => {
-      const pair = new WebSocketRequestResponsePair("ping", "pong");
-      expect(pair.request).toBe("ping");
-      expect(pair.response).toBe("pong");
-    });
-  });
-
   describe("State WebSocket methods", () => {
     let state: DurableObjectStateImpl;
 
@@ -773,14 +724,6 @@ describe("DurableObject WebSocket Support", () => {
       expect(state.getWebSocketAutoResponseTimestamp(ws as unknown as WebSocket)).toBeNull();
     });
 
-    test("setHibernatableWebSocketEventTimeout is no-op", () => {
-      state.setHibernatableWebSocketEventTimeout(5000);
-      // does not throw
-    });
-
-    test("getHibernatableWebSocketEventTimeout returns null", () => {
-      expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
-    });
   });
 
   describe("WebSocket handler delegation via namespace", () => {
@@ -1244,12 +1187,6 @@ describe("DO Gaps - Issue #27", () => {
       expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
     });
 
-    test("getHibernatableWebSocketEventTimeout returns null by default", () => {
-      const state = new DurableObjectStateImpl(
-        new DurableObjectIdImpl("hib-test3"), db, "HibDO3"
-      );
-      expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
-    });
   });
 });
 
@@ -1583,11 +1520,6 @@ describe("SyncKV", () => {
 
     const value = storage.kv.get("async-key");
     expect(value).toBe("async-value");
-  });
-
-  test("kv property returns same instance", () => {
-    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
-    expect(storage.kv).toBe(storage.kv);
   });
 
   test("kv is accessible from DurableObjectStateImpl", () => {

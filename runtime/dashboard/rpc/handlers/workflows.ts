@@ -1,4 +1,5 @@
 import type { HandlerContext, WorkflowSummary, WorkflowInstance, WorkflowDetail, OkResponse } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
 
@@ -20,9 +21,11 @@ export const handlers = {
       entry.byStatus[row.status] = row.count;
     }
 
-    for (const w of ctx.config?.workflows ?? []) {
-      if (!grouped.has(w.binding)) {
-        grouped.set(w.binding, { total: 0, byStatus: {} });
+    for (const config of getAllConfigs(ctx)) {
+      for (const w of config.workflows ?? []) {
+        if (!grouped.has(w.binding)) {
+          grouped.set(w.binding, { total: 0, byStatus: {} });
+        }
       }
     }
 

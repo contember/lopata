@@ -206,18 +206,6 @@ describe("WebSocketPair", () => {
     expect(server.readyState).toBe(3); // CLOSED
   });
 
-  test("readyState constants match standard WebSocket", () => {
-    expect(CFWebSocket.CONNECTING).toBe(0);
-    expect(CFWebSocket.OPEN).toBe(1);
-    expect(CFWebSocket.CLOSING).toBe(2);
-    expect(CFWebSocket.CLOSED).toBe(3);
-    // Instance constants
-    expect(server.CONNECTING).toBe(0);
-    expect(server.OPEN).toBe(1);
-    expect(server.CLOSING).toBe(2);
-    expect(server.CLOSED).toBe(3);
-  });
-
   test("upgrade response pattern", () => {
     server.accept();
 

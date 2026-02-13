@@ -1,4 +1,5 @@
 import type { HandlerContext, QueueInfo, QueueMessage, OkResponse } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
 
@@ -13,9 +14,11 @@ export const handlers = {
       FROM queue_messages GROUP BY queue ORDER BY queue`
     ).all();
     const rowMap = new Map(rows.map(r => [r.queue, r]));
-    for (const p of ctx.config?.queues?.producers ?? []) {
-      if (!rowMap.has(p.queue)) {
-        rows.push({ queue: p.queue, pending: 0, acked: 0, failed: 0 });
+    for (const config of getAllConfigs(ctx)) {
+      for (const p of config.queues?.producers ?? []) {
+        if (!rowMap.has(p.queue)) {
+          rows.push({ queue: p.queue, pending: 0, acked: 0, failed: 0 });
+        }
       }
     }
     rows.sort((a, b) => a.queue.localeCompare(b.queue));

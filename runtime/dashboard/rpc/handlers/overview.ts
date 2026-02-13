@@ -1,4 +1,5 @@
 import type { HandlerContext, OverviewData } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase, getDataDir } from "../../../db";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
@@ -19,9 +20,8 @@ export const handlers = {
     const dbDo = new Set(db.query<{ namespace: string }, []>("SELECT DISTINCT namespace FROM do_storage").all().map(r => r.namespace));
     const dbWorkflows = new Set(db.query<{ workflow_name: string }, []>("SELECT DISTINCT workflow_name FROM workflow_instances").all().map(r => r.workflow_name));
 
-    const config = ctx.config;
-    if (config) {
-      for (const ns of config.kv_namespaces ?? []) dbKv.add(ns.binding);
+    for (const config of getAllConfigs(ctx)) {
+      for (const ns of config.kv_namespaces ?? []) dbKv.add(ns.id);
       for (const b of config.r2_buckets ?? []) dbR2.add(b.bucket_name);
       for (const p of config.queues?.producers ?? []) dbQueue.add(p.queue);
       for (const b of config.durable_objects?.bindings ?? []) dbDo.add(b.class_name);

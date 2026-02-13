@@ -164,6 +164,20 @@ export interface GenerationsData {
   workers?: WorkerGenerations[];
 }
 
+// Workers
+export interface WorkerBinding {
+  type: string;
+  name: string;
+  target: string;
+  href: string | null;
+}
+
+export interface WorkerInfo {
+  name: string;
+  isMain: boolean;
+  bindings: WorkerBinding[];
+}
+
 // ─── Handler context ─────────────────────────────────────────────────
 
 import type { WranglerConfig } from "../../config";
@@ -174,4 +188,12 @@ export interface HandlerContext {
   config: WranglerConfig | null;
   manager: GenerationManager | null;
   registry: WorkerRegistry | null;
+}
+
+/** Collect configs from all workers (registry) or fall back to single config. */
+export function getAllConfigs(ctx: HandlerContext): WranglerConfig[] {
+  if (ctx.registry) {
+    return Array.from(ctx.registry.listManagers().values()).map(m => m.config);
+  }
+  return ctx.config ? [ctx.config] : [];
 }

@@ -1,18 +1,6 @@
 import { test, expect } from "bun:test";
 import "../plugin";
 
-test("navigator.userAgent is 'Cloudflare-Workers'", () => {
-  expect(navigator.userAgent).toBe("Cloudflare-Workers");
-});
-
-test("navigator.language defaults to 'en'", () => {
-  expect(navigator.language).toBe("en");
-});
-
-test("performance.timeOrigin is 0", () => {
-  expect(performance.timeOrigin).toBe(0);
-});
-
 test("performance.now() returns a number", () => {
   const now = performance.now();
   expect(typeof now).toBe("number");

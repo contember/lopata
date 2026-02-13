@@ -30,6 +30,9 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
   ],
+  "services": [
+    { "binding": "ECHO", "service": "echo-worker" }
+  ],
   "migrations": [
     { "tag": "v1", "new_classes": ["Counter"] }
   ]

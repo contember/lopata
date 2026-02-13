@@ -159,6 +159,22 @@ function indexPage(): Response {
   </form>
 </div>
 
+<h2>Echo Worker (Service Binding)</h2>
+<div class="section">
+  <div class="links">
+    <a href="#" onclick="api('GET','/echo');return false">Ping echo worker</a>
+    <a href="#" onclick="api('GET','/echo/info');return false">RPC: info()</a>
+  </div>
+  <form onsubmit="api('GET','/echo/greet?name='+encodeURIComponent(formVal('echo-name')));return false">
+    <label>Name <input id="echo-name" value="Bunflare"></label>
+    <button type="submit" class="secondary">RPC: greet(name)</button>
+  </form>
+  <form onsubmit="api('POST','/echo/fetch',formVal('echo-body'));return false" style="margin-top:0.5rem">
+    <label>Body <input id="echo-body" value="hello from main worker"></label>
+    <button type="submit">Fetch echo worker</button>
+  </form>
+</div>
+
 <h2>Workflow</h2>
 <div class="section">
   <form onsubmit="api('POST','/workflow',{input:formVal('wf-input')});return false">
@@ -330,6 +346,25 @@ export default {
       const instance = await env.MY_WORKFLOW.get(wfMatch[1]!);
       const status = await instance.status();
       return Response.json({ id: instance.id, status });
+    }
+
+    // ── Echo service binding ──
+    if (path === "/echo" && method === "GET") {
+      const res = await env.ECHO.fetch(new Request("http://echo/ping"));
+      return new Response(await res.text());
+    }
+    if (path === "/echo/fetch" && method === "POST") {
+      const res = await env.ECHO.fetch(new Request("http://echo/echo", { method: "POST", body: await request.text() }));
+      return res;
+    }
+    if (path === "/echo/greet" && method === "GET") {
+      const name = url.searchParams.get("name") ?? "world";
+      const greeting = await env.ECHO.greet(name);
+      return Response.json({ greeting });
+    }
+    if (path === "/echo/info" && method === "GET") {
+      const info = await env.ECHO.info();
+      return Response.json(info);
     }
 
     return new Response("Not found", { status: 404 });

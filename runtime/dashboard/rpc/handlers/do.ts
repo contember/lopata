@@ -1,4 +1,5 @@
 import type { HandlerContext, DoNamespace, DoInstance, DoDetail, OkResponse } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
 
 export const handlers = {
@@ -8,9 +9,11 @@ export const handlers = {
       "SELECT namespace, COUNT(DISTINCT id) as count FROM do_storage GROUP BY namespace ORDER BY namespace"
     ).all();
     const rowMap = new Map(rows.map(r => [r.namespace, r]));
-    for (const b of ctx.config?.durable_objects?.bindings ?? []) {
-      if (!rowMap.has(b.class_name)) {
-        rows.push({ namespace: b.class_name, count: 0 });
+    for (const config of getAllConfigs(ctx)) {
+      for (const b of config.durable_objects?.bindings ?? []) {
+        if (!rowMap.has(b.class_name)) {
+          rows.push({ namespace: b.class_name, count: 0 });
+        }
       }
     }
     rows.sort((a, b) => a.namespace.localeCompare(b.namespace));

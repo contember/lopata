@@ -1,4 +1,5 @@
 import type { HandlerContext, D1Database as D1DatabaseInfo, D1Table, QueryResult } from "../types";
+import { getAllConfigs } from "../types";
 import { getDataDir } from "../../../db";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
@@ -27,9 +28,12 @@ export const handlers = {
       }
     }
 
-    for (const d of ctx.config?.d1_databases ?? []) {
-      if (!seen.has(d.database_name)) {
-        databases.push({ name: d.database_name, tables: 0 });
+    for (const config of getAllConfigs(ctx)) {
+      for (const d of config.d1_databases ?? []) {
+        if (!seen.has(d.database_name)) {
+          databases.push({ name: d.database_name, tables: 0 });
+          seen.add(d.database_name);
+        }
       }
     }
 

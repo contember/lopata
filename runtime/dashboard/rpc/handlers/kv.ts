@@ -1,4 +1,5 @@
 import type { HandlerContext, KvNamespace, Paginated, KvKey, KvValue, OkResponse } from "../types";
+import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
 
@@ -9,9 +10,11 @@ export const handlers = {
       "SELECT namespace, COUNT(*) as count FROM kv GROUP BY namespace ORDER BY namespace"
     ).all();
     const rowMap = new Map(rows.map(r => [r.namespace, r]));
-    for (const ns of ctx.config?.kv_namespaces ?? []) {
-      if (!rowMap.has(ns.binding)) {
-        rows.push({ namespace: ns.binding, count: 0 });
+    for (const config of getAllConfigs(ctx)) {
+      for (const ns of config.kv_namespaces ?? []) {
+        if (!rowMap.has(ns.id)) {
+          rows.push({ namespace: ns.id, count: 0 });
+        }
       }
     }
     rows.sort((a, b) => a.namespace.localeCompare(b.namespace));
