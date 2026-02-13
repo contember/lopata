@@ -8,7 +8,7 @@ import { createScheduledController, startCronScheduler } from "./bindings/schedu
 import { getDatabase } from "./db";
 import { ExecutionContext } from "./execution-context";
 import { addCfProperty } from "./request-cf";
-import { handleDashboardRequest, dashboardHtml } from "./dashboard/api";
+import { handleDashboardRequest, dashboardHtml, setDashboardConfig } from "./dashboard/api";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import path from "node:path";
 
@@ -22,6 +22,9 @@ const envFlag = (() => {
 const baseDir = path.resolve(import.meta.dir, "..");
 const config = await autoLoadConfig(baseDir, envFlag);
 console.log(`[bunflare] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ""}`);
+
+// Pass config to dashboard so it can show configured-but-empty bindings
+setDashboardConfig(config);
 
 // 2. Build env with bindings and environment variables (.dev.vars or .env)
 const { env, registry } = buildEnv(config, baseDir);

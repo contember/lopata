@@ -1,4 +1,5 @@
 import { getDatabase, getDataDir } from "../db";
+import type { WranglerConfig } from "../config";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { join } from "node:path";
 import { existsSync, readdirSync, unlinkSync } from "node:fs";
@@ -6,8 +7,15 @@ import { existsSync, readdirSync, unlinkSync } from "node:fs";
 const PREFIX = "/__dashboard";
 const API_PREFIX = `${PREFIX}/api`;
 
-// Import the HTML file for Bun to auto-bundle
-import dashboardHtml from "./index.html";
+// Store config for showing configured-but-empty bindings
+let _config: WranglerConfig | null = null;
+
+export function setDashboardConfig(config: WranglerConfig): void {
+  _config = config;
+}
+
+// Dashboard HTML — must be used in Bun.serve routes (not fetch) for proper bundling
+export { default as dashboardHtml } from "./index.html";
 
 export function handleDashboardRequest(request: Request): Response | Promise<Response> {
   const url = new URL(request.url);
@@ -18,10 +26,8 @@ export function handleDashboardRequest(request: Request): Response | Promise<Res
     return handleApiRequest(request, path.slice(API_PREFIX.length), url);
   }
 
-  // Serve the SPA HTML for all non-API dashboard routes
-  return new Response(dashboardHtml as unknown as BodyInit, {
-    headers: { "Content-Type": "text/html" },
-  });
+  // Non-API dashboard routes are handled by Bun.serve routes
+  return new Response("Not found", { status: 404 });
 }
 
 function json(data: unknown, status = 200): Response {
@@ -77,7 +83,6 @@ function queryAll(db: Database, sql: string, params: SQLQueryBindings[]): Record
 // ─── Overview ────────────────────────────────────────────────────────
 function handleOverview(): Response {
   const db = getDatabase();
-  const count = (sql: string) => (db.query<{ count: number }, []>(sql).get()?.count ?? 0);
 
   const d1Dir = join(getDataDir(), "d1");
   let d1Count = 0;
@@ -85,14 +90,30 @@ function handleOverview(): Response {
     d1Count = readdirSync(d1Dir).filter(f => f.endsWith(".sqlite")).length;
   }
 
+  // Merge DB-discovered with configured bindings
+  const dbKv = new Set(db.query<{ namespace: string }, []>("SELECT DISTINCT namespace FROM kv").all().map(r => r.namespace));
+  const dbR2 = new Set(db.query<{ bucket: string }, []>("SELECT DISTINCT bucket FROM r2_objects").all().map(r => r.bucket));
+  const dbQueue = new Set(db.query<{ queue: string }, []>("SELECT DISTINCT queue FROM queue_messages").all().map(r => r.queue));
+  const dbDo = new Set(db.query<{ namespace: string }, []>("SELECT DISTINCT namespace FROM do_storage").all().map(r => r.namespace));
+  const dbWorkflows = new Set(db.query<{ workflow_name: string }, []>("SELECT DISTINCT workflow_name FROM workflow_instances").all().map(r => r.workflow_name));
+
+  if (_config) {
+    for (const ns of _config.kv_namespaces ?? []) dbKv.add(ns.binding);
+    for (const b of _config.r2_buckets ?? []) dbR2.add(b.bucket_name);
+    for (const p of _config.queues?.producers ?? []) dbQueue.add(p.queue);
+    for (const b of _config.durable_objects?.bindings ?? []) dbDo.add(b.class_name);
+    for (const w of _config.workflows ?? []) dbWorkflows.add(w.binding);
+    d1Count = Math.max(d1Count, (_config.d1_databases ?? []).length);
+  }
+
   return json({
-    kv: count("SELECT COUNT(DISTINCT namespace) as count FROM kv"),
-    r2: count("SELECT COUNT(DISTINCT bucket) as count FROM r2_objects"),
-    queue: count("SELECT COUNT(DISTINCT queue) as count FROM queue_messages"),
-    do: count("SELECT COUNT(DISTINCT namespace) as count FROM do_storage"),
-    workflows: count("SELECT COUNT(*) as count FROM workflow_instances"),
+    kv: dbKv.size,
+    r2: dbR2.size,
+    queue: dbQueue.size,
+    do: dbDo.size,
+    workflows: dbWorkflows.size,
     d1: d1Count,
-    cache: count("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries"),
+    cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
   });
 }
 
@@ -104,6 +125,14 @@ function handleKv(method: string, parts: string[], url: URL): Response {
     const rows = db.query<{ namespace: string; count: number }, []>(
       "SELECT namespace, COUNT(*) as count FROM kv GROUP BY namespace ORDER BY namespace"
     ).all();
+    const rowMap = new Map(rows.map(r => [r.namespace, r]));
+    // Add configured but empty namespaces
+    for (const ns of _config?.kv_namespaces ?? []) {
+      if (!rowMap.has(ns.binding)) {
+        rows.push({ namespace: ns.binding, count: 0 });
+      }
+    }
+    rows.sort((a, b) => a.namespace.localeCompare(b.namespace));
     return json(rows);
   }
 
@@ -165,6 +194,13 @@ function handleR2(method: string, parts: string[], url: URL): Response {
     const rows = db.query<{ bucket: string; count: number; total_size: number }, []>(
       "SELECT bucket, COUNT(*) as count, COALESCE(SUM(size),0) as total_size FROM r2_objects GROUP BY bucket ORDER BY bucket"
     ).all();
+    const rowMap = new Map(rows.map(r => [r.bucket, r]));
+    for (const b of _config?.r2_buckets ?? []) {
+      if (!rowMap.has(b.bucket_name)) {
+        rows.push({ bucket: b.bucket_name, count: 0, total_size: 0 });
+      }
+    }
+    rows.sort((a, b) => a.bucket.localeCompare(b.bucket));
     return json(rows);
   }
 
@@ -206,9 +242,20 @@ function handleQueue(method: string, parts: string[], url: URL): Response {
   const db = getDatabase();
 
   if (parts.length === 0 && method === "GET") {
-    const rows = db.query<{ queue: string; count: number }, []>(
-      "SELECT queue, COUNT(*) as count FROM queue_messages GROUP BY queue ORDER BY queue"
+    const rows = db.query<{ queue: string; pending: number; acked: number; failed: number }, []>(
+      `SELECT queue,
+        SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+        SUM(CASE WHEN status = 'acked' THEN 1 ELSE 0 END) as acked,
+        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+      FROM queue_messages GROUP BY queue ORDER BY queue`
     ).all();
+    const rowMap = new Map(rows.map(r => [r.queue, r]));
+    for (const p of _config?.queues?.producers ?? []) {
+      if (!rowMap.has(p.queue)) {
+        rows.push({ queue: p.queue, pending: 0, acked: 0, failed: 0 });
+      }
+    }
+    rows.sort((a, b) => a.queue.localeCompare(b.queue));
     return json(rows);
   }
 
@@ -216,9 +263,16 @@ function handleQueue(method: string, parts: string[], url: URL): Response {
 
   if (parts.length === 1 && method === "GET") {
     const limit = parseInt(url.searchParams.get("limit") ?? "50");
-    const rows = db.query<Record<string, unknown>, [string, number]>(
-      "SELECT id, body, content_type, attempts, visible_at, created_at FROM queue_messages WHERE queue = ? ORDER BY created_at DESC LIMIT ?"
-    ).all(queue, limit);
+    const status = url.searchParams.get("status");
+
+    let query = "SELECT id, body, content_type, status, attempts, visible_at, created_at, completed_at FROM queue_messages WHERE queue = ?";
+    const params: SQLQueryBindings[] = [queue];
+
+    if (status) { query += " AND status = ?"; params.push(status); }
+    query += " ORDER BY created_at DESC LIMIT ?";
+    params.push(limit);
+
+    const rows = queryAll(db, query, params);
 
     const items = rows.map(row => {
       let bodyStr: string;
@@ -245,6 +299,13 @@ function handleDo(method: string, parts: string[]): Response {
     const rows = db.query<{ namespace: string; count: number }, []>(
       "SELECT namespace, COUNT(DISTINCT id) as count FROM do_storage GROUP BY namespace ORDER BY namespace"
     ).all();
+    const rowMap = new Map(rows.map(r => [r.namespace, r]));
+    for (const b of _config?.durable_objects?.bindings ?? []) {
+      if (!rowMap.has(b.class_name)) {
+        rows.push({ namespace: b.class_name, count: 0 });
+      }
+    }
+    rows.sort((a, b) => a.namespace.localeCompare(b.namespace));
     return json(rows);
   }
 
@@ -308,7 +369,14 @@ function handleWorkflows(method: string, parts: string[], url: URL, request: Req
       entry.byStatus[row.status] = row.count;
     }
 
-    return json(Array.from(grouped.entries()).map(([name, data]) => ({ name, ...data })));
+    // Add configured but empty workflows
+    for (const w of _config?.workflows ?? []) {
+      if (!grouped.has(w.binding)) {
+        grouped.set(w.binding, { total: 0, byStatus: {} });
+      }
+    }
+
+    return json(Array.from(grouped.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([name, data]) => ({ name, ...data })));
   }
 
   const name = seg(parts, 0);
@@ -356,20 +424,34 @@ function handleD1(method: string, parts: string[], request: Request): Response |
   const d1Dir = join(getDataDir(), "d1");
 
   if (parts.length === 0 && method === "GET") {
-    if (!existsSync(d1Dir)) return json([]);
-    const files = readdirSync(d1Dir).filter(f => f.endsWith(".sqlite"));
-    const databases = files.map(f => {
-      const name = f.replace(".sqlite", "");
-      const d1db = new Database(join(d1Dir, f));
-      try {
-        const tables = d1db.query<{ name: string }, []>(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-        ).all();
-        return { name, tables: tables.length };
-      } finally {
-        d1db.close();
+    const databases: { name: string; tables: number }[] = [];
+    const seen = new Set<string>();
+
+    if (existsSync(d1Dir)) {
+      const files = readdirSync(d1Dir).filter(f => f.endsWith(".sqlite"));
+      for (const f of files) {
+        const name = f.replace(".sqlite", "");
+        seen.add(name);
+        const d1db = new Database(join(d1Dir, f));
+        try {
+          const tables = d1db.query<{ name: string }, []>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+          ).all();
+          databases.push({ name, tables: tables.length });
+        } finally {
+          d1db.close();
+        }
       }
-    });
+    }
+
+    // Add configured but not-yet-created D1 databases
+    for (const d of _config?.d1_databases ?? []) {
+      if (!seen.has(d.database_name)) {
+        databases.push({ name: d.database_name, tables: 0 });
+      }
+    }
+
+    databases.sort((a, b) => a.name.localeCompare(b.name));
     return json(databases);
   }
 
