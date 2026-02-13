@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, describe } from "bun:test";
 import { Database } from "bun:sqlite";
-import { LocalD1Database, LocalD1PreparedStatement } from "../bindings/d1";
+import { LocalD1Database, LocalD1DatabaseSession, LocalD1PreparedStatement } from "../bindings/d1";
 
 let db: Database;
 let d1: LocalD1Database;
@@ -54,6 +54,13 @@ describe("D1Database", () => {
     test("returns null for missing column on empty result", async () => {
       const val = await d1.prepare("SELECT * FROM users WHERE id = ?").bind(999).first("name");
       expect(val).toBeNull();
+    });
+
+    test("throws D1_ERROR for non-existent column when row exists", async () => {
+      await d1.prepare("INSERT INTO users (name, email) VALUES (?, ?)").bind("Alice", "alice@example.com").run();
+      await expect(
+        d1.prepare("SELECT * FROM users WHERE id = ?").bind(1).first("nonexistent"),
+      ).rejects.toThrow("D1_ERROR");
     });
   });
 
@@ -172,17 +179,55 @@ describe("D1Database", () => {
       const result = await d1.prepare("SELECT name FROM users").first<{ name: string }>();
       expect(result!.name).toBe("it's; ok");
     });
+
+    test("error includes the failing SQL statement", async () => {
+      await expect(
+        d1.exec("INSERT INTO nonexistent_table (x) VALUES ('fail')"),
+      ).rejects.toThrow(/D1_EXEC_ERROR.*nonexistent_table/);
+    });
   });
 
   describe("withSession", () => {
-    test("returns self (no-op)", () => {
-      const same = d1.withSession("some-bookmark");
-      expect(same).toBe(d1);
+    test("returns a D1DatabaseSession instance", () => {
+      const session = d1.withSession("some-bookmark");
+      expect(session).toBeInstanceOf(LocalD1DatabaseSession);
     });
 
-    test("returns self without bookmark", () => {
-      const same = d1.withSession();
-      expect(same).toBe(d1);
+    test("returns a D1DatabaseSession without bookmark", () => {
+      const session = d1.withSession();
+      expect(session).toBeInstanceOf(LocalD1DatabaseSession);
+    });
+
+    test("session has prepare and batch but not exec/dump/withSession", () => {
+      const session = d1.withSession();
+      expect(typeof session.prepare).toBe("function");
+      expect(typeof session.batch).toBe("function");
+      expect(typeof session.getBookmark).toBe("function");
+      expect("exec" in session).toBe(false);
+      expect("dump" in session).toBe(false);
+      expect("withSession" in session).toBe(false);
+    });
+
+    test("session.getBookmark() returns null", () => {
+      const session = d1.withSession();
+      expect(session.getBookmark()).toBeNull();
+    });
+
+    test("session.prepare works for queries", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      const session = d1.withSession();
+      const row = await session.prepare("SELECT * FROM users WHERE name = ?").bind("Alice").first<{ name: string }>();
+      expect(row!.name).toBe("Alice");
+    });
+
+    test("session.batch works", async () => {
+      const session = d1.withSession();
+      const results = await session.batch([
+        session.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice"),
+        session.prepare("SELECT * FROM users"),
+      ]);
+      expect(results).toHaveLength(2);
+      expect(results[1]!.results).toHaveLength(1);
     });
   });
 
@@ -268,6 +313,21 @@ describe("D1Database", () => {
       const result = await d1.prepare("UPDATE users SET email = 'test@test.com'").all();
       expect(result.meta.rows_written).toBe(2);
       expect(result.meta.rows_read).toBe(0);
+    });
+
+    test("size_after is a positive number", async () => {
+      const result = await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      expect(result.meta.size_after).toBeGreaterThan(0);
+    });
+
+    test("changed_db is true after write", async () => {
+      const result = await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      expect(result.meta.changed_db).toBe(true);
+    });
+
+    test("changed_db is false after read", async () => {
+      const result = await d1.prepare("SELECT * FROM users").all();
+      expect(result.meta.changed_db).toBe(false);
     });
   });
 

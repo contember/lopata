@@ -9,6 +9,8 @@ interface D1Meta {
   served_by: string;
   rows_read: number;
   rows_written: number;
+  size_after: number;
+  changed_db: boolean;
 }
 
 interface D1Result<T = Record<string, unknown>> {
@@ -23,13 +25,18 @@ interface D1ExecResult {
 }
 
 function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritten: number): D1Meta {
+  const changes = db.query<{ c: number }, []>("SELECT changes() as c").get()!.c;
+  const { page_count } = db.query<{ page_count: number }, []>("PRAGMA page_count").get()!;
+  const { page_size } = db.query<{ page_size: number }, []>("PRAGMA page_size").get()!;
   return {
     duration: durationMs,
-    changes: db.query<{ c: number }, []>("SELECT changes() as c").get()!.c,
+    changes,
     last_row_id: db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!.id,
     served_by: "bunflare-d1",
     rows_read: rowsRead,
     rows_written: rowsWritten,
+    size_after: page_count * page_size,
+    changed_db: changes > 0,
   };
 }
 
@@ -181,7 +188,12 @@ export class LocalD1Database {
     let count = 0;
     const statements = splitStatements(sql);
     for (const stmt of statements) {
-      this.db.run(stmt);
+      try {
+        this.db.run(stmt);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(`D1_EXEC_ERROR: Error in SQL statement [${stmt}]: ${msg}`);
+      }
       count++;
     }
     return { count, duration: performance.now() - start };
@@ -191,8 +203,39 @@ export class LocalD1Database {
     return this.db.serialize().buffer as ArrayBuffer;
   }
 
-  withSession(_bookmark?: string): LocalD1Database {
-    return this;
+  withSession(_bookmark?: string): LocalD1DatabaseSession {
+    return new LocalD1DatabaseSession(this.db);
+  }
+}
+
+export class LocalD1DatabaseSession {
+  private db: Database;
+
+  constructor(db: Database) {
+    this.db = db;
+  }
+
+  prepare(sql: string): LocalD1PreparedStatement {
+    return new LocalD1PreparedStatement(this.db, sql);
+  }
+
+  async batch<T = Record<string, unknown>>(statements: LocalD1PreparedStatement[]): Promise<D1Result<T>[]> {
+    const results: D1Result<T>[] = [];
+    this.db.run("BEGIN");
+    try {
+      for (const stmt of statements) {
+        results.push(await stmt.all<T>());
+      }
+      this.db.run("COMMIT");
+    } catch (e) {
+      this.db.run("ROLLBACK");
+      throw e;
+    }
+    return results;
+  }
+
+  getBookmark(): string | null {
+    return null;
   }
 }
 
@@ -217,7 +260,12 @@ export class LocalD1PreparedStatement {
     const start = performance.now();
     const row = this.db.query(this.sql).get(...this.params) as Record<string, unknown> | null;
     if (!row) return null;
-    if (column) return (row[column] as T) ?? null;
+    if (column) {
+      if (!(column in row)) {
+        throw new Error(`D1_ERROR: Column '${column}' does not exist in the result set.`);
+      }
+      return (row[column] as T) ?? null;
+    }
     return row as T;
   }
 
