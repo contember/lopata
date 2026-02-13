@@ -19,6 +19,17 @@
   "workflows": [
     { "name": "bunflare-workflow", "binding": "MY_WORKFLOW", "class_name": "MyWorkflow" }
   ],
+  "queues": {
+    "producers": [
+      { "binding": "MY_QUEUE", "queue": "my-queue" }
+    ],
+    "consumers": [
+      { "queue": "my-queue", "max_batch_size": 10, "max_retries": 3 }
+    ]
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
+  ],
   "migrations": [
     { "tag": "v1", "new_classes": ["Counter"] }
   ]

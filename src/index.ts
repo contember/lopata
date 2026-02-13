@@ -122,6 +122,20 @@ function indexPage(): Response {
   </form>
 </div>
 
+<h2>D1 Database</h2>
+<div class="section">
+  <div class="links">
+    <a href="#" onclick="api('POST','/d1/exec',{sql:'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL)'});return false">Create table</a>
+    <a href="#" onclick="api('GET','/d1/query?sql='+encodeURIComponent('SELECT * FROM users'));return false">SELECT * FROM users</a>
+    <a href="#" onclick="api('GET','/d1/tables');return false">List tables</a>
+  </div>
+  <form onsubmit="api('POST','/d1/query',{sql:formVal('d1-sql'),params:formVal('d1-params')?JSON.parse(formVal('d1-params')):[]});return false">
+    <label>SQL <textarea id="d1-sql">INSERT INTO users (name, email) VALUES (?, ?)</textarea></label>
+    <label>Params (JSON array) <input id="d1-params" value='["Alice","alice@example.com"]'></label>
+    <button type="submit">Execute</button>
+  </form>
+</div>
+
 <h2>Durable Object — Counter</h2>
 <div class="section">
   <form onsubmit="api('GET','/counter/'+formVal('do-name'));return false">
@@ -233,6 +247,33 @@ export default {
         await env.R2.delete(key);
         return new Response("Deleted", { status: 200 });
       }
+    }
+
+    // ── D1 ──
+    if (path === "/d1/tables" && method === "GET") {
+      const result = await env.DB.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'"
+      ).all();
+      return Response.json(result);
+    }
+    if (path === "/d1/query" && method === "GET") {
+      const sql = url.searchParams.get("sql");
+      if (!sql) return new Response("Missing sql param", { status: 400 });
+      const result = await env.DB.prepare(sql).all();
+      return Response.json(result);
+    }
+    if (path === "/d1/query" && method === "POST") {
+      const body = (await request.json()) as { sql: string; params?: unknown[] };
+      const stmt = body.params?.length
+        ? env.DB.prepare(body.sql).bind(...body.params)
+        : env.DB.prepare(body.sql);
+      const result = await stmt.all();
+      return Response.json(result);
+    }
+    if (path === "/d1/exec" && method === "POST") {
+      const body = (await request.json()) as { sql: string };
+      const result = await env.DB.exec(body.sql);
+      return Response.json(result);
     }
 
     // ── Counter DO ──

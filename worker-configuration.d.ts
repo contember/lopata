@@ -11,6 +11,8 @@ declare namespace Cloudflare {
 		R2: R2Bucket;
 		COUNTER: DurableObjectNamespace<import("./src/index").Counter>;
 		MY_WORKFLOW: Workflow<Parameters<import("./src/index").MyWorkflow['run']>[0]['payload']>;
+		MY_QUEUE: Queue;
+		DB: D1Database;
 	}
 }
 interface Env extends Cloudflare.Env {}
