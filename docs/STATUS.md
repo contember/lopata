@@ -5,9 +5,9 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 22    |
-| **Pending**      | 8     |
-| **Progress**     | 73%   |
+| **Completed**    | 23    |
+| **Pending**      | 7     |
+| **Progress**     | 77%   |
 
 ## Current Focus
 
@@ -48,7 +48,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 18 | kv-gaps                      | completed | Bulk ops, key/value/metadata validation, configurable limits |
 | 20 | d1-gaps                      | completed | dump(), exec() parsing, type conversion, meta accuracy |
 | 21 | queues-gaps                  | completed | Content types, validation, attempts fix, waitUntil |
-| 23 | cache-api-gaps               | pending | TTL/expiration, Cache-Control, cf-cache-status |
+| 23 | cache-api-gaps               | completed | TTL/expiration, Cache-Control, cf-cache-status, validation, limits |
 | 26 | workflows-gaps               | pending | Step retry config, checkpointing, status structure |
 | 19 | r2-gaps                      | pending | Multipart, conditionals, range reads, list delimiter |
 | 24 | static-assets-gaps           | pending | ETag, Cache-Control, _headers, run_worker_first, 307 fix |
@@ -112,6 +112,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#21 queues-gaps**: Fixed content type handling — `bytes` now stores/retrieves `ArrayBuffer`/`Uint8Array` as binary BLOB (changed `body` column from TEXT to BLOB), `v8` uses JSON serialization as structured-clone approximation, `text` properly encodes/decodes via `TextEncoder`/`TextDecoder`. Added `QueueLimits` interface with configurable `maxMessageSize` (128 KB), `maxBatchMessages` (100), `maxBatchSize` (256 KB), `maxDelaySeconds` (43200) — passed via constructor. Validation on `send()`: message size, delay range. Validation on `sendBatch()`: message count, individual message size, total batch size, delay range. Fixed `message.attempts` to be 0 on first delivery (counting previous attempts, matching CF behavior). `ctx.waitUntil()` now tracks promises and awaits them via `Promise.allSettled` after handler completes. Added 15 new tests (33 total queue tests). All 386 tests pass.
 
 - **#20 d1-gaps**: Added `dump()` method using `db.serialize()` to export the database as an ArrayBuffer. Replaced naive `exec()` semicolon splitting with a proper SQL statement splitter (`splitStatements()`) that respects single-quoted and double-quoted strings (including escaped quotes `''`/`""`), line comments (`--`), and block comments (`/* */`). Added type conversion in `bind()`: `undefined` throws `D1_TYPE_ERROR`, `boolean` converts to `0`/`1`, `ArrayBuffer` converts to `Uint8Array` for BLOB storage. Improved meta accuracy: `rows_read` now reflects the number of rows returned by SELECT queries, `rows_written` now reflects `changes()` for write statements (INSERT/UPDATE/DELETE). Added 12 new tests (30 total D1 tests). All 374 tests pass.
+
+- **#23 cache-api-gaps**: Added `expires_at` column to `cache_entries` table. `put()` now parses `Cache-Control` header (`max-age`, `s-maxage`, `no-store`) and `Expires` header as fallback, storing computed expiration timestamp. `s-maxage` takes precedence over `max-age` (shared cache behavior). `no-store` responses silently skipped (not cached). `match()` checks expiration and lazily deletes expired entries from DB. `match()` adds `cf-cache-status: HIT` header on cache hits. Added validation: `put()` rejects 206 Partial Content responses and `Vary: *` responses. Added `CacheLimits` interface with configurable `maxBodySize` (default 512 MiB) and `maxHeaderSize` (default 32 KiB) — passed via constructor. `SqliteCacheStorage` forwards limits to all caches. Added 14 new tests (34 total cache tests). All 400 tests pass.
 
 ## Lessons Learned
 
