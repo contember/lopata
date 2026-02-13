@@ -98,6 +98,9 @@ export class SqliteKVNamespace {
 
     const result = new Map<string, string | ArrayBuffer | object | ReadableStream | null>();
     const type = typeof options === "string" ? options : options?.type ?? "text";
+    if (type === "arrayBuffer" || type === "stream") {
+      throw new Error(`KV bulk get does not support type "${type}"`);
+    }
     const now = Date.now() / 1000;
 
     if (keys.length === 0) return result;
@@ -127,12 +130,12 @@ export class SqliteKVNamespace {
     return result;
   }
 
-  async getWithMetadata(key: string, options?: string | KVGetOptions): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>;
+  async getWithMetadata(key: string, options?: string | KVGetOptions): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown; cacheStatus: null }>;
   async getWithMetadata(keys: string[], options?: string | KVGetOptions): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>>;
   async getWithMetadata(
     keyOrKeys: string | string[],
     options?: string | KVGetOptions,
-  ): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown } | Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
+  ): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown; cacheStatus: null } | Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
     if (Array.isArray(keyOrKeys)) {
       return this.bulkGetWithMetadata(keyOrKeys, options);
     }
@@ -143,17 +146,17 @@ export class SqliteKVNamespace {
       "SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?"
     ).get(this.namespace, keyOrKeys);
 
-    if (!row) return { value: null, metadata: null };
+    if (!row) return { value: null, metadata: null, cacheStatus: null };
 
     if (row.expiration && row.expiration < Date.now() / 1000) {
       this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, keyOrKeys]);
-      return { value: null, metadata: null };
+      return { value: null, metadata: null, cacheStatus: null };
     }
 
     const type = typeof options === "string" ? options : options?.type ?? "text";
     const value = this.decodeValue(row.value, type);
     const metadata = row.metadata ? JSON.parse(row.metadata) : null;
-    return { value, metadata };
+    return { value, metadata, cacheStatus: null };
   }
 
   private async bulkGetWithMetadata(
@@ -169,6 +172,9 @@ export class SqliteKVNamespace {
 
     const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>();
     const type = typeof options === "string" ? options : options?.type ?? "text";
+    if (type === "arrayBuffer" || type === "stream") {
+      throw new Error(`KV bulk get does not support type "${type}"`);
+    }
     const now = Date.now() / 1000;
 
     if (keys.length === 0) return result;
@@ -217,6 +223,12 @@ export class SqliteKVNamespace {
     if (options?.expirationTtl !== undefined) {
       this.validateTtl(options.expirationTtl);
     }
+    if (options?.expiration !== undefined) {
+      const minExpiration = Date.now() / 1000 + this.limits.minTtlSeconds;
+      if (options.expiration < minExpiration) {
+        throw new Error(`KV expiration must be at least ${this.limits.minTtlSeconds} seconds in the future`);
+      }
+    }
 
     let expiration: number | null = null;
     if (options?.expiration) expiration = options.expiration;
@@ -239,7 +251,7 @@ export class SqliteKVNamespace {
 
   async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
     const prefix = options?.prefix ?? "";
-    const limit = options?.limit ?? 1000;
+    const limit = Math.min(options?.limit ?? 1000, 1000);
     const cursor = options?.cursor ?? "";
 
     const now = Date.now() / 1000;
@@ -252,20 +264,43 @@ export class SqliteKVNamespace {
 
     let rows: { key: string; expiration: number | null; metadata: string | null }[];
 
-    if (cursor) {
-      rows = this.db.query<
-        { key: string; expiration: number | null; metadata: string | null },
-        [string, string, string, number]
-      >(
-        "SELECT key, expiration, metadata FROM kv WHERE namespace = ? AND key LIKE ? AND key > ? ORDER BY key LIMIT ?",
-      ).all(this.namespace, prefix + "%", cursor, limit + 1);
+    // Use range query instead of LIKE to avoid SQL wildcard injection (% and _ in prefix)
+    const prefixEnd = prefix.length > 0
+      ? prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1)
+      : "";
+
+    if (prefix) {
+      if (cursor) {
+        rows = this.db.query<
+          { key: string; expiration: number | null; metadata: string | null },
+          [string, string, string, string, number]
+        >(
+          "SELECT key, expiration, metadata FROM kv WHERE namespace = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?",
+        ).all(this.namespace, prefix, prefixEnd, cursor, limit + 1);
+      } else {
+        rows = this.db.query<
+          { key: string; expiration: number | null; metadata: string | null },
+          [string, string, string, number]
+        >(
+          "SELECT key, expiration, metadata FROM kv WHERE namespace = ? AND key >= ? AND key < ? ORDER BY key LIMIT ?",
+        ).all(this.namespace, prefix, prefixEnd, limit + 1);
+      }
     } else {
-      rows = this.db.query<
-        { key: string; expiration: number | null; metadata: string | null },
-        [string, string, number]
-      >(
-        "SELECT key, expiration, metadata FROM kv WHERE namespace = ? AND key LIKE ? ORDER BY key LIMIT ?",
-      ).all(this.namespace, prefix + "%", limit + 1);
+      if (cursor) {
+        rows = this.db.query<
+          { key: string; expiration: number | null; metadata: string | null },
+          [string, string, number]
+        >(
+          "SELECT key, expiration, metadata FROM kv WHERE namespace = ? AND key > ? ORDER BY key LIMIT ?",
+        ).all(this.namespace, cursor, limit + 1);
+      } else {
+        rows = this.db.query<
+          { key: string; expiration: number | null; metadata: string | null },
+          [string, number]
+        >(
+          "SELECT key, expiration, metadata FROM kv WHERE namespace = ? ORDER BY key LIMIT ?",
+        ).all(this.namespace, limit + 1);
+      }
     }
 
     const listComplete = rows.length <= limit;

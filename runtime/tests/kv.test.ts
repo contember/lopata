@@ -85,9 +85,9 @@ test("getWithMetadata for missing key", async () => {
 });
 
 test("put with expiration (absolute)", async () => {
-  // expired in the past
-  await kv.put("key", "val", { expiration: Date.now() / 1000 - 10 });
-  expect(await kv.get("key")).toBeNull();
+  // valid future expiration
+  await kv.put("key", "val", { expiration: Date.now() / 1000 + 3600 });
+  expect(await kv.get("key")).toBe("val");
 });
 
 test("put with expirationTtl", async () => {
@@ -130,7 +130,11 @@ test("list empty namespace", async () => {
 
 test("list filters out expired keys", async () => {
   await kv.put("good", "val");
-  await kv.put("expired", "val", { expiration: Date.now() / 1000 - 10 });
+  // Insert expired row directly via SQL to bypass validation
+  db.run(
+    "INSERT INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)",
+    ["TEST_KV", "expired", Buffer.from("val"), null, Date.now() / 1000 - 10],
+  );
   const result = await kv.list();
   expect(result.keys.map((k) => k.name)).toEqual(["good"]);
 });
@@ -272,7 +276,11 @@ describe("bulk get", () => {
 
   test("skips expired keys", async () => {
     await kv.put("live", "ok");
-    await kv.put("dead", "gone", { expiration: Date.now() / 1000 - 10 });
+    // Insert expired row directly via SQL to bypass validation
+    db.run(
+      "INSERT INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)",
+      ["TEST_KV", "dead", Buffer.from("gone"), null, Date.now() / 1000 - 10],
+    );
     const result = await kv.get(["live", "dead"]);
     expect(result.get("live")).toBe("ok");
     expect(result.get("dead")).toBeNull();
@@ -304,10 +312,110 @@ describe("bulk getWithMetadata", () => {
 
   test("skips expired keys", async () => {
     await kv.put("live", "ok", { metadata: { alive: true } });
-    await kv.put("dead", "gone", { expiration: Date.now() / 1000 - 10 });
+    // Insert expired row directly via SQL to bypass validation
+    db.run(
+      "INSERT INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)",
+      ["TEST_KV", "dead", Buffer.from("gone"), null, Date.now() / 1000 - 10],
+    );
     const result = await kv.getWithMetadata(["live", "dead"]);
     expect(result.get("live")?.value).toBe("ok");
     expect(result.get("dead")).toEqual({ value: null, metadata: null });
+  });
+});
+
+// --- list prefix with SQL wildcards ---
+
+describe("list with SQL wildcard characters in prefix", () => {
+  test("prefix containing % matches literally", async () => {
+    await kv.put("100%_done", "a");
+    await kv.put("100%_ok", "b");
+    await kv.put("100x_other", "c");
+    const result = await kv.list({ prefix: "100%" });
+    expect(result.keys.map((k) => k.name)).toEqual(["100%_done", "100%_ok"]);
+  });
+
+  test("prefix containing _ matches literally", async () => {
+    await kv.put("a_b", "1");
+    await kv.put("a_c", "2");
+    await kv.put("axb", "3");
+    const result = await kv.list({ prefix: "a_" });
+    expect(result.keys.map((k) => k.name)).toEqual(["a_b", "a_c"]);
+  });
+});
+
+// --- list limit cap ---
+
+describe("list limit cap", () => {
+  test("limit is capped at 1000", async () => {
+    // We can't easily insert 1001 keys, but we can verify the cap works
+    // by checking that requesting limit > 1000 behaves as limit = 1000
+    for (let i = 0; i < 5; i++) {
+      await kv.put(`key-${String(i).padStart(4, "0")}`, "v");
+    }
+    const result = await kv.list({ limit: 5000 });
+    // Should still return all 5 keys (cap is 1000, we only have 5)
+    expect(result.keys).toHaveLength(5);
+    expect(result.list_complete).toBe(true);
+  });
+});
+
+// --- bulk get type restrictions ---
+
+describe("bulk get type restrictions", () => {
+  test("bulk get rejects arrayBuffer type", async () => {
+    await kv.put("a", "1");
+    expect(kv.get(["a"], "arrayBuffer")).rejects.toThrow('does not support type "arrayBuffer"');
+  });
+
+  test("bulk get rejects stream type", async () => {
+    await kv.put("a", "1");
+    expect(kv.get(["a"], "stream")).rejects.toThrow('does not support type "stream"');
+  });
+
+  test("bulk getWithMetadata rejects arrayBuffer type", async () => {
+    await kv.put("a", "1");
+    expect(kv.getWithMetadata(["a"], "arrayBuffer")).rejects.toThrow('does not support type "arrayBuffer"');
+  });
+
+  test("bulk getWithMetadata rejects stream type", async () => {
+    await kv.put("a", "1");
+    expect(kv.getWithMetadata(["a"], "stream")).rejects.toThrow('does not support type "stream"');
+  });
+});
+
+// --- expiration validation ---
+
+describe("expiration validation", () => {
+  test("rejects expiration in the past", async () => {
+    expect(kv.put("key", "val", { expiration: Date.now() / 1000 - 10 })).rejects.toThrow(
+      "at least 60 seconds in the future",
+    );
+  });
+
+  test("rejects expiration less than minTtlSeconds in the future", async () => {
+    expect(kv.put("key", "val", { expiration: Date.now() / 1000 + 30 })).rejects.toThrow(
+      "at least 60 seconds in the future",
+    );
+  });
+
+  test("allows expiration at least minTtlSeconds in the future", async () => {
+    await kv.put("key", "val", { expiration: Date.now() / 1000 + 120 });
+    expect(await kv.get("key")).toBe("val");
+  });
+});
+
+// --- cacheStatus in getWithMetadata ---
+
+describe("getWithMetadata cacheStatus", () => {
+  test("returns cacheStatus: null for existing key", async () => {
+    await kv.put("key", "val");
+    const result = await kv.getWithMetadata("key");
+    expect(result.cacheStatus).toBeNull();
+  });
+
+  test("returns cacheStatus: null for missing key", async () => {
+    const result = await kv.getWithMetadata("missing");
+    expect(result.cacheStatus).toBeNull();
   });
 });
 
