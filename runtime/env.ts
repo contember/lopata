@@ -112,7 +112,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   // Workflows
   for (const wf of config.workflows ?? []) {
     console.log(`[bunflare] Workflow: ${wf.binding} -> ${wf.class_name}`);
-    const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name);
+    const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name, wf.limits);
     env[wf.binding] = binding;
     registry.workflows.push({
       bindingName: wf.binding,

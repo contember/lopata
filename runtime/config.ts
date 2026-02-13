@@ -11,7 +11,7 @@ export interface WranglerConfig {
   durable_objects?: {
     bindings: { name: string; class_name: string }[];
   };
-  workflows?: { name: string; binding: string; class_name: string }[];
+  workflows?: { name: string; binding: string; class_name: string; limits?: Partial<import("./bindings/workflow").WorkflowLimits> }[];
   d1_databases?: { binding: string; database_name: string; database_id: string }[];
   queues?: {
     producers?: { binding: string; queue: string; delivery_delay?: number }[];

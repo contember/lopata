@@ -3,20 +3,46 @@ import type { Database } from "bun:sqlite";
 // --- Limits ---
 
 export interface WorkflowLimits {
-  maxConcurrentInstances?: number; // default Infinity (no limit)
-  maxRetentionMs?: number; // default: no auto-cleanup
+  maxConcurrentInstances?: number;       // default: Infinity
+  maxRetentionMs?: number;               // default: 0
+  maxStepsPerWorkflow?: number;          // default: 1024
+  maxStepOutputBytes?: number;           // default: 1 MiB
+  maxInstanceIdLength?: number;          // default: 100
+  maxStepNameLength?: number;            // default: 256
+  maxSleepMs?: number;                   // default: 365 days
+  maxWaitForEventTimeoutMs?: number;     // default: 365 days
+  minWaitForEventTimeoutMs?: number;     // default: 1s
+  defaultWaitForEventTimeoutMs?: number; // default: 24h
+  maxStepDoTimeoutMs?: number;           // default: 30 min
+  maxBatchSize?: number;                 // default: 100
+  defaultRetryLimit?: number;            // default: 5
+  defaultRetryDelayMs?: number;          // default: 10_000
+  defaultRetryBackoff?: "constant" | "linear" | "exponential"; // default: "exponential"
+  defaultStepTimeoutMs?: number;         // default: 600_000 (10 min)
 }
 
 const WORKFLOW_DEFAULTS: Required<WorkflowLimits> = {
   maxConcurrentInstances: Infinity,
-  maxRetentionMs: 0, // 0 = no auto-cleanup
+  maxRetentionMs: 0,
+  maxStepsPerWorkflow: 1024,
+  maxStepOutputBytes: 1024 * 1024,
+  maxInstanceIdLength: 100,
+  maxStepNameLength: 256,
+  maxSleepMs: 365 * 86_400_000,
+  maxWaitForEventTimeoutMs: 365 * 86_400_000,
+  minWaitForEventTimeoutMs: 1_000,
+  defaultWaitForEventTimeoutMs: 24 * 3_600_000,
+  maxStepDoTimeoutMs: 30 * 60_000,
+  maxBatchSize: 100,
+  defaultRetryLimit: 5,
+  defaultRetryDelayMs: 10_000,
+  defaultRetryBackoff: "exponential",
+  defaultStepTimeoutMs: 600_000,
 };
 
 // --- Cloudflare-compatible limits ---
 
-const MAX_STEPS_PER_WORKFLOW = 1024;
-const MAX_STEP_OUTPUT_BYTES = 1024 * 1024; // 1 MiB
-const EVENT_TYPE_PATTERN = /^[a-zA-Z0-9_-]{1,100}$/;
+const EVENT_TYPE_PATTERN = /^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,99}$/;
 
 // --- NonRetryableError ---
 
@@ -65,11 +91,13 @@ class WorkflowStepImpl {
   private instanceId: string;
   private stepCount = 0;
   private knownStepNames = new Set<string>();
+  private limits: Required<WorkflowLimits>;
 
-  constructor(abortSignal: AbortSignal, db: Database, instanceId: string) {
+  constructor(abortSignal: AbortSignal, db: Database, instanceId: string, limits: Required<WorkflowLimits>) {
     this.abortSignal = abortSignal;
     this.db = db;
     this.instanceId = instanceId;
+    this.limits = limits;
   }
 
   private async checkPaused(): Promise<void> {
@@ -79,14 +107,14 @@ class WorkflowStepImpl {
         .query("SELECT status FROM workflow_instances WHERE id = ?")
         .get(this.instanceId) as { status: string } | null;
       if (!row || row.status !== "paused") break;
-      await new Promise((r) => setTimeout(r, 50));
+      await interruptibleDelay(50, this.abortSignal);
     }
   }
 
   private checkStepLimit(): void {
     this.stepCount++;
-    if (this.stepCount > MAX_STEPS_PER_WORKFLOW) {
-      throw new Error(`Workflow exceeded maximum of ${MAX_STEPS_PER_WORKFLOW} steps`);
+    if (this.stepCount > this.limits.maxStepsPerWorkflow) {
+      throw new Error(`Workflow exceeded maximum of ${this.limits.maxStepsPerWorkflow} steps`);
     }
   }
 
@@ -105,7 +133,7 @@ class WorkflowStepImpl {
 
   private cacheStep(name: string, output: unknown): void {
     const serialized = JSON.stringify(output);
-    if (serialized !== undefined && serialized.length > MAX_STEP_OUTPUT_BYTES) {
+    if (serialized !== undefined && serialized.length > this.limits.maxStepOutputBytes) {
       throw new Error(`Step "${name}" output exceeds maximum size of 1 MiB`);
     }
     this.db
@@ -114,8 +142,8 @@ class WorkflowStepImpl {
   }
 
   async do<T>(name: string, callbackOrConfig: (() => Promise<T>) | WorkflowStepConfig, maybeCallback?: () => Promise<T>): Promise<T> {
-    if (name.length > 256) {
-      throw new Error(`Step name must be 256 characters or fewer, got ${name.length}`);
+    if (name.length > this.limits.maxStepNameLength) {
+      throw new Error(`Step name must be ${this.limits.maxStepNameLength} characters or fewer, got ${name.length}`);
     }
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
@@ -141,10 +169,14 @@ class WorkflowStepImpl {
 
     console.log(`  [workflow] step: ${name}`);
 
-    const maxRetries = config?.retries?.limit ?? 5;
-    const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : 10_000;
-    const backoff = config?.retries?.backoff ?? "exponential";
-    const timeoutMs = config?.timeout ? parseDuration(config.timeout) : parseDuration("10 minutes");
+    const maxRetries = config?.retries?.limit ?? this.limits.defaultRetryLimit;
+    const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : this.limits.defaultRetryDelayMs;
+    const backoff = config?.retries?.backoff ?? this.limits.defaultRetryBackoff;
+    const timeoutMs = config?.timeout ? parseDuration(config.timeout) : this.limits.defaultStepTimeoutMs;
+
+    if (timeoutMs > this.limits.maxStepDoTimeoutMs) {
+      throw new Error(`Step timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxStepDoTimeoutMs}ms`);
+    }
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -165,7 +197,7 @@ class WorkflowStepImpl {
         if (attempt < maxRetries) {
           const d = computeDelay(delayMs, attempt, backoff);
           console.log(`  [workflow] step "${name}" attempt ${attempt + 1} failed, retrying in ${d}ms`);
-          await new Promise((r) => setTimeout(r, d));
+          await interruptibleDelay(d, this.abortSignal);
         }
       }
     }
@@ -184,7 +216,7 @@ class WorkflowStepImpl {
       const remaining = Math.max(0, until - Date.now());
       if (remaining > 0) {
         console.log(`  [workflow] sleep: ${name} (resuming, ${remaining}ms remaining)`);
-        await new Promise((r) => setTimeout(r, remaining));
+        await interruptibleDelay(remaining, this.abortSignal);
       } else {
         console.log(`  [workflow] sleep: ${name} (cached, already elapsed)`);
       }
@@ -192,13 +224,16 @@ class WorkflowStepImpl {
     }
 
     const ms = typeof duration === "number" ? duration : parseDuration(duration);
+    if (ms > this.limits.maxSleepMs) {
+      throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
+    }
     const until = Date.now() + ms;
     // Checkpoint before sleeping so resume knows the target time
     this.cacheStep(`sleep:${name}`, { until });
 
     console.log(`  [workflow] sleep: ${name} (${duration}, ${ms}ms)`);
     if (ms > 0) {
-      await new Promise((r) => setTimeout(r, ms));
+      await interruptibleDelay(ms, this.abortSignal);
     }
   }
 
@@ -215,20 +250,24 @@ class WorkflowStepImpl {
       const remaining = Math.max(0, ts.getTime() - Date.now());
       if (remaining > 0) {
         console.log(`  [workflow] sleepUntil: ${name} (resuming, ${remaining}ms remaining)`);
-        await new Promise((r) => setTimeout(r, remaining));
+        await interruptibleDelay(remaining, this.abortSignal);
       } else {
         console.log(`  [workflow] sleepUntil: ${name} (cached, already elapsed)`);
       }
       return;
     }
 
+    const delay = Math.max(0, ts.getTime() - Date.now());
+    if (delay > this.limits.maxSleepMs) {
+      throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
+    }
+
     // Checkpoint before sleeping
     this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
 
-    const delay = Math.max(0, ts.getTime() - Date.now());
     console.log(`  [workflow] sleepUntil: ${name} (${ts.toISOString()}, ${delay}ms remaining)`);
     if (delay > 0) {
-      await new Promise((r) => setTimeout(r, delay));
+      await interruptibleDelay(delay, this.abortSignal);
     }
   }
 
@@ -279,7 +318,13 @@ class WorkflowStepImpl {
     }
 
     // Wait for event to arrive via sendEvent()
-    const timeoutMs = options.timeout ? parseDuration(options.timeout) : parseDuration("24 hours");
+    const timeoutMs = options.timeout ? parseDuration(options.timeout) : this.limits.defaultWaitForEventTimeoutMs;
+    if (timeoutMs < this.limits.minWaitForEventTimeoutMs) {
+      throw new Error(`waitForEvent timeout ${timeoutMs}ms is below minimum of ${this.limits.minWaitForEventTimeoutMs}ms`);
+    }
+    if (timeoutMs > this.limits.maxWaitForEventTimeoutMs) {
+      throw new Error(`waitForEvent timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxWaitForEventTimeoutMs}ms`);
+    }
 
     const result = await new Promise<{ payload: T; timestamp: Date; type: string }>((resolve, reject) => {
       const waiters = getWaitersForInstance(this.instanceId);
@@ -325,6 +370,17 @@ function computeDelay(baseMs: number, attempt: number, backoff: "constant" | "li
     case "linear": return baseMs * (attempt + 1);
     case "exponential": return baseMs * Math.pow(2, attempt);
   }
+}
+
+function interruptibleDelay(ms: number, abortSignal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (abortSignal.aborted) return Promise.reject(new Error("workflow terminated"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const abortHandler = () => { cleanup(); reject(new Error("workflow terminated")); };
+    const cleanup = () => { clearTimeout(timer); abortSignal.removeEventListener("abort", abortHandler); };
+    abortSignal.addEventListener("abort", abortHandler);
+  });
 }
 
 export function parseDuration(duration: string | number): number {
@@ -416,11 +472,13 @@ export class SqliteWorkflowInstance {
     const cls = this.binding._getClass();
     const env = this.binding._getEnv();
     const db = this.binding._getDb();
+    const workflowName = this.binding._getWorkflowName();
+    const limits = this.binding._getLimits();
     if (!cls) throw new Error("Cannot restart: workflow class not wired yet");
 
     const row = this.db
-      .query("SELECT params FROM workflow_instances WHERE id = ?")
-      .get(this.instanceId) as { params: string | null } | null;
+      .query("SELECT params, created_at FROM workflow_instances WHERE id = ?")
+      .get(this.instanceId) as { params: string | null; created_at: number } | null;
     if (!row) throw new Error(`Workflow instance ${this.instanceId} not found`);
 
     // Abort existing execution
@@ -438,7 +496,7 @@ export class SqliteWorkflowInstance {
       .run(Date.now(), this.instanceId);
 
     const params = row.params !== null ? JSON.parse(row.params) : {};
-    SqliteWorkflowBinding.executeWorkflow(db, this.instanceId, cls, env, params, abortController);
+    SqliteWorkflowBinding.executeWorkflow(db, this.instanceId, cls, env, params, abortController, workflowName, limits, row.created_at);
   }
 
   async sendEvent(event: { type: string; payload?: unknown }): Promise<void> {
@@ -495,6 +553,8 @@ export class SqliteWorkflowBinding {
   _getClass() { return this._class; }
   _getEnv() { return this._env; }
   _getDb() { return this.db; }
+  _getWorkflowName() { return this.workflowName; }
+  _getLimits() { return this.limits; }
 
   private cleanupRetentionExpired(): void {
     if (this.limits.maxRetentionMs <= 0) return;
@@ -517,9 +577,14 @@ export class SqliteWorkflowBinding {
     this.cleanupRetentionExpired();
 
     const id = options?.id ?? `wf-${++this.counter}-${Date.now()}`;
-    if (id.length > 100) {
-      throw new Error(`Workflow instance ID must be 100 characters or fewer, got ${id.length}`);
+    if (id.length > this.limits.maxInstanceIdLength) {
+      throw new Error(`Workflow instance ID must be ${this.limits.maxInstanceIdLength} characters or fewer, got ${id.length}`);
     }
+
+    // Check for duplicate ID
+    const existing = this.db.query("SELECT id FROM workflow_instances WHERE id = ?").get(id);
+    if (existing) throw new Error(`Workflow instance with ID "${id}" already exists`);
+
     const params = options?.params ?? {};
     const now = Date.now();
 
@@ -539,7 +604,7 @@ export class SqliteWorkflowBinding {
 
     if (!isQueued) {
       console.log(`[workflow] started ${id}`);
-      SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, abortController, this.workflowName);
+      SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, abortController, this.workflowName, this.limits, now);
     } else {
       console.log(`[workflow] queued ${id} (concurrency limit: ${this.limits.maxConcurrentInstances})`);
     }
@@ -548,6 +613,9 @@ export class SqliteWorkflowBinding {
   }
 
   async createBatch(batch: { id?: string; params?: unknown }[]): Promise<SqliteWorkflowInstance[]> {
+    if (batch.length > this.limits.maxBatchSize) {
+      throw new Error(`Batch size ${batch.length} exceeds maximum of ${this.limits.maxBatchSize}`);
+    }
     const results: SqliteWorkflowInstance[] = [];
     for (const item of batch) {
       const instance = await this.create({ id: item.id, params: item.params });
@@ -569,8 +637,8 @@ export class SqliteWorkflowBinding {
     if (!this._class) return;
 
     const rows = this.db
-      .query("SELECT id, params FROM workflow_instances WHERE workflow_name = ? AND status IN ('running', 'waiting')")
-      .all(this.workflowName) as { id: string; params: string | null }[];
+      .query("SELECT id, params, created_at FROM workflow_instances WHERE workflow_name = ? AND status IN ('running', 'waiting')")
+      .all(this.workflowName) as { id: string; params: string | null; created_at: number }[];
 
     for (const row of rows) {
       const abortController = new AbortController();
@@ -581,7 +649,7 @@ export class SqliteWorkflowBinding {
       this.db
         .query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
         .run(Date.now(), row.id);
-      SqliteWorkflowBinding.executeWorkflow(this.db, row.id, this._class, this._env, params, abortController, this.workflowName);
+      SqliteWorkflowBinding.executeWorkflow(this.db, row.id, this._class, this._env, params, abortController, this.workflowName, this.limits, row.created_at);
     }
   }
 
@@ -592,8 +660,8 @@ export class SqliteWorkflowBinding {
 
     while (this.countRunning() < this.limits.maxConcurrentInstances) {
       const queued = this.db
-        .query("SELECT id, params FROM workflow_instances WHERE workflow_name = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1")
-        .get(this.workflowName) as { id: string; params: string | null } | null;
+        .query("SELECT id, params, created_at FROM workflow_instances WHERE workflow_name = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1")
+        .get(this.workflowName) as { id: string; params: string | null; created_at: number } | null;
       if (!queued) break;
 
       this.db
@@ -604,7 +672,7 @@ export class SqliteWorkflowBinding {
       abortControllers.set(queued.id, abortController);
       const params = queued.params !== null ? JSON.parse(queued.params) : {};
       console.log(`[workflow] starting queued instance ${queued.id}`);
-      SqliteWorkflowBinding.executeWorkflow(this.db, queued.id, this._class, this._env, params, abortController, this.workflowName);
+      SqliteWorkflowBinding.executeWorkflow(this.db, queued.id, this._class, this._env, params, abortController, this.workflowName, this.limits, queued.created_at);
     }
   }
 
@@ -616,10 +684,13 @@ export class SqliteWorkflowBinding {
     params: unknown,
     abortController: AbortController,
     workflowName?: string,
+    limits?: Required<WorkflowLimits>,
+    createdAt?: number,
   ): void {
+    const resolvedLimits = limits ?? WORKFLOW_DEFAULTS;
     const instance = new workflowClass({}, env);
-    const step = new WorkflowStepImpl(abortController.signal, db, id);
-    const event = { payload: params, timestamp: new Date(), instanceId: id };
+    const step = new WorkflowStepImpl(abortController.signal, db, id, resolvedLimits);
+    const event = { payload: params, timestamp: new Date(createdAt ?? Date.now()), instanceId: id };
 
     (async () => {
       try {
@@ -642,8 +713,8 @@ export class SqliteWorkflowBinding {
         if (workflowName) {
           // Dequeue next instance for same workflow
           const queued = db
-            .query("SELECT id, params FROM workflow_instances WHERE workflow_name = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1")
-            .get(workflowName) as { id: string; params: string | null } | null;
+            .query("SELECT id, params, created_at FROM workflow_instances WHERE workflow_name = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1")
+            .get(workflowName) as { id: string; params: string | null; created_at: number } | null;
           if (queued) {
             db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
               .run(Date.now(), queued.id);
@@ -651,7 +722,7 @@ export class SqliteWorkflowBinding {
             const ac = new AbortController();
             abortControllers.set(queued.id, ac);
             console.log(`[workflow] starting queued instance ${queued.id}`);
-            SqliteWorkflowBinding.executeWorkflow(db, queued.id, workflowClass, env, qParams, ac, workflowName);
+            SqliteWorkflowBinding.executeWorkflow(db, queued.id, workflowClass, env, qParams, ac, workflowName, resolvedLimits, queued.created_at);
           }
         }
       }
