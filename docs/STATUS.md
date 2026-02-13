@@ -5,9 +5,9 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 19    |
-| **Pending**      | 11    |
-| **Progress**     | 63%   |
+| **Completed**    | 20    |
+| **Pending**      | 10    |
+| **Progress**     | 67%   |
 
 ## Current Focus
 
@@ -45,7 +45,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | #  | Issue                        | Status  | Notes |
 | -- | ---------------------------- | ------- | ----- |
 | 27 | do-gaps                      | completed | Stub fetch(), list startAfter, sync(), WS validation |
-| 18 | kv-gaps                      | pending | Bulk ops, key/value/metadata validation |
+| 18 | kv-gaps                      | completed | Bulk ops, key/value/metadata validation, configurable limits |
 | 20 | d1-gaps                      | pending | dump(), exec() parsing, type conversion |
 | 21 | queues-gaps                  | pending | Content types fix, batch timeout, validation |
 | 23 | cache-api-gaps               | pending | TTL/expiration, Cache-Control, cf-cache-status |
@@ -106,6 +106,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#12 do-sql-storage**: Implemented `SqlStorageCursor` and `SqlStorage` classes in `runtime/bindings/durable-object.ts`. `SqlStorageCursor` implements the full cursor API: iterable via `for..of`, `next()` iterator protocol, `toArray()`, `one()` (throws if not exactly 1 row), `raw()` (arrays without column names), `columnNames`, `rowsRead`, `rowsWritten`. `SqlStorage` provides `exec(query, ...bindings)` which creates a per-DO-instance SQLite file at `.bunflare/do-sql/<namespace>/<id>.sqlite` with lazy initialization and WAL mode. Distinguishes SELECT/WITH/PRAGMA (returns rows) from write statements (returns changes count). `databaseSize` returns file size via `statSync`. `SqliteDurableObjectStorage.sql` getter lazily creates `SqlStorage` when `dataDir` is configured. Extended constructor chain: `SqliteDurableObjectStorage(db, namespace, id, dataDir?)`, `DurableObjectStateImpl(id, db, namespace, dataDir?)`, `DurableObjectNamespaceImpl(db, name, dataDir?)`. Updated `env.ts` to pass `getDataDir()`. Added `migrations` field to `WranglerConfig`. Added 18 tests covering exec, columnNames, iteration, next(), one(), raw(), rowsRead/rowsWritten, databaseSize, parameter bindings, instance isolation, persistence, and namespace integration. All 322 tests pass.
 
 - **#27 do-gaps**: Added `stub.fetch(request)` — proxy intercepts `fetch` property and calls the DO's `fetch()` handler, constructing a proper `Request` from string/URL inputs. Added `stub.id` and `stub.name` properties on the proxy stub. Added `list({ startAfter })` — exclusive start key (key > startAfter), takes precedence over `start` when both provided. Added `sync()` as no-op returning resolved promise. Added `DurableObjectLimits` interface with configurable WebSocket validation: `maxTagsPerWebSocket` (default 10), `maxTagLength` (default 256), `maxConcurrentWebSockets` (default 32,768), `maxAutoResponseLength` (default 2,048). Limits passed through `DurableObjectNamespaceImpl` → `DurableObjectStateImpl`. Fixed `setHibernatableWebSocketEventTimeout`/`getHibernatableWebSocketEventTimeout` to store and return the value instead of being no-ops. Added 19 new tests. All 341 tests pass.
+
+- **#18 kv-gaps**: Added `KVLimits` interface with configurable `maxKeySize` (512), `maxValueSize` (25 MiB), `maxMetadataSize` (1024), `minTtlSeconds` (60), `maxBulkGetKeys` (100) — passed via constructor. Key validation rejects empty strings, `.`, `..`, and keys exceeding max byte size. Value size validated after encoding. Metadata size validated after JSON serialization. `expirationTtl` validated against minimum. Added bulk `get(keys[])` returning `Map<string, value>` and bulk `getWithMetadata(keys[])` returning `Map<string, {value, metadata}>` with IN-query batching and expired key cleanup. `cacheTtl` option accepted and ignored on `get()`/`getWithMetadata()`. Added 20 new tests (44 total KV tests). All 362 tests pass.
 
 ## Lessons Learned
 

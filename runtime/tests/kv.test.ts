@@ -1,12 +1,13 @@
-import { test, expect, beforeEach } from "bun:test";
+import { test, expect, beforeEach, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { runMigrations } from "../db";
 import { SqliteKVNamespace } from "../bindings/kv";
 
+let db: Database;
 let kv: SqliteKVNamespace;
 
 beforeEach(() => {
-  const db = new Database(":memory:");
+  db = new Database(":memory:");
   runMigrations(db);
   kv = new SqliteKVNamespace(db, "TEST_KV");
 });
@@ -95,11 +96,6 @@ test("put with expirationTtl", async () => {
   expect(await kv.get("key")).toBe("val");
 });
 
-test("put with expirationTtl of 0-ish expires immediately", async () => {
-  await kv.put("key", "val", { expirationTtl: -1 });
-  expect(await kv.get("key")).toBeNull();
-});
-
 test("list returns all keys", async () => {
   await kv.put("a", "1");
   await kv.put("b", "2");
@@ -160,8 +156,6 @@ test("list with cursor pagination", async () => {
 });
 
 test("namespaces are isolated", async () => {
-  const db = new Database(":memory:");
-  runMigrations(db);
   const kv1 = new SqliteKVNamespace(db, "NS1");
   const kv2 = new SqliteKVNamespace(db, "NS2");
 
@@ -170,4 +164,165 @@ test("namespaces are isolated", async () => {
 
   expect(await kv1.get("key")).toBe("from-ns1");
   expect(await kv2.get("key")).toBe("from-ns2");
+});
+
+// --- Key validation ---
+
+describe("key validation", () => {
+  test("rejects empty key", async () => {
+    expect(kv.put("", "val")).rejects.toThrow("not allowed");
+    expect(kv.get("")).rejects.toThrow("not allowed");
+  });
+
+  test("rejects '.' key", async () => {
+    expect(kv.put(".", "val")).rejects.toThrow("not allowed");
+  });
+
+  test("rejects '..' key", async () => {
+    expect(kv.put("..", "val")).rejects.toThrow("not allowed");
+  });
+
+  test("rejects key exceeding max size", async () => {
+    const longKey = "x".repeat(513);
+    expect(kv.put(longKey, "val")).rejects.toThrow("exceeds max size");
+  });
+
+  test("allows key at exactly max size", async () => {
+    const key = "x".repeat(512);
+    await kv.put(key, "val");
+    expect(await kv.get(key)).toBe("val");
+  });
+
+  test("custom key size limit", async () => {
+    const customKv = new SqliteKVNamespace(db, "CUSTOM", { maxKeySize: 10 });
+    expect(customKv.put("x".repeat(11), "val")).rejects.toThrow("exceeds max size of 10");
+    await customKv.put("x".repeat(10), "val"); // should not throw
+  });
+});
+
+// --- Value size validation ---
+
+describe("value size validation", () => {
+  test("rejects value exceeding max size", async () => {
+    const customKv = new SqliteKVNamespace(db, "SMALL", { maxValueSize: 100 });
+    const bigValue = "x".repeat(101);
+    expect(customKv.put("key", bigValue)).rejects.toThrow("exceeds max size");
+  });
+
+  test("allows value at exactly max size", async () => {
+    const customKv = new SqliteKVNamespace(db, "SMALL", { maxValueSize: 100 });
+    await customKv.put("key", "x".repeat(100));
+    expect(await customKv.get("key")).toBe("x".repeat(100));
+  });
+});
+
+// --- Metadata size validation ---
+
+describe("metadata size validation", () => {
+  test("rejects metadata exceeding max size", async () => {
+    const customKv = new SqliteKVNamespace(db, "META", { maxMetadataSize: 50 });
+    const bigMetadata = { data: "x".repeat(100) };
+    expect(customKv.put("key", "val", { metadata: bigMetadata })).rejects.toThrow("metadata exceeds max size");
+  });
+
+  test("allows metadata at limit", async () => {
+    await kv.put("key", "val", { metadata: { a: "b" } });
+    const { metadata } = await kv.getWithMetadata("key");
+    expect(metadata).toEqual({ a: "b" });
+  });
+});
+
+// --- TTL validation ---
+
+describe("TTL validation", () => {
+  test("rejects expirationTtl below minimum", async () => {
+    expect(kv.put("key", "val", { expirationTtl: 30 })).rejects.toThrow("at least 60 seconds");
+  });
+
+  test("allows expirationTtl at minimum", async () => {
+    await kv.put("key", "val", { expirationTtl: 60 });
+    expect(await kv.get("key")).toBe("val");
+  });
+
+  test("custom min TTL", async () => {
+    const customKv = new SqliteKVNamespace(db, "TTL", { minTtlSeconds: 10 });
+    expect(customKv.put("key", "val", { expirationTtl: 5 })).rejects.toThrow("at least 10 seconds");
+    await customKv.put("key", "val", { expirationTtl: 10 }); // should not throw
+  });
+});
+
+// --- Bulk get ---
+
+describe("bulk get", () => {
+  test("returns Map with values for existing keys", async () => {
+    await kv.put("a", "1");
+    await kv.put("b", "2");
+    const result = await kv.get(["a", "b", "c"]);
+    expect(result).toBeInstanceOf(Map);
+    expect(result.get("a")).toBe("1");
+    expect(result.get("b")).toBe("2");
+    expect(result.get("c")).toBeNull();
+  });
+
+  test("respects type option", async () => {
+    await kv.put("j", JSON.stringify({ x: 1 }));
+    const result = await kv.get(["j"], "json");
+    expect(result.get("j")).toEqual({ x: 1 });
+  });
+
+  test("skips expired keys", async () => {
+    await kv.put("live", "ok");
+    await kv.put("dead", "gone", { expiration: Date.now() / 1000 - 10 });
+    const result = await kv.get(["live", "dead"]);
+    expect(result.get("live")).toBe("ok");
+    expect(result.get("dead")).toBeNull();
+  });
+
+  test("empty keys array returns empty Map", async () => {
+    const result = await kv.get([]);
+    expect(result.size).toBe(0);
+  });
+
+  test("rejects too many keys", async () => {
+    const customKv = new SqliteKVNamespace(db, "BULK", { maxBulkGetKeys: 3 });
+    expect(customKv.get(["a", "b", "c", "d"])).rejects.toThrow("exceeds max of 3");
+  });
+});
+
+// --- Bulk getWithMetadata ---
+
+describe("bulk getWithMetadata", () => {
+  test("returns Map with values and metadata", async () => {
+    await kv.put("a", "1", { metadata: { tag: "x" } });
+    await kv.put("b", "2");
+    const result = await kv.getWithMetadata(["a", "b", "missing"]);
+    expect(result).toBeInstanceOf(Map);
+    expect(result.get("a")).toEqual({ value: "1", metadata: { tag: "x" } });
+    expect(result.get("b")).toEqual({ value: "2", metadata: null });
+    expect(result.get("missing")).toEqual({ value: null, metadata: null });
+  });
+
+  test("skips expired keys", async () => {
+    await kv.put("live", "ok", { metadata: { alive: true } });
+    await kv.put("dead", "gone", { expiration: Date.now() / 1000 - 10 });
+    const result = await kv.getWithMetadata(["live", "dead"]);
+    expect(result.get("live")?.value).toBe("ok");
+    expect(result.get("dead")).toEqual({ value: null, metadata: null });
+  });
+});
+
+// --- cacheTtl (no-op) ---
+
+describe("cacheTtl option", () => {
+  test("get accepts cacheTtl without error", async () => {
+    await kv.put("key", "val");
+    const result = await kv.get("key", { type: "text", cacheTtl: 300 });
+    expect(result).toBe("val");
+  });
+
+  test("getWithMetadata accepts cacheTtl without error", async () => {
+    await kv.put("key", "val");
+    const { value } = await kv.getWithMetadata("key", { type: "text", cacheTtl: 300 });
+    expect(value).toBe("val");
+  });
 });

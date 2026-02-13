@@ -1,23 +1,83 @@
 import type { Database } from "bun:sqlite";
 
+export interface KVLimits {
+  maxKeySize?: number;       // default 512 (bytes)
+  maxValueSize?: number;     // default 25 * 1024 * 1024 (25 MiB)
+  maxMetadataSize?: number;  // default 1024 (bytes)
+  minTtlSeconds?: number;    // default 60
+  maxBulkGetKeys?: number;   // default 100
+}
+
+const KV_DEFAULTS: Required<KVLimits> = {
+  maxKeySize: 512,
+  maxValueSize: 25 * 1024 * 1024,
+  maxMetadataSize: 1024,
+  minTtlSeconds: 60,
+  maxBulkGetKeys: 100,
+};
+
+type KVGetOptions = { type?: string; cacheTtl?: number };
+
 export class SqliteKVNamespace {
   private db: Database;
   private namespace: string;
+  private limits: Required<KVLimits>;
 
-  constructor(db: Database, namespace: string) {
+  constructor(db: Database, namespace: string, limits?: KVLimits) {
     this.db = db;
     this.namespace = namespace;
+    this.limits = { ...KV_DEFAULTS, ...limits };
   }
 
-  async get(key: string, options?: string | { type?: string }): Promise<string | ArrayBuffer | object | ReadableStream | null> {
+  private validateKey(key: string): void {
+    if (key === "" || key === "." || key === "..") {
+      throw new Error(`KV key "${key}" is not allowed`);
+    }
+    if (new TextEncoder().encode(key).byteLength > this.limits.maxKeySize) {
+      throw new Error(`KV key exceeds max size of ${this.limits.maxKeySize} bytes`);
+    }
+  }
+
+  private validateValue(blob: Buffer): void {
+    if (blob.byteLength > this.limits.maxValueSize) {
+      throw new Error(`KV value exceeds max size of ${this.limits.maxValueSize} bytes`);
+    }
+  }
+
+  private validateMetadata(metadata: unknown): string {
+    const serialized = JSON.stringify(metadata);
+    if (new TextEncoder().encode(serialized).byteLength > this.limits.maxMetadataSize) {
+      throw new Error(`KV metadata exceeds max size of ${this.limits.maxMetadataSize} bytes`);
+    }
+    return serialized;
+  }
+
+  private validateTtl(ttl: number): void {
+    if (ttl < this.limits.minTtlSeconds) {
+      throw new Error(`KV expirationTtl must be at least ${this.limits.minTtlSeconds} seconds`);
+    }
+  }
+
+  async get(key: string, options?: string | KVGetOptions): Promise<string | ArrayBuffer | object | ReadableStream | null>;
+  async get(keys: string[], options?: string | KVGetOptions): Promise<Map<string, string | ArrayBuffer | object | ReadableStream | null>>;
+  async get(
+    keyOrKeys: string | string[],
+    options?: string | KVGetOptions,
+  ): Promise<string | ArrayBuffer | object | ReadableStream | null | Map<string, string | ArrayBuffer | object | ReadableStream | null>> {
+    if (Array.isArray(keyOrKeys)) {
+      return this.bulkGet(keyOrKeys, options);
+    }
+
+    this.validateKey(keyOrKeys);
+
     const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
       "SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?"
-    ).get(this.namespace, key);
+    ).get(this.namespace, keyOrKeys);
 
     if (!row) return null;
 
     if (row.expiration && row.expiration < Date.now() / 1000) {
-      this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, key]);
+      this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, keyOrKeys]);
       return null;
     }
 
@@ -25,15 +85,68 @@ export class SqliteKVNamespace {
     return this.decodeValue(row.value, type);
   }
 
-  async getWithMetadata(key: string, options?: string | { type?: string }) {
+  private async bulkGet(
+    keys: string[],
+    options?: string | KVGetOptions,
+  ): Promise<Map<string, string | ArrayBuffer | object | ReadableStream | null>> {
+    if (keys.length > this.limits.maxBulkGetKeys) {
+      throw new Error(`KV bulk get exceeds max of ${this.limits.maxBulkGetKeys} keys`);
+    }
+    for (const key of keys) {
+      this.validateKey(key);
+    }
+
+    const result = new Map<string, string | ArrayBuffer | object | ReadableStream | null>();
+    const type = typeof options === "string" ? options : options?.type ?? "text";
+    const now = Date.now() / 1000;
+
+    if (keys.length === 0) return result;
+
+    const placeholders = keys.map(() => "?").join(", ");
+    const rows = this.db.query<
+      { key: string; value: Buffer; expiration: number | null },
+      [string, ...string[]]
+    >(
+      `SELECT key, value, expiration FROM kv WHERE namespace = ? AND key IN (${placeholders})`
+    ).all(this.namespace, ...keys);
+
+    const rowMap = new Map<string, { value: Buffer; expiration: number | null }>();
+    for (const row of rows) {
+      if (row.expiration && row.expiration < now) {
+        this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, row.key]);
+      } else {
+        rowMap.set(row.key, row);
+      }
+    }
+
+    for (const key of keys) {
+      const row = rowMap.get(key);
+      result.set(key, row ? this.decodeValue(row.value, type) : null);
+    }
+
+    return result;
+  }
+
+  async getWithMetadata(key: string, options?: string | KVGetOptions): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>;
+  async getWithMetadata(keys: string[], options?: string | KVGetOptions): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>>;
+  async getWithMetadata(
+    keyOrKeys: string | string[],
+    options?: string | KVGetOptions,
+  ): Promise<{ value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown } | Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
+    if (Array.isArray(keyOrKeys)) {
+      return this.bulkGetWithMetadata(keyOrKeys, options);
+    }
+
+    this.validateKey(keyOrKeys);
+
     const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
       "SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?"
-    ).get(this.namespace, key);
+    ).get(this.namespace, keyOrKeys);
 
     if (!row) return { value: null, metadata: null };
 
     if (row.expiration && row.expiration < Date.now() / 1000) {
-      this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, key]);
+      this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, keyOrKeys]);
       return { value: null, metadata: null };
     }
 
@@ -43,18 +156,76 @@ export class SqliteKVNamespace {
     return { value, metadata };
   }
 
+  private async bulkGetWithMetadata(
+    keys: string[],
+    options?: string | KVGetOptions,
+  ): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
+    if (keys.length > this.limits.maxBulkGetKeys) {
+      throw new Error(`KV bulk get exceeds max of ${this.limits.maxBulkGetKeys} keys`);
+    }
+    for (const key of keys) {
+      this.validateKey(key);
+    }
+
+    const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>();
+    const type = typeof options === "string" ? options : options?.type ?? "text";
+    const now = Date.now() / 1000;
+
+    if (keys.length === 0) return result;
+
+    const placeholders = keys.map(() => "?").join(", ");
+    const rows = this.db.query<
+      { key: string; value: Buffer; metadata: string | null; expiration: number | null },
+      [string, ...string[]]
+    >(
+      `SELECT key, value, metadata, expiration FROM kv WHERE namespace = ? AND key IN (${placeholders})`
+    ).all(this.namespace, ...keys);
+
+    const rowMap = new Map<string, { value: Buffer; metadata: string | null; expiration: number | null }>();
+    for (const row of rows) {
+      if (row.expiration && row.expiration < now) {
+        this.db.run("DELETE FROM kv WHERE namespace = ? AND key = ?", [this.namespace, row.key]);
+      } else {
+        rowMap.set(row.key, row);
+      }
+    }
+
+    for (const key of keys) {
+      const row = rowMap.get(key);
+      if (row) {
+        result.set(key, {
+          value: this.decodeValue(row.value, type),
+          metadata: row.metadata ? JSON.parse(row.metadata) : null,
+        });
+      } else {
+        result.set(key, { value: null, metadata: null });
+      }
+    }
+
+    return result;
+  }
+
   async put(
     key: string,
     value: string | ArrayBuffer | ReadableStream,
     options?: { metadata?: unknown; expirationTtl?: number; expiration?: number },
   ) {
+    this.validateKey(key);
     const blob = await this.encodeValue(value);
+    this.validateValue(blob);
+
+    if (options?.expirationTtl !== undefined) {
+      this.validateTtl(options.expirationTtl);
+    }
 
     let expiration: number | null = null;
     if (options?.expiration) expiration = options.expiration;
     else if (options?.expirationTtl) expiration = Date.now() / 1000 + options.expirationTtl;
 
-    const metadata = options?.metadata !== undefined ? JSON.stringify(options.metadata) : null;
+    let metadata: string | null = null;
+    if (options?.metadata !== undefined) {
+      metadata = this.validateMetadata(options.metadata);
+    }
 
     this.db.run(
       "INSERT OR REPLACE INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)",
