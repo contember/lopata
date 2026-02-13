@@ -24,8 +24,8 @@ interface Message {
 }
 
 interface MessageBatch {
-  queue: string;
-  messages: Message[];
+  readonly queue: string;
+  readonly messages: readonly Message[];
   ackAll(): void;
   retryAll(options?: { delaySeconds?: number }): void;
 }
@@ -36,6 +36,7 @@ interface ConsumerConfig {
   maxBatchTimeout: number;
   maxRetries: number;
   deadLetterQueue: string | null;
+  retentionPeriodSeconds?: number; // default 345600 (4 days), matching CF default
 }
 
 type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: { waitUntil(p: Promise<unknown>): void }) => Promise<void>;
@@ -191,6 +192,7 @@ export class QueueConsumer {
   private timer: ReturnType<typeof setInterval> | null = null;
   private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
+  private polling = false;
 
   constructor(
     db: Database,
@@ -223,20 +225,31 @@ export class QueueConsumer {
   }
 
   async poll(): Promise<void> {
-    const now = Date.now();
-    const rows = this.db.query<
-      { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
-      [string, number, number]
-    >(
-      "SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND visible_at <= ? ORDER BY visible_at LIMIT ?",
-    ).all(this.config.queue, now, this.config.maxBatchSize);
+    if (this.polling) return;
+    this.polling = true;
+    try {
+      const now = Date.now();
 
-    if (rows.length === 0) return;
+      // Periodically clean up expired messages beyond retention period
+      const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000;
+      this.db.run(
+        "DELETE FROM queue_messages WHERE queue = ? AND created_at < ?",
+        [this.config.queue, now - retentionMs],
+      );
 
-    // If we got fewer than maxBatchSize and maxBatchTimeout > 0, we could wait.
-    // But for simplicity in poll-based model, deliver what we have.
+      const rows = this.db.query<
+        { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
+        [string, number, number]
+      >(
+        "SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND visible_at <= ? ORDER BY visible_at LIMIT ?",
+      ).all(this.config.queue, now, this.config.maxBatchSize);
 
-    await this.deliverBatch(rows);
+      if (rows.length === 0) return;
+
+      await this.deliverBatch(rows);
+    } finally {
+      this.polling = false;
+    }
   }
 
   private async deliverBatch(rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[]): Promise<void> {
@@ -245,12 +258,10 @@ export class QueueConsumer {
     const placeholders = ids.map(() => "?").join(",");
     this.db.run(`UPDATE queue_messages SET attempts = attempts + 1 WHERE id IN (${placeholders})`, ids);
 
-    // Track per-message ack/retry state
-    const acked = new Set<string>();
-    const retried = new Map<string, number | undefined>(); // id -> delaySeconds
-    let allAcked = false;
-    let allRetried = false;
-    let allRetryDelay: number | undefined;
+    // Track per-message decisions — last call wins (matching CF behavior)
+    type Decision = { type: 'ack' } | { type: 'retry'; delaySeconds: number | undefined };
+    const messageDecisions = new Map<string, Decision>();
+    let batchDecision: Decision | null = null;
 
     const messages: Message[] = rows.map((row) => {
       const body = decodeBody(row.body, row.content_type);
@@ -258,12 +269,12 @@ export class QueueConsumer {
         id: row.id,
         timestamp: new Date(row.created_at),
         body,
-        attempts: row.attempts, // CF behavior: count of previous attempts (0 on first delivery)
+        attempts: row.attempts + 1, // CF behavior: starts at 1 on first delivery
         ack() {
-          acked.add(row.id);
+          messageDecisions.set(row.id, { type: 'ack' });
         },
         retry(options?: { delaySeconds?: number }) {
-          retried.set(row.id, options?.delaySeconds);
+          messageDecisions.set(row.id, { type: 'retry', delaySeconds: options?.delaySeconds });
         },
       };
     });
@@ -272,11 +283,10 @@ export class QueueConsumer {
       queue: this.config.queue,
       messages,
       ackAll() {
-        allAcked = true;
+        batchDecision = { type: 'ack' };
       },
       retryAll(options?: { delaySeconds?: number }) {
-        allRetried = true;
-        allRetryDelay = options?.delaySeconds;
+        batchDecision = { type: 'retry', delaySeconds: options?.delaySeconds };
       },
     };
 
@@ -287,12 +297,13 @@ export class QueueConsumer {
       },
     };
 
+    let handlerError = false;
     try {
       await this.handler(batch, this.env, ctx);
     } catch (err) {
       console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err);
       // On handler error, retry all messages
-      allRetried = true;
+      handlerError = true;
     }
 
     // Wait for all waitUntil promises to settle (best-effort)
@@ -300,14 +311,19 @@ export class QueueConsumer {
       await Promise.allSettled(waitUntilPromises);
     }
 
-    // Process message outcomes
+    // Process message outcomes — per-message decision overrides batch decision
     for (const row of rows) {
       const currentAttempts = row.attempts + 1;
-      if (allAcked || acked.has(row.id)) {
-        // Delete acknowledged message
+      const decision: Decision | null = handlerError
+        ? { type: 'retry', delaySeconds: undefined }
+        : messageDecisions.get(row.id) ?? batchDecision;
+
+      if (!decision || decision.type === 'ack') {
+        // Ack (explicit or default) — delete message
         this.db.run("DELETE FROM queue_messages WHERE id = ?", [row.id]);
-      } else if (allRetried || retried.has(row.id)) {
-        const delay = retried.get(row.id) ?? allRetryDelay ?? 0;
+      } else {
+        // Retry
+        const delay = decision.delaySeconds ?? 0;
         if (currentAttempts >= this.config.maxRetries) {
           // Max retries exceeded — move to DLQ or delete
           if (this.config.deadLetterQueue) {
@@ -326,9 +342,6 @@ export class QueueConsumer {
             [Date.now() + delay * 1000, row.id],
           );
         }
-      } else {
-        // No explicit ack or retry — default is ack (matching CF behavior)
-        this.db.run("DELETE FROM queue_messages WHERE id = ?", [row.id]);
       }
     }
   }

@@ -452,7 +452,7 @@ describe("QueueConsumer", () => {
     expect(row.attempts).toBe(1);
   });
 
-  test("message.attempts is 0 on first delivery (CF behavior)", async () => {
+  test("message.attempts starts at 1 on first delivery (CF behavior)", async () => {
     await producer.send("count-attempts");
 
     const attemptsSeen: number[] = [];
@@ -470,7 +470,7 @@ describe("QueueConsumer", () => {
     await consumer.poll();
     await consumer.poll();
 
-    expect(attemptsSeen).toEqual([0, 1, 2]);
+    expect(attemptsSeen).toEqual([1, 2, 3]);
   });
 
   test("batch.queue contains the queue name", async () => {
@@ -543,5 +543,94 @@ describe("QueueConsumer", () => {
     await consumer.poll();
     // waitUntil promise should have been awaited
     expect(resolved).toBe(true);
+  });
+
+  test("ack/retry conflict: last per-message call wins", async () => {
+    await producer.send("conflict-msg");
+
+    const consumer = new QueueConsumer(
+      db,
+      { queue: "test-queue", maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+      async (batch) => {
+        const msg = batch.messages[0]!;
+        // First ack, then retry — retry should win (last call wins)
+        msg.ack();
+        msg.retry();
+      },
+      {},
+    );
+
+    await consumer.poll();
+
+    // Message should still exist (retried, not acked)
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    expect(count.cnt).toBe(1);
+  });
+
+  test("ack/retry conflict: last batch call wins", async () => {
+    await producer.send("batch-conflict");
+
+    const consumer = new QueueConsumer(
+      db,
+      { queue: "test-queue", maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+      async (batch) => {
+        // First retryAll, then ackAll — ackAll should win
+        batch.retryAll();
+        batch.ackAll();
+      },
+      {},
+    );
+
+    await consumer.poll();
+
+    // Message should be deleted (acked)
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    expect(count.cnt).toBe(0);
+  });
+
+  test("per-message decision overrides batch decision", async () => {
+    await producer.send("override-me");
+    await producer.send("keep-batch");
+
+    const consumer = new QueueConsumer(
+      db,
+      { queue: "test-queue", maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+      async (batch) => {
+        batch.ackAll();
+        // Override first message to retry
+        batch.messages[0]!.retry();
+      },
+      {},
+    );
+
+    await consumer.poll();
+
+    // One message retried, one acked
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    expect(count.cnt).toBe(1);
+  });
+
+  test("concurrent poll calls are prevented", async () => {
+    await producer.send("concurrent-test");
+
+    let handlerCallCount = 0;
+    const consumer = new QueueConsumer(
+      db,
+      { queue: "test-queue", maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+      async (batch) => {
+        handlerCallCount++;
+        // Simulate slow handler
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        batch.ackAll();
+      },
+      {},
+    );
+
+    // Start two polls concurrently — second should be skipped
+    const p1 = consumer.poll();
+    const p2 = consumer.poll();
+    await Promise.all([p1, p2]);
+
+    expect(handlerCallCount).toBe(1);
   });
 });
