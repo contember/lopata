@@ -1,5 +1,6 @@
 import { getDatabase, getDataDir } from "../db";
 import type { WranglerConfig } from "../config";
+import type { GenerationManager } from "../generation-manager";
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { join } from "node:path";
 import { existsSync, readdirSync, unlinkSync } from "node:fs";
@@ -9,9 +10,14 @@ const API_PREFIX = `${PREFIX}/api`;
 
 // Store config for showing configured-but-empty bindings
 let _config: WranglerConfig | null = null;
+let _manager: GenerationManager | null = null;
 
 export function setDashboardConfig(config: WranglerConfig): void {
   _config = config;
+}
+
+export function setGenerationManager(manager: GenerationManager): void {
+  _manager = manager;
 }
 
 // Dashboard HTML — must be used in Bun.serve routes (not fetch) for proper bundling
@@ -68,6 +74,7 @@ async function handleApiRequest(request: Request, apiPath: string, url: URL): Pr
     if (section === "workflows") return handleWorkflows(method, parts.slice(1), url, request);
     if (section === "d1") return handleD1(method, parts.slice(1), request);
     if (section === "cache") return handleCache(method, parts.slice(1), url);
+    if (section === "generations") return handleGenerations(method, parts.slice(1), request);
     return notFound("Unknown API route");
   } catch (err) {
     console.error("[bunflare dashboard] API error:", err);
@@ -114,6 +121,7 @@ function handleOverview(): Response {
     workflows: dbWorkflows.size,
     d1: d1Count,
     cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
+    generations: _manager ? _manager.list() : [],
   });
 }
 
@@ -530,6 +538,50 @@ function handleCache(method: string, parts: string[], url: URL): Response {
     if (!entryUrl) return badRequest("Missing url query parameter");
     db.prepare("DELETE FROM cache_entries WHERE cache_name = ? AND url = ?").run(name, entryUrl);
     return json({ ok: true });
+  }
+
+  return notFound();
+}
+
+// ─── Generations ──────────────────────────────────────────────────────
+async function handleGenerations(method: string, parts: string[], request: Request): Promise<Response> {
+  if (!_manager) return json({ error: "Generation manager not available" }, 503);
+
+  // GET /generations — list all generations
+  if (parts.length === 0 && method === "GET") {
+    return json({
+      generations: _manager.list(),
+      gracePeriodMs: _manager.gracePeriodMs,
+    });
+  }
+
+  // POST /generations/reload — trigger manual reload
+  if (parts.length === 1 && parts[0] === "reload" && method === "POST") {
+    try {
+      const gen = await _manager.reload();
+      return json({ ok: true, generation: gen.getInfo() });
+    } catch (err) {
+      return json({ error: String(err) }, 500);
+    }
+  }
+
+  // POST /generations/drain — force-drain oldest draining generation
+  if (parts.length === 1 && parts[0] === "drain" && method === "POST") {
+    const gens = _manager.list().filter(g => g.state === "draining");
+    if (gens.length === 0) return json({ error: "No draining generations" }, 404);
+    const oldest = gens.reduce((a, b) => a.createdAt < b.createdAt ? a : b);
+    _manager.stop(oldest.id);
+    return json({ ok: true, stoppedGeneration: oldest.id });
+  }
+
+  // POST /generations/config — set gracePeriodMs
+  if (parts.length === 1 && parts[0] === "config" && method === "POST") {
+    const body = await request.json() as { gracePeriodMs?: number };
+    if (typeof body.gracePeriodMs === "number" && body.gracePeriodMs >= 0) {
+      _manager.setGracePeriod(body.gracePeriodMs);
+      return json({ ok: true, gracePeriodMs: _manager.gracePeriodMs });
+    }
+    return badRequest("Invalid gracePeriodMs");
   }
 
   return notFound();

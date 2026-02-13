@@ -556,6 +556,16 @@ export class SqliteWorkflowBinding {
   _getWorkflowName() { return this.workflowName; }
   _getLimits() { return this.limits; }
 
+  /** Abort all running/queued/waiting instances for this workflow */
+  abortRunning(): void {
+    const rows = this.db.query(
+      "SELECT id FROM workflow_instances WHERE workflow_name = ? AND status IN ('running','queued','waiting')"
+    ).all(this.workflowName) as { id: string }[];
+    for (const { id } of rows) {
+      abortControllers.get(id)?.abort();
+    }
+  }
+
   private cleanupRetentionExpired(): void {
     if (this.limits.maxRetentionMs <= 0) return;
     const cutoff = Date.now() - this.limits.maxRetentionMs;

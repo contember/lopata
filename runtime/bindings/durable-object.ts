@@ -835,6 +835,24 @@ export class DurableObjectNamespaceImpl {
     }
   }
 
+  /** @internal Destroy this namespace: clear timers, evict instances without active WebSockets */
+  destroy(): void {
+    if (this._evictionTimer) {
+      clearInterval(this._evictionTimer);
+      this._evictionTimer = null;
+    }
+    for (const timer of this.alarmTimers.values()) clearTimeout(timer);
+    this.alarmTimers.clear();
+    // Keep instances with active WebSockets alive; evict the rest
+    for (const [idStr, instance] of this.instances) {
+      const state = instance.ctx as DurableObjectStateImpl;
+      if (state.getWebSockets().length === 0) {
+        this.instances.delete(idStr);
+      }
+    }
+    this._lastActivity.clear();
+  }
+
   /** @internal Get a raw instance for testing (no proxy) */
   _getInstance(idStr: string): DurableObjectBase | null {
     return this.instances.get(idStr) ?? null;

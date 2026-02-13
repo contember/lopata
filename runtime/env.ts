@@ -17,6 +17,10 @@ import { getDatabase, getDataDir } from "./db";
  */
 export let globalEnv: Record<string, unknown> = {};
 
+export function setGlobalEnv(env: Record<string, unknown>) {
+  globalEnv = env;
+}
+
 export function parseDevVars(content: string): Record<string, string> {
   const vars: Record<string, string> = {};
   for (const line of content.split("\n")) {
