@@ -76,7 +76,7 @@ export function runMigrations(db: Database): void {
 		CREATE TABLE IF NOT EXISTS queue_messages (
 			id TEXT PRIMARY KEY,
 			queue TEXT NOT NULL,
-			body TEXT NOT NULL,
+			body BLOB NOT NULL,
 			content_type TEXT NOT NULL DEFAULT 'json',
 			attempts INTEGER NOT NULL DEFAULT 0,
 			visible_at INTEGER NOT NULL,

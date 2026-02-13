@@ -40,45 +40,141 @@ interface ConsumerConfig {
 
 type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: { waitUntil(p: Promise<unknown>): void }) => Promise<void>;
 
+// --- Limits ---
+
+export interface QueueLimits {
+  maxMessageSize?: number;     // default 128 * 1024 (128 KB)
+  maxBatchMessages?: number;   // default 100
+  maxBatchSize?: number;       // default 256 * 1024 (256 KB)
+  maxDelaySeconds?: number;    // default 43200 (12 hours)
+}
+
+const QUEUE_DEFAULTS: Required<QueueLimits> = {
+  maxMessageSize: 128 * 1024,
+  maxBatchMessages: 100,
+  maxBatchSize: 256 * 1024,
+  maxDelaySeconds: 43200,
+};
+
+// --- Encoding / Decoding ---
+
+function encodeBody(message: unknown, contentType: string): Uint8Array {
+  switch (contentType) {
+    case "bytes": {
+      if (message instanceof ArrayBuffer) {
+        return new Uint8Array(message);
+      }
+      if (message instanceof Uint8Array) {
+        return message;
+      }
+      if (ArrayBuffer.isView(message)) {
+        return new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+      }
+      throw new Error("bytes content type requires ArrayBuffer or Uint8Array");
+    }
+    case "text":
+      return new TextEncoder().encode(String(message));
+    case "v8":
+      // Use JSON serialization as a v8-structured-clone approximation
+      return new TextEncoder().encode(JSON.stringify(message));
+    case "json":
+    default:
+      return new TextEncoder().encode(JSON.stringify(message));
+  }
+}
+
+function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
+  switch (contentType) {
+    case "bytes":
+      return raw instanceof Uint8Array ? raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) : new Uint8Array(raw).buffer;
+    case "text":
+      return new TextDecoder().decode(raw);
+    case "v8":
+      return JSON.parse(new TextDecoder().decode(raw));
+    case "json":
+    default:
+      return JSON.parse(new TextDecoder().decode(raw));
+  }
+}
+
 // --- Producer ---
 
 export class SqliteQueueProducer {
   private db: Database;
   private queueName: string;
   private defaultDelay: number;
+  private limits: Required<QueueLimits>;
 
-  constructor(db: Database, queueName: string, defaultDelay: number = 0) {
+  constructor(db: Database, queueName: string, defaultDelay: number = 0, limits?: QueueLimits) {
     this.db = db;
     this.queueName = queueName;
     this.defaultDelay = defaultDelay;
+    this.limits = { ...QUEUE_DEFAULTS, ...limits };
   }
 
   async send(message: unknown, options?: SendOptions): Promise<void> {
     const contentType = options?.contentType ?? "json";
     const delaySeconds = options?.delaySeconds ?? this.defaultDelay;
+
+    if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {
+      throw new Error(`delaySeconds must be between 0 and ${this.limits.maxDelaySeconds}`);
+    }
+
+    const encoded = encodeBody(message, contentType);
+
+    if (encoded.byteLength > this.limits.maxMessageSize) {
+      throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`);
+    }
+
     const now = Date.now();
     const visibleAt = now + delaySeconds * 1000;
 
-    const body = contentType === "json" ? JSON.stringify(message) : String(message);
-
     this.db.run(
       "INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
-      [randomUUIDv7(), this.queueName, body, contentType, visibleAt, now],
+      [randomUUIDv7(), this.queueName, encoded, contentType, visibleAt, now],
     );
   }
 
   async sendBatch(messages: BatchMessage[], options?: SendOptions): Promise<void> {
+    if (messages.length > this.limits.maxBatchMessages) {
+      throw new Error(`Batch exceeds max message count of ${this.limits.maxBatchMessages}`);
+    }
+
     const stmt = this.db.prepare(
       "INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)",
     );
     const now = Date.now();
+
+    // Pre-encode all messages and validate total size
+    const encoded: { data: Uint8Array; contentType: string; delaySeconds: number }[] = [];
+    let totalSize = 0;
+
+    for (const msg of messages) {
+      const contentType = msg.contentType ?? options?.contentType ?? "json";
+      const delaySeconds = msg.delaySeconds ?? options?.delaySeconds ?? this.defaultDelay;
+
+      if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {
+        throw new Error(`delaySeconds must be between 0 and ${this.limits.maxDelaySeconds}`);
+      }
+
+      const data = encodeBody(msg.body, contentType);
+
+      if (data.byteLength > this.limits.maxMessageSize) {
+        throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`);
+      }
+
+      totalSize += data.byteLength;
+      encoded.push({ data, contentType, delaySeconds });
+    }
+
+    if (totalSize > this.limits.maxBatchSize) {
+      throw new Error(`Batch exceeds max total size of ${this.limits.maxBatchSize} bytes`);
+    }
+
     const tx = this.db.transaction(() => {
-      for (const msg of messages) {
-        const contentType = msg.contentType ?? options?.contentType ?? "json";
-        const delaySeconds = msg.delaySeconds ?? options?.delaySeconds ?? this.defaultDelay;
+      for (const { data, contentType, delaySeconds } of encoded) {
         const visibleAt = now + delaySeconds * 1000;
-        const body = contentType === "json" ? JSON.stringify(msg.body) : String(msg.body);
-        stmt.run(randomUUIDv7(), this.queueName, body, contentType, visibleAt, now);
+        stmt.run(randomUUIDv7(), this.queueName, data, contentType, visibleAt, now);
       }
     });
     tx();
@@ -93,6 +189,8 @@ export class QueueConsumer {
   private handler: QueueHandler;
   private env: Record<string, unknown>;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = [];
+  private batchTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     db: Database,
@@ -118,12 +216,16 @@ export class QueueConsumer {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
   }
 
   async poll(): Promise<void> {
     const now = Date.now();
     const rows = this.db.query<
-      { id: string; body: string; content_type: string; attempts: number; created_at: number },
+      { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
       [string, number, number]
     >(
       "SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND visible_at <= ? ORDER BY visible_at LIMIT ?",
@@ -131,6 +233,13 @@ export class QueueConsumer {
 
     if (rows.length === 0) return;
 
+    // If we got fewer than maxBatchSize and maxBatchTimeout > 0, we could wait.
+    // But for simplicity in poll-based model, deliver what we have.
+
+    await this.deliverBatch(rows);
+  }
+
+  private async deliverBatch(rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[]): Promise<void> {
     // Increment attempts for all fetched messages
     const ids = rows.map((r) => r.id);
     const placeholders = ids.map(() => "?").join(",");
@@ -144,12 +253,12 @@ export class QueueConsumer {
     let allRetryDelay: number | undefined;
 
     const messages: Message[] = rows.map((row) => {
-      const body = row.content_type === "json" ? JSON.parse(row.body) : row.body;
+      const body = decodeBody(row.body, row.content_type);
       return {
         id: row.id,
         timestamp: new Date(row.created_at),
         body,
-        attempts: row.attempts + 1, // reflects the current attempt
+        attempts: row.attempts, // CF behavior: count of previous attempts (0 on first delivery)
         ack() {
           acked.add(row.id);
         },
@@ -171,7 +280,12 @@ export class QueueConsumer {
       },
     };
 
-    const ctx = { waitUntil(_p: Promise<unknown>) {} };
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil(p: Promise<unknown>) {
+        waitUntilPromises.push(p);
+      },
+    };
 
     try {
       await this.handler(batch, this.env, ctx);
@@ -179,6 +293,11 @@ export class QueueConsumer {
       console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err);
       // On handler error, retry all messages
       allRetried = true;
+    }
+
+    // Wait for all waitUntil promises to settle (best-effort)
+    if (waitUntilPromises.length > 0) {
+      await Promise.allSettled(waitUntilPromises);
     }
 
     // Process message outcomes
