@@ -1,15 +1,5 @@
-import { useState, useEffect } from "preact/hooks";
-import { api } from "../lib";
-
-interface Overview {
-  kv: number;
-  r2: number;
-  queue: number;
-  do: number;
-  workflows: number;
-  d1: number;
-  cache: number;
-}
+import type { OverviewData } from "../rpc/types";
+import { useQuery } from "../rpc/hooks";
 
 const CARDS = [
   { key: "kv", label: "KV Namespaces", path: "/kv", icon: "⬡", accent: "bg-accent-lime" },
@@ -22,11 +12,7 @@ const CARDS = [
 ] as const;
 
 export function HomeView() {
-  const [data, setData] = useState<Overview | null>(null);
-
-  useEffect(() => {
-    api<Overview>("/overview").then(setData);
-  }, []);
+  const { data } = useQuery("overview.get");
 
   return (
     <div class="p-8">
@@ -53,7 +39,7 @@ export function HomeView() {
               <div class={`w-11 h-11 ${card.accent} rounded-2xl flex items-center justify-center text-lg mb-4`}>
                 {card.icon}
               </div>
-              <div class="text-4xl font-bold text-ink mb-1">{data[card.key as keyof Overview]}</div>
+              <div class="text-4xl font-bold text-ink mb-1">{data[card.key as keyof OverviewData]}</div>
               <div class="text-sm text-gray-400 font-medium">{card.label}</div>
             </a>
           ))}

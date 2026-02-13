@@ -1,22 +1,6 @@
-import { useState, useEffect } from "preact/hooks";
-import { api, formatTime } from "../lib";
+import { formatTime } from "../lib";
+import { useQuery, useMutation } from "../rpc/hooks";
 import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink } from "../components";
-
-interface DoNamespace {
-  namespace: string;
-  count: number;
-}
-
-interface DoInstance {
-  id: string;
-  key_count: number;
-  alarm: number | null;
-}
-
-interface DoDetail {
-  entries: { key: string; value: string }[];
-  alarm: number | null;
-}
 
 export function DoView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -27,16 +11,12 @@ export function DoView({ route }: { route: string }) {
 }
 
 function DoNamespaceList() {
-  const [namespaces, setNamespaces] = useState<DoNamespace[]>([]);
-
-  useEffect(() => {
-    api<DoNamespace[]>("/do").then(setNamespaces);
-  }, []);
+  const { data: namespaces } = useQuery("do.listNamespaces");
 
   return (
     <div class="p-8">
-      <PageHeader title="Durable Objects" subtitle={`${namespaces.length} namespace(s)`} />
-      {namespaces.length === 0 ? (
+      <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
+      {!namespaces?.length ? (
         <EmptyState message="No Durable Object namespaces found" />
       ) : (
         <Table
@@ -52,16 +32,12 @@ function DoNamespaceList() {
 }
 
 function DoInstanceList({ ns }: { ns: string }) {
-  const [instances, setInstances] = useState<DoInstance[]>([]);
-
-  useEffect(() => {
-    api<DoInstance[]>(`/do/${encodeURIComponent(ns)}`).then(setInstances);
-  }, [ns]);
+  const { data: instances } = useQuery("do.listInstances", { ns });
 
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Durable Objects", href: "#/do" }, { label: ns }]} />
-      {instances.length === 0 ? (
+      {!instances?.length ? (
         <EmptyState message="No instances found" />
       ) : (
         <Table
@@ -78,16 +54,13 @@ function DoInstanceList({ ns }: { ns: string }) {
 }
 
 function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
-  const [data, setData] = useState<DoDetail | null>(null);
+  const { data, refetch } = useQuery("do.getInstance", { ns, id });
+  const deleteEntry = useMutation("do.deleteEntry");
 
-  useEffect(() => {
-    api<DoDetail>(`/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}`).then(setData);
-  }, [ns, id]);
-
-  const deleteEntry = async (key: string) => {
+  const handleDelete = async (key: string) => {
     if (!confirm(`Delete storage key "${key}"?`)) return;
-    await api(`/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}/${encodeURIComponent(key)}`, { method: "DELETE" });
-    setData(prev => prev ? { ...prev, entries: prev.entries.filter(e => e.key !== key) } : null);
+    await deleteEntry.mutate({ ns, id, key });
+    refetch();
   };
 
   if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
@@ -112,7 +85,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
           rows={data.entries.map(e => [
             <span class="font-mono text-xs font-medium">{e.key}</span>,
             <pre class="text-xs max-w-lg truncate font-mono">{e.value}</pre>,
-            <DeleteButton onClick={() => deleteEntry(e.key)} />,
+            <DeleteButton onClick={() => handleDelete(e.key)} />,
           ])}
         />
       )}

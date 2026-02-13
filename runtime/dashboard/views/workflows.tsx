@@ -1,27 +1,7 @@
-import { useState, useEffect } from "preact/hooks";
-import { api, formatTime } from "../lib";
+import { useState } from "preact/hooks";
+import { formatTime } from "../lib";
+import { useQuery, useMutation } from "../rpc/hooks";
 import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge } from "../components";
-
-interface WorkflowSummary {
-  name: string;
-  total: number;
-  byStatus: Record<string, number>;
-}
-
-interface WorkflowInstance {
-  id: string;
-  status: string;
-  params: string | null;
-  output: string | null;
-  error: string | null;
-  created_at: number;
-  updated_at: number;
-}
-
-interface WorkflowDetail extends WorkflowInstance {
-  steps: { step_name: string; output: string | null; completed_at: number }[];
-  events: { id: number; event_type: string; payload: string | null; created_at: number }[];
-}
 
 const WORKFLOW_STATUS_COLORS: Record<string, string> = {
   running: "bg-accent-blue text-ink",
@@ -39,16 +19,12 @@ export function WorkflowsView({ route }: { route: string }) {
 }
 
 function WorkflowList() {
-  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
-
-  useEffect(() => {
-    api<WorkflowSummary[]>("/workflows").then(setWorkflows);
-  }, []);
+  const { data: workflows } = useQuery("workflows.list");
 
   return (
     <div class="p-8">
-      <PageHeader title="Workflows" subtitle={`${workflows.length} workflow(s)`} />
-      {workflows.length === 0 ? (
+      <PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} />
+      {!workflows?.length ? (
         <EmptyState message="No workflow instances found" />
       ) : (
         <Table
@@ -67,13 +43,15 @@ function WorkflowList() {
 }
 
 function WorkflowInstanceList({ name }: { name: string }) {
-  const [instances, setInstances] = useState<WorkflowInstance[]>([]);
   const [statusFilter, setStatusFilter] = useState("");
+  const { data: instances, refetch } = useQuery("workflows.listInstances", { name, status: statusFilter || undefined });
+  const terminate = useMutation("workflows.terminate");
 
-  useEffect(() => {
-    const qs = statusFilter ? `?status=${statusFilter}` : "";
-    api<WorkflowInstance[]>(`/workflows/${encodeURIComponent(name)}${qs}`).then(setInstances);
-  }, [name, statusFilter]);
+  const handleTerminate = async (id: string) => {
+    if (!confirm("Terminate this workflow?")) return;
+    await terminate.mutate({ name, id });
+    refetch();
+  };
 
   return (
     <div class="p-8">
@@ -91,7 +69,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
           <option value="terminated">Terminated</option>
         </select>
       </div>
-      {instances.length === 0 ? (
+      {!instances?.length ? (
         <EmptyState message="No instances found" />
       ) : (
         <Table
@@ -103,11 +81,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
             formatTime(inst.updated_at),
             inst.status === "running" ? (
               <button
-                onClick={async () => {
-                  if (!confirm("Terminate this workflow?")) return;
-                  await api(`/workflows/${encodeURIComponent(name)}/${encodeURIComponent(inst.id)}/terminate`, { method: "POST" });
-                  setInstances(prev => prev.map(i => i.id === inst.id ? { ...i, status: "terminated" } : i));
-                }}
+                onClick={() => handleTerminate(inst.id)}
                 class="text-red-400 hover:text-red-600 text-xs font-medium rounded-full px-3 py-1 hover:bg-red-50 transition-all"
               >
                 Terminate
@@ -121,11 +95,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
 }
 
 function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
-  const [data, setData] = useState<WorkflowDetail | null>(null);
-
-  useEffect(() => {
-    api<WorkflowDetail>(`/workflows/${encodeURIComponent(name)}/${encodeURIComponent(id)}`).then(setData);
-  }, [name, id]);
+  const { data } = useQuery("workflows.getInstance", { name, id });
 
   if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
 

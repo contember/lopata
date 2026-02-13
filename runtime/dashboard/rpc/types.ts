@@ -1,0 +1,168 @@
+// ─── Shared data types ───────────────────────────────────────────────
+
+export type { GenerationInfo } from "../../generation";
+import type { GenerationInfo } from "../../generation";
+
+export interface Paginated<T> {
+  items: T[];
+  cursor: string | null;
+}
+
+export interface OkResponse {
+  ok: true;
+}
+
+// Overview
+export interface OverviewData {
+  kv: number;
+  r2: number;
+  queue: number;
+  do: number;
+  workflows: number;
+  d1: number;
+  cache: number;
+  generations: GenerationInfo[];
+}
+
+// KV
+export interface KvNamespace {
+  namespace: string;
+  count: number;
+}
+
+export interface KvKey {
+  key: string;
+  size: number;
+  metadata: string | null;
+  expiration: number | null;
+}
+
+export interface KvValue {
+  key: string;
+  value: string;
+  metadata: unknown;
+  expiration: number | null;
+}
+
+// R2
+export interface R2Bucket {
+  bucket: string;
+  count: number;
+  total_size: number;
+}
+
+export interface R2Object {
+  key: string;
+  size: number;
+  etag: string;
+  uploaded: string;
+  http_metadata: string | null;
+  custom_metadata: string | null;
+}
+
+// Queue
+export interface QueueInfo {
+  queue: string;
+  pending: number;
+  acked: number;
+  failed: number;
+}
+
+export interface QueueMessage {
+  id: string;
+  body: string;
+  content_type: string;
+  status: string;
+  attempts: number;
+  visible_at: number;
+  created_at: number;
+  completed_at: number | null;
+}
+
+// Durable Objects
+export interface DoNamespace {
+  namespace: string;
+  count: number;
+}
+
+export interface DoInstance {
+  id: string;
+  key_count: number;
+  alarm: number | null;
+}
+
+export interface DoDetail {
+  entries: { key: string; value: string }[];
+  alarm: number | null;
+}
+
+// Workflows
+export interface WorkflowSummary {
+  name: string;
+  total: number;
+  byStatus: Record<string, number>;
+}
+
+export interface WorkflowInstance {
+  id: string;
+  status: string;
+  params: string | null;
+  output: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WorkflowDetail extends WorkflowInstance {
+  steps: { step_name: string; output: string | null; completed_at: number }[];
+  events: { id: number; event_type: string; payload: string | null; created_at: number }[];
+}
+
+// D1
+export interface D1Database {
+  name: string;
+  tables: number;
+}
+
+export interface D1Table {
+  name: string;
+  sql: string;
+  rows: number;
+}
+
+export interface QueryResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  count: number;
+  message?: string;
+  error?: string;
+}
+
+// Cache
+export interface CacheName {
+  cache_name: string;
+  count: number;
+}
+
+export interface CacheEntry {
+  url: string;
+  status: number;
+  headers: string;
+  expires_at: number | null;
+}
+
+// Generations
+export interface GenerationsData {
+  generations: GenerationInfo[];
+  gracePeriodMs: number;
+}
+
+// ─── Handler context ─────────────────────────────────────────────────
+
+import type { WranglerConfig } from "../../config";
+import type { GenerationManager } from "../../generation-manager";
+
+export interface HandlerContext {
+  config: WranglerConfig | null;
+  manager: GenerationManager | null;
+}

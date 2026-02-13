@@ -1,21 +1,7 @@
-import { useState, useEffect } from "preact/hooks";
-import { api, formatBytes } from "../lib";
+import { useState } from "preact/hooks";
+import { formatBytes } from "../lib";
+import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
 import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
-
-interface R2Bucket {
-  bucket: string;
-  count: number;
-  total_size: number;
-}
-
-interface R2Object {
-  key: string;
-  size: number;
-  etag: string;
-  uploaded: string;
-  http_metadata: string | null;
-  custom_metadata: string | null;
-}
 
 export function R2View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -25,16 +11,12 @@ export function R2View({ route }: { route: string }) {
 }
 
 function R2BucketList() {
-  const [buckets, setBuckets] = useState<R2Bucket[]>([]);
-
-  useEffect(() => {
-    api<R2Bucket[]>("/r2").then(setBuckets);
-  }, []);
+  const { data: buckets } = useQuery("r2.listBuckets");
 
   return (
     <div class="p-8">
-      <PageHeader title="R2 Buckets" subtitle={`${buckets.length} bucket(s)`} />
-      {buckets.length === 0 ? (
+      <PageHeader title="R2 Buckets" subtitle={`${buckets?.length ?? 0} bucket(s)`} />
+      {!buckets?.length ? (
         <EmptyState message="No R2 buckets found" />
       ) : (
         <Table
@@ -51,25 +33,13 @@ function R2BucketList() {
 }
 
 function R2ObjectList({ bucket }: { bucket: string }) {
-  const [objects, setObjects] = useState<R2Object[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
   const [prefix, setPrefix] = useState("");
+  const { items: objects, hasMore, loadMore } = usePaginatedQuery("r2.listObjects", { bucket, prefix });
+  const deleteObject = useMutation("r2.deleteObject");
 
-  const load = (reset = false) => {
-    const c = reset ? "" : (cursor ?? "");
-    api<{ items: R2Object[]; cursor: string | null }>(`/r2/${encodeURIComponent(bucket)}?prefix=${encodeURIComponent(prefix)}&cursor=${encodeURIComponent(c)}`)
-      .then(data => {
-        setObjects(prev => reset ? data.items : [...prev, ...data.items]);
-        setCursor(data.cursor);
-      });
-  };
-
-  useEffect(() => { load(true); }, [bucket, prefix]);
-
-  const deleteObject = async (key: string) => {
+  const handleDelete = async (key: string) => {
     if (!confirm(`Delete object "${key}"?`)) return;
-    await api(`/r2/${encodeURIComponent(bucket)}/${encodeURIComponent(key)}`, { method: "DELETE" });
-    setObjects(prev => prev.filter(o => o.key !== key));
+    await deleteObject.mutate({ bucket, key });
   };
 
   return (
@@ -89,10 +59,10 @@ function R2ObjectList({ bucket }: { bucket: string }) {
               formatBytes(o.size),
               <span class="font-mono text-xs text-gray-400">{o.etag.slice(0, 12)}</span>,
               o.uploaded,
-              <DeleteButton onClick={() => deleteObject(o.key)} />,
+              <DeleteButton onClick={() => handleDelete(o.key)} />,
             ])}
           />
-          {cursor && <LoadMoreButton onClick={() => load()} />}
+          {hasMore && <LoadMoreButton onClick={loadMore} />}
         </>
       )}
     </div>

@@ -1,25 +1,6 @@
-import { useState, useEffect } from "preact/hooks";
-import { api } from "../lib";
+import { useState } from "preact/hooks";
+import { useQuery, useMutation } from "../rpc/hooks";
 import { EmptyState, Breadcrumb, Table, PageHeader, TableLink } from "../components";
-
-interface D1Database {
-  name: string;
-  tables: number;
-}
-
-interface D1Table {
-  name: string;
-  sql: string;
-  rows: number;
-}
-
-interface QueryResult {
-  columns: string[];
-  rows: Record<string, unknown>[];
-  count: number;
-  message?: string;
-  error?: string;
-}
 
 export function D1View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -29,16 +10,12 @@ export function D1View({ route }: { route: string }) {
 }
 
 function D1DatabaseList() {
-  const [databases, setDatabases] = useState<D1Database[]>([]);
-
-  useEffect(() => {
-    api<D1Database[]>("/d1").then(setDatabases);
-  }, []);
+  const { data: databases } = useQuery("d1.listDatabases");
 
   return (
     <div class="p-8">
-      <PageHeader title="D1 Databases" subtitle={`${databases.length} database(s)`} />
-      {databases.length === 0 ? (
+      <PageHeader title="D1 Databases" subtitle={`${databases?.length ?? 0} database(s)`} />
+      {!databases?.length ? (
         <EmptyState message="No D1 databases found" />
       ) : (
         <Table
@@ -54,31 +31,9 @@ function D1DatabaseList() {
 }
 
 function D1DatabaseDetail({ dbName }: { dbName: string }) {
-  const [tables, setTables] = useState<D1Table[]>([]);
+  const { data: tables } = useQuery("d1.listTables", { dbName });
   const [sql, setSql] = useState("");
-  const [result, setResult] = useState<QueryResult | null>(null);
-  const [running, setRunning] = useState(false);
-
-  useEffect(() => {
-    api<D1Table[]>(`/d1/${encodeURIComponent(dbName)}/tables`).then(setTables);
-  }, [dbName]);
-
-  const runQuery = async () => {
-    if (!sql.trim()) return;
-    setRunning(true);
-    setResult(null);
-    try {
-      const res = await api<QueryResult>(`/d1/${encodeURIComponent(dbName)}/query`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sql }),
-      });
-      setResult(res);
-    } catch (err) {
-      setResult({ columns: [], rows: [], count: 0, error: String(err) });
-    }
-    setRunning(false);
-  };
+  const query = useMutation("d1.query");
 
   return (
     <div class="p-8">
@@ -87,7 +42,7 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
       {/* Tables */}
       <div class="mb-8">
         <h3 class="text-lg font-bold mb-4">Tables</h3>
-        {tables.length === 0 ? (
+        {!tables?.length ? (
           <EmptyState message="No tables found" />
         ) : (
           <Table
@@ -112,54 +67,54 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
         <textarea
           value={sql}
           onInput={e => setSql((e.target as HTMLTextAreaElement).value)}
-          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runQuery(); }}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) query.mutate({ dbName, sql }); }}
           placeholder="SELECT * FROM ..."
           class="w-full bg-surface-raised border-none rounded-2xl px-5 py-4 font-mono text-sm outline-none min-h-[100px] resize-y focus:bg-surface focus:shadow-focus-soft transition-all mb-4"
         />
         <div class="flex items-center gap-3">
           <button
-            onClick={runQuery}
-            disabled={running || !sql.trim()}
+            onClick={() => query.mutate({ dbName, sql })}
+            disabled={query.isLoading || !sql.trim()}
             class="rounded-full px-6 py-2.5 text-sm font-semibold bg-ink text-white hover:bg-ink-muted disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
-            {running ? "Running..." : "Run Query"}
+            {query.isLoading ? "Running..." : "Run Query"}
           </button>
           <span class="text-xs text-gray-400 font-medium">Ctrl+Enter to run</span>
         </div>
       </div>
 
       {/* Results */}
-      {result && (
+      {query.error ? (
+        <div class="bg-red-50 text-red-600 p-5 rounded-card text-sm font-medium">
+          {query.error.message}
+        </div>
+      ) : query.data ? (
         <div>
-          {result.error ? (
-            <div class="bg-red-50 text-red-600 p-5 rounded-card text-sm font-medium">
-              {result.error}
-            </div>
-          ) : result.message ? (
+          {query.data.message ? (
             <div class="bg-emerald-50 text-emerald-700 p-5 rounded-card text-sm font-medium">
-              {result.message}
+              {query.data.message}
             </div>
-          ) : result.columns.length > 0 ? (
+          ) : query.data.columns.length > 0 ? (
             <div>
-              <div class="text-sm text-gray-400 mb-3 font-medium">{result.count} row(s)</div>
+              <div class="text-sm text-gray-400 mb-3 font-medium">{query.data.count} row(s)</div>
               <div class="bg-white rounded-card shadow-card p-5 overflow-x-auto">
                 <table class="w-full text-sm" style="border-collapse: separate; border-spacing: 0 6px;">
                   <thead>
                     <tr>
-                      {result.columns.map(col => (
+                      {query.data.columns.map(col => (
                         <th key={col} class="text-left px-5 pb-2 font-medium text-xs text-gray-400 uppercase tracking-wider font-mono">{col}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {result.rows.map((row, i) => (
+                    {query.data.rows.map((row, i) => (
                       <tr key={i} class="group">
-                        {result.columns.map((col, j) => (
+                        {query.data!.columns.map((col, j) => (
                           <td
                             key={col}
                             class={`px-5 py-3.5 bg-surface-raised group-hover:bg-surface-hover transition-colors font-mono text-xs ${
                               j === 0 ? "rounded-l-2xl" : ""
-                            } ${j === result.columns.length - 1 ? "rounded-r-2xl" : ""}`}
+                            } ${j === query.data!.columns.length - 1 ? "rounded-r-2xl" : ""}`}
                           >
                             {row[col] === null ? <span class="text-gray-300 italic">NULL</span> : String(row[col])}
                           </td>
@@ -172,7 +127,7 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
             </div>
           ) : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

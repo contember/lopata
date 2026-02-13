@@ -1,7 +1,5 @@
 import { useState, useEffect } from "preact/hooks";
 
-const API_BASE = "/__dashboard/api";
-
 export function useRoute(): string {
   const [route, setRoute] = useState(location.hash.slice(1) || "/");
 
@@ -16,11 +14,6 @@ export function useRoute(): string {
 
 export function navigate(path: string) {
   location.hash = path;
-}
-
-export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, init);
-  return res.json() as Promise<T>;
 }
 
 export function formatBytes(bytes: number): string {

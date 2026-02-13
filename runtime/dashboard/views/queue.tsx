@@ -1,24 +1,7 @@
-import { useState, useEffect } from "preact/hooks";
-import { api, formatTime } from "../lib";
+import { useState } from "preact/hooks";
+import { formatTime } from "../lib";
+import { useQuery, useMutation } from "../rpc/hooks";
 import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge } from "../components";
-
-interface Queue {
-  queue: string;
-  pending: number;
-  acked: number;
-  failed: number;
-}
-
-interface QueueMessage {
-  id: string;
-  body: string;
-  content_type: string;
-  status: string;
-  attempts: number;
-  visible_at: number;
-  created_at: number;
-  completed_at: number | null;
-}
 
 const QUEUE_STATUS_COLORS: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -34,16 +17,12 @@ export function QueueView({ route }: { route: string }) {
 }
 
 function QueueList() {
-  const [queues, setQueues] = useState<Queue[]>([]);
-
-  useEffect(() => {
-    api<Queue[]>("/queue").then(setQueues);
-  }, []);
+  const { data: queues } = useQuery("queue.listQueues");
 
   return (
     <div class="p-8">
-      <PageHeader title="Queues" subtitle={`${queues.length} queue(s)`} />
-      {queues.length === 0 ? (
+      <PageHeader title="Queues" subtitle={`${queues?.length ?? 0} queue(s)`} />
+      {!queues?.length ? (
         <EmptyState message="No queues found" />
       ) : (
         <Table
@@ -61,20 +40,14 @@ function QueueList() {
 }
 
 function QueueMessages({ name }: { name: string }) {
-  const [messages, setMessages] = useState<QueueMessage[]>([]);
   const [filter, setFilter] = useState("");
+  const { data: messages, refetch } = useQuery("queue.listMessages", { queue: name, status: filter || undefined });
+  const deleteMsg = useMutation("queue.deleteMessage");
 
-  const load = () => {
-    const qs = filter ? `?status=${filter}` : "";
-    api<QueueMessage[]>(`/queue/${encodeURIComponent(name)}${qs}`).then(setMessages);
-  };
-
-  useEffect(() => { load(); }, [name, filter]);
-
-  const deleteMsg = async (id: string) => {
+  const handleDelete = async (id: string) => {
     if (!confirm("Delete this message?")) return;
-    await api(`/queue/${encodeURIComponent(name)}/${encodeURIComponent(id)}`, { method: "DELETE" });
-    setMessages(prev => prev.filter(m => m.id !== id));
+    await deleteMsg.mutate({ queue: name, id });
+    refetch();
   };
 
   return (
@@ -87,7 +60,7 @@ function QueueMessages({ name }: { name: string }) {
           </PillButton>
         ))}
       </div>
-      {messages.length === 0 ? (
+      {!messages?.length ? (
         <EmptyState message="No messages found" />
       ) : (
         <Table
@@ -99,7 +72,7 @@ function QueueMessages({ name }: { name: string }) {
             m.attempts,
             formatTime(m.created_at),
             m.completed_at ? formatTime(m.completed_at) : "—",
-            <DeleteButton onClick={() => deleteMsg(m.id)} />,
+            <DeleteButton onClick={() => handleDelete(m.id)} />,
           ])}
         />
       )}

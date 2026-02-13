@@ -1,25 +1,8 @@
-import { useState, useEffect } from "preact/hooks";
-import { api, formatBytes } from "../lib";
+import { useState } from "preact/hooks";
+import { formatBytes } from "../lib";
+import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
+import type { KvValue } from "../rpc/types";
 import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
-
-interface KvNamespace {
-  namespace: string;
-  count: number;
-}
-
-interface KvKey {
-  key: string;
-  size: number;
-  metadata: string | null;
-  expiration: number | null;
-}
-
-interface KvValue {
-  key: string;
-  value: string;
-  metadata: unknown;
-  expiration: number | null;
-}
 
 export function KvView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -31,16 +14,12 @@ export function KvView({ route }: { route: string }) {
 }
 
 function KvNamespaceList() {
-  const [namespaces, setNamespaces] = useState<KvNamespace[]>([]);
-
-  useEffect(() => {
-    api<KvNamespace[]>("/kv").then(setNamespaces);
-  }, []);
+  const { data: namespaces } = useQuery("kv.listNamespaces");
 
   return (
     <div class="p-8">
-      <PageHeader title="KV Namespaces" subtitle={`${namespaces.length} namespace(s)`} />
-      {namespaces.length === 0 ? (
+      <PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
+      {!namespaces?.length ? (
         <EmptyState message="No KV namespaces found" />
       ) : (
         <Table
@@ -56,25 +35,13 @@ function KvNamespaceList() {
 }
 
 function KvKeyList({ ns }: { ns: string }) {
-  const [keys, setKeys] = useState<KvKey[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
   const [prefix, setPrefix] = useState("");
+  const { items: keys, hasMore, loadMore } = usePaginatedQuery("kv.listKeys", { ns, prefix });
+  const deleteKey = useMutation("kv.deleteKey");
 
-  const load = (reset = false) => {
-    const c = reset ? "" : (cursor ?? "");
-    api<{ items: KvKey[]; cursor: string | null }>(`/kv/${encodeURIComponent(ns)}?prefix=${encodeURIComponent(prefix)}&cursor=${encodeURIComponent(c)}`)
-      .then(data => {
-        setKeys(prev => reset ? data.items : [...prev, ...data.items]);
-        setCursor(data.cursor);
-      });
-  };
-
-  useEffect(() => { load(true); }, [ns, prefix]);
-
-  const deleteKey = async (key: string) => {
+  const handleDelete = async (key: string) => {
     if (!confirm(`Delete key "${key}"?`)) return;
-    await api(`/kv/${encodeURIComponent(ns)}/${encodeURIComponent(key)}`, { method: "DELETE" });
-    setKeys(prev => prev.filter(k => k.key !== key));
+    await deleteKey.mutate({ ns, key });
   };
 
   return (
@@ -93,10 +60,10 @@ function KvKeyList({ ns }: { ns: string }) {
               <TableLink href={`#/kv/${encodeURIComponent(ns)}/${encodeURIComponent(k.key)}`} mono>{k.key}</TableLink>,
               formatBytes(k.size),
               k.expiration ? new Date(k.expiration * 1000).toLocaleString() : "—",
-              <DeleteButton onClick={() => deleteKey(k.key)} />,
+              <DeleteButton onClick={() => handleDelete(k.key)} />,
             ])}
           />
-          {cursor && <LoadMoreButton onClick={() => load()} />}
+          {hasMore && <LoadMoreButton onClick={loadMore} />}
         </>
       )}
     </div>
@@ -104,11 +71,7 @@ function KvKeyList({ ns }: { ns: string }) {
 }
 
 function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
-  const [data, setData] = useState<KvValue | null>(null);
-
-  useEffect(() => {
-    api<KvValue>(`/kv/${encodeURIComponent(ns)}/${encodeURIComponent(keyName)}`).then(setData);
-  }, [ns, keyName]);
+  const { data } = useQuery("kv.getKey", { ns, key: keyName });
 
   if (!data) return <div class="p-8 text-gray-400">Loading...</div>;
 

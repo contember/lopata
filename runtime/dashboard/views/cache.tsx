@@ -1,18 +1,5 @@
-import { useState, useEffect } from "preact/hooks";
-import { api } from "../lib";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, StatusBadge } from "../components";
-
-interface CacheName {
-  cache_name: string;
-  count: number;
-}
-
-interface CacheEntry {
-  url: string;
-  status: number;
-  headers: string;
-  expires_at: number | null;
-}
+import { useQuery, useMutation } from "../rpc/hooks";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink } from "../components";
 
 const HTTP_STATUS_COLORS: Record<string, string> = {
   "2xx": "bg-emerald-100 text-emerald-700",
@@ -35,16 +22,12 @@ export function CacheView({ route }: { route: string }) {
 }
 
 function CacheNameList() {
-  const [caches, setCaches] = useState<CacheName[]>([]);
-
-  useEffect(() => {
-    api<CacheName[]>("/cache").then(setCaches);
-  }, []);
+  const { data: caches } = useQuery("cache.listCaches");
 
   return (
     <div class="p-8">
-      <PageHeader title="Cache" subtitle={`${caches.length} cache(s)`} />
-      {caches.length === 0 ? (
+      <PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} />
+      {!caches?.length ? (
         <EmptyState message="No cache entries found" />
       ) : (
         <Table
@@ -60,22 +43,19 @@ function CacheNameList() {
 }
 
 function CacheEntryList({ name }: { name: string }) {
-  const [entries, setEntries] = useState<CacheEntry[]>([]);
+  const { data: entries, refetch } = useQuery("cache.listEntries", { name });
+  const deleteEntry = useMutation("cache.deleteEntry");
 
-  useEffect(() => {
-    api<CacheEntry[]>(`/cache/${encodeURIComponent(name)}`).then(setEntries);
-  }, [name]);
-
-  const deleteEntry = async (url: string) => {
+  const handleDelete = async (url: string) => {
     if (!confirm(`Delete cache entry for "${url}"?`)) return;
-    await api(`/cache/${encodeURIComponent(name)}?url=${encodeURIComponent(url)}`, { method: "DELETE" });
-    setEntries(prev => prev.filter(e => e.url !== url));
+    await deleteEntry.mutate({ name, url });
+    refetch();
   };
 
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Cache", href: "#/cache" }, { label: name }]} />
-      {entries.length === 0 ? (
+      {!entries?.length ? (
         <EmptyState message="No cache entries" />
       ) : (
         <Table
@@ -84,7 +64,7 @@ function CacheEntryList({ name }: { name: string }) {
             <span class="font-mono text-xs max-w-md truncate block">{e.url}</span>,
             <span class={`inline-flex px-3.5 py-1 rounded-full text-xs font-semibold ${httpStatusColor(e.status)}`}>{e.status}</span>,
             e.expires_at ? new Date(e.expires_at * 1000).toLocaleString() : "—",
-            <DeleteButton onClick={() => deleteEntry(e.url)} />,
+            <DeleteButton onClick={() => handleDelete(e.url)} />,
           ])}
         />
       )}

@@ -59,7 +59,7 @@ const server = Bun.serve({
     const url = new URL(request.url);
 
     // Dashboard API routes
-    if (url.pathname.startsWith("/__dashboard/api")) {
+    if (url.pathname === "/__dashboard/api/rpc") {
       return handleDashboardRequest(request);
     }
 
