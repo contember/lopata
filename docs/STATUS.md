@@ -4,14 +4,14 @@
 
 | Metric           | Value |
 | ---------------- | ----- |
-| **Total Issues** | 30    |
-| **Completed**    | 30    |
-| **Pending**      | 0     |
-| **Progress**     | 100%  |
+| **Total Issues** | 39    |
+| **Completed**    | 31    |
+| **Pending**      | 8     |
+| **Progress**     | 79%   |
 
 ## Current Focus
 
-All issues completed.
+Phase 3 — closing remaining API gaps, prioritized by community impact.
 
 ## Issues
 
@@ -38,7 +38,7 @@ All issues completed.
 | 11 | do-websocket-support         | completed | |
 | 12 | do-sql-storage               | completed | |
 
-### Phase 2 — API Completeness (pending)
+### Phase 2 — API Completeness (completed)
 
 Issues ordered by priority — high-impact gaps first, optional/low-priority last.
 
@@ -57,6 +57,22 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 29 | scheduled-gaps               | completed | Special cron strings, day/month names, controller.type |
 | 25 | images-transforms            | completed | Sharp-based transforms, AVIF dimensions, draw overlay, quality |
 
+### Phase 3 — Remaining API Gaps (pending)
+
+Issues ordered by priority — high-impact first.
+
+| #  | Issue                        | Status  | Priority  | Notes |
+| -- | ---------------------------- | ------- | --------- | ----- |
+| 30 | html-rewriter                | completed | medium    | HTMLRewriter class via html-rewriter-wasm (lol-html WASM) |
+| 31 | websocket-pair               | pending | medium    | WebSocketPair + WS upgrade for regular Workers |
+| 32 | cf-streams                   | pending | low       | IdentityTransformStream, FixedLengthStream |
+| 33 | do-sync-kv                   | pending | low       | storage.kv.get/put/delete/list (synchronous) |
+| 34 | redirects-file               | pending | low       | Static assets _redirects file support |
+| 35 | crypto-extras                | pending | very low  | crypto.subtle.timingSafeEqual, crypto.DigestStream |
+| 36 | navigator-globals            | pending | very low  | navigator.userAgent, scheduler.wait |
+| 37 | queue-pull-consumers         | pending | low       | HTTP pull/ack endpoints for queues |
+| 38 | do-transaction-sync          | pending | low       | storage.transactionSync() |
+
 ## Dependencies
 
 ### Phase 1
@@ -70,6 +86,12 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - No hard dependencies between Phase 2 issues — can be implemented in any order
 - All Phase 2 issues depend on their respective Phase 1 implementation being completed (already done)
 - **25** (images-transforms) requires `sharp` as an optional dependency
+
+### Phase 3
+- **38** (do-transaction-sync) pairs with **33** (do-sync-kv) — implement together
+- **31** (websocket-pair) is independent — no dependency on other Phase 3 issues
+- **30** (html-rewriter) is independent — requires external dependency (lol-html WASM)
+- All other Phase 3 issues are independent
 
 ## Changelog
 
@@ -128,6 +150,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#29 scheduled-gaps**: Added special cron string aliases (`@daily`/`@midnight`, `@hourly`, `@weekly`, `@monthly`, `@yearly`/`@annually`) — resolved to standard 5-field expressions before parsing, with original alias preserved in `expression` field. Added day-of-week names (`MON`–`SUN`) and month names (`JAN`–`DEC`) support in cron fields — case-insensitive, works in single values, ranges, and comma-separated lists. Added `type: "scheduled"` property to `ScheduledController` interface and `createScheduledController()`. Added 18 new tests (36 total scheduled tests). All 518 tests pass.
 
 - **#25 images-transforms**: Replaced passthrough image transformer with Sharp-based implementation. `transform()` now applies resize (`width`/`height` with `fit` mapping to Sharp equivalents), `rotate` (0/90/180/270), `flip`, `flop`, `blur`, `sharpen`, and `brightness`. Each transform step runs as a separate Sharp pipeline to ensure correct operation ordering (Sharp internally reorders operations within a single pipeline). `draw()` now composites overlays via Sharp's `composite()` with support for `top`/`left`/`bottom`/`right` positioning and `repeat` tiling. `output()` applies format conversion (PNG/JPEG/WebP/AVIF) with configurable `quality`. Added `DrawOptions.bottom`, `DrawOptions.right`, and `DrawOptions.repeat` fields. Implemented AVIF/HEIF dimension parsing in `info()` by scanning for the `ispe` (ImageSpatialExtentsProperty) box in the ISOBMFF container, with Sharp metadata as fallback. Added `sharp` as a dependency. Added 11 new tests (23 total images tests) covering AVIF dimensions, resize, rotate, format conversion, quality, draw compositing, tiling, and combined transforms. All 529 tests pass.
+
+- **#30 html-rewriter**: Implemented `HTMLRewriter` class in `runtime/bindings/html-rewriter.ts` wrapping `html-rewriter-wasm` (WASM port of Cloudflare's lol-html). `on(selector, handler)` registers element handlers with full CSS selector support (tag, class, id, attribute selectors, combinators, pseudo-classes). `onDocument(handler)` registers document-level handlers (doctype, comments, text, end). `transform(response)` returns a new `Response` with streaming HTML transformation via `TransformStream` — reads chunks from the original response body, pipes through the WASM rewriter, and writes transformed chunks to the output stream. Content-length header removed since streaming transform changes body size. Null body responses passed through as-is. Registered `HTMLRewriter` on `globalThis` in `plugin.ts`. Added `html-rewriter-wasm` dependency. Added 35 tests covering element operations (getAttribute, setAttribute, removeAttribute, hasAttribute, tagName, attributes iterator, setInnerContent, before/after, prepend/append, replace, remove, removeAndKeepContent), end tag handlers, text handlers (chunks, replace, remove, lastInTextNode), comment handlers (read, modify, remove, replace), document handlers (doctype, end append, text, comments), CSS selectors (class, id, attribute value, wildcard), chaining multiple handlers, and transform behavior (status/headers preservation, content-length removal, null body, large HTML). All 564 tests pass.
 
 ## Lessons Learned
 

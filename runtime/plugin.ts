@@ -2,12 +2,20 @@ import { plugin } from "bun";
 import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/durable-object";
 import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
 import { SqliteCacheStorage } from "./bindings/cache";
+import { HTMLRewriter } from "./bindings/html-rewriter";
 import { getDatabase } from "./db";
 import { globalEnv } from "./env";
 
 // Register global `caches` object (CacheStorage)
 Object.defineProperty(globalThis, "caches", {
   value: new SqliteCacheStorage(getDatabase()),
+  writable: false,
+  configurable: true,
+});
+
+// Register global `HTMLRewriter` class
+Object.defineProperty(globalThis, "HTMLRewriter", {
+  value: HTMLRewriter,
   writable: false,
   configurable: true,
 });
