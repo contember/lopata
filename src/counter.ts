@@ -10,4 +10,14 @@ export class Counter extends DurableObject<Env> {
     await this.ctx.storage.put("count", count);
     return count;
   }
+
+  async decrement(): Promise<number> {
+    const count = (await this.getCount()) - 1;
+    await this.ctx.storage.put("count", count);
+    return count;
+  }
+
+  async reset(): Promise<void> {
+    await this.ctx.storage.delete("count");
+  }
 }
