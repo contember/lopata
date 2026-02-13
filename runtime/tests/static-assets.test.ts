@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { StaticAssets, parseHeadersFile, matchPattern } from "../bindings/static-assets";
+import { StaticAssets, parseHeadersFile, matchPattern, parseRedirects, matchRedirectPattern } from "../bindings/static-assets";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -274,7 +274,7 @@ test("parseHeadersFile: parses basic rules", () => {
   X-Another: world
 /images/*
   Cache-Control: max-age=3600`;
-  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000 });
+  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000, maxStaticRedirects: 2000, maxDynamicRedirects: 100 });
   expect(rules).toHaveLength(2);
   expect(rules[0]!.pattern).toBe("/about");
   expect(rules[0]!.headers["X-Custom"]).toBe("hello");
@@ -285,13 +285,13 @@ test("parseHeadersFile: parses basic rules", () => {
 
 test("parseHeadersFile: respects maxHeaderRules limit", () => {
   const content = `/a\n  X: 1\n/b\n  X: 2\n/c\n  X: 3`;
-  const rules = parseHeadersFile(content, { maxHeaderRules: 2, maxHeaderLineLength: 2000 });
+  const rules = parseHeadersFile(content, { maxHeaderRules: 2, maxHeaderLineLength: 2000, maxStaticRedirects: 2000, maxDynamicRedirects: 100 });
   expect(rules).toHaveLength(2);
 });
 
 test("parseHeadersFile: skips comments", () => {
   const content = `# This is a comment\n/about\n  X-Custom: hello`;
-  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000 });
+  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000, maxStaticRedirects: 2000, maxDynamicRedirects: 100 });
   expect(rules).toHaveLength(1);
   expect(rules[0]!.pattern).toBe("/about");
 });
@@ -367,4 +367,159 @@ test("custom limits are accepted via constructor", async () => {
   });
   const res = await assets.fetch(makeRequest("/hello.txt"));
   expect(res.status).toBe(200);
+});
+
+// === _redirects file ===
+
+const defaultLimits = { maxHeaderRules: 100, maxHeaderLineLength: 2000, maxStaticRedirects: 2000, maxDynamicRedirects: 100 };
+
+test("parseRedirects: parses static redirect with status", () => {
+  const rules = parseRedirects("/old /new 301", defaultLimits);
+  expect(rules).toHaveLength(1);
+  expect(rules[0]!.from).toBe("/old");
+  expect(rules[0]!.to).toBe("/new");
+  expect(rules[0]!.status).toBe(301);
+  expect(rules[0]!.isDynamic).toBe(false);
+});
+
+test("parseRedirects: default status is 302", () => {
+  const rules = parseRedirects("/old /new", defaultLimits);
+  expect(rules[0]!.status).toBe(302);
+});
+
+test("parseRedirects: ignores comments and empty lines", () => {
+  const content = `# comment\n\n/a /b 301\n# another comment\n/c /d`;
+  const rules = parseRedirects(content, defaultLimits);
+  expect(rules).toHaveLength(2);
+});
+
+test("parseRedirects: detects dynamic rules (splat and placeholder)", () => {
+  const rules = parseRedirects("/blog/* /posts/:splat\n/users/:id /profile/:id", defaultLimits);
+  expect(rules[0]!.isDynamic).toBe(true);
+  expect(rules[1]!.isDynamic).toBe(true);
+});
+
+test("parseRedirects: skips invalid status codes", () => {
+  const rules = parseRedirects("/a /b 999\n/c /d 200", defaultLimits);
+  expect(rules).toHaveLength(1);
+  expect(rules[0]!.from).toBe("/c");
+});
+
+test("parseRedirects: enforces static redirect limit", () => {
+  const lines = Array.from({ length: 10 }, (_, i) => `/old${i} /new${i} 301`).join("\n");
+  const rules = parseRedirects(lines, { ...defaultLimits, maxStaticRedirects: 3 });
+  expect(rules).toHaveLength(3);
+});
+
+test("parseRedirects: enforces dynamic redirect limit", () => {
+  const lines = Array.from({ length: 10 }, (_, i) => `/old${i}/* /new${i}/:splat`).join("\n");
+  const rules = parseRedirects(lines, { ...defaultLimits, maxDynamicRedirects: 2 });
+  expect(rules).toHaveLength(2);
+});
+
+test("matchRedirectPattern: exact match", () => {
+  expect(matchRedirectPattern("/about", "/about")).toEqual({});
+  expect(matchRedirectPattern("/about", "/other")).toBeNull();
+});
+
+test("matchRedirectPattern: splat captures", () => {
+  const match = matchRedirectPattern("/blog/*", "/blog/2024/hello");
+  expect(match).toEqual({ splat: "2024/hello" });
+});
+
+test("matchRedirectPattern: placeholder captures", () => {
+  const match = matchRedirectPattern("/users/:id", "/users/42");
+  expect(match).toEqual({ id: "42" });
+});
+
+test("matchRedirectPattern: placeholder does not match slashes", () => {
+  expect(matchRedirectPattern("/users/:id", "/users/42/extra")).toBeNull();
+});
+
+// === _redirects integration tests ===
+
+test("_redirects: exact path redirect with 301", async () => {
+  createFile("_redirects", "/old-page /new-page 301");
+  createFile("new-page.html", "New Page");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/old-page"));
+  expect(res.status).toBe(301);
+  expect(res.headers.get("Location")).toBe("http://localhost/new-page");
+});
+
+test("_redirects: default status is 302", async () => {
+  createFile("_redirects", "/old /new");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/old"));
+  expect(res.status).toBe(302);
+  expect(res.headers.get("Location")).toBe("http://localhost/new");
+});
+
+test("_redirects: splat redirect substitutes :splat", async () => {
+  createFile("_redirects", "/blog/* /posts/:splat 302");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/blog/2024/my-post"));
+  expect(res.status).toBe(302);
+  expect(res.headers.get("Location")).toBe("http://localhost/posts/2024/my-post");
+});
+
+test("_redirects: placeholder redirect substitutes named param", async () => {
+  createFile("_redirects", "/users/:id /profile/:id 307");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/users/42"));
+  expect(res.status).toBe(307);
+  expect(res.headers.get("Location")).toBe("http://localhost/profile/42");
+});
+
+test("_redirects: 200 status rewrites path transparently", async () => {
+  createFile("_redirects", "/app/* /index.html 200");
+  createFile("index.html", "<div>App</div>");
+  assets = new StaticAssets(tmpDir, "none");
+  const res = await assets.fetch(makeRequest("/app/dashboard"));
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("<div>App</div>");
+});
+
+test("_redirects: first match wins", async () => {
+  createFile("_redirects", "/test /first 301\n/test /second 302");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/test"));
+  expect(res.status).toBe(301);
+  expect(res.headers.get("Location")).toBe("http://localhost/first");
+});
+
+test("_redirects: redirects apply before asset matching", async () => {
+  createFile("_redirects", "/hello.txt /other 301");
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.status).toBe(301);
+});
+
+test("_redirects: non-matching paths serve files normally", async () => {
+  createFile("_redirects", "/old /new 301");
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("Hello");
+});
+
+test("_redirects: supports all valid status codes", async () => {
+  createFile("_redirects", "/a /b 303\n/c /d 308");
+  assets = new StaticAssets(tmpDir);
+
+  const res1 = await assets.fetch(makeRequest("/a"));
+  expect(res1.status).toBe(303);
+
+  const res2 = await assets.fetch(makeRequest("/c"));
+  expect(res2.status).toBe(308);
+});
+
+test("_redirects: preserves query string on redirect", async () => {
+  createFile("_redirects", "/old /new 302");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(new Request("http://localhost/old?foo=bar"));
+  expect(res.status).toBe(302);
+  expect(res.headers.get("Location")).toBe("http://localhost/new?foo=bar");
 });
