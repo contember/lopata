@@ -83,7 +83,7 @@ describe("runMigrations", () => {
 
 		const cols = db.query("PRAGMA table_info(cache_entries)").all() as { name: string }[];
 		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["cache_name", "url", "status", "headers", "body"]);
+		expect(colNames).toEqual(["cache_name", "url", "status", "headers", "body", "expires_at"]);
 	});
 
 	test("can insert and read from kv table", () => {

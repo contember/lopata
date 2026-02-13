@@ -115,6 +115,7 @@ export function runMigrations(db: Database): void {
 			status INTEGER NOT NULL,
 			headers TEXT NOT NULL,
 			body BLOB NOT NULL,
+			expires_at INTEGER,
 			PRIMARY KEY (cache_name, url)
 		)
 	`);
