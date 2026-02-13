@@ -109,7 +109,7 @@ describe("SqliteQueueProducer", () => {
     ]);
 
     const count = db.query<{ cnt: number }, []>(
-      "SELECT COUNT(*) as cnt FROM queue_messages"
+      "SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'"
     ).get()!;
 
     expect(count.cnt).toBe(3);
@@ -204,7 +204,7 @@ describe("QueueConsumer", () => {
 
     expect(received).toEqual([{ key: "value" }]);
     // Message should be deleted (auto-acked)
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(0);
   });
 
@@ -281,7 +281,7 @@ describe("QueueConsumer", () => {
     expect(batchSize).toBe(3);
 
     // 2 remaining
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(2);
   });
 
@@ -300,7 +300,7 @@ describe("QueueConsumer", () => {
 
     await consumer.poll();
 
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(0);
   });
 
@@ -325,7 +325,7 @@ describe("QueueConsumer", () => {
 
     await consumer.poll();
 
-    const rows = db.query<{ body: Uint8Array }, []>("SELECT body FROM queue_messages").all();
+    const rows = db.query<{ body: Uint8Array }, []>("SELECT body FROM queue_messages WHERE status = 'pending'").all();
     expect(rows).toHaveLength(1);
     expect(JSON.parse(new TextDecoder().decode(rows[0]!.body))).toBe("keep");
   });
@@ -401,7 +401,7 @@ describe("QueueConsumer", () => {
     // Second poll: attempts becomes 2 (== maxRetries), should be discarded
     await consumer.poll();
 
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(0);
   });
 
@@ -421,7 +421,7 @@ describe("QueueConsumer", () => {
 
     // Original queue should be empty
     const testCount = db.query<{ cnt: number }, [string]>(
-      "SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = ?"
+      "SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending' AND queue = ?"
     ).get("test-queue")!;
     expect(testCount.cnt).toBe(0);
 
@@ -563,7 +563,7 @@ describe("QueueConsumer", () => {
     await consumer.poll();
 
     // Message should still exist (retried, not acked)
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(1);
   });
 
@@ -584,7 +584,7 @@ describe("QueueConsumer", () => {
     await consumer.poll();
 
     // Message should be deleted (acked)
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(0);
   });
 
@@ -606,7 +606,7 @@ describe("QueueConsumer", () => {
     await consumer.poll();
 
     // One message retried, one acked
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!;
     expect(count.cnt).toBe(1);
   });
 
@@ -677,7 +677,7 @@ describe("QueuePullConsumer", () => {
     expect(result.acked).toBe(1);
 
     // Message should be gone from DB
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending' AND queue = 'pull-queue'").get()!;
     expect(count.cnt).toBe(0);
   });
 
@@ -747,7 +747,7 @@ describe("QueuePullConsumer", () => {
     expect(result.acked).toBe(0);
 
     // Message should still be in the queue
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending' AND queue = 'pull-queue'").get()!;
     expect(count.cnt).toBe(1);
   });
 
@@ -767,7 +767,7 @@ describe("QueuePullConsumer", () => {
     expect(result.retried).toBe(1);
 
     // One message acked (deleted), one retried (still exists)
-    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending' AND queue = 'pull-queue'").get()!;
     expect(count.cnt).toBe(1);
   });
 

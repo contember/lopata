@@ -232,7 +232,7 @@ export class QueueConsumer {
     try {
       const now = Date.now();
 
-      // Periodically clean up expired messages beyond retention period
+      // Periodically clean up completed messages beyond retention period
       const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000;
       this.db.run(
         "DELETE FROM queue_messages WHERE queue = ? AND created_at < ?",
@@ -243,7 +243,7 @@ export class QueueConsumer {
         { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
         [string, number, number]
       >(
-        "SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND visible_at <= ? ORDER BY visible_at LIMIT ?",
+        "SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at LIMIT ?",
       ).all(this.config.queue, now, this.config.maxBatchSize);
 
       if (rows.length === 0) return;
@@ -314,21 +314,21 @@ export class QueueConsumer {
         : messageDecisions.get(row.id) ?? batchDecision;
 
       if (!decision || decision.type === 'ack') {
-        // Ack (explicit or default) — delete message
-        this.db.run("DELETE FROM queue_messages WHERE id = ?", [row.id]);
+        // Ack (explicit or default) — mark as acked
+        this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [Date.now(), row.id]);
       } else {
         // Retry
         const delay = decision.delaySeconds ?? 0;
         if (currentAttempts >= this.config.maxRetries) {
-          // Max retries exceeded — move to DLQ or delete
+          // Max retries exceeded — move to DLQ or mark as failed
           if (this.config.deadLetterQueue) {
             this.db.run(
-              "UPDATE queue_messages SET queue = ?, visible_at = ? WHERE id = ?",
+              "UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending' WHERE id = ?",
               [this.config.deadLetterQueue, Date.now(), row.id],
             );
           } else {
             console.warn(`[bunflare] Queue message ${row.id} exceeded max retries (${this.config.maxRetries}), discarding`);
-            this.db.run("DELETE FROM queue_messages WHERE id = ?", [row.id]);
+            this.db.run("UPDATE queue_messages SET status = 'failed', completed_at = ? WHERE id = ?", [Date.now(), row.id]);
           }
         } else {
           // Retry with delay
@@ -389,13 +389,13 @@ export class QueuePullConsumer {
       [this.queueName, now],
     );
 
-    // Select visible messages that don't have an active lease
+    // Select visible pending messages that don't have an active lease
     const rows = this.db.query<
       { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
       [string, number, string, number, number]
     >(
       `SELECT id, body, content_type, attempts, created_at FROM queue_messages
-       WHERE queue = ? AND visible_at <= ?
+       WHERE queue = ? AND status = 'pending' AND visible_at <= ?
        AND id NOT IN (SELECT message_id FROM queue_leases WHERE queue = ? AND expires_at > ?)
        ORDER BY visible_at LIMIT ?`,
     ).all(this.queueName, now, this.queueName, now, batchSize);
@@ -459,7 +459,7 @@ export class QueuePullConsumer {
           ).get(lease_id, this.queueName, now);
 
           if (lease) {
-            this.db.run("DELETE FROM queue_messages WHERE id = ?", [lease.message_id]);
+            this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [Date.now(), lease.message_id]);
             this.db.run("DELETE FROM queue_leases WHERE lease_id = ?", [lease_id]);
             acked++;
           }

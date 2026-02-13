@@ -103,10 +103,23 @@ export function runMigrations(db: Database): void {
 			body BLOB NOT NULL,
 			content_type TEXT NOT NULL DEFAULT 'json',
 			attempts INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'pending',
 			visible_at INTEGER NOT NULL,
-			created_at INTEGER NOT NULL
+			created_at INTEGER NOT NULL,
+			completed_at INTEGER
 		)
 	`);
+
+	// Migrate: add status column if missing (existing databases)
+	{
+		const cols = db.query<{ name: string }, []>("PRAGMA table_info(queue_messages)").all();
+		if (!cols.some(c => c.name === "status")) {
+			db.run("ALTER TABLE queue_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+		}
+		if (!cols.some(c => c.name === "completed_at")) {
+			db.run("ALTER TABLE queue_messages ADD COLUMN completed_at INTEGER");
+		}
+	}
 
 	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_visible ON queue_messages(queue, visible_at)`);
 
