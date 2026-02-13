@@ -7,6 +7,7 @@ import { createScheduledController, startCronScheduler } from "./bindings/schedu
 import { getDatabase } from "./db";
 import { ExecutionContext } from "./execution-context";
 import { addCfProperty } from "./request-cf";
+import { handleDashboardRequest } from "./dashboard/api";
 import path from "node:path";
 
 // Parse --env flag from CLI args
@@ -90,8 +91,14 @@ Bun.serve({
     const ctx = new ExecutionContext();
     addCfProperty(request);
 
-    // Manual trigger: GET /__scheduled?cron=<expression>
     const url = new URL(request.url);
+
+    // Dashboard
+    if (url.pathname.startsWith("/__dashboard")) {
+      return handleDashboardRequest(request);
+    }
+
+    // Manual trigger: GET /__scheduled?cron=<expression>
     if (url.pathname === "/__scheduled") {
       let handler: Function | undefined;
       if (classBasedExport) {
@@ -170,6 +177,7 @@ Bun.serve({
 });
 
 console.log(`[bunflare] Server running at http://localhost:${port}`);
+console.log(`[bunflare] Dashboard: http://localhost:${port}/__dashboard`);
 
 function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {
   if (config === true) return true;

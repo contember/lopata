@@ -11,12 +11,14 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "bun-plugin-tailwind": "^0.1.2",
     "wrangler": "^4.65.0"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
+    "preact": "^10.28.3",
     "sharp": "^0.34.5"
   }
 }
