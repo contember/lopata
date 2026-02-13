@@ -22,15 +22,132 @@ interface D1ExecResult {
   duration: number;
 }
 
-function buildMeta(db: Database, durationMs: number): D1Meta {
+function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritten: number): D1Meta {
   return {
     duration: durationMs,
     changes: db.query<{ c: number }, []>("SELECT changes() as c").get()!.c,
     last_row_id: db.query<{ id: number }, []>("SELECT last_insert_rowid() as id").get()!.id,
     served_by: "bunflare-d1",
-    rows_read: 0,
-    rows_written: 0,
+    rows_read: rowsRead,
+    rows_written: rowsWritten,
   };
+}
+
+/**
+ * Split SQL text into individual statements, respecting string literals
+ * (single-quoted, double-quoted), line comments (--), and block comments.
+ */
+function splitStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = "";
+  let i = 0;
+  const len = sql.length;
+
+  while (i < len) {
+    const ch = sql[i]!;
+
+    // Single-quoted string literal
+    if (ch === "'") {
+      current += ch;
+      i++;
+      while (i < len) {
+        const c = sql[i]!;
+        current += c;
+        i++;
+        if (c === "'" && i < len && sql[i] === "'") {
+          // escaped quote ''
+          current += sql[i]!;
+          i++;
+        } else if (c === "'") {
+          break;
+        }
+      }
+      continue;
+    }
+
+    // Double-quoted identifier
+    if (ch === '"') {
+      current += ch;
+      i++;
+      while (i < len) {
+        const c = sql[i]!;
+        current += c;
+        i++;
+        if (c === '"' && i < len && sql[i] === '"') {
+          current += sql[i]!;
+          i++;
+        } else if (c === '"') {
+          break;
+        }
+      }
+      continue;
+    }
+
+    // Line comment --
+    if (ch === "-" && i + 1 < len && sql[i + 1] === "-") {
+      i += 2;
+      while (i < len && sql[i] !== "\n") {
+        i++;
+      }
+      if (i < len) i++; // skip \n
+      current += " ";
+      continue;
+    }
+
+    // Block comment /* ... */
+    if (ch === "/" && i + 1 < len && sql[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < len && !(sql[i] === "*" && sql[i + 1] === "/")) {
+        i++;
+      }
+      if (i + 1 < len) i += 2; // skip */
+      current += " ";
+      continue;
+    }
+
+    // Statement separator
+    if (ch === ";") {
+      const trimmed = current.trim();
+      if (trimmed.length > 0) {
+        statements.push(trimmed);
+      }
+      current = "";
+      i++;
+      continue;
+    }
+
+    current += ch;
+    i++;
+  }
+
+  const trimmed = current.trim();
+  if (trimmed.length > 0) {
+    statements.push(trimmed);
+  }
+
+  return statements;
+}
+
+/** Convert bind parameters: boolean→int, undefined→error, ArrayBuffer→Uint8Array */
+function convertBindParams(params: unknown[]): SQLQueryBindings[] {
+  return params.map((v, idx) => {
+    if (v === undefined) {
+      throw new Error(`D1_TYPE_ERROR: Cannot bind undefined value at index ${idx}. Use null instead.`);
+    }
+    if (typeof v === "boolean") {
+      return v ? 1 : 0;
+    }
+    if (v instanceof ArrayBuffer) {
+      return new Uint8Array(v);
+    }
+    return v as SQLQueryBindings;
+  });
+}
+
+/** Check if a SQL statement is a read query (returns rows) */
+function isReadStatement(sql: string): boolean {
+  const upper = sql.trimStart().toUpperCase();
+  return upper.startsWith("SELECT") || upper.startsWith("WITH") || upper.startsWith("PRAGMA");
 }
 
 export class LocalD1Database {
@@ -62,12 +179,16 @@ export class LocalD1Database {
   async exec(sql: string): Promise<D1ExecResult> {
     const start = performance.now();
     let count = 0;
-    const statements = sql.split(";").map(s => s.trim()).filter(s => s.length > 0);
+    const statements = splitStatements(sql);
     for (const stmt of statements) {
       this.db.run(stmt);
       count++;
     }
     return { count, duration: performance.now() - start };
+  }
+
+  async dump(): Promise<ArrayBuffer> {
+    return this.db.serialize().buffer as ArrayBuffer;
   }
 
   withSession(_bookmark?: string): LocalD1Database {
@@ -86,9 +207,9 @@ export class LocalD1PreparedStatement {
     this.params = [];
   }
 
-  bind(...values: SQLQueryBindings[]): LocalD1PreparedStatement {
+  bind(...values: unknown[]): LocalD1PreparedStatement {
     const stmt = new LocalD1PreparedStatement(this.db, this.sql);
-    stmt.params = values;
+    stmt.params = convertBindParams(values);
     return stmt;
   }
 
@@ -104,10 +225,11 @@ export class LocalD1PreparedStatement {
     const start = performance.now();
     this.db.query(this.sql).run(...this.params);
     const duration = performance.now() - start;
+    const changes = this.db.query<{ c: number }, []>("SELECT changes() as c").get()!.c;
     return {
       results: [],
       success: true,
-      meta: buildMeta(this.db, duration),
+      meta: buildMeta(this.db, duration, 0, changes),
     };
   }
 
@@ -115,10 +237,12 @@ export class LocalD1PreparedStatement {
     const start = performance.now();
     const results = this.db.query(this.sql).all(...this.params) as T[];
     const duration = performance.now() - start;
+    const isRead = isReadStatement(this.sql);
+    const changes = this.db.query<{ c: number }, []>("SELECT changes() as c").get()!.c;
     return {
       results,
       success: true,
-      meta: buildMeta(this.db, duration),
+      meta: buildMeta(this.db, duration, isRead ? results.length : 0, isRead ? 0 : changes),
     };
   }
 

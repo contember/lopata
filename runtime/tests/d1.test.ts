@@ -140,6 +140,38 @@ describe("D1Database", () => {
       const result = await d1.prepare("SELECT * FROM posts").all<{ title: string }>();
       expect(result.results[0]!.title).toBe("Hello");
     });
+
+    test("handles semicolons inside string literals", async () => {
+      await d1.exec("INSERT INTO users (name) VALUES ('semi;colon')");
+      const result = await d1.prepare("SELECT name FROM users").first<{ name: string }>();
+      expect(result!.name).toBe("semi;colon");
+    });
+
+    test("handles line comments with semicolons", async () => {
+      const result = await d1.exec(`
+        INSERT INTO users (name) VALUES ('Alice'); -- this is a comment with ;
+        INSERT INTO users (name) VALUES ('Bob');
+      `);
+      expect(result.count).toBe(2);
+      const all = await d1.prepare("SELECT * FROM users ORDER BY name").all();
+      expect(all.results).toHaveLength(2);
+    });
+
+    test("handles block comments with semicolons", async () => {
+      const result = await d1.exec(`
+        INSERT INTO users (name) VALUES ('Alice'); /* comment with ; inside */
+        INSERT INTO users (name) VALUES ('Bob');
+      `);
+      expect(result.count).toBe(2);
+      const all = await d1.prepare("SELECT * FROM users ORDER BY name").all();
+      expect(all.results).toHaveLength(2);
+    });
+
+    test("handles escaped quotes in strings", async () => {
+      await d1.exec("INSERT INTO users (name) VALUES ('it''s; ok')");
+      const result = await d1.prepare("SELECT name FROM users").first<{ name: string }>();
+      expect(result!.name).toBe("it's; ok");
+    });
   });
 
   describe("withSession", () => {
@@ -167,6 +199,75 @@ describe("D1Database", () => {
       expect(result.results).toHaveLength(2);
       expect(result.results[0]!.name).toBe("Alice");
       expect(result.results[1]!.name).toBe("Bob");
+    });
+  });
+
+  describe("dump", () => {
+    test("returns an ArrayBuffer of the database", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      const buffer = await d1.dump();
+      expect(buffer).toBeInstanceOf(ArrayBuffer);
+      expect(buffer.byteLength).toBeGreaterThan(0);
+
+      // Verify it's a valid SQLite database by checking magic bytes
+      const view = new Uint8Array(buffer);
+      const magic = new TextDecoder().decode(view.slice(0, 15));
+      expect(magic).toBe("SQLite format 3");
+    });
+  });
+
+  describe("type conversion", () => {
+    test("undefined as bind parameter throws D1_TYPE_ERROR", async () => {
+      expect(() => {
+        d1.prepare("INSERT INTO users (name) VALUES (?)").bind(undefined);
+      }).toThrow("D1_TYPE_ERROR");
+    });
+
+    test("boolean true is converted to 1", async () => {
+      db.run("CREATE TABLE flags (id INTEGER PRIMARY KEY, active INTEGER)");
+      await d1.prepare("INSERT INTO flags (active) VALUES (?)").bind(true).run();
+      const row = await d1.prepare("SELECT active FROM flags").first<{ active: number }>();
+      expect(row!.active).toBe(1);
+    });
+
+    test("boolean false is converted to 0", async () => {
+      db.run("CREATE TABLE flags (id INTEGER PRIMARY KEY, active INTEGER)");
+      await d1.prepare("INSERT INTO flags (active) VALUES (?)").bind(false).run();
+      const row = await d1.prepare("SELECT active FROM flags").first<{ active: number }>();
+      expect(row!.active).toBe(0);
+    });
+
+    test("ArrayBuffer is stored as BLOB", async () => {
+      db.run("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)");
+      const data = new Uint8Array([1, 2, 3, 4]).buffer;
+      await d1.prepare("INSERT INTO blobs (data) VALUES (?)").bind(data).run();
+      const row = await d1.prepare("SELECT data FROM blobs").first<{ data: Uint8Array }>();
+      expect(row!.data).toBeInstanceOf(Uint8Array);
+      expect(Array.from(row!.data)).toEqual([1, 2, 3, 4]);
+    });
+  });
+
+  describe("meta accuracy", () => {
+    test("rows_written reflects changes for INSERT", async () => {
+      const result = await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      expect(result.meta.rows_written).toBe(1);
+      expect(result.meta.rows_read).toBe(0);
+    });
+
+    test("rows_read reflects rows returned by SELECT", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob").run();
+      const result = await d1.prepare("SELECT * FROM users").all();
+      expect(result.meta.rows_read).toBe(2);
+      expect(result.meta.rows_written).toBe(0);
+    });
+
+    test("rows_written reflects changes for UPDATE via all()", async () => {
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Alice").run();
+      await d1.prepare("INSERT INTO users (name) VALUES (?)").bind("Bob").run();
+      const result = await d1.prepare("UPDATE users SET email = 'test@test.com'").all();
+      expect(result.meta.rows_written).toBe(2);
+      expect(result.meta.rows_read).toBe(0);
     });
   });
 
