@@ -410,6 +410,18 @@ export class SqliteDurableObjectStorage {
     }
   }
 
+  transactionSync<T>(callback: () => T): T {
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const result = callback();
+      this.db.run("COMMIT");
+      return result;
+    } catch (e) {
+      this.db.run("ROLLBACK");
+      throw e;
+    }
+  }
+
   // --- Alarm methods ---
 
   private _onAlarmSet?: (scheduledTime: number | null) => void;

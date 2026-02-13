@@ -1597,3 +1597,59 @@ describe("SyncKV", () => {
     expect(state.storage.kv.get("from-state")).toBe(123);
   });
 });
+
+describe("transactionSync", () => {
+  test("basic commit", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.transactionSync(() => {
+      storage.kv.put("key1", "val1");
+      storage.kv.put("key2", "val2");
+    });
+    expect(storage.kv.get("key1")).toBe("val1");
+    expect(storage.kv.get("key2")).toBe("val2");
+  });
+
+  test("rollback on exception", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("key", "before");
+    expect(() => {
+      storage.transactionSync(() => {
+        storage.kv.put("key", "during");
+        throw new Error("boom");
+      });
+    }).toThrow("boom");
+    expect(storage.kv.get("key")).toBe("before");
+  });
+
+  test("return value propagation", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    const result = storage.transactionSync(() => {
+      storage.kv.put("key", 42);
+      return storage.kv.get("key");
+    });
+    expect(result).toBe(42);
+  });
+
+  test("nested reads and writes are atomic", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("counter", 0);
+    storage.transactionSync(() => {
+      const val = storage.kv.get("counter") as number;
+      storage.kv.put("counter", val + 1);
+      const val2 = storage.kv.get("counter") as number;
+      storage.kv.put("counter", val2 + 1);
+    });
+    expect(storage.kv.get("counter")).toBe(2);
+  });
+
+  test("interop with storage.sql operations", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "do-txnsync-"));
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1", tmpDir);
+    storage.sql.exec("CREATE TABLE test (id INTEGER PRIMARY KEY, val TEXT)");
+    storage.transactionSync(() => {
+      storage.kv.put("key", "kv-value");
+    });
+    // kv write committed
+    expect(storage.kv.get("key")).toBe("kv-value");
+  });
+});
