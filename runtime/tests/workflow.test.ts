@@ -5,6 +5,7 @@ import {
   SqliteWorkflowBinding,
   SqliteWorkflowInstance,
   NonRetryableError,
+  parseDuration,
 } from "../bindings/workflow";
 import type { WorkflowStepConfig } from "../bindings/workflow";
 import { runMigrations } from "../db";
@@ -14,7 +15,7 @@ class TestWorkflow extends WorkflowEntrypointBase {
     const result = await step.do("process", async () => {
       return { input: event.payload.value, processed: true };
     });
-    await step.sleep("pause", "1 second");
+    await step.sleep("pause", "1 millisecond");
     return result;
   }
 }
@@ -28,9 +29,9 @@ class FailingWorkflow extends WorkflowEntrypointBase {
 class SlowWorkflow extends WorkflowEntrypointBase {
   override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T>; sleep: (name: string, duration: string) => Promise<void> }): Promise<unknown> {
     await step.do("step1", async () => "a");
-    await step.sleep("wait", "1 second");
+    await step.sleep("wait", "1 millisecond");
     await step.do("step2", async () => "b");
-    await step.sleep("wait2", "1 second");
+    await step.sleep("wait2", "1 millisecond");
     return "done";
   }
 }
@@ -128,7 +129,7 @@ describe("SqliteWorkflowBinding", () => {
 
   test("workflow completes and updates status", async () => {
     const instance = await binding.create({ params: { value: "test" } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -139,7 +140,7 @@ describe("SqliteWorkflowBinding", () => {
     const failBinding = new SqliteWorkflowBinding(db, "fail-wf", "FailingWorkflow");
     failBinding._setClass(FailingWorkflow, {});
     const instance = await failBinding.create();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
@@ -183,7 +184,7 @@ describe("SqliteWorkflowBinding", () => {
 
   test("persistence across binding instances", async () => {
     const instance = await binding.create({ params: { value: "persist" } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const binding2 = new SqliteWorkflowBinding(db, "test-workflow", "TestWorkflow");
     binding2._setClass(TestWorkflow, { TEST: true });
@@ -227,7 +228,7 @@ describe("createBatch", () => {
       { params: { value: "x" } },
       { params: { value: "y" } },
     ]);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
     for (const inst of instances) {
       const s = await inst.status();
@@ -263,7 +264,7 @@ describe("sleepUntil", () => {
     const binding = new SqliteWorkflowBinding(db, "past-sleep", "PastSleepWorkflow");
     binding._setClass(PastSleepWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -284,7 +285,7 @@ describe("waitForEvent / sendEvent", () => {
 
     await instance.sendEvent({ type: "approval", payload: { approved: true } });
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     s = await instance.status();
     expect(s.status).toBe("complete");
@@ -295,7 +296,7 @@ describe("waitForEvent / sendEvent", () => {
     const binding = new SqliteWorkflowBinding(db, "timeout-wf", "TimeoutEventWorkflow");
     binding._setClass(TimeoutEventWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
@@ -305,7 +306,7 @@ describe("waitForEvent / sendEvent", () => {
   test("sendEvent before waitForEvent stores event in DB", async () => {
     class LateEventWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T>; sleep: (name: string, duration: string) => Promise<void>; waitForEvent: <T>(name: string, options: { type: string }) => Promise<{ payload: T; timestamp: Date; type: string }> }): Promise<unknown> {
-        await step.sleep("delay", "1 second");
+        await step.sleep("delay", "10 milliseconds");
         const event = await step.waitForEvent<{ msg: string }>("get-data", { type: "data" });
         return event.payload;
       }
@@ -319,7 +320,7 @@ describe("waitForEvent / sendEvent", () => {
     const row = db.query("SELECT * FROM workflow_events WHERE instance_id = ?").get(instance.id);
     expect(row).not.toBeNull();
 
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -336,7 +337,7 @@ describe("waitForEvent / sendEvent", () => {
     const retrieved = await binding.get(instance.id);
     await retrieved.sendEvent({ type: "approval", payload: { approved: false } });
 
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -357,6 +358,22 @@ describe("waitForEvent / sendEvent", () => {
     expect(s.status).toBe("terminated");
   });
 
+  test("terminate via get() handle also aborts execution", async () => {
+    const binding = new SqliteWorkflowBinding(db, "term-get", "EventWorkflow");
+    binding._setClass(EventWorkflow, {});
+    const instance = await binding.create();
+
+    await new Promise((r) => setTimeout(r, 50));
+    let s = await instance.status();
+    expect(s.status).toBe("waiting");
+
+    // Terminate via a separately retrieved handle
+    const retrieved = await binding.get(instance.id);
+    await retrieved.terminate();
+    s = await retrieved.status();
+    expect(s.status).toBe("terminated");
+  });
+
   test("waitForEvent returns WorkflowStepEvent with payload, timestamp, type", async () => {
     class EventStructWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { waitForEvent: <T>(name: string, options: { type: string }) => Promise<{ payload: T; timestamp: Date; type: string }> }): Promise<unknown> {
@@ -370,11 +387,18 @@ describe("waitForEvent / sendEvent", () => {
 
     await new Promise((r) => setTimeout(r, 50));
     await instance.sendEvent({ type: "mytype", payload: { data: 42 } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
     expect(s.output).toEqual({ payload: { data: 42 }, type: "mytype", hasTimestamp: true });
+  });
+
+  test("sendEvent validates event type", async () => {
+    const binding = new SqliteWorkflowBinding(db, "ev-validate", "EventWorkflow");
+    binding._setClass(EventWorkflow, {});
+    const instance = await binding.create();
+    await expect(instance.sendEvent({ type: "invalid type!" })).rejects.toThrow("Invalid event type");
   });
 });
 
@@ -393,7 +417,7 @@ describe("pause-aware step execution", () => {
     expect(s.status).toBe("paused");
 
     await instance.resume();
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
     s = await instance.status();
     expect(s.status).toBe("complete");
     expect(s.output).toBe("done");
@@ -405,7 +429,7 @@ describe("step retry config", () => {
     let attempts = 0;
     class RetryWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-        const result = await step.do("flaky", { retries: { limit: 3, delay: "10 milliseconds", backoff: "constant" } }, async () => {
+        const result = await step.do("flaky", { retries: { limit: 3, delay: "10 milliseconds", backoff: "constant" }, timeout: "5 seconds" }, async () => {
           attempts++;
           if (attempts < 3) throw new Error("transient failure");
           return "success";
@@ -416,7 +440,7 @@ describe("step retry config", () => {
     const binding = new SqliteWorkflowBinding(db, "retry-wf", "RetryWorkflow");
     binding._setClass(RetryWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 500));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -427,7 +451,7 @@ describe("step retry config", () => {
   test("step.do fails after exhausting retries", async () => {
     class AlwaysFailWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-        return await step.do("broken", { retries: { limit: 2, delay: "10 milliseconds" } }, async () => {
+        return await step.do("broken", { retries: { limit: 2, delay: "10 milliseconds" }, timeout: "5 seconds" }, async () => {
           throw new Error("permanent failure");
         });
       }
@@ -435,7 +459,7 @@ describe("step retry config", () => {
     const binding = new SqliteWorkflowBinding(db, "exhaust-wf", "AlwaysFailWorkflow");
     binding._setClass(AlwaysFailWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 500));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
@@ -446,7 +470,7 @@ describe("step retry config", () => {
     let attempts = 0;
     class NonRetryWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-        return await step.do("no-retry", { retries: { limit: 5, delay: "10 milliseconds" } }, async () => {
+        return await step.do("no-retry", { retries: { limit: 5, delay: "10 milliseconds" }, timeout: "5 seconds" }, async () => {
           attempts++;
           throw new NonRetryableError("don't retry this");
         });
@@ -455,7 +479,7 @@ describe("step retry config", () => {
     const binding = new SqliteWorkflowBinding(db, "nonretry-wf", "NonRetryWorkflow");
     binding._setClass(NonRetryWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
@@ -466,7 +490,7 @@ describe("step retry config", () => {
   test("step.do with timeout", async () => {
     class TimeoutStepWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-        return await step.do("slow-step", { timeout: "50 milliseconds" }, async () => {
+        return await step.do("slow-step", { timeout: "50 milliseconds", retries: { limit: 0 } }, async () => {
           await new Promise((r) => setTimeout(r, 5000));
           return "should not reach";
         });
@@ -475,7 +499,7 @@ describe("step retry config", () => {
     const binding = new SqliteWorkflowBinding(db, "timeout-step", "TimeoutStepWorkflow");
     binding._setClass(TimeoutStepWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 300));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
@@ -487,7 +511,7 @@ describe("step retry config", () => {
     let attempts = 0;
     class ExpBackoffWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-        return await step.do("exp", { retries: { limit: 3, delay: "20 milliseconds", backoff: "exponential" } }, async () => {
+        return await step.do("exp", { retries: { limit: 3, delay: "20 milliseconds", backoff: "exponential" }, timeout: "5 seconds" }, async () => {
           timestamps.push(Date.now());
           attempts++;
           if (attempts < 4) throw new Error("fail");
@@ -509,6 +533,33 @@ describe("step retry config", () => {
       expect(d2).toBeGreaterThan(d1);
     }
   });
+
+  test("default retries kick in without explicit config", async () => {
+    // Verify that without explicit retries config, a failing step still retries
+    // (default is limit=5 with exponential backoff starting at 10s)
+    // We use a short-lived workflow with explicit override to test the default behavior
+    let attempts = 0;
+    class DefaultRetryVerifyWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        // Use short delay to avoid slow test, but verify defaults via a callback
+        // that succeeds on 2nd attempt — without retries this would fail
+        return await step.do("verify", { retries: { delay: "10 milliseconds" }, timeout: "5 seconds" }, async () => {
+          attempts++;
+          if (attempts < 2) throw new Error("transient");
+          return "recovered";
+        });
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "default-retry", "DefaultRetryVerifyWorkflow");
+    binding._setClass(DefaultRetryVerifyWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 500));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("recovered");
+    expect(attempts).toBe(2);
+  });
 });
 
 describe("step checkpointing", () => {
@@ -516,13 +567,24 @@ describe("step checkpointing", () => {
     const binding = new SqliteWorkflowBinding(db, "cache-wf", "TestWorkflow");
     binding._setClass(TestWorkflow, { TEST: true });
     const instance = await binding.create({ params: { value: "cached" } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const rows = db.query("SELECT * FROM workflow_steps WHERE instance_id = ?").all(instance.id) as { step_name: string; output: string }[];
     expect(rows.length).toBeGreaterThan(0);
     const processStep = rows.find((r) => r.step_name === "process");
     expect(processStep).not.toBeUndefined();
     expect(JSON.parse(processStep!.output)).toEqual({ input: "cached", processed: true });
+  });
+
+  test("sleep steps are checkpointed", async () => {
+    const binding = new SqliteWorkflowBinding(db, "sleep-cache", "TestWorkflow");
+    binding._setClass(TestWorkflow, { TEST: true });
+    const instance = await binding.create({ params: { value: "test" } });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const rows = db.query("SELECT * FROM workflow_steps WHERE instance_id = ?").all(instance.id) as { step_name: string; output: string }[];
+    const sleepStep = rows.find((r) => r.step_name === "sleep:pause");
+    expect(sleepStep).not.toBeUndefined();
   });
 
   test("restart clears cached steps", async () => {
@@ -534,15 +596,15 @@ describe("step checkpointing", () => {
     const binding = new SqliteWorkflowBinding(db, "restart-cache", "RestartableWorkflow");
     binding._setClass(RestartableWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s1 = await instance.status();
     expect(s1.status).toBe("complete");
     const firstOutput = s1.output;
 
-    // Restart clears cached steps, so step should re-execute
-    await instance.restart(RestartableWorkflow, {}, db);
-    await new Promise((r) => setTimeout(r, 100));
+    // Restart clears cached steps, so step should re-execute (no extra params needed)
+    await instance.restart();
+    await new Promise((r) => setTimeout(r, 200));
 
     const s2 = await instance.status();
     expect(s2.status).toBe("complete");
@@ -553,6 +615,11 @@ describe("step checkpointing", () => {
     const stepsAfterRestart = db.query("SELECT * FROM workflow_steps WHERE instance_id = ?").all(instance.id);
     expect(stepsAfterRestart.length).toBe(1); // Only the new step
   });
+
+  test("restart without binding throws", async () => {
+    const ghost = new SqliteWorkflowInstance(db, "ghost", null);
+    await expect(ghost.restart()).rejects.toThrow("not associated with a workflow binding");
+  });
 });
 
 describe("status structure", () => {
@@ -560,18 +627,53 @@ describe("status structure", () => {
     const binding = new SqliteWorkflowBinding(db, "err-struct", "FailingWorkflow");
     binding._setClass(FailingWorkflow, {});
     const instance = await binding.create();
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("errored");
     expect(s.error).toEqual({ name: "Error", message: "workflow failed" });
   });
 
+  test("error name is preserved for custom errors", async () => {
+    class CustomErrorWorkflow extends WorkflowEntrypointBase {
+      override async run(): Promise<unknown> {
+        throw new TypeError("bad type");
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "custom-err", "CustomErrorWorkflow");
+    binding._setClass(CustomErrorWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("errored");
+    expect(s.error!.name).toBe("TypeError");
+    expect(s.error!.message).toBe("bad type");
+  });
+
+  test("NonRetryableError name is preserved", async () => {
+    class NRWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { do: <T>(name: string, config: WorkflowStepConfig, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        return await step.do("fail", { retries: { limit: 0 } }, async () => {
+          throw new NonRetryableError("stop", "CustomName");
+        });
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "nr-name", "NRWorkflow");
+    binding._setClass(NRWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("errored");
+    expect(s.error!.name).toBe("CustomName");
+  });
+
   test("complete status has no error field", async () => {
     const binding = new SqliteWorkflowBinding(db, "ok-struct", "TestWorkflow");
     binding._setClass(TestWorkflow, { TEST: true });
     const instance = await binding.create({ params: { value: "test" } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -584,7 +686,7 @@ describe("queued status and concurrency limits", () => {
   test("instances are queued when concurrency limit is reached", async () => {
     class SlowishWorkflow extends WorkflowEntrypointBase {
       override async run(_event: unknown, step: { sleep: (name: string, duration: string) => Promise<void> }): Promise<unknown> {
-        await step.sleep("wait", "1 second");
+        await step.sleep("wait", "50 milliseconds");
         return "done";
       }
     }
@@ -601,12 +703,12 @@ describe("queued status and concurrency limits", () => {
     expect(s2.status).toBe("queued");
 
     // Wait for first to complete
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
     s1 = await first.status();
     expect(s1.status).toBe("complete");
 
     // Second should now be running or complete
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
     s2 = await second.status();
     expect(["running", "complete"]).toContain(s2.status);
 
@@ -644,7 +746,7 @@ describe("instance retention", () => {
     binding._setClass(TestWorkflow, { TEST: true });
 
     const instance = await binding.create({ params: { value: "temp" } });
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 200));
 
     const s = await instance.status();
     expect(s.status).toBe("complete");
@@ -657,5 +759,97 @@ describe("instance retention", () => {
 
     // Old instance should be cleaned up
     await expect(binding.get(instance.id)).rejects.toThrow("not found");
+  });
+});
+
+describe("NonRetryableError", () => {
+  test("has correct name by default", () => {
+    const err = new NonRetryableError("test message");
+    expect(err.name).toBe("NonRetryableError");
+    expect(err.message).toBe("test message");
+  });
+
+  test("accepts custom name", () => {
+    const err = new NonRetryableError("test message", "CustomError");
+    expect(err.name).toBe("CustomError");
+    expect(err.message).toBe("test message");
+  });
+});
+
+describe("parseDuration", () => {
+  test("parses common units", () => {
+    expect(parseDuration("100 milliseconds")).toBe(100);
+    expect(parseDuration("5 seconds")).toBe(5000);
+    expect(parseDuration("2 minutes")).toBe(120000);
+    expect(parseDuration("1 hour")).toBe(3600000);
+    expect(parseDuration("1 day")).toBe(86400000);
+  });
+
+  test("parses extended units", () => {
+    expect(parseDuration("2 weeks")).toBe(2 * 7 * 86400000);
+    expect(parseDuration("1 month")).toBe(30 * 86400000);
+    expect(parseDuration("1 year")).toBe(365 * 86400000);
+  });
+
+  test("parses short units", () => {
+    expect(parseDuration("100ms")).toBe(100);
+    expect(parseDuration("5s")).toBe(5000);
+    expect(parseDuration("2m")).toBe(120000);
+    expect(parseDuration("1h")).toBe(3600000);
+    expect(parseDuration("1d")).toBe(86400000);
+    expect(parseDuration("1w")).toBe(7 * 86400000);
+    expect(parseDuration("1y")).toBe(365 * 86400000);
+  });
+
+  test("returns 0 for invalid input", () => {
+    expect(parseDuration("invalid")).toBe(0);
+    expect(parseDuration("")).toBe(0);
+  });
+});
+
+describe("duplicate step names", () => {
+  test("throws on duplicate step name", async () => {
+    class DuplicateStepWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        await step.do("same-name", async () => "first");
+        await step.do("same-name", async () => "second");
+        return "done";
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "dup-step", "DuplicateStepWorkflow");
+    binding._setClass(DuplicateStepWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("errored");
+    expect(s.error!.message).toContain("Duplicate step name");
+  });
+});
+
+describe("resumeInterrupted", () => {
+  test("resumes instances stuck in running status", async () => {
+    class SimpleWorkflow extends WorkflowEntrypointBase {
+      override async run(event: { payload: { value: string } }, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        return await step.do("compute", async () => event.payload.value);
+      }
+    }
+
+    // Manually insert a "running" instance as if the process crashed
+    const now = Date.now();
+    db.query(
+      "INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run("stuck-1", "resume-wf", "SimpleWorkflow", JSON.stringify({ value: "resumed" }), "running", now, now);
+
+    const binding = new SqliteWorkflowBinding(db, "resume-wf", "SimpleWorkflow");
+    binding._setClass(SimpleWorkflow, {});
+    binding.resumeInterrupted();
+
+    await new Promise((r) => setTimeout(r, 300));
+
+    const retrieved = await binding.get("stuck-1");
+    const s = await retrieved.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("resumed");
   });
 });

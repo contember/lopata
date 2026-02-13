@@ -117,6 +117,7 @@ export function runMigrations(db: Database): void {
 			status TEXT NOT NULL DEFAULT 'running',
 			output TEXT,
 			error TEXT,
+			error_name TEXT,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)

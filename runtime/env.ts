@@ -199,6 +199,7 @@ export function wireClassRefs(
     const cls = workerModule[entry.className];
     if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`);
     entry.binding._setClass(cls as any, env);
+    entry.binding.resumeInterrupted();
     console.log(`[bunflare] Wired Workflow class: ${entry.className}`);
   }
 

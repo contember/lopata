@@ -12,12 +12,18 @@ const WORKFLOW_DEFAULTS: Required<WorkflowLimits> = {
   maxRetentionMs: 0, // 0 = no auto-cleanup
 };
 
+// --- Cloudflare-compatible limits ---
+
+const MAX_STEPS_PER_WORKFLOW = 1024;
+const MAX_STEP_OUTPUT_BYTES = 1024 * 1024; // 1 MiB
+const EVENT_TYPE_PATTERN = /^[a-zA-Z0-9_-]{1,100}$/;
+
 // --- NonRetryableError ---
 
 export class NonRetryableError extends Error {
-  constructor(message: string, public override readonly cause?: unknown) {
+  constructor(message: string, name?: string) {
     super(message);
-    this.name = "NonRetryableError";
+    this.name = name ?? "NonRetryableError";
   }
 }
 
@@ -46,12 +52,19 @@ function getWaitersForInstance(instanceId: string): Map<string, EventResolver> {
   return map;
 }
 
+// --- Global abort controller registry (per-process) ---
+// Allows get() to retrieve a running instance's abort controller for terminate()
+
+const abortControllers = new Map<string, AbortController>();
+
 // --- Step ---
 
 class WorkflowStepImpl {
   private abortSignal: AbortSignal;
   private db: Database;
   private instanceId: string;
+  private stepCount = 0;
+  private knownStepNames = new Set<string>();
 
   constructor(abortSignal: AbortSignal, db: Database, instanceId: string) {
     this.abortSignal = abortSignal;
@@ -70,6 +83,20 @@ class WorkflowStepImpl {
     }
   }
 
+  private checkStepLimit(): void {
+    this.stepCount++;
+    if (this.stepCount > MAX_STEPS_PER_WORKFLOW) {
+      throw new Error(`Workflow exceeded maximum of ${MAX_STEPS_PER_WORKFLOW} steps`);
+    }
+  }
+
+  private checkDuplicateStepName(name: string): void {
+    if (this.knownStepNames.has(name)) {
+      throw new Error(`Duplicate step name "${name}". Step names must be unique within a workflow execution.`);
+    }
+    this.knownStepNames.add(name);
+  }
+
   private getCachedStep(name: string): { output: string | null } | null {
     return this.db
       .query("SELECT output FROM workflow_steps WHERE instance_id = ? AND step_name = ?")
@@ -77,14 +104,20 @@ class WorkflowStepImpl {
   }
 
   private cacheStep(name: string, output: unknown): void {
+    const serialized = JSON.stringify(output);
+    if (serialized !== undefined && serialized.length > MAX_STEP_OUTPUT_BYTES) {
+      throw new Error(`Step "${name}" output exceeds maximum size of 1 MiB`);
+    }
     this.db
       .query("INSERT OR REPLACE INTO workflow_steps (instance_id, step_name, output, completed_at) VALUES (?, ?, ?, ?)")
-      .run(this.instanceId, name, JSON.stringify(output), Date.now());
+      .run(this.instanceId, name, serialized, Date.now());
   }
 
   async do<T>(name: string, callbackOrConfig: (() => Promise<T>) | WorkflowStepConfig, maybeCallback?: () => Promise<T>): Promise<T> {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
+    this.checkStepLimit();
+    this.checkDuplicateStepName(name);
 
     // Parse overloads: do(name, callback) or do(name, config, callback)
     let config: WorkflowStepConfig | undefined;
@@ -105,24 +138,20 @@ class WorkflowStepImpl {
 
     console.log(`  [workflow] step: ${name}`);
 
-    const maxRetries = config?.retries?.limit ?? 0;
-    const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : 1000;
-    const backoff = config?.retries?.backoff ?? "constant";
-    const timeoutMs = config?.timeout ? parseDuration(config.timeout) : undefined;
+    const maxRetries = config?.retries?.limit ?? 5;
+    const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : 10_000;
+    const backoff = config?.retries?.backoff ?? "exponential";
+    const timeoutMs = config?.timeout ? parseDuration(config.timeout) : parseDuration("10 minutes");
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (this.abortSignal.aborted) throw new Error("workflow terminated");
       try {
         let result: T;
-        if (timeoutMs !== undefined) {
-          result = await Promise.race([
-            callback(),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Step "${name}" timed out after ${config!.timeout}`)), timeoutMs)),
-          ]);
-        } else {
-          result = await callback();
-        }
+        result = await Promise.race([
+          callback(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Step "${name}" timed out after ${config?.timeout ?? "10 minutes"}`)), timeoutMs)),
+        ]);
         this.cacheStep(name, result);
         return result;
       } catch (err) {
@@ -143,23 +172,58 @@ class WorkflowStepImpl {
   async sleep(name: string, duration: string) {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
-    console.log(`  [workflow] sleep: ${name} (${duration}) — skipping in dev (10ms)`);
-    await new Promise((r) => setTimeout(r, 10));
+    this.checkStepLimit();
+    this.checkDuplicateStepName(`sleep:${name}`);
+
+    // Check checkpoint — if already slept, skip
+    const cached = this.getCachedStep(`sleep:${name}`);
+    if (cached) {
+      console.log(`  [workflow] sleep: ${name} (cached)`);
+      return;
+    }
+
+    const ms = parseDuration(duration);
+    console.log(`  [workflow] sleep: ${name} (${duration}, ${ms}ms)`);
+    if (ms > 0) {
+      await new Promise((r) => setTimeout(r, ms));
+    }
+
+    // Checkpoint the sleep as completed
+    this.cacheStep(`sleep:${name}`, { sleptMs: ms });
   }
 
   async sleepUntil(name: string, timestamp: Date) {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
+    this.checkStepLimit();
+    this.checkDuplicateStepName(`sleepUntil:${name}`);
+
+    // Check checkpoint
+    const cached = this.getCachedStep(`sleepUntil:${name}`);
+    if (cached) {
+      console.log(`  [workflow] sleepUntil: ${name} (cached)`);
+      return;
+    }
+
     const delay = Math.max(0, timestamp.getTime() - Date.now());
     console.log(`  [workflow] sleepUntil: ${name} (${timestamp.toISOString()}, ${delay}ms remaining)`);
     if (delay > 0) {
       await new Promise((r) => setTimeout(r, delay));
     }
+
+    // Checkpoint
+    this.cacheStep(`sleepUntil:${name}`, { until: timestamp.toISOString() });
   }
 
   async waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: string }): Promise<{ payload: T; timestamp: Date; type: string }> {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
+    this.checkStepLimit();
+
+    // Validate event type
+    if (!EVENT_TYPE_PATTERN.test(options.type)) {
+      throw new Error(`Invalid event type "${options.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`);
+    }
 
     // Check checkpoint
     const cached = this.getCachedStep(`waitForEvent:${name}`);
@@ -248,15 +312,18 @@ function computeDelay(baseMs: number, attempt: number, backoff: "constant" | "li
 }
 
 export function parseDuration(duration: string): number {
-  const match = duration.match(/^(\d+)\s*(ms|milliseconds?|s|seconds?|m|minutes?|h|hours?|d|days?)$/i);
+  const match = duration.match(/^(\d+)\s*(ms|milliseconds?|s|seconds?|m|minutes?|h|hours?|d|days?|w|weeks?|months?|y|years?)$/i);
   if (!match) return 0;
   const value = parseInt(match[1]!, 10);
   const unit = match[2]!.toLowerCase();
   if (unit.startsWith("ms") || unit.startsWith("millisecond")) return value;
   if (unit.startsWith("s")) return value * 1000;
-  if (unit.startsWith("m")) return value * 60_000;
+  if (unit === "m" || unit.startsWith("minute")) return value * 60_000;
   if (unit.startsWith("h")) return value * 3_600_000;
   if (unit.startsWith("d")) return value * 86_400_000;
+  if (unit.startsWith("w")) return value * 7 * 86_400_000;
+  if (unit.startsWith("month")) return value * 30 * 86_400_000;
+  if (unit.startsWith("y")) return value * 365 * 86_400_000;
   return 0;
 }
 
@@ -281,12 +348,12 @@ export class WorkflowEntrypointBase {
 export class SqliteWorkflowInstance {
   private db: Database;
   private instanceId: string;
-  private abortController: AbortController | null;
+  private binding: SqliteWorkflowBinding | null;
 
-  constructor(db: Database, instanceId: string, abortController: AbortController | null) {
+  constructor(db: Database, instanceId: string, binding: SqliteWorkflowBinding | null) {
     this.db = db;
     this.instanceId = instanceId;
-    this.abortController = abortController;
+    this.binding = binding;
   }
 
   get id(): string {
@@ -295,14 +362,14 @@ export class SqliteWorkflowInstance {
 
   async status(): Promise<{ status: string; output?: unknown; error?: { name: string; message: string } }> {
     const row = this.db
-      .query("SELECT status, output, error FROM workflow_instances WHERE id = ?")
-      .get(this.instanceId) as { status: string; output: string | null; error: string | null } | null;
+      .query("SELECT status, output, error, error_name FROM workflow_instances WHERE id = ?")
+      .get(this.instanceId) as { status: string; output: string | null; error: string | null; error_name: string | null } | null;
 
     if (!row) throw new Error(`Workflow instance ${this.instanceId} not found`);
 
     const result: { status: string; output?: unknown; error?: { name: string; message: string } } = { status: row.status };
     if (row.output !== null) result.output = JSON.parse(row.output);
-    if (row.error !== null) result.error = { name: "Error", message: row.error };
+    if (row.error !== null) result.error = { name: row.error_name ?? "Error", message: row.error };
     return result;
   }
 
@@ -322,33 +389,47 @@ export class SqliteWorkflowInstance {
     this.db
       .query("UPDATE workflow_instances SET status = 'terminated', updated_at = ? WHERE id = ? AND status IN ('running', 'paused', 'waiting', 'queued')")
       .run(Date.now(), this.instanceId);
-    this.abortController?.abort();
+    // Abort via global registry so get()-retrieved instances also work
+    const ac = abortControllers.get(this.instanceId);
+    ac?.abort();
   }
 
-  async restart(workflowClass: new (ctx: unknown, env: unknown) => WorkflowEntrypointBase, env: unknown, db: Database): Promise<void> {
+  async restart(): Promise<void> {
+    if (!this.binding) throw new Error("Cannot restart: instance not associated with a workflow binding. Use the binding's get() method.");
+    const cls = this.binding._getClass();
+    const env = this.binding._getEnv();
+    const db = this.binding._getDb();
+    if (!cls) throw new Error("Cannot restart: workflow class not wired yet");
+
     const row = this.db
       .query("SELECT params FROM workflow_instances WHERE id = ?")
       .get(this.instanceId) as { params: string | null } | null;
     if (!row) throw new Error(`Workflow instance ${this.instanceId} not found`);
 
     // Abort existing execution
-    this.abortController?.abort();
+    const existingAc = abortControllers.get(this.instanceId);
+    existingAc?.abort();
 
     const abortController = new AbortController();
-    this.abortController = abortController;
+    abortControllers.set(this.instanceId, abortController);
 
     // Clear cached steps for this instance
     this.db.query("DELETE FROM workflow_steps WHERE instance_id = ?").run(this.instanceId);
 
     this.db
-      .query("UPDATE workflow_instances SET status = 'running', output = NULL, error = NULL, updated_at = ? WHERE id = ?")
+      .query("UPDATE workflow_instances SET status = 'running', output = NULL, error = NULL, error_name = NULL, updated_at = ? WHERE id = ?")
       .run(Date.now(), this.instanceId);
 
     const params = row.params !== null ? JSON.parse(row.params) : {};
-    SqliteWorkflowBinding.executeWorkflow(db, this.instanceId, workflowClass, env, params, abortController);
+    SqliteWorkflowBinding.executeWorkflow(db, this.instanceId, cls, env, params, abortController);
   }
 
   async sendEvent(event: { type: string; payload?: unknown }): Promise<void> {
+    // Validate event type
+    if (!EVENT_TYPE_PATTERN.test(event.type)) {
+      throw new Error(`Invalid event type "${event.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`);
+    }
+
     // Check if there's a waiter for this event type in-memory
     const waiters = eventWaiters.get(this.instanceId);
     const resolver = waiters?.get(event.type);
@@ -386,6 +467,10 @@ export class SqliteWorkflowBinding {
     this._env = env;
   }
 
+  _getClass() { return this._class; }
+  _getEnv() { return this._env; }
+  _getDb() { return this.db; }
+
   private cleanupRetentionExpired(): void {
     if (this.limits.maxRetentionMs <= 0) return;
     const cutoff = Date.now() - this.limits.maxRetentionMs;
@@ -421,7 +506,8 @@ export class SqliteWorkflowBinding {
       .run(id, this.workflowName, this.className, JSON.stringify(params), initialStatus, now, now);
 
     const abortController = new AbortController();
-    const handle = new SqliteWorkflowInstance(this.db, id, abortController);
+    abortControllers.set(id, abortController);
+    const handle = new SqliteWorkflowInstance(this.db, id, this);
 
     if (!isQueued) {
       console.log(`[workflow] started ${id}`);
@@ -447,7 +533,28 @@ export class SqliteWorkflowBinding {
       .query("SELECT id FROM workflow_instances WHERE id = ?")
       .get(id) as { id: string } | null;
     if (!row) throw new Error(`Workflow instance ${id} not found`);
-    return new SqliteWorkflowInstance(this.db, id, null);
+    return new SqliteWorkflowInstance(this.db, id, this);
+  }
+
+  /** Resume any workflow instances that were running/waiting when the process last exited. */
+  resumeInterrupted(): void {
+    if (!this._class) return;
+
+    const rows = this.db
+      .query("SELECT id, params FROM workflow_instances WHERE workflow_name = ? AND status IN ('running', 'waiting')")
+      .all(this.workflowName) as { id: string; params: string | null }[];
+
+    for (const row of rows) {
+      const abortController = new AbortController();
+      abortControllers.set(row.id, abortController);
+      const params = row.params !== null ? JSON.parse(row.params) : {};
+      console.log(`[workflow] resuming interrupted instance ${row.id}`);
+      // Reset to running before re-executing (waiting status needs to restart from last checkpoint)
+      this.db
+        .query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+        .run(Date.now(), row.id);
+      SqliteWorkflowBinding.executeWorkflow(this.db, row.id, this._class, this._env, params, abortController, this.workflowName);
+    }
   }
 
   /** Try to start any queued instances for this workflow (called after an instance completes). */
@@ -466,6 +573,7 @@ export class SqliteWorkflowBinding {
         .run(Date.now(), queued.id);
 
       const abortController = new AbortController();
+      abortControllers.set(queued.id, abortController);
       const params = queued.params !== null ? JSON.parse(queued.params) : {};
       console.log(`[workflow] starting queued instance ${queued.id}`);
       SqliteWorkflowBinding.executeWorkflow(this.db, queued.id, this._class, this._env, params, abortController, this.workflowName);
@@ -494,13 +602,14 @@ export class SqliteWorkflowBinding {
         console.log(`[workflow] completed ${id}:`, result);
       } catch (err) {
         if (abortController.signal.aborted) return;
-        const name = err instanceof Error ? err.constructor.name || "Error" : "Error";
+        const errorName = err instanceof Error ? (err.name || err.constructor.name || "Error") : "Error";
         const message = err instanceof Error ? err.message : String(err);
-        db.query("UPDATE workflow_instances SET status = 'errored', error = ?, updated_at = ? WHERE id = ?")
-          .run(message, Date.now(), id);
+        db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
+          .run(message, errorName, Date.now(), id);
         console.error(`[workflow] failed ${id}:`, err);
       } finally {
         eventWaiters.delete(id);
+        abortControllers.delete(id);
         // Try to start queued instances if we have a workflow name to look up the binding
         if (workflowName) {
           // Dequeue next instance for same workflow
@@ -512,6 +621,7 @@ export class SqliteWorkflowBinding {
               .run(Date.now(), queued.id);
             const qParams = queued.params !== null ? JSON.parse(queued.params) : {};
             const ac = new AbortController();
+            abortControllers.set(queued.id, ac);
             console.log(`[workflow] starting queued instance ${queued.id}`);
             SqliteWorkflowBinding.executeWorkflow(db, queued.id, workflowClass, env, qParams, ac, workflowName);
           }
