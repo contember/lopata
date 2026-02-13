@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 29    |
-| **Pending**      | 1     |
-| **Progress**     | 97%   |
+| **Completed**    | 30    |
+| **Pending**      | 0     |
+| **Progress**     | 100%  |
 
 ## Current Focus
 
-Next: **#25 images-transforms** — Basic transforms via Sharp, AVIF dimensions.
+All issues completed.
 
 ## Issues
 
@@ -55,7 +55,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 22 | service-bindings-gaps        | completed | RPC property access, async consistency, subrequest limits, TCP stub |
 | 28 | config-gaps                  | completed | wrangler.toml, env-specific config, global env import |
 | 29 | scheduled-gaps               | completed | Special cron strings, day/month names, controller.type |
-| 25 | images-transforms            | pending | Basic transforms via Sharp, AVIF dimensions |
+| 25 | images-transforms            | completed | Sharp-based transforms, AVIF dimensions, draw overlay, quality |
 
 ## Dependencies
 
@@ -127,6 +127,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 
 - **#29 scheduled-gaps**: Added special cron string aliases (`@daily`/`@midnight`, `@hourly`, `@weekly`, `@monthly`, `@yearly`/`@annually`) — resolved to standard 5-field expressions before parsing, with original alias preserved in `expression` field. Added day-of-week names (`MON`–`SUN`) and month names (`JAN`–`DEC`) support in cron fields — case-insensitive, works in single values, ranges, and comma-separated lists. Added `type: "scheduled"` property to `ScheduledController` interface and `createScheduledController()`. Added 18 new tests (36 total scheduled tests). All 518 tests pass.
 
+- **#25 images-transforms**: Replaced passthrough image transformer with Sharp-based implementation. `transform()` now applies resize (`width`/`height` with `fit` mapping to Sharp equivalents), `rotate` (0/90/180/270), `flip`, `flop`, `blur`, `sharpen`, and `brightness`. Each transform step runs as a separate Sharp pipeline to ensure correct operation ordering (Sharp internally reorders operations within a single pipeline). `draw()` now composites overlays via Sharp's `composite()` with support for `top`/`left`/`bottom`/`right` positioning and `repeat` tiling. `output()` applies format conversion (PNG/JPEG/WebP/AVIF) with configurable `quality`. Added `DrawOptions.bottom`, `DrawOptions.right`, and `DrawOptions.repeat` fields. Implemented AVIF/HEIF dimension parsing in `info()` by scanning for the `ispe` (ImageSpatialExtentsProperty) box in the ISOBMFF container, with Sharp metadata as fallback. Added `sharp` as a dependency. Added 11 new tests (23 total images tests) covering AVIF dimensions, resize, rotate, format conversion, quality, draw compositing, tiling, and combined transforms. All 529 tests pass.
+
 ## Lessons Learned
 
 - `Bun.plugin()` with `build.module()` is the way to shim `cloudflare:*` imports — `onResolve`/`onLoad` doesn't work for the `cloudflare:` scheme because Bun rejects it as an invalid URL before the plugin can intercept
@@ -136,3 +138,4 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - `runtime/config.ts` has a `WranglerConfig` interface — when adding a new binding type, extend this interface with the new config fields
 - For workflow `waitForEvent`/`sendEvent`, use an in-memory registry of promise resolvers (per-process) combined with a `workflow_events` DB table for events sent before the workflow reaches `waitForEvent`. This handles both timing scenarios correctly.
 - Naive JSONC comment stripping (`/\/\/.*$/gm`) breaks URLs inside JSON strings (e.g. `https://...`). Use a proper state-machine parser that tracks whether you're inside a string literal before stripping `//` comments.
+- Sharp internally reorders operations within a single pipeline (e.g. `rotate` runs before `resize`). To ensure sequential ordering of transforms, run each transform as a separate Sharp pipeline by calling `toBuffer()` between them.
