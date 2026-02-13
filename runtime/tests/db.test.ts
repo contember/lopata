@@ -47,7 +47,7 @@ describe("runMigrations", () => {
 
 		const cols = db.query("PRAGMA table_info(r2_objects)").all() as { name: string }[];
 		const colNames = cols.map((c) => c.name);
-		expect(colNames).toEqual(["bucket", "key", "size", "etag", "uploaded", "http_metadata", "custom_metadata"]);
+		expect(colNames).toEqual(["bucket", "key", "size", "etag", "version", "uploaded", "http_metadata", "custom_metadata", "checksums"]);
 	});
 
 	test("do_storage table has correct columns", () => {

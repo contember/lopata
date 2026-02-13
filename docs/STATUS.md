@@ -5,9 +5,9 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 24    |
-| **Pending**      | 6     |
-| **Progress**     | 80%   |
+| **Completed**    | 25    |
+| **Pending**      | 5     |
+| **Progress**     | 83%   |
 
 ## Current Focus
 
@@ -50,7 +50,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 21 | queues-gaps                  | completed | Content types, validation, attempts fix, waitUntil |
 | 23 | cache-api-gaps               | completed | TTL/expiration, Cache-Control, cf-cache-status, validation, limits |
 | 26 | workflows-gaps               | completed | Step retry, checkpointing, status structure, queued, retention, concurrency |
-| 19 | r2-gaps                      | pending | Multipart, conditionals, range reads, list delimiter |
+| 19 | r2-gaps                      | completed | Multipart, conditionals, range reads, list delimiter, validation, R2Object props |
 | 24 | static-assets-gaps           | pending | ETag, Cache-Control, _headers, run_worker_first, 307 fix |
 | 22 | service-bindings-gaps        | pending | Stub fetch, RPC property access, async consistency |
 | 28 | config-gaps                  | pending | wrangler.toml, env-specific config, global env import |
@@ -116,6 +116,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#23 cache-api-gaps**: Added `expires_at` column to `cache_entries` table. `put()` now parses `Cache-Control` header (`max-age`, `s-maxage`, `no-store`) and `Expires` header as fallback, storing computed expiration timestamp. `s-maxage` takes precedence over `max-age` (shared cache behavior). `no-store` responses silently skipped (not cached). `match()` checks expiration and lazily deletes expired entries from DB. `match()` adds `cf-cache-status: HIT` header on cache hits. Added validation: `put()` rejects 206 Partial Content responses and `Vary: *` responses. Added `CacheLimits` interface with configurable `maxBodySize` (default 512 MiB) and `maxHeaderSize` (default 32 KiB) — passed via constructor. `SqliteCacheStorage` forwards limits to all caches. Added 14 new tests (34 total cache tests). All 400 tests pass.
 
 - **#26 workflows-gaps**: Added `WorkflowStepConfig` interface with `retries` (`limit`, `delay`, `backoff`: constant/linear/exponential) and `timeout`. `step.do(name, config, callback)` overload now supports retry with configurable backoff and per-step timeout via `Promise.race`. Added `NonRetryableError` class (exported from both `workflow.ts` and `cloudflare:workflows` plugin) — when thrown, skips all retries. Implemented step checkpointing: `workflow_steps` table caches step results by `(instance_id, step_name)`; on workflow restart, cached results are replayed instead of re-executing. `restart()` clears cached steps. `status()` now returns structured error `{ name, message }` instead of plain string. Added `queued` status: when `WorkflowLimits.maxConcurrentInstances` is set, new instances beyond the limit get `queued` status and start automatically when running instances complete. `waitForEvent` now returns `{ payload, timestamp, type }` (WorkflowStepEvent structure). Added `retention` support: `WorkflowLimits.maxRetentionMs` auto-deletes completed/errored instances on next `create()`. Updated `plugin.ts` to use exported `NonRetryableError`. Added 13 new tests (40 total workflow tests). All 413 tests pass.
+
+- **#19 r2-gaps**: Added `R2Limits` interface with configurable `maxKeySize` (1024), `maxCustomMetadataSize` (2048), `maxBatchDeleteKeys` (1000), `maxMultipartParts` (10000) — passed via constructor. Key size validation on `put()` and `createMultipartUpload()`. Custom metadata size validation after JSON serialization. Batch delete count validation. Added `version` (UUID), `httpEtag` (quoted etag), `checksums` (R2Checksums with md5 auto-generated), `storageClass` ("Standard"), `writeHttpMetadata(headers)`, and `blob()` to R2Object/R2ObjectBody. Implemented `onlyIf` conditional on `get()` (returns R2Object without body on condition failure) and `put()` (returns null on failure) — supports `etagMatches`, `etagDoesNotMatch`, `uploadedBefore`, `uploadedAfter`. Implemented range reads on `get()` with `{ offset, length }` and `{ suffix }` — returned object includes `range` property. Added `delimiter` to `list()` returning `delimitedPrefixes` for hierarchical key grouping. Added `include` option to filter `httpMetadata`/`customMetadata` in list results. Implemented multipart upload: `createMultipartUpload()`, `resumeMultipartUpload()`, `R2MultipartUpload` with `uploadPart()`, `complete()`, `abort()` — parts stored as temp files, assembled on complete. Added `r2_multipart_uploads` and `r2_multipart_parts` tables. Added `version` and `checksums` columns to `r2_objects`. Added 28 new tests (55 total R2 tests). All 442 tests pass.
 
 ## Lessons Learned
 

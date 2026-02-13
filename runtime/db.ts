@@ -46,10 +46,34 @@ export function runMigrations(db: Database): void {
 			key TEXT NOT NULL,
 			size INTEGER NOT NULL,
 			etag TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '',
 			uploaded TEXT NOT NULL,
 			http_metadata TEXT,
 			custom_metadata TEXT,
+			checksums TEXT,
 			PRIMARY KEY (bucket, key)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS r2_multipart_uploads (
+			upload_id TEXT PRIMARY KEY,
+			bucket TEXT NOT NULL,
+			key TEXT NOT NULL,
+			http_metadata TEXT,
+			custom_metadata TEXT,
+			created_at TEXT NOT NULL
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS r2_multipart_parts (
+			upload_id TEXT NOT NULL,
+			part_number INTEGER NOT NULL,
+			etag TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			file_path TEXT NOT NULL,
+			PRIMARY KEY (upload_id, part_number)
 		)
 	`);
 
