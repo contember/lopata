@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 39    |
-| **Completed**    | 36    |
-| **Pending**      | 3     |
-| **Progress**     | 92%   |
+| **Completed**    | 37    |
+| **Pending**      | 2     |
+| **Progress**     | 95%   |
 
 ## Current Focus
 
-Phase 3 — closing remaining API gaps, prioritized by community impact. Next: #36 navigator-globals.
+Phase 3 — closing remaining API gaps, prioritized by community impact. Next: #37 queue-pull-consumers.
 
 ## Issues
 
@@ -69,7 +69,7 @@ Issues ordered by priority — high-impact first.
 | 33 | do-sync-kv                   | completed | low       | storage.kv.get/put/delete/list (synchronous) |
 | 34 | redirects-file               | completed | low       | _redirects file: static/dynamic redirects, splats, placeholders, rewrite |
 | 35 | crypto-extras                | completed | very low  | crypto.subtle.timingSafeEqual, crypto.DigestStream |
-| 36 | navigator-globals            | pending | very low  | navigator.userAgent, scheduler.wait |
+| 36 | navigator-globals            | completed | very low  | navigator.userAgent, navigator.language, performance.timeOrigin, scheduler.wait |
 | 37 | queue-pull-consumers         | pending | low       | HTTP pull/ack endpoints for queues |
 | 38 | do-transaction-sync          | pending | low       | storage.transactionSync() |
 
@@ -160,6 +160,8 @@ Issues ordered by priority — high-impact first.
 - **#33 do-sync-kv**: Added `SyncKV` class in `runtime/bindings/durable-object.ts` with synchronous `get(key)`, `put(key, value)`, `delete(key)` (returns boolean), and `list(options?)` (generator yielding `[key, value]` tuples). Uses the same `do_storage` SQLite table as the async API — full interop between sync and async methods. Lazy `kv` getter added to `SqliteDurableObjectStorage`. `list()` supports `prefix`, `start`, `startAfter`, `end`, `reverse`, and `limit` options. Added 16 new tests (137 total DO tests) covering basic CRUD, overwrite, delete return values, list with all options, async/sync interop, instance caching, and access via `DurableObjectStateImpl`. All 697 tests pass.
 
 - **#34 redirects-file**: Implemented `_redirects` file support in `runtime/bindings/static-assets.ts`. Added `parseRedirects(content, limits)` parser: one rule per line (`<from> <to> [status]`), default status 302, comments/empty lines ignored, invalid status codes skipped. Added `matchRedirectPattern(pattern, pathname)` returning captured groups (`splat` for `*`, named for `:param`). Redirect rules checked first in `fetch()` (highest precedence, before `_headers` and asset matching). 3xx status codes return `Response` with `Location` header. 200 status rewrites the path internally (transparent proxy). Added `StaticAssetsLimits.maxStaticRedirects` (default 2000) and `maxDynamicRedirects` (default 100) — static rules have no wildcards/placeholders, dynamic rules do. Added 21 new tests (60 total static-assets tests) covering `parseRedirects` (status codes, comments, dynamic detection, limits), `matchRedirectPattern` (exact, splat, placeholder), and integration tests (301/302/303/307/308, splats, placeholders, 200 rewrite, first-match-wins, precedence over assets, query string preservation). All 718 tests pass.
+
+- **#36 navigator-globals**: Set `navigator.userAgent` to `"Cloudflare-Workers"` and `navigator.language` to `"en"` via `Object.defineProperty` on `globalThis.navigator` in `plugin.ts`. Set `performance.timeOrigin` to `0` (matching CF semantics where timeOrigin is always 0). Registered `scheduler.wait(ms)` on `globalThis` — returns a `Promise<void>` that resolves after `ms` milliseconds via `setTimeout`. Added 6 tests covering userAgent value, language default, timeOrigin, performance.now(), scheduler.wait delay, and scheduler.wait(0). All 741 tests pass (1 pre-existing workflow failure unrelated).
 
 - **#35 crypto-extras**: Implemented `crypto.subtle.timingSafeEqual(a, b)` using `node:crypto`'s `timingSafeEqual` (Bun-supported). Accepts `ArrayBuffer` or `ArrayBufferView`, throws `TypeError` on mismatched lengths, returns `boolean`. Implemented `DigestStream` extending `WritableStream` — constructor takes algorithm name (`SHA-1`, `SHA-256`, `SHA-384`, `SHA-512`, `MD5`), internally uses `Bun.CryptoHasher`. `digest` property is a `Promise<ArrayBuffer>` resolving on stream close. Supports case-insensitive algorithm names. Both registered on `globalThis.crypto` via `patchGlobalCrypto()` in `plugin.ts`. Added 17 tests covering equal/different/empty buffers, ArrayBufferView/DataView/subarray inputs, SHA-256/SHA-1/SHA-512/MD5 hashes, multiple chunks, pipeTo, empty input, unsupported algorithm, and case-insensitive algorithm names. All 735 tests pass (1 pre-existing workflow failure unrelated).
 
