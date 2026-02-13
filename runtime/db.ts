@@ -109,6 +109,16 @@ export function runMigrations(db: Database): void {
 	`);
 
 	db.run(`
+		CREATE TABLE IF NOT EXISTS workflow_steps (
+			instance_id TEXT NOT NULL,
+			step_name TEXT NOT NULL,
+			output TEXT,
+			completed_at INTEGER NOT NULL,
+			PRIMARY KEY (instance_id, step_name)
+		)
+	`);
+
+	db.run(`
 		CREATE TABLE IF NOT EXISTS cache_entries (
 			cache_name TEXT NOT NULL,
 			url TEXT NOT NULL,

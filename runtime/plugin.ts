@@ -1,6 +1,6 @@
 import { plugin } from "bun";
 import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/durable-object";
-import { WorkflowEntrypointBase } from "./bindings/workflow";
+import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { getDatabase } from "./db";
 
@@ -40,12 +40,7 @@ plugin({
     build.module("cloudflare:workflows", () => {
       return {
         exports: {
-          NonRetryableError: class NonRetryableError extends Error {
-            constructor(message: string) {
-              super(message);
-              this.name = "NonRetryableError";
-            }
-          },
+          NonRetryableError,
         },
         loader: "object",
       };
