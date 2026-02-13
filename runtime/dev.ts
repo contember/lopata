@@ -7,7 +7,8 @@ import { createScheduledController, startCronScheduler } from "./bindings/schedu
 import { getDatabase } from "./db";
 import { ExecutionContext } from "./execution-context";
 import { addCfProperty } from "./request-cf";
-import { handleDashboardRequest } from "./dashboard/api";
+import { handleDashboardRequest, dashboardHtml } from "./dashboard/api";
+import { CFWebSocket } from "./bindings/websocket-pair";
 import path from "node:path";
 
 // Parse --env flag from CLI args
@@ -85,16 +86,19 @@ if (crons.length > 0 && scheduledHandler) {
 // 8. Start server
 const port = parseInt(process.env.PORT ?? "8787", 10);
 
-Bun.serve({
+const server = Bun.serve({
   port,
-  async fetch(request) {
+  routes: {
+    "/__dashboard": dashboardHtml,
+  },
+  async fetch(request, server) {
     const ctx = new ExecutionContext();
     addCfProperty(request);
 
     const url = new URL(request.url);
 
-    // Dashboard
-    if (url.pathname.startsWith("/__dashboard")) {
+    // Dashboard API routes
+    if (url.pathname.startsWith("/__dashboard/api")) {
       return handleDashboardRequest(request);
     }
 
@@ -142,13 +146,30 @@ Bun.serve({
       return await (defaultExport as { fetch: Function }).fetch(req, env, ctx) as Response;
     };
 
+    // Helper: check if response is a WebSocket upgrade and handle it
+    const handleResponse = (response: Response) => {
+      const ws = (response as Response & { webSocket?: CFWebSocket }).webSocket;
+      if (response.status === 101 && ws instanceof CFWebSocket) {
+        // Bridge: upgrade the real HTTP connection and link to the CFWebSocket
+        const upgraded = (server as { upgrade(req: Request, opts: { data: unknown }): boolean }).upgrade(request, { data: { cfSocket: ws } });
+        if (!upgraded) {
+          return new Response("WebSocket upgrade failed", { status: 500 });
+        }
+        // Return undefined — Bun handles the upgrade
+        return undefined;
+      }
+      return response;
+    };
+
     if (workerFirst) {
       // Worker first, fall back to assets
       try {
         const workerResponse = await callFetch(request);
-        if (workerResponse.status !== 404) {
+        const result = handleResponse(workerResponse);
+        if (result === undefined) return undefined as unknown as Response;
+        if (result.status !== 404) {
           ctx._awaitAll().catch(() => {});
-          return workerResponse;
+          return result;
         }
       } catch (err) {
         console.error("[bunflare] Request error:", err);
@@ -167,12 +188,56 @@ Bun.serve({
 
     try {
       const response = await callFetch(request);
+      const result = handleResponse(response);
+      if (result === undefined) return undefined as unknown as Response;
       ctx._awaitAll().catch(() => {});
-      return response;
+      return result;
     } catch (err) {
       console.error("[bunflare] Request error:", err);
       return new Response("Internal Server Error", { status: 500 });
     }
+  },
+  websocket: {
+    open(ws) {
+      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
+      // Forward messages from cfSocket → real client
+      cfSocket.addEventListener("message", (ev: Event) => {
+        const data = (ev as MessageEvent).data;
+        ws.send(data);
+      });
+      cfSocket.addEventListener("close", (ev: Event) => {
+        const ce = ev as CloseEvent;
+        ws.close(ce.code, ce.reason);
+      });
+    },
+    message(ws, message) {
+      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
+      // Forward real client messages → cfSocket's peer (the server side)
+      // The cfSocket is the client side — its peer is the server side
+      // But we need to deliver the message to cfSocket so the server's peer receives it
+      // Actually: cfSocket IS the client socket returned in Response.
+      // The server side accepted and listens on the other end.
+      // Real client messages should appear on the server side, which is cfSocket's peer.
+      if (cfSocket._peer && cfSocket._peer._accepted) {
+        cfSocket._peer._dispatchWSEvent({ type: "message", data: typeof message === "string" ? message : message.buffer as ArrayBuffer });
+      } else if (cfSocket._peer) {
+        cfSocket._peer._eventQueue.push({ type: "message", data: typeof message === "string" ? message : message.buffer as ArrayBuffer });
+      }
+    },
+    close(ws, code, reason) {
+      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
+      // Notify the server side (cfSocket's peer) about close
+      if (cfSocket._peer && cfSocket._peer.readyState !== 3 /* CLOSED */) {
+        const evt = { type: "close" as const, code: code ?? 1000, reason: reason ?? "", wasClean: true };
+        if (cfSocket._peer._accepted) {
+          cfSocket._peer._dispatchWSEvent(evt);
+        } else {
+          cfSocket._peer._eventQueue.push(evt);
+        }
+        cfSocket._peer.readyState = 3;
+      }
+      cfSocket.readyState = 3;
+    },
   },
 });
 

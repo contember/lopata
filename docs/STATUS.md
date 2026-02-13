@@ -5,9 +5,9 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 39    |
-| **Completed**    | 31    |
-| **Pending**      | 8     |
-| **Progress**     | 79%   |
+| **Completed**    | 32    |
+| **Pending**      | 7     |
+| **Progress**     | 82%   |
 
 ## Current Focus
 
@@ -64,7 +64,7 @@ Issues ordered by priority — high-impact first.
 | #  | Issue                        | Status  | Priority  | Notes |
 | -- | ---------------------------- | ------- | --------- | ----- |
 | 30 | html-rewriter                | completed | medium    | HTMLRewriter class via html-rewriter-wasm (lol-html WASM) |
-| 31 | websocket-pair               | pending | medium    | WebSocketPair + WS upgrade for regular Workers |
+| 31 | websocket-pair               | completed | medium    | WebSocketPair + WS upgrade for regular Workers |
 | 32 | cf-streams                   | pending | low       | IdentityTransformStream, FixedLengthStream |
 | 33 | do-sync-kv                   | pending | low       | storage.kv.get/put/delete/list (synchronous) |
 | 34 | redirects-file               | pending | low       | Static assets _redirects file support |
@@ -152,6 +152,8 @@ Issues ordered by priority — high-impact first.
 - **#25 images-transforms**: Replaced passthrough image transformer with Sharp-based implementation. `transform()` now applies resize (`width`/`height` with `fit` mapping to Sharp equivalents), `rotate` (0/90/180/270), `flip`, `flop`, `blur`, `sharpen`, and `brightness`. Each transform step runs as a separate Sharp pipeline to ensure correct operation ordering (Sharp internally reorders operations within a single pipeline). `draw()` now composites overlays via Sharp's `composite()` with support for `top`/`left`/`bottom`/`right` positioning and `repeat` tiling. `output()` applies format conversion (PNG/JPEG/WebP/AVIF) with configurable `quality`. Added `DrawOptions.bottom`, `DrawOptions.right`, and `DrawOptions.repeat` fields. Implemented AVIF/HEIF dimension parsing in `info()` by scanning for the `ispe` (ImageSpatialExtentsProperty) box in the ISOBMFF container, with Sharp metadata as fallback. Added `sharp` as a dependency. Added 11 new tests (23 total images tests) covering AVIF dimensions, resize, rotate, format conversion, quality, draw compositing, tiling, and combined transforms. All 529 tests pass.
 
 - **#30 html-rewriter**: Implemented `HTMLRewriter` class in `runtime/bindings/html-rewriter.ts` wrapping `html-rewriter-wasm` (WASM port of Cloudflare's lol-html). `on(selector, handler)` registers element handlers with full CSS selector support (tag, class, id, attribute selectors, combinators, pseudo-classes). `onDocument(handler)` registers document-level handlers (doctype, comments, text, end). `transform(response)` returns a new `Response` with streaming HTML transformation via `TransformStream` — reads chunks from the original response body, pipes through the WASM rewriter, and writes transformed chunks to the output stream. Content-length header removed since streaming transform changes body size. Null body responses passed through as-is. Registered `HTMLRewriter` on `globalThis` in `plugin.ts`. Added `html-rewriter-wasm` dependency. Added 35 tests covering element operations (getAttribute, setAttribute, removeAttribute, hasAttribute, tagName, attributes iterator, setInnerContent, before/after, prepend/append, replace, remove, removeAndKeepContent), end tag handlers, text handlers (chunks, replace, remove, lastInTextNode), comment handlers (read, modify, remove, replace), document handlers (doctype, end append, text, comments), CSS selectors (class, id, attribute value, wildcard), chaining multiple handlers, and transform behavior (status/headers preservation, content-length removal, null body, large HTML). All 564 tests pass.
+
+- **#31 websocket-pair**: Implemented `WebSocketPair` and `CFWebSocket` classes in `runtime/bindings/websocket-pair.ts`. `WebSocketPair` constructor creates two linked in-memory WebSocket-like objects accessible via numeric keys (`pair[0]`, `pair[1]`) and `Object.values()`. `CFWebSocket` extends `EventTarget` with CF-specific `accept()` method — events are buffered until `accept()` is called. Supports `send()` (string, ArrayBuffer, ArrayBufferView), `close(code?, reason?)`, `readyState` transitions (CONNECTING→OPEN→CLOSED), `addEventListener()` and `on*` callback-style handlers. Messages sent on one socket are delivered to the peer. Close propagates bidirectionally. Registered `WebSocketPair` on `globalThis` and exported from `cloudflare:workers` plugin. In `dev.ts`, added WebSocket upgrade bridge: when worker returns `Response(null, { status: 101, webSocket: client })`, Bun's native WebSocket upgrade bridges the real client connection to the CFWebSocket pair — real client messages forwarded to the server-side CFWebSocket, server-side sends forwarded to the real client. Added 22 tests covering constructor, Object.values destructuring, readyState constants/transitions, accept() gating, bidirectional string/binary messaging, ArrayBufferView support, event buffering until accept(), close propagation, close idempotency, callback-style handlers, multiple listeners, upgrade response pattern, and buffered close flush. All 586 tests pass.
 
 ## Lessons Learned
 

@@ -3,6 +3,7 @@ import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/dura
 import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { HTMLRewriter } from "./bindings/html-rewriter";
+import { WebSocketPair } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
 import { globalEnv } from "./env";
 
@@ -16,6 +17,13 @@ Object.defineProperty(globalThis, "caches", {
 // Register global `HTMLRewriter` class
 Object.defineProperty(globalThis, "HTMLRewriter", {
   value: HTMLRewriter,
+  writable: false,
+  configurable: true,
+});
+
+// Register global `WebSocketPair` class
+Object.defineProperty(globalThis, "WebSocketPair", {
+  value: WebSocketPair,
   writable: false,
   configurable: true,
 });
@@ -37,6 +45,7 @@ plugin({
           }
         },
         WebSocketRequestResponsePair,
+        WebSocketPair,
         RpcTarget: class {},
       };
       Object.defineProperty(exports, "env", {
