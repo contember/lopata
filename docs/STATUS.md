@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 27    |
-| **Pending**      | 3     |
-| **Progress**     | 90%   |
+| **Completed**    | 28    |
+| **Pending**      | 2     |
+| **Progress**     | 93%   |
 
 ## Current Focus
 
-Next: **#28 config-gaps** — wrangler.toml support, env-specific config, global env import.
+Next: **#29 scheduled-gaps** — Special cron strings (@daily), day/month names.
 
 ## Issues
 
@@ -53,7 +53,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 19 | r2-gaps                      | completed | Multipart, conditionals, range reads, list delimiter, validation, R2Object props |
 | 24 | static-assets-gaps           | completed | ETag, Cache-Control, _headers, run_worker_first, 307 fix, hierarchical 404 |
 | 22 | service-bindings-gaps        | completed | RPC property access, async consistency, subrequest limits, TCP stub |
-| 28 | config-gaps                  | pending | wrangler.toml, env-specific config, global env import |
+| 28 | config-gaps                  | completed | wrangler.toml, env-specific config, global env import |
 | 29 | scheduled-gaps               | pending | Special cron strings (@daily), day/month names |
 | 25 | images-transforms            | pending | Basic transforms via Sharp, AVIF dimensions |
 
@@ -123,6 +123,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 
 - **#22 service-bindings-gaps**: RPC property access now returns thenables — `await binding.prop` reads a property from the target, `await binding.method(args)` calls it. All RPC returns wrapped in `Promise.resolve()` for async consistency (matching CF behavior where everything crosses a process boundary). Added `ServiceBindingLimits` with configurable `maxSubrequests` (default 1000) and `maxRpcPayloadSize` (default 32 MiB). Subrequest count tracked across both `fetch()` and RPC calls. `connect()` stub throws with clear error. Promise protocol safety: proxy's own `then`/`catch`/`finally` return `undefined` so the proxy itself is not auto-unwrapped. Request/Response/ReadableStream pass through as RPC arguments (in-process, no serialization needed). Added 15 new tests (31 total service binding tests). All 473 tests pass.
 
+- **#28 config-gaps**: Added lightweight TOML parser in `config.ts` supporting key/value pairs, basic/literal strings, numbers, booleans, arrays, inline tables, tables, and array of tables — enough for wrangler.toml configs. Added `autoLoadConfig(baseDir)` that auto-detects config format: tries `wrangler.jsonc`, then `wrangler.json`, then `wrangler.toml`. Added environment-specific config: `env` field in WranglerConfig with `[env.<name>]` sections (TOML) or `"env": { "<name>": {} }` (JSON); `--env <name>` CLI flag in `dev.ts` selects environment; env-specific values override top-level config. Added `compatibility_date` and `compatibility_flags` to WranglerConfig (parsed and accepted, not enforced). Added `.env` file support as fallback when `.dev.vars` doesn't exist — `.dev.vars` takes priority (matching CF behavior). `buildEnv()` now accepts a directory path and auto-detects `.dev.vars`/`.env`. Added `env` export to `cloudflare:workers` plugin via getter on `globalEnv` — `import { env } from "cloudflare:workers"` works. Fixed JSONC comment stripping to respect string literals (no longer breaks URLs with `//`). Added 27 new tests (30 total config tests, 15 total env-vars tests). All 500 tests pass.
+
 ## Lessons Learned
 
 - `Bun.plugin()` with `build.module()` is the way to shim `cloudflare:*` imports — `onResolve`/`onLoad` doesn't work for the `cloudflare:` scheme because Bun rejects it as an invalid URL before the plugin can intercept
@@ -131,3 +133,4 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - When changing a binding class (rename, new constructor params), always update the corresponding test file in `runtime/tests/` AND `runtime/env.ts`
 - `runtime/config.ts` has a `WranglerConfig` interface — when adding a new binding type, extend this interface with the new config fields
 - For workflow `waitForEvent`/`sendEvent`, use an in-memory registry of promise resolvers (per-process) combined with a `workflow_events` DB table for events sent before the workflow reaches `waitForEvent`. This handles both timing scenarios correctly.
+- Naive JSONC comment stripping (`/\/\/.*$/gm`) breaks URLs inside JSON strings (e.g. `https://...`). Use a proper state-machine parser that tracks whether you're inside a string literal before stripping `//` comments.

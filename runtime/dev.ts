@@ -1,20 +1,25 @@
 // Plugin is registered via preload (bunfig.toml / --preload flag)
 import "./plugin";
-import { loadConfig } from "./config";
+import { autoLoadConfig } from "./config";
 import { buildEnv, wireClassRefs } from "./env";
 import { QueueConsumer } from "./bindings/queue";
 import { createScheduledController, startCronScheduler } from "./bindings/scheduled";
 import { getDatabase } from "./db";
 import path from "node:path";
 
-// 1. Parse config
-const configPath = path.resolve(import.meta.dir, "../wrangler.jsonc");
-const config = await loadConfig(configPath);
-console.log(`[bunflare] Loaded config: ${config.name}`);
+// Parse --env flag from CLI args
+const envFlag = (() => {
+  const idx = process.argv.indexOf("--env");
+  return idx !== -1 ? process.argv[idx + 1] : undefined;
+})();
 
-// 2. Build env with bindings and environment variables
-const devVarsPath = path.resolve(import.meta.dir, "../.dev.vars");
-const { env, registry } = buildEnv(config, devVarsPath);
+// 1. Parse config (auto-detect wrangler.jsonc / wrangler.json / wrangler.toml)
+const baseDir = path.resolve(import.meta.dir, "..");
+const config = await autoLoadConfig(baseDir, envFlag);
+console.log(`[bunflare] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ""}`);
+
+// 2. Build env with bindings and environment variables (.dev.vars or .env)
+const { env, registry } = buildEnv(config, baseDir);
 
 // 3. Import worker module (plugin intercepts cloudflare:workers imports)
 const workerPath = path.resolve(import.meta.dir, "..", config.main);

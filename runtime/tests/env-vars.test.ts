@@ -65,10 +65,9 @@ describe("buildEnv - environment variables", () => {
 
   test("reads .dev.vars file and merges into env", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bunflare-test-"));
-    const devVarsPath = join(tmpDir, ".dev.vars");
-    writeFileSync(devVarsPath, "SECRET_KEY=supersecret\nDB_URL=postgres://localhost/test");
+    writeFileSync(join(tmpDir, ".dev.vars"), "SECRET_KEY=supersecret\nDB_URL=postgres://localhost/test");
 
-    const { env } = buildEnv({ name: "test", main: "index.ts" }, devVarsPath);
+    const { env } = buildEnv({ name: "test", main: "index.ts" }, tmpDir);
     expect(env.SECRET_KEY).toBe("supersecret");
     expect(env.DB_URL).toBe("postgres://localhost/test");
 
@@ -77,8 +76,7 @@ describe("buildEnv - environment variables", () => {
 
   test(".dev.vars overrides vars from config", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "bunflare-test-"));
-    const devVarsPath = join(tmpDir, ".dev.vars");
-    writeFileSync(devVarsPath, "API_HOST=http://localhost:3000");
+    writeFileSync(join(tmpDir, ".dev.vars"), "API_HOST=http://localhost:3000");
 
     const { env } = buildEnv(
       {
@@ -86,7 +84,7 @@ describe("buildEnv - environment variables", () => {
         main: "index.ts",
         vars: { API_HOST: "https://api.example.com", KEEP_ME: "yes" },
       },
-      devVarsPath,
+      tmpDir,
     );
     expect(env.API_HOST).toBe("http://localhost:3000");
     expect(env.KEEP_ME).toBe("yes");
@@ -95,14 +93,38 @@ describe("buildEnv - environment variables", () => {
   });
 
   test("handles non-existent .dev.vars gracefully", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bunflare-test-"));
     const { env } = buildEnv(
       {
         name: "test",
         main: "index.ts",
         vars: { FOO: "bar" },
       },
-      "/tmp/nonexistent-devvars-file",
+      tmpDir,
     );
     expect(env.FOO).toBe("bar");
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("reads .env file when .dev.vars does not exist", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bunflare-test-"));
+    writeFileSync(join(tmpDir, ".env"), "FROM_ENV=yes\nDB=postgres");
+
+    const { env } = buildEnv({ name: "test", main: "index.ts" }, tmpDir);
+    expect(env.FROM_ENV).toBe("yes");
+    expect(env.DB).toBe("postgres");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test(".dev.vars takes priority over .env", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "bunflare-test-"));
+    writeFileSync(join(tmpDir, ".dev.vars"), "KEY=from-dev-vars");
+    writeFileSync(join(tmpDir, ".env"), "KEY=from-env");
+
+    const { env } = buildEnv({ name: "test", main: "index.ts" }, tmpDir);
+    expect(env.KEY).toBe("from-dev-vars");
+
+    rmSync(tmpDir, { recursive: true });
   });
 });

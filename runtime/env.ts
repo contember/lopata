@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { WranglerConfig } from "./config";
 import { SqliteKVNamespace } from "./bindings/kv";
 import { FileR2Bucket } from "./bindings/r2";
@@ -10,6 +11,11 @@ import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
 import { getDatabase, getDataDir } from "./db";
+
+/**
+ * Global reference to the built env object. Used by cloudflare:workers `env` export.
+ */
+export let globalEnv: Record<string, unknown> = {};
 
 export function parseDevVars(content: string): Record<string, string> {
   const vars: Record<string, string> = {};
@@ -52,7 +58,7 @@ interface ClassRegistry {
   staticAssets: StaticAssets | null;
 }
 
-export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
+export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
   const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
 
@@ -63,11 +69,14 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
     }
   }
 
-  // Override with .dev.vars file (if exists)
-  if (devVarsPath) {
-    const { existsSync, readFileSync } = require("node:fs") as typeof import("node:fs");
-    if (existsSync(devVarsPath)) {
-      const content = readFileSync(devVarsPath, "utf-8");
+  // Override with .dev.vars or .env file (if exists)
+  // .dev.vars takes priority over .env (matching CF behavior)
+  if (devVarsDir) {
+    const devVarsPath = path.join(devVarsDir, ".dev.vars");
+    const envPath = path.join(devVarsDir, ".env");
+    const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null;
+    if (filePath) {
+      const content = readFileSync(filePath, "utf-8");
       const devVars = parseDevVars(content);
       for (const [key, value] of Object.entries(devVars)) {
         env[key] = value;
@@ -167,6 +176,9 @@ export function buildEnv(config: WranglerConfig, devVarsPath?: string): { env: R
       console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`);
     }
   }
+
+  // Store reference for cloudflare:workers env export
+  globalEnv = env;
 
   return { env, registry };
 }
