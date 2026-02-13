@@ -46,6 +46,40 @@ Object.defineProperty(globalThis, "FixedLengthStream", {
 // Patch crypto with CF-specific extensions (timingSafeEqual, DigestStream)
 patchGlobalCrypto();
 
+// Set navigator.userAgent to match Cloudflare Workers
+Object.defineProperty(globalThis.navigator, "userAgent", {
+  value: "Cloudflare-Workers",
+  writable: false,
+  configurable: true,
+});
+
+// Set navigator.language (behind enable_navigator_language compat flag in CF)
+if (!globalThis.navigator.language) {
+  Object.defineProperty(globalThis.navigator, "language", {
+    value: "en",
+    writable: false,
+    configurable: true,
+  });
+}
+
+// Set performance.timeOrigin to 0 (CF semantics)
+Object.defineProperty(globalThis.performance, "timeOrigin", {
+  value: 0,
+  writable: false,
+  configurable: true,
+});
+
+// Register scheduler.wait(ms) — await-able setTimeout alternative
+Object.defineProperty(globalThis, "scheduler", {
+  value: {
+    wait(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    },
+  },
+  writable: false,
+  configurable: true,
+});
+
 plugin({
   name: "cloudflare-workers-shim",
   setup(build) {
