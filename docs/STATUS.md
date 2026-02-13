@@ -4,26 +4,26 @@
 
 | Metric           | Value |
 | ---------------- | ----- |
-| **Total Issues** | 18    |
-| **Completed**    | 18    |
-| **Pending**      | 0     |
-| **Progress**     | 100%  |
+| **Total Issues** | 30    |
+| **Completed**    | 19    |
+| **Pending**      | 11    |
+| **Progress**     | 63%   |
 
 ## Current Focus
 
-All issues completed.
+Phase 2 — API completeness audit. Filling gaps identified by comparing each binding against Cloudflare documentation.
 
 ## Issues
 
-Issues are ordered by implementation priority. **Implement in this order.**
+### Phase 1 — Core Implementation (completed)
 
-| #  | Issue                        | Status  | Notes |
-| -- | ---------------------------- | ------- | ----- |
-| 00 | persistence-layer            | completed | Foundation — creates db.ts, schema, .bunflare/ dir |
-| 14 | migrate-kv-to-sqlite         | completed | Migrate existing KV from in-memory Map to SQLite |
-| 15 | migrate-r2-to-files          | completed | Migrate existing R2 from in-memory Map to files + SQLite metadata |
-| 16 | migrate-do-storage-to-sqlite | completed | Migrate existing DO storage from in-memory Map to SQLite |
-| 17 | migrate-workflows-to-sqlite  | completed | Migrate existing Workflow binding to SQLite |
+| #  | Issue                        | Status    | Notes |
+| -- | ---------------------------- | --------- | ----- |
+| 00 | persistence-layer            | completed | Foundation — db.ts, schema, .bunflare/ dir |
+| 14 | migrate-kv-to-sqlite         | completed | KV from in-memory Map to SQLite |
+| 15 | migrate-r2-to-files          | completed | R2 from in-memory Map to files + SQLite metadata |
+| 16 | migrate-do-storage-to-sqlite | completed | DO storage from in-memory Map to SQLite |
+| 17 | migrate-workflows-to-sqlite  | completed | Workflow binding to SQLite |
 | 07 | environment-variables        | completed | Parse vars from config + .dev.vars |
 | 01 | d1-database                  | completed | |
 | 02 | queues                       | completed | |
@@ -31,20 +31,45 @@ Issues are ordered by implementation priority. **Implement in this order.**
 | 04 | scheduled-handler            | completed | |
 | 05 | static-assets                | completed | |
 | 06 | cache-api                    | completed | |
-| 08 | workflow-instance-management | completed | Depends on 17 |
+| 08 | workflow-instance-management | completed | |
 | 09 | images-binding               | completed | |
 | 13 | do-misc                      | completed | |
-| 10 | do-alarms                    | completed | Depends on 16 |
-| 11 | do-websocket-support         | completed | Depends on 16 |
-| 12 | do-sql-storage               | completed | Depends on 16 |
+| 10 | do-alarms                    | completed | |
+| 11 | do-websocket-support         | completed | |
+| 12 | do-sql-storage               | completed | |
+
+### Phase 2 — API Completeness (pending)
+
+Issues ordered by priority — high-impact gaps first, optional/low-priority last.
+
+| #  | Issue                        | Status  | Notes |
+| -- | ---------------------------- | ------- | ----- |
+| 27 | do-gaps                      | completed | Stub fetch(), list startAfter, sync(), WS validation |
+| 18 | kv-gaps                      | pending | Bulk ops, key/value/metadata validation |
+| 20 | d1-gaps                      | pending | dump(), exec() parsing, type conversion |
+| 21 | queues-gaps                  | pending | Content types fix, batch timeout, validation |
+| 23 | cache-api-gaps               | pending | TTL/expiration, Cache-Control, cf-cache-status |
+| 26 | workflows-gaps               | pending | Step retry config, checkpointing, status structure |
+| 19 | r2-gaps                      | pending | Multipart, conditionals, range reads, list delimiter |
+| 24 | static-assets-gaps           | pending | ETag, Cache-Control, _headers, run_worker_first, 307 fix |
+| 22 | service-bindings-gaps        | pending | Stub fetch, RPC property access, async consistency |
+| 28 | config-gaps                  | pending | wrangler.toml, env-specific config, global env import |
+| 29 | scheduled-gaps               | pending | Special cron strings (@daily), day/month names |
+| 25 | images-transforms            | pending | Basic transforms via Sharp, AVIF dimensions |
 
 ## Dependencies
 
+### Phase 1
 - **00** must be completed first (shared DB singleton, schema, data directory)
 - **14, 15, 16, 17** (migrations) depend on **00** — do these right after 00
 - **08** (workflow management) depends on **17** (workflow persistence)
 - **10, 11, 12, 13** (DO features) depend on **16** (DO persistence)
 - All new binding issues (01-06, 09) depend on **00**
+
+### Phase 2
+- No hard dependencies between Phase 2 issues — can be implemented in any order
+- All Phase 2 issues depend on their respective Phase 1 implementation being completed (already done)
+- **25** (images-transforms) requires `sharp` as an optional dependency
 
 ## Changelog
 
@@ -76,6 +101,12 @@ Issues are ordered by implementation priority. **Implement in this order.**
 
 - **#10 do-alarms**: Added `getAlarm()`, `setAlarm(scheduledTime)`, and `deleteAlarm()` to `SqliteDurableObjectStorage` — backed by the `do_alarms` table. `setAlarm()` accepts `number` (ms epoch) or `Date`, upserts a single alarm row per DO instance (only one alarm at a time). `DurableObjectNamespaceImpl` manages alarm timers: `_scheduleAlarmTimer()` sets a `setTimeout`, `_fireAlarm()` calls the DO's `alarm()` handler with `{ retryCount, isRetry }`. On handler error, retries up to 6 times with exponential backoff (2^n seconds). Alarm is cleared from DB before calling handler (matching CF behavior). `_restoreAlarms()` runs on `_setClass()` to re-schedule any persisted alarms (past-due ones fire immediately). Alarm callback wired via `_setAlarmCallback()` on storage so `setAlarm`/`deleteAlarm` automatically schedule/cancel timers. Added 14 tests covering storage methods, alarm firing, replacement, cancellation, retry with backoff, past-due restoration, and persistence. All 286 tests pass.
 
+- **#11 do-websocket-support**: Added `WebSocketRequestResponsePair` class and exported from `cloudflare:workers` plugin. Added WebSocket Hibernation API methods to `DurableObjectStateImpl`: `acceptWebSocket(ws, tags?)` registers WebSocket with event listeners delegating to DO's `webSocketMessage`/`webSocketClose`/`webSocketError` handlers; `getWebSockets(tag?)` returns accepted WebSockets filtered by optional tag; `getTags(ws)` returns tags for a WebSocket; `setWebSocketAutoResponse(pair?)` / `getWebSocketAutoResponse()` for automatic ping/pong-style responses; `getWebSocketAutoResponseTimestamp(ws)` tracks last auto-response time; `setHibernatableWebSocketEventTimeout()` / `getHibernatableWebSocketEventTimeout()` are no-ops. Auto-response intercepts matching messages before handler and sends response directly. Closed WebSockets auto-removed from accepted set. `_doInstance` reference wired in `DurableObjectNamespaceImpl` for handler delegation. Added 18 tests covering all methods, tag filtering, auto-response, handler delegation, and close cleanup. All 304 tests pass.
+
+- **#12 do-sql-storage**: Implemented `SqlStorageCursor` and `SqlStorage` classes in `runtime/bindings/durable-object.ts`. `SqlStorageCursor` implements the full cursor API: iterable via `for..of`, `next()` iterator protocol, `toArray()`, `one()` (throws if not exactly 1 row), `raw()` (arrays without column names), `columnNames`, `rowsRead`, `rowsWritten`. `SqlStorage` provides `exec(query, ...bindings)` which creates a per-DO-instance SQLite file at `.bunflare/do-sql/<namespace>/<id>.sqlite` with lazy initialization and WAL mode. Distinguishes SELECT/WITH/PRAGMA (returns rows) from write statements (returns changes count). `databaseSize` returns file size via `statSync`. `SqliteDurableObjectStorage.sql` getter lazily creates `SqlStorage` when `dataDir` is configured. Extended constructor chain: `SqliteDurableObjectStorage(db, namespace, id, dataDir?)`, `DurableObjectStateImpl(id, db, namespace, dataDir?)`, `DurableObjectNamespaceImpl(db, name, dataDir?)`. Updated `env.ts` to pass `getDataDir()`. Added `migrations` field to `WranglerConfig`. Added 18 tests covering exec, columnNames, iteration, next(), one(), raw(), rowsRead/rowsWritten, databaseSize, parameter bindings, instance isolation, persistence, and namespace integration. All 322 tests pass.
+
+- **#27 do-gaps**: Added `stub.fetch(request)` — proxy intercepts `fetch` property and calls the DO's `fetch()` handler, constructing a proper `Request` from string/URL inputs. Added `stub.id` and `stub.name` properties on the proxy stub. Added `list({ startAfter })` — exclusive start key (key > startAfter), takes precedence over `start` when both provided. Added `sync()` as no-op returning resolved promise. Added `DurableObjectLimits` interface with configurable WebSocket validation: `maxTagsPerWebSocket` (default 10), `maxTagLength` (default 256), `maxConcurrentWebSockets` (default 32,768), `maxAutoResponseLength` (default 2,048). Limits passed through `DurableObjectNamespaceImpl` → `DurableObjectStateImpl`. Fixed `setHibernatableWebSocketEventTimeout`/`getHibernatableWebSocketEventTimeout` to store and return the value instead of being no-ops. Added 19 new tests. All 341 tests pass.
+
 ## Lessons Learned
 
 - `Bun.plugin()` with `build.module()` is the way to shim `cloudflare:*` imports — `onResolve`/`onLoad` doesn't work for the `cloudflare:` scheme because Bun rejects it as an invalid URL before the plugin can intercept
@@ -84,7 +115,3 @@ Issues are ordered by implementation priority. **Implement in this order.**
 - When changing a binding class (rename, new constructor params), always update the corresponding test file in `runtime/tests/` AND `runtime/env.ts`
 - `runtime/config.ts` has a `WranglerConfig` interface — when adding a new binding type, extend this interface with the new config fields
 - For workflow `waitForEvent`/`sendEvent`, use an in-memory registry of promise resolvers (per-process) combined with a `workflow_events` DB table for events sent before the workflow reaches `waitForEvent`. This handles both timing scenarios correctly.
-
-- **#11 do-websocket-support**: Added `WebSocketRequestResponsePair` class and exported from `cloudflare:workers` plugin. Added WebSocket Hibernation API methods to `DurableObjectStateImpl`: `acceptWebSocket(ws, tags?)` registers WebSocket with event listeners delegating to DO's `webSocketMessage`/`webSocketClose`/`webSocketError` handlers; `getWebSockets(tag?)` returns accepted WebSockets filtered by optional tag; `getTags(ws)` returns tags for a WebSocket; `setWebSocketAutoResponse(pair?)` / `getWebSocketAutoResponse()` for automatic ping/pong-style responses; `getWebSocketAutoResponseTimestamp(ws)` tracks last auto-response time; `setHibernatableWebSocketEventTimeout()` / `getHibernatableWebSocketEventTimeout()` are no-ops. Auto-response intercepts matching messages before handler and sends response directly. Closed WebSockets auto-removed from accepted set. `_doInstance` reference wired in `DurableObjectNamespaceImpl` for handler delegation. Added 18 tests covering all methods, tag filtering, auto-response, handler delegation, and close cleanup. All 304 tests pass.
-
-- **#12 do-sql-storage**: Implemented `SqlStorageCursor` and `SqlStorage` classes in `runtime/bindings/durable-object.ts`. `SqlStorageCursor` implements the full cursor API: iterable via `for..of`, `next()` iterator protocol, `toArray()`, `one()` (throws if not exactly 1 row), `raw()` (arrays without column names), `columnNames`, `rowsRead`, `rowsWritten`. `SqlStorage` provides `exec(query, ...bindings)` which creates a per-DO-instance SQLite file at `.bunflare/do-sql/<namespace>/<id>.sqlite` with lazy initialization and WAL mode. Distinguishes SELECT/WITH/PRAGMA (returns rows) from write statements (returns changes count). `databaseSize` returns file size via `statSync`. `SqliteDurableObjectStorage.sql` getter lazily creates `SqlStorage` when `dataDir` is configured. Extended constructor chain: `SqliteDurableObjectStorage(db, namespace, id, dataDir?)`, `DurableObjectStateImpl(id, db, namespace, dataDir?)`, `DurableObjectNamespaceImpl(db, name, dataDir?)`. Updated `env.ts` to pass `getDataDir()`. Added `migrations` field to `WranglerConfig`. Added 18 tests covering exec, columnNames, iteration, next(), one(), raw(), rowsRead/rowsWritten, databaseSize, parameter bindings, instance isolation, persistence, and namespace integration. All 322 tests pass.
