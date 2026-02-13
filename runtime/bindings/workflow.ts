@@ -32,10 +32,10 @@ export class NonRetryableError extends Error {
 export interface WorkflowStepConfig {
   retries?: {
     limit?: number;
-    delay?: string;
+    delay?: string | number;
     backoff?: "constant" | "linear" | "exponential";
   };
-  timeout?: string;
+  timeout?: string | number;
 }
 
 // --- Event waiting registry (in-memory, per-process) ---
@@ -114,6 +114,9 @@ class WorkflowStepImpl {
   }
 
   async do<T>(name: string, callbackOrConfig: (() => Promise<T>) | WorkflowStepConfig, maybeCallback?: () => Promise<T>): Promise<T> {
+    if (name.length > 256) {
+      throw new Error(`Step name must be 256 characters or fewer, got ${name.length}`);
+    }
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
     this.checkStepLimit();
@@ -169,10 +172,9 @@ class WorkflowStepImpl {
     throw lastError;
   }
 
-  async sleep(name: string, duration: string) {
+  async sleep(name: string, duration: string | number) {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
-    this.checkStepLimit();
     this.checkDuplicateStepName(`sleep:${name}`);
 
     // Check checkpoint — if already slept, skip
@@ -182,7 +184,7 @@ class WorkflowStepImpl {
       return;
     }
 
-    const ms = parseDuration(duration);
+    const ms = typeof duration === "number" ? duration : parseDuration(duration);
     console.log(`  [workflow] sleep: ${name} (${duration}, ${ms}ms)`);
     if (ms > 0) {
       await new Promise((r) => setTimeout(r, ms));
@@ -192,10 +194,9 @@ class WorkflowStepImpl {
     this.cacheStep(`sleep:${name}`, { sleptMs: ms });
   }
 
-  async sleepUntil(name: string, timestamp: Date) {
+  async sleepUntil(name: string, timestamp: Date | number) {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
-    this.checkStepLimit();
     this.checkDuplicateStepName(`sleepUntil:${name}`);
 
     // Check checkpoint
@@ -205,20 +206,22 @@ class WorkflowStepImpl {
       return;
     }
 
-    const delay = Math.max(0, timestamp.getTime() - Date.now());
-    console.log(`  [workflow] sleepUntil: ${name} (${timestamp.toISOString()}, ${delay}ms remaining)`);
+    const ts = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
+    const delay = Math.max(0, ts.getTime() - Date.now());
+    console.log(`  [workflow] sleepUntil: ${name} (${ts.toISOString()}, ${delay}ms remaining)`);
     if (delay > 0) {
       await new Promise((r) => setTimeout(r, delay));
     }
 
     // Checkpoint
-    this.cacheStep(`sleepUntil:${name}`, { until: timestamp.toISOString() });
+    this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
   }
 
   async waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: string }): Promise<{ payload: T; timestamp: Date; type: string }> {
     await this.checkPaused();
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
     this.checkStepLimit();
+    this.checkDuplicateStepName(`waitForEvent:${name}`);
 
     // Validate event type
     if (!EVENT_TYPE_PATTERN.test(options.type)) {
@@ -261,7 +264,7 @@ class WorkflowStepImpl {
     }
 
     // Wait for event to arrive via sendEvent()
-    const timeoutMs = options.timeout ? parseDuration(options.timeout) : undefined;
+    const timeoutMs = options.timeout ? parseDuration(options.timeout) : parseDuration("24 hours");
 
     const result = await new Promise<{ payload: T; timestamp: Date; type: string }>((resolve, reject) => {
       const waiters = getWaitersForInstance(this.instanceId);
@@ -279,12 +282,10 @@ class WorkflowStepImpl {
         resolve({ payload: payload as T, timestamp: new Date(), type: options.type });
       });
 
-      if (timeoutMs !== undefined) {
-        timer = setTimeout(() => {
-          cleanup();
-          reject(new Error(`waitForEvent timed out after ${options.timeout}`));
-        }, timeoutMs);
-      }
+      timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`waitForEvent timed out after ${options.timeout ?? "24 hours"}`));
+      }, timeoutMs);
 
       abortHandler = () => {
         cleanup();
@@ -311,9 +312,10 @@ function computeDelay(baseMs: number, attempt: number, backoff: "constant" | "li
   }
 }
 
-export function parseDuration(duration: string): number {
+export function parseDuration(duration: string | number): number {
+  if (typeof duration === "number") return duration;
   const match = duration.match(/^(\d+)\s*(ms|milliseconds?|s|seconds?|m|minutes?|h|hours?|d|days?|w|weeks?|months?|y|years?)$/i);
-  if (!match) return 0;
+  if (!match) throw new Error(`Invalid duration: "${duration}"`);
   const value = parseInt(match[1]!, 10);
   const unit = match[2]!.toLowerCase();
   if (unit.startsWith("ms") || unit.startsWith("millisecond")) return value;
@@ -324,7 +326,7 @@ export function parseDuration(duration: string): number {
   if (unit.startsWith("w")) return value * 7 * 86_400_000;
   if (unit.startsWith("month")) return value * 30 * 86_400_000;
   if (unit.startsWith("y")) return value * 365 * 86_400_000;
-  return 0;
+  throw new Error(`Invalid duration: "${duration}"`);
 }
 
 // --- Base class ---
@@ -430,6 +432,14 @@ export class SqliteWorkflowInstance {
       throw new Error(`Invalid event type "${event.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`);
     }
 
+    // Validate instance state — cannot send events to finished instances
+    const row = this.db
+      .query("SELECT status FROM workflow_instances WHERE id = ?")
+      .get(this.instanceId) as { status: string } | null;
+    if (row && ["complete", "errored", "terminated"].includes(row.status)) {
+      throw new Error(`Cannot send event to workflow instance "${this.instanceId}" with status "${row.status}"`);
+    }
+
     // Check if there's a waiter for this event type in-memory
     const waiters = eventWaiters.get(this.instanceId);
     const resolver = waiters?.get(event.type);
@@ -492,6 +502,9 @@ export class SqliteWorkflowBinding {
     this.cleanupRetentionExpired();
 
     const id = options?.id ?? `wf-${++this.counter}-${Date.now()}`;
+    if (id.length > 100) {
+      throw new Error(`Workflow instance ID must be 100 characters or fewer, got ${id.length}`);
+    }
     const params = options?.params ?? {};
     const now = Date.now();
 
@@ -591,7 +604,7 @@ export class SqliteWorkflowBinding {
   ): void {
     const instance = new workflowClass({}, env);
     const step = new WorkflowStepImpl(abortController.signal, db, id);
-    const event = { payload: params, timestamp: new Date() };
+    const event = { payload: params, timestamp: new Date(), instanceId: id };
 
     (async () => {
       try {

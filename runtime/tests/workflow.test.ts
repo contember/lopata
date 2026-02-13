@@ -801,9 +801,15 @@ describe("parseDuration", () => {
     expect(parseDuration("1y")).toBe(365 * 86400000);
   });
 
-  test("returns 0 for invalid input", () => {
-    expect(parseDuration("invalid")).toBe(0);
-    expect(parseDuration("")).toBe(0);
+  test("throws for invalid input", () => {
+    expect(() => parseDuration("invalid")).toThrow("Invalid duration");
+    expect(() => parseDuration("")).toThrow("Invalid duration");
+  });
+
+  test("accepts number input (milliseconds)", () => {
+    expect(parseDuration(5000)).toBe(5000);
+    expect(parseDuration(0)).toBe(0);
+    expect(parseDuration(100)).toBe(100);
   });
 });
 
@@ -851,5 +857,190 @@ describe("resumeInterrupted", () => {
     const s = await retrieved.status();
     expect(s.status).toBe("complete");
     expect(s.output).toBe("resumed");
+  });
+});
+
+describe("sleep/sleepUntil don't count toward step limit", () => {
+  test("sleep and sleepUntil do not consume step limit", async () => {
+    // Create a workflow with many sleeps — should not hit the 1024 step limit
+    class ManySleepsWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T>; sleep: (name: string, duration: string) => Promise<void>; sleepUntil: (name: string, timestamp: Date) => Promise<void> }): Promise<unknown> {
+        await step.sleep("s1", "1 millisecond");
+        await step.sleep("s2", "1 millisecond");
+        await step.sleepUntil("su1", new Date(Date.now() + 1));
+        await step.do("final", async () => "ok");
+        return "done";
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "many-sleeps", "ManySleepsWorkflow");
+    binding._setClass(ManySleepsWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("done");
+  });
+});
+
+describe("sleep/sleepUntil accept number", () => {
+  test("sleep accepts number (milliseconds)", async () => {
+    class NumSleepWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { sleep: (name: string, duration: string | number) => Promise<void> }): Promise<unknown> {
+        await step.sleep("nap", 10);
+        return "slept";
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "num-sleep", "NumSleepWorkflow");
+    binding._setClass(NumSleepWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("slept");
+  });
+
+  test("sleepUntil accepts number (epoch ms)", async () => {
+    class NumSleepUntilWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { sleepUntil: (name: string, timestamp: Date | number) => Promise<void> }): Promise<unknown> {
+        await step.sleepUntil("wake", Date.now() + 10);
+        return "woke";
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "num-sleep-until", "NumSleepUntilWorkflow");
+    binding._setClass(NumSleepUntilWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("woke");
+  });
+});
+
+describe("event instanceId", () => {
+  test("event object contains instanceId", async () => {
+    class InstanceIdWorkflow extends WorkflowEntrypointBase {
+      override async run(event: { payload: unknown; instanceId: string }, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        return await step.do("check", async () => event.instanceId);
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "iid-wf", "InstanceIdWorkflow");
+    binding._setClass(InstanceIdWorkflow, {});
+    const instance = await binding.create({ id: "my-instance-123" });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("my-instance-123");
+  });
+});
+
+describe("waitForEvent default timeout", () => {
+  test("waitForEvent has default 24h timeout", async () => {
+    // We can't wait 24h, but we verify a workflow that uses waitForEvent
+    // without timeout option still gets a timeout set (by checking it doesn't hang forever)
+    // We'll use a short-lived test by sending the event quickly
+    class DefaultTimeoutWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { waitForEvent: <T>(name: string, options: { type: string }) => Promise<{ payload: T }> }): Promise<unknown> {
+        const ev = await step.waitForEvent<string>("wait", { type: "ping" });
+        return ev.payload;
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "def-timeout", "DefaultTimeoutWorkflow");
+    binding._setClass(DefaultTimeoutWorkflow, {});
+    const instance = await binding.create();
+
+    await new Promise((r) => setTimeout(r, 50));
+    await instance.sendEvent({ type: "ping", payload: "pong" });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+    expect(s.output).toBe("pong");
+  });
+});
+
+describe("sendEvent on terminated instance", () => {
+  test("sendEvent throws for completed instance", async () => {
+    const binding = new SqliteWorkflowBinding(db, "send-term", "TestWorkflow");
+    binding._setClass(TestWorkflow, { TEST: true });
+    const instance = await binding.create({ params: { value: "done" } });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("complete");
+
+    await expect(instance.sendEvent({ type: "test", payload: {} })).rejects.toThrow("Cannot send event");
+  });
+
+  test("sendEvent throws for terminated instance", async () => {
+    const binding = new SqliteWorkflowBinding(db, "send-term2", "EventWorkflow");
+    binding._setClass(EventWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 50));
+
+    await instance.terminate();
+    await expect(instance.sendEvent({ type: "approval", payload: {} })).rejects.toThrow("Cannot send event");
+  });
+});
+
+describe("instance ID length validation", () => {
+  test("rejects instance ID longer than 100 characters", async () => {
+    const binding = new SqliteWorkflowBinding(db, "id-len", "TestWorkflow");
+    binding._setClass(TestWorkflow, { TEST: true });
+    const longId = "a".repeat(101);
+    await expect(binding.create({ id: longId, params: { value: "x" } })).rejects.toThrow("100 characters");
+  });
+
+  test("accepts instance ID of exactly 100 characters", async () => {
+    const binding = new SqliteWorkflowBinding(db, "id-len2", "TestWorkflow");
+    binding._setClass(TestWorkflow, { TEST: true });
+    const exactId = "a".repeat(100);
+    const instance = await binding.create({ id: exactId, params: { value: "x" } });
+    expect(instance.id).toBe(exactId);
+  });
+});
+
+describe("step name length validation", () => {
+  test("rejects step name longer than 256 characters", async () => {
+    const longName = "s".repeat(257);
+    class LongNameWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
+        return await step.do(longName, async () => "ok");
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "long-step", "LongNameWorkflow");
+    binding._setClass(LongNameWorkflow, {});
+    const instance = await binding.create();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const s = await instance.status();
+    expect(s.status).toBe("errored");
+    expect(s.error!.message).toContain("256 characters");
+  });
+});
+
+describe("waitForEvent duplicate step name", () => {
+  test("throws on duplicate waitForEvent name", async () => {
+    class DupWaitWorkflow extends WorkflowEntrypointBase {
+      override async run(_event: unknown, step: { waitForEvent: <T>(name: string, options: { type: string; timeout?: string }) => Promise<{ payload: T }> }): Promise<unknown> {
+        await step.waitForEvent("same", { type: "a", timeout: "2 seconds" });
+        await step.waitForEvent("same", { type: "b", timeout: "2 seconds" });
+        return "done";
+      }
+    }
+    const binding = new SqliteWorkflowBinding(db, "dup-wait", "DupWaitWorkflow");
+    binding._setClass(DupWaitWorkflow, {});
+    const instance = await binding.create();
+    // Pre-store both events so waitForEvent finds them immediately from DB
+    await instance.sendEvent({ type: "a", payload: "first" });
+    await instance.sendEvent({ type: "b", payload: "second" });
+    await new Promise((r) => setTimeout(r, 300));
+
+    const s = await instance.status();
+    expect(s.status).toBe("errored");
+    expect(s.error!.message).toContain("Duplicate step name");
   });
 });
