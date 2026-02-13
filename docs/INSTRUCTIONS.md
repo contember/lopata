@@ -77,6 +77,47 @@ Do sekce "Lessons Learned" v STATUS.md zapisuj **užitečné poznatky** pro budo
 - **Persistence** - všechno do SQLite nebo souborů, nic in-memory (kromě cache DO instancí)
 - **Jednoduchý kód** - žádné over-engineering, žádné zbytečné abstrakce
 
+### Validační limity musí být konfigurovatelné
+
+Všechny limity převzaté z Cloudflare (velikost zpráv, délka klíčů, velikost metadata, max počty v batch, minimální TTL atd.) musí být konfigurovatelné, ne hardcoded. Uživatel je může potřebovat přepsat pro dev/test, CF je může časem změnit, a liší se mezi free a paid plány.
+
+Limity se předávají přes konstruktor binding třídy jako volitelný objekt. Výchozí hodnoty odpovídají aktuálním CF production limitům.
+
+```ts
+// Rozhraní pro limity
+interface KVLimits {
+  maxKeySize?: number;       // default 512 (bytes)
+  maxValueSize?: number;     // default 25 * 1024 * 1024 (25 MiB)
+  maxMetadataSize?: number;  // default 1024 (bytes)
+  minTtlSeconds?: number;    // default 60
+}
+
+const KV_DEFAULTS: Required<KVLimits> = {
+  maxKeySize: 512,
+  maxValueSize: 25 * 1024 * 1024,
+  maxMetadataSize: 1024,
+  minTtlSeconds: 60,
+};
+
+// Konstruktor přijímá limity
+class SqliteKVNamespace {
+  private limits: Required<KVLimits>;
+
+  constructor(db: Database, namespace: string, limits?: KVLimits) {
+    this.limits = { ...KV_DEFAULTS, ...limits };
+  }
+
+  async put(key: string, value: ...) {
+    if (key.length > this.limits.maxKeySize) {
+      throw new Error(`Key exceeds max size of ${this.limits.maxKeySize} bytes`);
+    }
+    // ...
+  }
+}
+```
+
+Stejný vzor platí pro všechny bindingy — `QueueLimits`, `R2Limits`, `CacheLimits` atd. Každý binding má svůj `*Limits` interface a `*_DEFAULTS` konstantu.
+
 ### Struktura
 
 ```
