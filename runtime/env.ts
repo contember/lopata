@@ -10,6 +10,7 @@ import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
+import type { WorkerRegistry } from "./worker-registry";
 import { getDatabase, getDataDir } from "./db";
 
 /**
@@ -191,7 +192,7 @@ export function wireClassRefs(
   registry: ClassRegistry,
   workerModule: Record<string, unknown>,
   env: Record<string, unknown>,
-  workerRegistry?: import("./worker-registry").WorkerRegistry,
+  workerRegistry?: WorkerRegistry,
 ) {
   for (const entry of registry.durableObjects) {
     const cls = workerModule[entry.className];

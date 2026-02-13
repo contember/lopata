@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
+import type { WorkflowLimits } from "./bindings/workflow";
 
 export interface WranglerConfig {
   name: string;
@@ -11,7 +12,7 @@ export interface WranglerConfig {
   durable_objects?: {
     bindings: { name: string; class_name: string }[];
   };
-  workflows?: { name: string; binding: string; class_name: string; limits?: Partial<import("./bindings/workflow").WorkflowLimits> }[];
+  workflows?: { name: string; binding: string; class_name: string; limits?: Partial<WorkflowLimits> }[];
   d1_databases?: { binding: string; database_name: string; database_id: string }[];
   queues?: {
     producers?: { binding: string; queue: string; delivery_delay?: number }[];
