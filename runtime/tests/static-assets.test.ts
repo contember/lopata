@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { StaticAssets } from "../bindings/static-assets";
+import { StaticAssets, parseHeadersFile, matchPattern } from "../bindings/static-assets";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -21,8 +21,8 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeRequest(pathname: string): Request {
-  return new Request(`http://localhost${pathname}`);
+function makeRequest(pathname: string, headers?: Record<string, string>): Request {
+  return new Request(`http://localhost${pathname}`, { headers });
 }
 
 // === Basic file serving ===
@@ -67,20 +67,13 @@ test("sets Content-Type header", async () => {
 // === Path traversal ===
 
 test("path traversal: URL normalization prevents escaping directory", async () => {
-  // URL constructor normalizes /../ and %2e%2e, so path traversal via URL is not possible
-  // The resolved path always stays within the directory
   assets = new StaticAssets(tmpDir);
-  // This URL gets normalized to /etc/passwd (no ..), which resolves inside tmpDir
   const res = await assets.fetch(new Request("http://localhost/%2e%2e/etc/passwd"));
-  expect(res.status).toBe(404); // file doesn't exist, but no escape
+  expect(res.status).toBe(404);
 });
 
 test("path with .. segment in decoded pathname is rejected", async () => {
-  // Manually construct a scenario where decoded pathname contains ..
-  // In practice, URL normalizes this, but our defense-in-depth catches it
   assets = new StaticAssets(tmpDir);
-  // Create a file in a subdir, then try a path like /sub/../sub/file
-  // URL normalizes /sub/../sub/file to /sub/file, so it works normally
   createFile("sub/file.txt", "content");
   const res = await assets.fetch(makeRequest("/sub/file.txt"));
   expect(res.status).toBe(200);
@@ -130,13 +123,13 @@ test("none: /about.html still works", async () => {
   expect(await res.text()).toBe("<h1>About</h1>");
 });
 
-// === html_handling: force-trailing-slash ===
+// === html_handling: force-trailing-slash (307 redirect) ===
 
-test("force-trailing-slash: redirects /about to /about/", async () => {
+test("force-trailing-slash: redirects /about to /about/ with 307", async () => {
   createFile("about/index.html", "About");
   assets = new StaticAssets(tmpDir, "force-trailing-slash");
   const res = await assets.fetch(makeRequest("/about"));
-  expect(res.status).toBe(301);
+  expect(res.status).toBe(307);
   expect(res.headers.get("Location")).toBe("http://localhost/about/");
 });
 
@@ -155,13 +148,13 @@ test("force-trailing-slash: /about/ serves /about/index.html", async () => {
   expect(await res.text()).toBe("About page");
 });
 
-// === html_handling: drop-trailing-slash ===
+// === html_handling: drop-trailing-slash (307 redirect) ===
 
-test("drop-trailing-slash: redirects /about/ to /about", async () => {
+test("drop-trailing-slash: redirects /about/ to /about with 307", async () => {
   createFile("about.html", "About");
   assets = new StaticAssets(tmpDir, "drop-trailing-slash");
   const res = await assets.fetch(makeRequest("/about/"));
-  expect(res.status).toBe(301);
+  expect(res.status).toBe(307);
   expect(res.headers.get("Location")).toBe("http://localhost/about");
 });
 
@@ -221,4 +214,157 @@ test("SPA: returns 404 if /index.html doesn't exist", async () => {
   assets = new StaticAssets(tmpDir, "auto-trailing-slash", "single-page-application");
   const res = await assets.fetch(makeRequest("/missing"));
   expect(res.status).toBe(404);
+});
+
+// === ETag and Cache-Control ===
+
+test("response includes ETag header", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.status).toBe(200);
+  const etag = res.headers.get("ETag");
+  expect(etag).toBeTruthy();
+  expect(etag!.startsWith('"')).toBe(true);
+  expect(etag!.endsWith('"')).toBe(true);
+});
+
+test("response includes Cache-Control header", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+});
+
+test("If-None-Match returns 304 when ETag matches", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+
+  // First request to get ETag
+  const res1 = await assets.fetch(makeRequest("/hello.txt"));
+  const etag = res1.headers.get("ETag")!;
+  expect(etag).toBeTruthy();
+
+  // Second request with If-None-Match
+  const res2 = await assets.fetch(makeRequest("/hello.txt", { "If-None-Match": etag }));
+  expect(res2.status).toBe(304);
+  expect(res2.headers.get("ETag")).toBe(etag);
+});
+
+test("If-None-Match returns 200 when ETag does not match", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt", { "If-None-Match": '"wrong"' }));
+  expect(res.status).toBe(200);
+});
+
+test("ETag is consistent across requests for same file", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir);
+  const res1 = await assets.fetch(makeRequest("/hello.txt"));
+  const res2 = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res1.headers.get("ETag")).toBe(res2.headers.get("ETag"));
+});
+
+// === _headers file ===
+
+test("parseHeadersFile: parses basic rules", () => {
+  const content = `/about
+  X-Custom: hello
+  X-Another: world
+/images/*
+  Cache-Control: max-age=3600`;
+  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000 });
+  expect(rules).toHaveLength(2);
+  expect(rules[0]!.pattern).toBe("/about");
+  expect(rules[0]!.headers["X-Custom"]).toBe("hello");
+  expect(rules[0]!.headers["X-Another"]).toBe("world");
+  expect(rules[1]!.pattern).toBe("/images/*");
+  expect(rules[1]!.headers["Cache-Control"]).toBe("max-age=3600");
+});
+
+test("parseHeadersFile: respects maxHeaderRules limit", () => {
+  const content = `/a\n  X: 1\n/b\n  X: 2\n/c\n  X: 3`;
+  const rules = parseHeadersFile(content, { maxHeaderRules: 2, maxHeaderLineLength: 2000 });
+  expect(rules).toHaveLength(2);
+});
+
+test("parseHeadersFile: skips comments", () => {
+  const content = `# This is a comment\n/about\n  X-Custom: hello`;
+  const rules = parseHeadersFile(content, { maxHeaderRules: 100, maxHeaderLineLength: 2000 });
+  expect(rules).toHaveLength(1);
+  expect(rules[0]!.pattern).toBe("/about");
+});
+
+test("matchPattern: exact match", () => {
+  expect(matchPattern("/about", "/about")).toBe(true);
+  expect(matchPattern("/about", "/other")).toBe(false);
+});
+
+test("matchPattern: splat wildcard", () => {
+  expect(matchPattern("/images/*", "/images/photo.jpg")).toBe(true);
+  expect(matchPattern("/images/*", "/images/sub/photo.jpg")).toBe(true);
+  expect(matchPattern("/images/*", "/other/photo.jpg")).toBe(false);
+});
+
+test("matchPattern: placeholder", () => {
+  expect(matchPattern("/user/:id", "/user/123")).toBe(true);
+  expect(matchPattern("/user/:id", "/user/abc")).toBe(true);
+  expect(matchPattern("/user/:id", "/user/123/extra")).toBe(false);
+});
+
+test("_headers file applies to served responses", async () => {
+  createFile("hello.txt", "Hello");
+  createFile("_headers", "/hello.txt\n  X-Custom: my-value");
+  assets = new StaticAssets(tmpDir);
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.status).toBe(200);
+  expect(res.headers.get("X-Custom")).toBe("my-value");
+});
+
+test("_headers file splat applies to multiple paths", async () => {
+  createFile("img/a.png", "a");
+  createFile("img/b.png", "b");
+  createFile("_headers", "/img/*\n  Cache-Control: max-age=86400");
+  assets = new StaticAssets(tmpDir);
+  const res1 = await assets.fetch(makeRequest("/img/a.png"));
+  expect(res1.headers.get("Cache-Control")).toBe("max-age=86400");
+  const res2 = await assets.fetch(makeRequest("/img/b.png"));
+  expect(res2.headers.get("Cache-Control")).toBe("max-age=86400");
+});
+
+// === Hierarchical 404.html ===
+
+test("404-page: serves nearest 404.html in subdirectory", async () => {
+  createFile("404.html", "Root 404");
+  createFile("api/404.html", "API 404");
+  assets = new StaticAssets(tmpDir, "auto-trailing-slash", "404-page");
+
+  const res1 = await assets.fetch(makeRequest("/api/missing"));
+  expect(res1.status).toBe(404);
+  expect(await res1.text()).toBe("API 404");
+
+  const res2 = await assets.fetch(makeRequest("/other/missing"));
+  expect(res2.status).toBe(404);
+  expect(await res2.text()).toBe("Root 404");
+});
+
+test("404-page: walks up directory tree", async () => {
+  createFile("404.html", "Root 404");
+  assets = new StaticAssets(tmpDir, "auto-trailing-slash", "404-page");
+  const res = await assets.fetch(makeRequest("/deep/nested/path/missing"));
+  expect(res.status).toBe(404);
+  expect(await res.text()).toBe("Root 404");
+});
+
+// === StaticAssetsLimits ===
+
+test("custom limits are accepted via constructor", async () => {
+  createFile("hello.txt", "Hello");
+  assets = new StaticAssets(tmpDir, "auto-trailing-slash", "none", {
+    maxHeaderRules: 5,
+    maxHeaderLineLength: 100,
+  });
+  const res = await assets.fetch(makeRequest("/hello.txt"));
+  expect(res.status).toBe(200);
 });

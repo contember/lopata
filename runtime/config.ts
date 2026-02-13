@@ -20,6 +20,7 @@ export interface WranglerConfig {
     binding?: string;
     html_handling?: "none" | "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash";
     not_found_handling?: "none" | "404-page" | "single-page-application";
+    run_worker_first?: boolean | string[];
   };
   images?: {
     binding: string;

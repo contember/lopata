@@ -77,9 +77,28 @@ Bun.serve({
       }
     }
 
-    // Serve static assets before worker fetch (when no binding name is set)
-    if (registry.staticAssets && !config.assets?.binding) {
-      const assetResponse = await registry.staticAssets.fetch(request);
+    // Determine asset/worker ordering based on run_worker_first
+    const runWorkerFirst = config.assets?.run_worker_first;
+    const hasAssets = registry.staticAssets && !config.assets?.binding;
+    const workerFirst = hasAssets && shouldRunWorkerFirst(runWorkerFirst, url.pathname);
+
+    if (workerFirst) {
+      // Worker first, fall back to assets
+      try {
+        const workerResponse = await handler.fetch(request, env, ctx);
+        if (workerResponse.status !== 404) {
+          return workerResponse;
+        }
+      } catch (err) {
+        console.error("[bunflare] Request error:", err);
+        return new Response("Internal Server Error", { status: 500 });
+      }
+      return await registry.staticAssets!.fetch(request);
+    }
+
+    // Assets first (default), fall back to worker
+    if (hasAssets) {
+      const assetResponse = await registry.staticAssets!.fetch(request);
       if (assetResponse.status !== 404) {
         return assetResponse;
       }
@@ -95,3 +114,18 @@ Bun.serve({
 });
 
 console.log(`[bunflare] Server running at http://localhost:${port}`);
+
+function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {
+  if (config === true) return true;
+  if (!config) return false;
+  // Array of route patterns
+  return config.some(pattern => {
+    if (pattern === pathname) return true;
+    // Simple glob: /api/* matches /api/anything
+    if (pattern.endsWith("/*")) {
+      const prefix = pattern.slice(0, -1); // "/api/"
+      return pathname.startsWith(prefix) || pathname === pattern.slice(0, -2);
+    }
+    return false;
+  });
+}
