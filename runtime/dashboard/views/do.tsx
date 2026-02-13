@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api, formatTime } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink } from "../components";
 
 interface DoNamespace {
   namespace: string;
@@ -35,15 +35,15 @@ function DoNamespaceList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">Durable Objects</h1>
+      <PageHeader title="Durable Objects" subtitle={`${namespaces.length} namespace(s)`} />
       {namespaces.length === 0 ? (
         <EmptyState message="No Durable Object namespaces found" />
       ) : (
         <Table
           headers={["Namespace", "Instances"]}
           rows={namespaces.map(ns => [
-            <a href={`#/do/${encodeURIComponent(ns.namespace)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{ns.namespace}</a>,
-            ns.count,
+            <TableLink href={`#/do/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
+            <span class="font-bold text-lg">{ns.count}</span>,
           ])}
         />
       )}
@@ -67,8 +67,8 @@ function DoInstanceList({ ns }: { ns: string }) {
         <Table
           headers={["Instance ID", "Storage Keys", "Alarm"]}
           rows={instances.map(inst => [
-            <a href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} class="text-orange-600 dark:text-orange-400 hover:underline font-mono text-xs">{inst.id}</a>,
-            inst.key_count,
+            <TableLink href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} mono>{inst.id}</TableLink>,
+            <span class="font-bold">{inst.key_count}</span>,
             inst.alarm ? formatTime(inst.alarm) : "—",
           ])}
         />
@@ -90,7 +90,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
     setData(prev => prev ? { ...prev, entries: prev.entries.filter(e => e.key !== key) } : null);
   };
 
-  if (!data) return <div class="p-8 text-gray-400">Loading...</div>;
+  if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
 
   return (
     <div class="p-8">
@@ -100,7 +100,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
         { label: id.slice(0, 16) + "..." },
       ]} />
       {data.alarm && (
-        <div class="mb-4 px-4 py-2 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 rounded text-sm">
+        <div class="mb-6 px-6 py-4 bg-accent-lime rounded-2xl text-sm font-medium text-ink shadow-lime-glow">
           Alarm set for: {formatTime(data.alarm)}
         </div>
       )}
@@ -110,9 +110,9 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
         <Table
           headers={["Key", "Value", ""]}
           rows={data.entries.map(e => [
-            <span class="font-mono text-xs">{e.key}</span>,
-            <pre class="text-xs max-w-lg truncate">{e.value}</pre>,
-            <button onClick={() => deleteEntry(e.key)} class="text-red-500 hover:text-red-700 text-xs">Delete</button>,
+            <span class="font-mono text-xs font-medium">{e.key}</span>,
+            <pre class="text-xs max-w-lg truncate font-mono">{e.value}</pre>,
+            <DeleteButton onClick={() => deleteEntry(e.key)} />,
           ])}
         />
       )}

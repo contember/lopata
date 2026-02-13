@@ -1,5 +1,5 @@
 import { render } from "preact";
-import { useRoute, navigate } from "./lib";
+import { useRoute } from "./lib";
 import { HomeView } from "./views/home";
 import { KvView } from "./views/kv";
 import { R2View } from "./views/r2";
@@ -33,38 +33,39 @@ function App() {
     if (route.startsWith("/workflows")) return <WorkflowsView route={route} />;
     if (route.startsWith("/d1")) return <D1View route={route} />;
     if (route.startsWith("/cache")) return <CacheView route={route} />;
-    return <div class="p-8 text-gray-500">Page not found</div>;
+    return <div class="p-8 text-gray-400">Page not found</div>;
   }
 
   return (
     <div class="flex h-full">
-      {/* Sidebar */}
-      <nav class="w-56 flex-shrink-0 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col">
-        <div class="p-4 border-b border-gray-200 dark:border-gray-800">
-          <a href="#/" class="flex items-center gap-2 text-lg font-semibold text-orange-600 dark:text-orange-400 no-underline">
-            <span class="text-xl">🔥</span> Bunflare
+      <nav class="w-60 flex-shrink-0 bg-white rounded-card shadow-card flex flex-col m-3 mr-0">
+        <div class="p-6 pb-4">
+          <a href="#/" class="flex items-center gap-2.5 no-underline">
+            <span class="w-10 h-10 rounded-full bg-accent-lime flex items-center justify-center text-lg">🔥</span>
+            <div>
+              <div class="text-lg font-bold text-ink">Bunflare</div>
+              <div class="text-[11px] text-gray-400 font-medium">Dev Dashboard</div>
+            </div>
           </a>
-          <div class="text-xs text-gray-400 mt-1">Dev Dashboard</div>
         </div>
-        <div class="flex-1 overflow-y-auto scrollbar-thin py-2">
+        <div class="flex-1 overflow-y-auto scrollbar-thin px-3 py-2">
           {NAV_ITEMS.map(item => (
             <a
               key={item.path}
               href={`#${item.path}`}
-              class={`flex items-center gap-3 px-4 py-2 text-sm no-underline transition-colors ${
+              class={`flex items-center gap-3 px-4 py-2.5 mb-1 text-sm no-underline rounded-2xl transition-all ${
                 activeSection === item.path
-                  ? "bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-400 font-medium"
-                  : "text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                  ? "bg-accent-lime text-ink font-semibold shadow-lime-glow"
+                  : "text-gray-500 hover:bg-surface-raised hover:text-ink"
               }`}
             >
-              <span class="w-5 text-center">{item.icon}</span>
+              <span class="w-5 text-center text-base">{item.icon}</span>
               {item.label}
             </a>
           ))}
         </div>
       </nav>
 
-      {/* Content */}
       <main class="flex-1 overflow-y-auto scrollbar-thin">
         {renderView()}
       </main>

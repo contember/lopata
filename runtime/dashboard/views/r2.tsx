@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api, formatBytes } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
 
 interface R2Bucket {
   bucket: string;
@@ -33,15 +33,15 @@ function R2BucketList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">R2 Buckets</h1>
+      <PageHeader title="R2 Buckets" subtitle={`${buckets.length} bucket(s)`} />
       {buckets.length === 0 ? (
         <EmptyState message="No R2 buckets found" />
       ) : (
         <Table
           headers={["Bucket", "Objects", "Total Size"]}
           rows={buckets.map(b => [
-            <a href={`#/r2/${encodeURIComponent(b.bucket)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{b.bucket}</a>,
-            b.count,
+            <TableLink href={`#/r2/${encodeURIComponent(b.bucket)}`}>{b.bucket}</TableLink>,
+            <span class="font-bold text-lg">{b.count}</span>,
             formatBytes(b.total_size),
           ])}
         />
@@ -75,14 +75,8 @@ function R2ObjectList({ bucket }: { bucket: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "R2", href: "#/r2" }, { label: bucket }]} />
-      <div class="mb-4">
-        <input
-          type="text"
-          placeholder="Filter by prefix..."
-          value={prefix}
-          onInput={e => setPrefix((e.target as HTMLInputElement).value)}
-          class="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-900 text-sm w-64"
-        />
+      <div class="mb-6">
+        <FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
       </div>
       {objects.length === 0 ? (
         <EmptyState message="No objects found" />
@@ -91,18 +85,14 @@ function R2ObjectList({ bucket }: { bucket: string }) {
           <Table
             headers={["Key", "Size", "ETag", "Uploaded", ""]}
             rows={objects.map(o => [
-              <span class="font-mono text-xs">{o.key}</span>,
+              <span class="font-mono text-xs font-medium">{o.key}</span>,
               formatBytes(o.size),
-              <span class="font-mono text-xs text-gray-500">{o.etag.slice(0, 12)}</span>,
+              <span class="font-mono text-xs text-gray-400">{o.etag.slice(0, 12)}</span>,
               o.uploaded,
-              <button onClick={() => deleteObject(o.key)} class="text-red-500 hover:text-red-700 text-xs">Delete</button>,
+              <DeleteButton onClick={() => deleteObject(o.key)} />,
             ])}
           />
-          {cursor && (
-            <button onClick={() => load()} class="mt-4 px-4 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded hover:bg-gray-200 dark:hover:bg-gray-700">
-              Load more
-            </button>
-          )}
+          {cursor && <LoadMoreButton onClick={() => load()} />}
         </>
       )}
     </div>

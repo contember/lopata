@@ -1,5 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
-import { api, navigate, formatBytes } from "../lib";
+import { api, formatBytes } from "../lib";
+import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
 
 interface KvNamespace {
   namespace: string;
@@ -21,7 +22,7 @@ interface KvValue {
 }
 
 export function KvView({ route }: { route: string }) {
-  const parts = route.split("/").filter(Boolean); // ["kv"] or ["kv", "NS"] or ["kv", "NS", "key"]
+  const parts = route.split("/").filter(Boolean);
 
   if (parts.length === 1) return <KvNamespaceList />;
   if (parts.length === 2) return <KvKeyList ns={decodeURIComponent(parts[1]!)} />;
@@ -38,15 +39,15 @@ function KvNamespaceList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">KV Namespaces</h1>
+      <PageHeader title="KV Namespaces" subtitle={`${namespaces.length} namespace(s)`} />
       {namespaces.length === 0 ? (
         <EmptyState message="No KV namespaces found" />
       ) : (
         <Table
           headers={["Namespace", "Keys"]}
           rows={namespaces.map(ns => [
-            <a href={`#/kv/${encodeURIComponent(ns.namespace)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{ns.namespace}</a>,
-            ns.count,
+            <TableLink href={`#/kv/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
+            <span class="font-bold text-lg">{ns.count}</span>,
           ])}
         />
       )}
@@ -79,14 +80,8 @@ function KvKeyList({ ns }: { ns: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "KV", href: "#/kv" }, { label: ns }]} />
-      <div class="mb-4">
-        <input
-          type="text"
-          placeholder="Filter by prefix..."
-          value={prefix}
-          onInput={e => setPrefix((e.target as HTMLInputElement).value)}
-          class="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-900 text-sm w-64"
-        />
+      <div class="mb-6">
+        <FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
       </div>
       {keys.length === 0 ? (
         <EmptyState message="No keys found" />
@@ -95,17 +90,13 @@ function KvKeyList({ ns }: { ns: string }) {
           <Table
             headers={["Key", "Size", "Expiration", ""]}
             rows={keys.map(k => [
-              <a href={`#/kv/${encodeURIComponent(ns)}/${encodeURIComponent(k.key)}`} class="text-orange-600 dark:text-orange-400 hover:underline font-mono text-xs">{k.key}</a>,
+              <TableLink href={`#/kv/${encodeURIComponent(ns)}/${encodeURIComponent(k.key)}`} mono>{k.key}</TableLink>,
               formatBytes(k.size),
               k.expiration ? new Date(k.expiration * 1000).toLocaleString() : "—",
-              <button onClick={() => deleteKey(k.key)} class="text-red-500 hover:text-red-700 text-xs">Delete</button>,
+              <DeleteButton onClick={() => deleteKey(k.key)} />,
             ])}
           />
-          {cursor && (
-            <button onClick={() => load()} class="mt-4 px-4 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded hover:bg-gray-200 dark:hover:bg-gray-700">
-              Load more
-            </button>
-          )}
+          {cursor && <LoadMoreButton onClick={() => load()} />}
         </>
       )}
     </div>
@@ -124,81 +115,20 @@ function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "KV", href: "#/kv" }, { label: ns, href: `#/kv/${encodeURIComponent(ns)}` }, { label: keyName }]} />
-      <div class="space-y-4">
+      <div class="space-y-5">
         <DetailField label="Key" value={data.key} />
         <DetailField label="Value">
-          <pre class="bg-gray-100 dark:bg-gray-900 p-3 rounded text-xs overflow-x-auto max-h-96">{data.value}</pre>
+          <CodeBlock class="max-h-96">{data.value}</CodeBlock>
         </DetailField>
         {data.metadata && (
           <DetailField label="Metadata">
-            <pre class="bg-gray-100 dark:bg-gray-900 p-3 rounded text-xs overflow-x-auto">{JSON.stringify(data.metadata, null, 2)}</pre>
+            <CodeBlock>{JSON.stringify(data.metadata, null, 2)}</CodeBlock>
           </DetailField>
         )}
         {data.expiration && (
           <DetailField label="Expiration" value={new Date(data.expiration * 1000).toLocaleString()} />
         )}
       </div>
-    </div>
-  );
-}
-
-// ─── Shared components ───────────────────────────────────────────────
-export function EmptyState({ message }: { message: string }) {
-  return (
-    <div class="text-center py-12 text-gray-400 dark:text-gray-600">
-      <div class="text-4xl mb-2">∅</div>
-      <div>{message}</div>
-    </div>
-  );
-}
-
-export function Breadcrumb({ items }: { items: { label: string; href?: string }[] }) {
-  return (
-    <div class="flex items-center gap-2 text-sm text-gray-500 mb-6">
-      {items.map((item, i) => (
-        <span key={i} class="flex items-center gap-2">
-          {i > 0 && <span>/</span>}
-          {item.href ? (
-            <a href={item.href} class="text-orange-600 dark:text-orange-400 hover:underline">{item.label}</a>
-          ) : (
-            <span class="text-gray-900 dark:text-gray-100 font-medium">{item.label}</span>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-export function Table({ headers, rows }: { headers: string[]; rows: unknown[][] }) {
-  return (
-    <div class="overflow-x-auto border border-gray-200 dark:border-gray-800 rounded-lg">
-      <table class="w-full text-sm">
-        <thead class="bg-gray-50 dark:bg-gray-900">
-          <tr>
-            {headers.map(h => (
-              <th key={h} class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
-          {rows.map((row, i) => (
-            <tr key={i} class="hover:bg-gray-50 dark:hover:bg-gray-900/50">
-              {row.map((cell, j) => (
-                <td key={j} class="px-4 py-2">{cell as any}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-export function DetailField({ label, value, children }: { label: string; value?: string; children?: any }) {
-  return (
-    <div>
-      <div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">{label}</div>
-      {value ? <div class="font-mono text-sm">{value}</div> : children}
     </div>
   );
 }

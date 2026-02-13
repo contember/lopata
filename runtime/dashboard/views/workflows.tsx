@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api, formatTime } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge } from "../components";
 
 interface WorkflowSummary {
   name: string;
@@ -23,20 +23,12 @@ interface WorkflowDetail extends WorkflowInstance {
   events: { id: number; event_type: string; payload: string | null; created_at: number }[];
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  running: "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
-  complete: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-  errored: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
-  terminated: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
+const WORKFLOW_STATUS_COLORS: Record<string, string> = {
+  running: "bg-accent-blue text-ink",
+  complete: "bg-emerald-100 text-emerald-700",
+  errored: "bg-red-100 text-red-700",
+  terminated: "bg-gray-200 text-gray-600",
 };
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span class={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLORS[status] ?? "bg-gray-100 text-gray-800"}`}>
-      {status}
-    </span>
-  );
-}
 
 export function WorkflowsView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -55,15 +47,15 @@ function WorkflowList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">Workflows</h1>
+      <PageHeader title="Workflows" subtitle={`${workflows.length} workflow(s)`} />
       {workflows.length === 0 ? (
         <EmptyState message="No workflow instances found" />
       ) : (
         <Table
           headers={["Workflow", "Total", "Running", "Complete", "Errored"]}
           rows={workflows.map(w => [
-            <a href={`#/workflows/${encodeURIComponent(w.name)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{w.name}</a>,
-            w.total,
+            <TableLink href={`#/workflows/${encodeURIComponent(w.name)}`}>{w.name}</TableLink>,
+            <span class="font-bold">{w.total}</span>,
             w.byStatus.running ?? 0,
             w.byStatus.complete ?? 0,
             w.byStatus.errored ?? 0,
@@ -86,11 +78,11 @@ function WorkflowInstanceList({ name }: { name: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Workflows", href: "#/workflows" }, { label: name }]} />
-      <div class="mb-4">
+      <div class="mb-6">
         <select
           value={statusFilter}
           onChange={e => setStatusFilter((e.target as HTMLSelectElement).value)}
-          class="px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-900 text-sm"
+          class="bg-surface-raised border-none rounded-2xl px-5 py-3 text-sm outline-none focus:bg-white focus:shadow-focus transition-all appearance-none pr-10"
         >
           <option value="">All statuses</option>
           <option value="running">Running</option>
@@ -105,8 +97,8 @@ function WorkflowInstanceList({ name }: { name: string }) {
         <Table
           headers={["Instance ID", "Status", "Created", "Updated", ""]}
           rows={instances.map(inst => [
-            <a href={`#/workflows/${encodeURIComponent(name)}/${encodeURIComponent(inst.id)}`} class="text-orange-600 dark:text-orange-400 hover:underline font-mono text-xs">{inst.id.slice(0, 16)}...</a>,
-            <StatusBadge status={inst.status} />,
+            <TableLink href={`#/workflows/${encodeURIComponent(name)}/${encodeURIComponent(inst.id)}`} mono>{inst.id.slice(0, 16)}...</TableLink>,
+            <StatusBadge status={inst.status} colorMap={WORKFLOW_STATUS_COLORS} />,
             formatTime(inst.created_at),
             formatTime(inst.updated_at),
             inst.status === "running" ? (
@@ -116,7 +108,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
                   await api(`/workflows/${encodeURIComponent(name)}/${encodeURIComponent(inst.id)}/terminate`, { method: "POST" });
                   setInstances(prev => prev.map(i => i.id === inst.id ? { ...i, status: "terminated" } : i));
                 }}
-                class="text-red-500 hover:text-red-700 text-xs"
+                class="text-red-400 hover:text-red-600 text-xs font-medium rounded-full px-3 py-1 hover:bg-red-50 transition-all"
               >
                 Terminate
               </button>
@@ -135,7 +127,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
     api<WorkflowDetail>(`/workflows/${encodeURIComponent(name)}/${encodeURIComponent(id)}`).then(setData);
   }, [name, id]);
 
-  if (!data) return <div class="p-8 text-gray-400">Loading...</div>;
+  if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
 
   return (
     <div class="p-8">
@@ -145,42 +137,42 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
         { label: id.slice(0, 16) + "..." },
       ]} />
 
-      <div class="flex items-center gap-3 mb-6">
-        <StatusBadge status={data.status} />
-        <span class="text-sm text-gray-500">Created: {formatTime(data.created_at)}</span>
+      <div class="flex items-center gap-4 mb-8">
+        <StatusBadge status={data.status} colorMap={WORKFLOW_STATUS_COLORS} />
+        <span class="text-sm text-gray-400 font-medium">Created: {formatTime(data.created_at)}</span>
       </div>
 
       {data.params && (
-        <div class="mb-6">
-          <h3 class="text-sm font-medium text-gray-500 mb-2">Parameters</h3>
-          <pre class="bg-gray-100 dark:bg-gray-900 p-3 rounded text-xs overflow-x-auto">{data.params}</pre>
+        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Parameters</h3>
+          <CodeBlock>{data.params}</CodeBlock>
         </div>
       )}
 
       {data.output && (
-        <div class="mb-6">
-          <h3 class="text-sm font-medium text-gray-500 mb-2">Output</h3>
-          <pre class="bg-gray-100 dark:bg-gray-900 p-3 rounded text-xs overflow-x-auto">{data.output}</pre>
+        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Output</h3>
+          <CodeBlock>{data.output}</CodeBlock>
         </div>
       )}
 
       {data.error && (
-        <div class="mb-6">
-          <h3 class="text-sm font-medium text-gray-500 mb-2">Error</h3>
-          <pre class="bg-red-50 dark:bg-red-950/30 p-3 rounded text-xs text-red-700 dark:text-red-400 overflow-x-auto">{data.error}</pre>
+        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Error</h3>
+          <pre class="bg-red-50 rounded-2xl p-5 text-xs text-red-600 overflow-x-auto font-mono">{data.error}</pre>
         </div>
       )}
 
       <div class="mb-6">
-        <h3 class="text-sm font-medium text-gray-500 mb-2">Steps ({data.steps.length})</h3>
+        <h3 class="text-sm font-semibold text-ink mb-4">Steps ({data.steps.length})</h3>
         {data.steps.length === 0 ? (
-          <div class="text-gray-400 text-sm">No steps completed yet</div>
+          <div class="text-gray-400 text-sm font-medium">No steps completed yet</div>
         ) : (
           <Table
             headers={["Step", "Output", "Completed"]}
             rows={data.steps.map(s => [
-              <span class="font-mono text-xs">{s.step_name}</span>,
-              s.output ? <pre class="text-xs max-w-md truncate">{s.output}</pre> : "—",
+              <span class="font-mono text-xs font-medium">{s.step_name}</span>,
+              s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : "—",
               formatTime(s.completed_at),
             ])}
           />
@@ -189,12 +181,12 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 
       {data.events.length > 0 && (
         <div>
-          <h3 class="text-sm font-medium text-gray-500 mb-2">Events ({data.events.length})</h3>
+          <h3 class="text-sm font-semibold text-ink mb-4">Events ({data.events.length})</h3>
           <Table
             headers={["Type", "Payload", "Time"]}
             rows={data.events.map(e => [
-              <span class="font-mono text-xs">{e.event_type}</span>,
-              e.payload ? <pre class="text-xs max-w-md truncate">{e.payload}</pre> : "—",
+              <span class="font-mono text-xs font-medium">{e.event_type}</span>,
+              e.payload ? <pre class="text-xs max-w-md truncate font-mono">{e.payload}</pre> : "—",
               formatTime(e.created_at),
             ])}
           />

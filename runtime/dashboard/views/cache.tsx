@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, StatusBadge } from "../components";
 
 interface CacheName {
   cache_name: string;
@@ -12,6 +12,19 @@ interface CacheEntry {
   status: number;
   headers: string;
   expires_at: number | null;
+}
+
+const HTTP_STATUS_COLORS: Record<string, string> = {
+  "2xx": "bg-emerald-100 text-emerald-700",
+  "3xx": "bg-amber-100 text-amber-700",
+  "4xx": "bg-red-100 text-red-700",
+  "5xx": "bg-red-100 text-red-700",
+};
+
+function httpStatusColor(status: number): string {
+  if (status < 300) return HTTP_STATUS_COLORS["2xx"]!;
+  if (status < 400) return HTTP_STATUS_COLORS["3xx"]!;
+  return HTTP_STATUS_COLORS["4xx"]!;
 }
 
 export function CacheView({ route }: { route: string }) {
@@ -30,15 +43,15 @@ function CacheNameList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">Cache</h1>
+      <PageHeader title="Cache" subtitle={`${caches.length} cache(s)`} />
       {caches.length === 0 ? (
         <EmptyState message="No cache entries found" />
       ) : (
         <Table
           headers={["Cache Name", "Entries"]}
           rows={caches.map(c => [
-            <a href={`#/cache/${encodeURIComponent(c.cache_name)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{c.cache_name}</a>,
-            c.count,
+            <TableLink href={`#/cache/${encodeURIComponent(c.cache_name)}`}>{c.cache_name}</TableLink>,
+            <span class="font-bold text-lg">{c.count}</span>,
           ])}
         />
       )}
@@ -69,13 +82,9 @@ function CacheEntryList({ name }: { name: string }) {
           headers={["URL", "Status", "Expires", ""]}
           rows={entries.map(e => [
             <span class="font-mono text-xs max-w-md truncate block">{e.url}</span>,
-            <span class={`px-2 py-0.5 rounded text-xs font-medium ${
-              e.status < 300 ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                : e.status < 400 ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-400"
-                : "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400"
-            }`}>{e.status}</span>,
+            <span class={`inline-flex px-3.5 py-1 rounded-full text-xs font-semibold ${httpStatusColor(e.status)}`}>{e.status}</span>,
             e.expires_at ? new Date(e.expires_at * 1000).toLocaleString() : "—",
-            <button onClick={() => deleteEntry(e.url)} class="text-red-500 hover:text-red-700 text-xs">Delete</button>,
+            <DeleteButton onClick={() => deleteEntry(e.url)} />,
           ])}
         />
       )}

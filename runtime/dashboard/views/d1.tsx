@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, TableLink } from "../components";
 
 interface D1Database {
   name: string;
@@ -37,15 +37,15 @@ function D1DatabaseList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">D1 Databases</h1>
+      <PageHeader title="D1 Databases" subtitle={`${databases.length} database(s)`} />
       {databases.length === 0 ? (
         <EmptyState message="No D1 databases found" />
       ) : (
         <Table
           headers={["Database", "Tables"]}
           rows={databases.map(db => [
-            <a href={`#/d1/${encodeURIComponent(db.name)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{db.name}</a>,
-            db.tables,
+            <TableLink href={`#/d1/${encodeURIComponent(db.name)}`}>{db.name}</TableLink>,
+            <span class="font-bold text-lg">{db.tables}</span>,
           ])}
         />
       )}
@@ -86,7 +86,7 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
 
       {/* Tables */}
       <div class="mb-8">
-        <h3 class="text-lg font-semibold mb-3">Tables</h3>
+        <h3 class="text-lg font-bold mb-4">Tables</h3>
         {tables.length === 0 ? (
           <EmptyState message="No tables found" />
         ) : (
@@ -95,68 +95,73 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
             rows={tables.map(t => [
               <button
                 onClick={() => setSql(`SELECT * FROM "${t.name}" LIMIT 100`)}
-                class="text-orange-600 dark:text-orange-400 hover:underline font-mono text-xs"
+                class="text-ink font-medium hover:text-accent-olive transition-colors font-mono text-xs"
               >
                 {t.name}
               </button>,
-              t.rows,
-              <pre class="text-xs text-gray-500 max-w-lg truncate">{t.sql}</pre>,
+              <span class="font-bold">{t.rows}</span>,
+              <pre class="text-xs text-gray-400 max-w-lg truncate font-mono">{t.sql}</pre>,
             ])}
           />
         )}
       </div>
 
       {/* SQL Console */}
-      <div class="mb-6">
-        <h3 class="text-lg font-semibold mb-3">SQL Console</h3>
-        <div class="flex gap-2 mb-3">
-          <textarea
-            value={sql}
-            onInput={e => setSql((e.target as HTMLTextAreaElement).value)}
-            onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runQuery(); }}
-            placeholder="SELECT * FROM ..."
-            class="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-md bg-white dark:bg-gray-900 font-mono text-sm min-h-[80px] resize-y"
-          />
+      <div class="bg-white rounded-card shadow-card p-6 mb-6">
+        <h3 class="text-lg font-bold mb-4">SQL Console</h3>
+        <textarea
+          value={sql}
+          onInput={e => setSql((e.target as HTMLTextAreaElement).value)}
+          onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runQuery(); }}
+          placeholder="SELECT * FROM ..."
+          class="w-full bg-surface-raised border-none rounded-2xl px-5 py-4 font-mono text-sm outline-none min-h-[100px] resize-y focus:bg-surface focus:shadow-focus-soft transition-all mb-4"
+        />
+        <div class="flex items-center gap-3">
+          <button
+            onClick={runQuery}
+            disabled={running || !sql.trim()}
+            class="rounded-full px-6 py-2.5 text-sm font-semibold bg-ink text-white hover:bg-ink-muted disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            {running ? "Running..." : "Run Query"}
+          </button>
+          <span class="text-xs text-gray-400 font-medium">Ctrl+Enter to run</span>
         </div>
-        <button
-          onClick={runQuery}
-          disabled={running || !sql.trim()}
-          class="px-4 py-2 bg-orange-600 text-white rounded-md text-sm hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          {running ? "Running..." : "Run Query"}
-        </button>
-        <span class="ml-2 text-xs text-gray-400">Ctrl+Enter to run</span>
       </div>
 
       {/* Results */}
       {result && (
         <div>
           {result.error ? (
-            <div class="bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 p-4 rounded text-sm">
+            <div class="bg-red-50 text-red-600 p-5 rounded-card text-sm font-medium">
               {result.error}
             </div>
           ) : result.message ? (
-            <div class="bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 p-4 rounded text-sm">
+            <div class="bg-emerald-50 text-emerald-700 p-5 rounded-card text-sm font-medium">
               {result.message}
             </div>
           ) : result.columns.length > 0 ? (
             <div>
-              <div class="text-sm text-gray-500 mb-2">{result.count} row(s)</div>
-              <div class="overflow-x-auto border border-gray-200 dark:border-gray-800 rounded-lg">
-                <table class="w-full text-sm">
-                  <thead class="bg-gray-50 dark:bg-gray-900">
+              <div class="text-sm text-gray-400 mb-3 font-medium">{result.count} row(s)</div>
+              <div class="bg-white rounded-card shadow-card p-5 overflow-x-auto">
+                <table class="w-full text-sm" style="border-collapse: separate; border-spacing: 0 6px;">
+                  <thead>
                     <tr>
                       {result.columns.map(col => (
-                        <th key={col} class="text-left px-4 py-2 font-medium text-gray-500 dark:text-gray-400 font-mono text-xs">{col}</th>
+                        <th key={col} class="text-left px-5 pb-2 font-medium text-xs text-gray-400 uppercase tracking-wider font-mono">{col}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody class="divide-y divide-gray-100 dark:divide-gray-800">
+                  <tbody>
                     {result.rows.map((row, i) => (
-                      <tr key={i} class="hover:bg-gray-50 dark:hover:bg-gray-900/50">
-                        {result.columns.map(col => (
-                          <td key={col} class="px-4 py-2 font-mono text-xs">
-                            {row[col] === null ? <span class="text-gray-400 italic">NULL</span> : String(row[col])}
+                      <tr key={i} class="group">
+                        {result.columns.map((col, j) => (
+                          <td
+                            key={col}
+                            class={`px-5 py-3.5 bg-surface-raised group-hover:bg-surface-hover transition-colors font-mono text-xs ${
+                              j === 0 ? "rounded-l-2xl" : ""
+                            } ${j === result.columns.length - 1 ? "rounded-r-2xl" : ""}`}
+                          >
+                            {row[col] === null ? <span class="text-gray-300 italic">NULL</span> : String(row[col])}
                           </td>
                         ))}
                       </tr>

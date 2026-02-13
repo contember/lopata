@@ -1,6 +1,6 @@
 import { useState, useEffect } from "preact/hooks";
 import { api, formatTime } from "../lib";
-import { EmptyState, Breadcrumb, Table } from "./kv";
+import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge } from "../components";
 
 interface Queue {
   queue: string;
@@ -20,6 +20,12 @@ interface QueueMessage {
   completed_at: number | null;
 }
 
+const QUEUE_STATUS_COLORS: Record<string, string> = {
+  pending: "bg-amber-100 text-amber-700",
+  acked: "bg-emerald-100 text-emerald-700",
+  failed: "bg-red-100 text-red-700",
+};
+
 export function QueueView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
   if (parts.length === 1) return <QueueList />;
@@ -36,29 +42,23 @@ function QueueList() {
 
   return (
     <div class="p-8">
-      <h1 class="text-2xl font-bold mb-6">Queues</h1>
+      <PageHeader title="Queues" subtitle={`${queues.length} queue(s)`} />
       {queues.length === 0 ? (
         <EmptyState message="No queues found" />
       ) : (
         <Table
           headers={["Queue", "Pending", "Acked", "Failed"]}
           rows={queues.map(q => [
-            <a href={`#/queue/${encodeURIComponent(q.queue)}`} class="text-orange-600 dark:text-orange-400 hover:underline">{q.queue}</a>,
-            q.pending,
-            q.acked,
-            q.failed,
+            <TableLink href={`#/queue/${encodeURIComponent(q.queue)}`}>{q.queue}</TableLink>,
+            <span class="font-bold">{q.pending}</span>,
+            <span class="font-bold">{q.acked}</span>,
+            <span class="font-bold">{q.failed}</span>,
           ])}
         />
       )}
     </div>
   );
 }
-
-const STATUS_BADGE: Record<string, string> = {
-  pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  acked: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  failed: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-};
 
 function QueueMessages({ name }: { name: string }) {
   const [messages, setMessages] = useState<QueueMessage[]>([]);
@@ -80,15 +80,11 @@ function QueueMessages({ name }: { name: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Queues", href: "#/queue" }, { label: name }]} />
-      <div class="mb-4 flex gap-2">
+      <div class="mb-6 flex gap-2">
         {["", "pending", "acked", "failed"].map(s => (
-          <button
-            key={s}
-            onClick={() => setFilter(s)}
-            class={`px-3 py-1 text-sm rounded-md border ${filter === s ? "bg-orange-100 dark:bg-orange-900 border-orange-400 text-orange-800 dark:text-orange-200" : "border-gray-300 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"}`}
-          >
+          <PillButton key={s} onClick={() => setFilter(s)} active={filter === s}>
             {s || "All"}
-          </button>
+          </PillButton>
         ))}
       </div>
       {messages.length === 0 ? (
@@ -98,12 +94,12 @@ function QueueMessages({ name }: { name: string }) {
           headers={["ID", "Body", "Status", "Attempts", "Created", "Completed", ""]}
           rows={messages.map(m => [
             <span class="font-mono text-xs">{m.id.slice(0, 12)}...</span>,
-            <pre class="text-xs max-w-md truncate">{m.body}</pre>,
-            <span class={`px-2 py-0.5 rounded text-xs font-medium ${STATUS_BADGE[m.status] ?? ""}`}>{m.status}</span>,
+            <pre class="text-xs max-w-md truncate font-mono">{m.body}</pre>,
+            <StatusBadge status={m.status} colorMap={QUEUE_STATUS_COLORS} />,
             m.attempts,
             formatTime(m.created_at),
             m.completed_at ? formatTime(m.completed_at) : "—",
-            <button onClick={() => deleteMsg(m.id)} class="text-red-500 hover:text-red-700 text-xs">Delete</button>,
+            <DeleteButton onClick={() => deleteMsg(m.id)} />,
           ])}
         />
       )}
