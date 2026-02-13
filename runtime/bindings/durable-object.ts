@@ -147,6 +147,21 @@ interface StorageOptions {
   noCache?: boolean;
 }
 
+/** Configurable limits for Durable Objects */
+export interface DurableObjectLimits {
+  maxTagsPerWebSocket?: number;
+  maxTagLength?: number;
+  maxConcurrentWebSockets?: number;
+  maxAutoResponseLength?: number;
+}
+
+const DO_DEFAULTS: Required<DurableObjectLimits> = {
+  maxTagsPerWebSocket: 10,
+  maxTagLength: 256,
+  maxConcurrentWebSockets: 32_768,
+  maxAutoResponseLength: 2048,
+};
+
 // --- Storage ---
 
 export class SqliteDurableObjectStorage {
@@ -251,7 +266,7 @@ export class SqliteDurableObjectStorage {
       .run(this.namespace, this.id);
   }
 
-  async list(options?: { prefix?: string; start?: string; end?: string; limit?: number; reverse?: boolean }): Promise<Map<string, unknown>> {
+  async list(options?: { prefix?: string; start?: string; startAfter?: string; end?: string; limit?: number; reverse?: boolean }): Promise<Map<string, unknown>> {
     const prefix = options?.prefix ?? "";
     const limit = options?.limit ?? 1000;
     const reverse = options?.reverse ?? false;
@@ -267,7 +282,10 @@ export class SqliteDurableObjectStorage {
       sql += " ESCAPE '\\'";
     }
 
-    if (options?.start) {
+    if (options?.startAfter) {
+      sql += " AND key > ?";
+      params.push(options.startAfter);
+    } else if (options?.start) {
       sql += " AND key >= ?";
       params.push(options.start);
     }
@@ -286,6 +304,10 @@ export class SqliteDurableObjectStorage {
       result.set(row.key, JSON.parse(row.value));
     }
     return result;
+  }
+
+  async sync(): Promise<void> {
+    // No-op in dev — in production this flushes the write buffer
   }
 
   async transaction<T>(closure: (txn: SqliteDurableObjectStorage) => Promise<T>): Promise<T> {
@@ -365,12 +387,14 @@ export class DurableObjectStateImpl {
   private _acceptedWebSockets: Set<AcceptedWebSocket> = new Set();
   private _autoResponsePair: WebSocketRequestResponsePair | null = null;
   private _hibernatableTimeout: number | null = null;
+  private _limits: Required<DurableObjectLimits>;
   /** @internal Set by DurableObjectNamespaceImpl after DO is created */
   _doInstance: DurableObjectBase | null = null;
 
-  constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string) {
+  constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
     this.id = id;
     this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir);
+    this._limits = { ...DO_DEFAULTS, ...limits };
   }
 
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T> {
@@ -391,7 +415,19 @@ export class DurableObjectStateImpl {
   // --- WebSocket Hibernation API ---
 
   acceptWebSocket(ws: WebSocket, tags?: string[]): void {
-    const entry: AcceptedWebSocket = { ws, tags: tags ?? [], autoResponseTimestamp: null };
+    const tagList = tags ?? [];
+    if (tagList.length > this._limits.maxTagsPerWebSocket) {
+      throw new Error(`Exceeded max tags per WebSocket (${this._limits.maxTagsPerWebSocket})`);
+    }
+    for (const tag of tagList) {
+      if (tag.length > this._limits.maxTagLength) {
+        throw new Error(`Tag exceeds max length of ${this._limits.maxTagLength} characters`);
+      }
+    }
+    if (this._acceptedWebSockets.size >= this._limits.maxConcurrentWebSockets) {
+      throw new Error(`Exceeded max concurrent WebSocket connections (${this._limits.maxConcurrentWebSockets})`);
+    }
+    const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null };
     this._acceptedWebSockets.add(entry);
 
     const instance = this._doInstance;
@@ -447,6 +483,14 @@ export class DurableObjectStateImpl {
   }
 
   setWebSocketAutoResponse(pair?: WebSocketRequestResponsePair): void {
+    if (pair) {
+      if (pair.request.length > this._limits.maxAutoResponseLength) {
+        throw new Error(`Auto-response request exceeds max length of ${this._limits.maxAutoResponseLength} characters`);
+      }
+      if (pair.response.length > this._limits.maxAutoResponseLength) {
+        throw new Error(`Auto-response response exceeds max length of ${this._limits.maxAutoResponseLength} characters`);
+      }
+    }
     this._autoResponsePair = pair ?? null;
   }
 
@@ -461,12 +505,12 @@ export class DurableObjectStateImpl {
     return null;
   }
 
-  setHibernatableWebSocketEventTimeout(_ms?: number): void {
-    // no-op in dev
+  setHibernatableWebSocketEventTimeout(ms?: number): void {
+    this._hibernatableTimeout = ms ?? null;
   }
 
   getHibernatableWebSocketEventTimeout(): number | null {
-    return null;
+    return this._hibernatableTimeout;
   }
 }
 
@@ -496,11 +540,13 @@ export class DurableObjectNamespaceImpl {
   private namespaceName: string;
   private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private dataDir: string | undefined;
+  private limits: DurableObjectLimits | undefined;
 
-  constructor(db: Database, namespaceName: string, dataDir?: string) {
+  constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits) {
     this.db = db;
     this.namespaceName = namespaceName;
     this.dataDir = dataDir;
+    this.limits = limits;
   }
 
   /** Called after worker module is loaded to wire the actual class */
@@ -578,7 +624,7 @@ export class DurableObjectNamespaceImpl {
     if (this.instances.has(idStr)) return this.instances.get(idStr)!;
     if (!this._class) return null;
     const doId = new DurableObjectIdImpl(idStr);
-    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName, this.dataDir);
+    const state = new DurableObjectStateImpl(doId, this.db, this.namespaceName, this.dataDir, this.limits);
     const instance = new this._class(state, this._env);
     // Wire DO instance reference for WebSocket handler delegation
     state._doInstance = instance;
@@ -620,7 +666,7 @@ export class DurableObjectNamespaceImpl {
     const idStr = id.toString();
     if (!this.instances.has(idStr)) {
       if (!this._class) throw new Error("DurableObject class not wired yet. Call _setClass() first.");
-      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir);
+      const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir, this.limits);
       const instance = new this._class(state, this._env);
       // Wire DO instance reference for WebSocket handler delegation
       state._doInstance = instance;
@@ -638,11 +684,30 @@ export class DurableObjectNamespaceImpl {
     }
 
     const instance = this.instances.get(idStr)!;
+    const doId = instance.ctx.id;
 
     // Return a Proxy stub that forwards method calls (RPC semantics)
     // Awaits blockConcurrencyWhile before forwarding any calls
+    // Also exposes .id, .name, and .fetch()
     return new Proxy(instance, {
       get(target, prop, receiver) {
+        // Expose stub.id — returns the DurableObjectId
+        if (prop === "id") return doId;
+        // Expose stub.name — returns the name if available
+        if (prop === "name") return doId.name;
+        // Expose stub.fetch() — calls the DO's fetch() handler
+        if (prop === "fetch") {
+          return async (input: RequestInfo | URL, init?: RequestInit) => {
+            const readyPromise = target.ctx._getReadyPromise();
+            if (readyPromise) await readyPromise;
+            const fetchFn = (target as unknown as Record<string, unknown>).fetch;
+            if (typeof fetchFn !== "function") {
+              throw new Error("Durable Object does not implement fetch()");
+            }
+            const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+            return (fetchFn as (req: Request) => Promise<Response>).call(target, request);
+          };
+        }
         const val = Reflect.get(target, prop, receiver);
         if (typeof val === "function") {
           return async (...args: unknown[]) => {

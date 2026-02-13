@@ -13,6 +13,7 @@ import {
   WebSocketRequestResponsePair,
   SqlStorageCursor,
   SqlStorage,
+  type DurableObjectLimits,
 } from "../bindings/durable-object";
 
 /** Minimal mock WebSocket for testing state.acceptWebSocket() and friends */
@@ -1030,6 +1031,213 @@ describe("DurableObject SQL Storage", () => {
       await stub.createTable();
       await stub.setCounter("visits", 42);
       expect(await stub.getCounter("visits")).toBe(42);
+    });
+  });
+});
+
+describe("DO Gaps - Issue #27", () => {
+  describe("stub.fetch()", () => {
+    class FetchDO extends DurableObjectBase {
+      async fetch(request: Request): Promise<Response> {
+        const url = new URL(request.url);
+        if (url.pathname === "/echo") {
+          const body = await request.text();
+          return new Response(`Echo: ${body}`, { status: 200 });
+        }
+        return new Response("Not Found", { status: 404 });
+      }
+    }
+
+    test("stub.fetch calls DO fetch handler with Request", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO");
+      ns._setClass(FetchDO, {});
+      const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
+
+      const resp = await stub.fetch(new Request("http://fake-host/echo", { method: "POST", body: "hello" }));
+      expect(resp.status).toBe(200);
+      expect(await resp.text()).toBe("Echo: hello");
+    });
+
+    test("stub.fetch with string URL and init", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO2");
+      ns._setClass(FetchDO, {});
+      const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
+
+      const resp = await stub.fetch("http://fake-host/echo", { method: "POST", body: "world" });
+      expect(await resp.text()).toBe("Echo: world");
+    });
+
+    test("stub.fetch throws if DO has no fetch handler", async () => {
+      class NoFetchDO extends DurableObjectBase {
+        async hello() { return "hi"; }
+      }
+      const ns = new DurableObjectNamespaceImpl(db, "NoFetchDO");
+      ns._setClass(NoFetchDO, {});
+      const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> };
+
+      expect(stub.fetch("http://fake-host/")).rejects.toThrow("does not implement fetch");
+    });
+
+    test("stub.fetch returns 404 for unknown path", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "FetchDO3");
+      ns._setClass(FetchDO, {});
+      const stub = ns.get(ns.idFromName("test")) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> };
+
+      const resp = await stub.fetch("http://fake-host/unknown");
+      expect(resp.status).toBe(404);
+    });
+  });
+
+  describe("stub.id and stub.name", () => {
+    class SimpleDO extends DurableObjectBase {
+      async ping() { return "pong"; }
+    }
+
+    test("stub.id returns DurableObjectId", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO");
+      ns._setClass(SimpleDO, {});
+      const id = ns.idFromName("test");
+      const stub = ns.get(id) as unknown as { id: DurableObjectIdImpl };
+      expect(stub.id).toBe(id);
+    });
+
+    test("stub.name returns name from id", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO2");
+      ns._setClass(SimpleDO, {});
+      const id = ns.idFromName("myname");
+      const stub = ns.get(id) as unknown as { name: string | undefined };
+      expect(stub.name).toBe("myname");
+    });
+
+    test("stub.name is undefined for unique ids", async () => {
+      const ns = new DurableObjectNamespaceImpl(db, "SimpleDO3");
+      ns._setClass(SimpleDO, {});
+      const id = ns.newUniqueId();
+      const stub = ns.get(id) as unknown as { name: string | undefined };
+      expect(stub.name).toBeUndefined();
+    });
+  });
+
+  describe("list({ startAfter })", () => {
+    let storage: SqliteDurableObjectStorage;
+
+    beforeEach(() => {
+      storage = new SqliteDurableObjectStorage(db, "TestDO", "inst-list");
+    });
+
+    test("startAfter excludes the given key", async () => {
+      await storage.put({ a: 1, b: 2, c: 3, d: 4 });
+      const result = await storage.list({ startAfter: "b" });
+      expect(result.size).toBe(2);
+      expect(result.has("b")).toBe(false);
+      expect(result.has("c")).toBe(true);
+      expect(result.has("d")).toBe(true);
+    });
+
+    test("startAfter with limit", async () => {
+      await storage.put({ a: 1, b: 2, c: 3, d: 4, e: 5 });
+      const result = await storage.list({ startAfter: "b", limit: 2 });
+      expect(result.size).toBe(2);
+      const keys = [...result.keys()];
+      expect(keys).toEqual(["c", "d"]);
+    });
+
+    test("startAfter takes precedence over start", async () => {
+      await storage.put({ a: 1, b: 2, c: 3 });
+      // startAfter should be used, start should be ignored
+      const result = await storage.list({ startAfter: "a", start: "a" });
+      expect(result.has("a")).toBe(false);
+      expect(result.has("b")).toBe(true);
+    });
+  });
+
+  describe("sync()", () => {
+    test("sync returns a resolved promise", async () => {
+      const storage = new SqliteDurableObjectStorage(db, "TestDO", "inst-sync");
+      await storage.sync(); // should not throw
+    });
+  });
+
+  describe("WebSocket validation", () => {
+    test("rejects more than max tags per WebSocket", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("ws-val"), db, "WsVal", undefined,
+        { maxTagsPerWebSocket: 2 }
+      );
+      const ws = new MockWebSocket();
+      expect(() => {
+        state.acceptWebSocket(ws as unknown as WebSocket, ["a", "b", "c"]);
+      }).toThrow("Exceeded max tags");
+    });
+
+    test("rejects tag exceeding max length", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("ws-val2"), db, "WsVal2", undefined,
+        { maxTagLength: 5 }
+      );
+      const ws = new MockWebSocket();
+      expect(() => {
+        state.acceptWebSocket(ws as unknown as WebSocket, ["toolong"]);
+      }).toThrow("exceeds max length");
+    });
+
+    test("rejects when max concurrent WebSockets exceeded", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("ws-val3"), db, "WsVal3", undefined,
+        { maxConcurrentWebSockets: 1 }
+      );
+      const ws1 = new MockWebSocket();
+      const ws2 = new MockWebSocket();
+      state.acceptWebSocket(ws1 as unknown as WebSocket);
+      expect(() => {
+        state.acceptWebSocket(ws2 as unknown as WebSocket);
+      }).toThrow("Exceeded max concurrent");
+    });
+
+    test("rejects auto-response request exceeding max length", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("ws-val4"), db, "WsVal4", undefined,
+        { maxAutoResponseLength: 5 }
+      );
+      expect(() => {
+        state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("toolong", "ok"));
+      }).toThrow("request exceeds max length");
+    });
+
+    test("rejects auto-response response exceeding max length", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("ws-val5"), db, "WsVal5", undefined,
+        { maxAutoResponseLength: 5 }
+      );
+      expect(() => {
+        state.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ok", "toolong"));
+      }).toThrow("response exceeds max length");
+    });
+  });
+
+  describe("Hibernation timeout", () => {
+    test("setHibernatableWebSocketEventTimeout stores value", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("hib-test"), db, "HibDO"
+      );
+      state.setHibernatableWebSocketEventTimeout(5000);
+      expect(state.getHibernatableWebSocketEventTimeout()).toBe(5000);
+    });
+
+    test("setHibernatableWebSocketEventTimeout clears with no arg", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("hib-test2"), db, "HibDO2"
+      );
+      state.setHibernatableWebSocketEventTimeout(5000);
+      state.setHibernatableWebSocketEventTimeout();
+      expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
+    });
+
+    test("getHibernatableWebSocketEventTimeout returns null by default", () => {
+      const state = new DurableObjectStateImpl(
+        new DurableObjectIdImpl("hib-test3"), db, "HibDO3"
+      );
+      expect(state.getHibernatableWebSocketEventTimeout()).toBeNull();
     });
   });
 });
