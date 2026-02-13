@@ -5,9 +5,9 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 39    |
-| **Completed**    | 33    |
-| **Pending**      | 6     |
-| **Progress**     | 85%   |
+| **Completed**    | 34    |
+| **Pending**      | 5     |
+| **Progress**     | 87%   |
 
 ## Current Focus
 
@@ -66,7 +66,7 @@ Issues ordered by priority — high-impact first.
 | 30 | html-rewriter                | completed | medium    | HTMLRewriter class via html-rewriter-wasm (lol-html WASM) |
 | 31 | websocket-pair               | completed | medium    | WebSocketPair + WS upgrade for regular Workers |
 | 32 | cf-streams                   | completed | low       | IdentityTransformStream, FixedLengthStream |
-| 33 | do-sync-kv                   | pending | low       | storage.kv.get/put/delete/list (synchronous) |
+| 33 | do-sync-kv                   | completed | low       | storage.kv.get/put/delete/list (synchronous) |
 | 34 | redirects-file               | pending | low       | Static assets _redirects file support |
 | 35 | crypto-extras                | pending | very low  | crypto.subtle.timingSafeEqual, crypto.DigestStream |
 | 36 | navigator-globals            | pending | very low  | navigator.userAgent, scheduler.wait |
@@ -156,6 +156,8 @@ Issues ordered by priority — high-impact first.
 - **#31 websocket-pair**: Implemented `WebSocketPair` and `CFWebSocket` classes in `runtime/bindings/websocket-pair.ts`. `WebSocketPair` constructor creates two linked in-memory WebSocket-like objects accessible via numeric keys (`pair[0]`, `pair[1]`) and `Object.values()`. `CFWebSocket` extends `EventTarget` with CF-specific `accept()` method — events are buffered until `accept()` is called. Supports `send()` (string, ArrayBuffer, ArrayBufferView), `close(code?, reason?)`, `readyState` transitions (CONNECTING→OPEN→CLOSED), `addEventListener()` and `on*` callback-style handlers. Messages sent on one socket are delivered to the peer. Close propagates bidirectionally. Registered `WebSocketPair` on `globalThis` and exported from `cloudflare:workers` plugin. In `dev.ts`, added WebSocket upgrade bridge: when worker returns `Response(null, { status: 101, webSocket: client })`, Bun's native WebSocket upgrade bridges the real client connection to the CFWebSocket pair — real client messages forwarded to the server-side CFWebSocket, server-side sends forwarded to the real client. Added 22 tests covering constructor, Object.values destructuring, readyState constants/transitions, accept() gating, bidirectional string/binary messaging, ArrayBufferView support, event buffering until accept(), close propagation, close idempotency, callback-style handlers, multiple listeners, upgrade response pattern, and buffered close flush. All 586 tests pass.
 
 - **#32 cf-streams**: Implemented `IdentityTransformStream` (extends `TransformStream`, byte passthrough) and `FixedLengthStream` (enforces exact byte count — errors on over-write via `controller.error()` in `transform()`, errors on under-write via `controller.error()` in `flush()`). `FixedLengthStream` constructor accepts `number` or `bigint`, exposes `expectedLength` property. Both classes registered on `globalThis` in `plugin.ts`. Added 17 tests covering passthrough, multi-chunk, pipeTo, binary data, exact length, over-length error, under-length error, bigint, zero length, Response body usage, and instanceof checks. All 682 pre-existing tests still pass (1 pre-existing failure in db.test.ts unrelated to this change).
+
+- **#33 do-sync-kv**: Added `SyncKV` class in `runtime/bindings/durable-object.ts` with synchronous `get(key)`, `put(key, value)`, `delete(key)` (returns boolean), and `list(options?)` (generator yielding `[key, value]` tuples). Uses the same `do_storage` SQLite table as the async API — full interop between sync and async methods. Lazy `kv` getter added to `SqliteDurableObjectStorage`. `list()` supports `prefix`, `start`, `startAfter`, `end`, `reverse`, and `limit` options. Added 16 new tests (137 total DO tests) covering basic CRUD, overwrite, delete return values, list with all options, async/sync interop, instance caching, and access via `DurableObjectStateImpl`. All 697 tests pass.
 
 ## Lessons Learned
 

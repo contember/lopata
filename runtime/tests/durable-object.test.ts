@@ -13,6 +13,7 @@ import {
   WebSocketRequestResponsePair,
   SqlStorageCursor,
   SqlStorage,
+  SyncKV,
   type DurableObjectLimits,
 } from "../bindings/durable-object";
 
@@ -1466,5 +1467,133 @@ describe("DO RPC Semantics", () => {
     const stub1 = ns.get(id);
     const stub2 = ns.get(id);
     expect(stub1).toBe(stub2);
+  });
+});
+
+// --- Synchronous KV API ---
+
+describe("SyncKV", () => {
+  test("get returns undefined for missing key", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    expect(storage.kv.get("missing")).toBeUndefined();
+  });
+
+  test("put and get basic values", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("key1", "hello");
+    storage.kv.put("key2", 42);
+    storage.kv.put("key3", { nested: true });
+
+    expect(storage.kv.get("key1")).toBe("hello");
+    expect(storage.kv.get("key2")).toBe(42);
+    expect(storage.kv.get("key3")).toEqual({ nested: true });
+  });
+
+  test("put overwrites existing value", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("key", "old");
+    storage.kv.put("key", "new");
+    expect(storage.kv.get("key")).toBe("new");
+  });
+
+  test("delete returns true if key existed", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("key", "val");
+    expect(storage.kv.delete("key")).toBe(true);
+    expect(storage.kv.get("key")).toBeUndefined();
+  });
+
+  test("delete returns false if key did not exist", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    expect(storage.kv.delete("nope")).toBe(false);
+  });
+
+  test("list returns all entries", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("a", 1);
+    storage.kv.put("b", 2);
+    storage.kv.put("c", 3);
+
+    const entries = [...storage.kv.list()];
+    expect(entries).toEqual([["a", 1], ["b", 2], ["c", 3]]);
+  });
+
+  test("list with prefix", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("user:1", "alice");
+    storage.kv.put("user:2", "bob");
+    storage.kv.put("post:1", "hello");
+
+    const entries = [...storage.kv.list({ prefix: "user:" })];
+    expect(entries).toEqual([["user:1", "alice"], ["user:2", "bob"]]);
+  });
+
+  test("list with start and end", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("a", 1);
+    storage.kv.put("b", 2);
+    storage.kv.put("c", 3);
+    storage.kv.put("d", 4);
+
+    const entries = [...storage.kv.list({ start: "b", end: "d" })];
+    expect(entries).toEqual([["b", 2], ["c", 3]]);
+  });
+
+  test("list with startAfter", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("a", 1);
+    storage.kv.put("b", 2);
+    storage.kv.put("c", 3);
+
+    const entries = [...storage.kv.list({ startAfter: "a" })];
+    expect(entries).toEqual([["b", 2], ["c", 3]]);
+  });
+
+  test("list with reverse", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("a", 1);
+    storage.kv.put("b", 2);
+    storage.kv.put("c", 3);
+
+    const entries = [...storage.kv.list({ reverse: true })];
+    expect(entries).toEqual([["c", 3], ["b", 2], ["a", 1]]);
+  });
+
+  test("list with limit", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("a", 1);
+    storage.kv.put("b", 2);
+    storage.kv.put("c", 3);
+
+    const entries = [...storage.kv.list({ limit: 2 })];
+    expect(entries).toEqual([["a", 1], ["b", 2]]);
+  });
+
+  test("interop: sync kv.put readable by async get", async () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    storage.kv.put("sync-key", "sync-value");
+
+    const value = await storage.get("sync-key");
+    expect(value).toBe("sync-value");
+  });
+
+  test("interop: async put readable by sync kv.get", async () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    await storage.put("async-key", "async-value");
+
+    const value = storage.kv.get("async-key");
+    expect(value).toBe("async-value");
+  });
+
+  test("kv property returns same instance", () => {
+    const storage = new SqliteDurableObjectStorage(db, "NS", "id1");
+    expect(storage.kv).toBe(storage.kv);
+  });
+
+  test("kv is accessible from DurableObjectStateImpl", () => {
+    const id = new DurableObjectIdImpl("test-id", "test");
+    const state = new DurableObjectStateImpl(id, db, "NS");
+    state.storage.kv.put("from-state", 123);
+    expect(state.storage.kv.get("from-state")).toBe(123);
   });
 });

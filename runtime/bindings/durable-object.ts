@@ -167,18 +167,103 @@ const DO_DEFAULTS: Required<DurableObjectLimits> = {
 
 // --- Storage ---
 
+/**
+ * Synchronous KV API for Durable Object storage.
+ * Uses the same `do_storage` table as the async API.
+ */
+export class SyncKV {
+  private db: Database;
+  private namespace: string;
+  private id: string;
+
+  constructor(db: Database, namespace: string, id: string) {
+    this.db = db;
+    this.namespace = namespace;
+    this.id = id;
+  }
+
+  get(key: string): unknown {
+    const row = this.db
+      .query("SELECT value FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .get(this.namespace, this.id, key) as { value: string } | null;
+    if (!row) return undefined;
+    return JSON.parse(row.value);
+  }
+
+  put(key: string, value: unknown): void {
+    this.db
+      .query("INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)")
+      .run(this.namespace, this.id, key, JSON.stringify(value));
+  }
+
+  delete(key: string): boolean {
+    const existing = this.db
+      .query("SELECT 1 FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .get(this.namespace, this.id, key);
+    this.db
+      .query("DELETE FROM do_storage WHERE namespace = ? AND id = ? AND key = ?")
+      .run(this.namespace, this.id, key);
+    return existing !== null;
+  }
+
+  *list(options?: { prefix?: string; start?: string; startAfter?: string; end?: string; limit?: number; reverse?: boolean }): Iterable<[string, unknown]> {
+    const prefix = options?.prefix ?? "";
+    const limit = options?.limit ?? 1000;
+    const reverse = options?.reverse ?? false;
+
+    let sql = "SELECT key, value FROM do_storage WHERE namespace = ? AND id = ?";
+    const params: (string | number)[] = [this.namespace, this.id];
+
+    if (prefix) {
+      sql += " AND key LIKE ?";
+      const escaped = prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+      params.push(escaped + "%");
+      sql += " ESCAPE '\\'";
+    }
+
+    if (options?.startAfter) {
+      sql += " AND key > ?";
+      params.push(options.startAfter);
+    } else if (options?.start) {
+      sql += " AND key >= ?";
+      params.push(options.start);
+    }
+
+    if (options?.end) {
+      sql += " AND key < ?";
+      params.push(options.end);
+    }
+
+    sql += ` ORDER BY key ${reverse ? "DESC" : "ASC"} LIMIT ?`;
+    params.push(limit);
+
+    const rows = this.db.query(sql).all(...params) as { key: string; value: string }[];
+    for (const row of rows) {
+      yield [row.key, JSON.parse(row.value)];
+    }
+  }
+}
+
 export class SqliteDurableObjectStorage {
   private db: Database;
   private namespace: string;
   private id: string;
   private _sql: SqlStorage | null = null;
   private _dataDir: string | null = null;
+  private _kv: SyncKV | null = null;
 
   constructor(db: Database, namespace: string, id: string, dataDir?: string) {
     this.db = db;
     this.namespace = namespace;
     this.id = id;
     this._dataDir = dataDir ?? null;
+  }
+
+  get kv(): SyncKV {
+    if (!this._kv) {
+      this._kv = new SyncKV(this.db, this.namespace, this.id);
+    }
+    return this._kv;
   }
 
   get sql(): SqlStorage {
