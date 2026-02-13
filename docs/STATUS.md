@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 39    |
-| **Completed**    | 37    |
-| **Pending**      | 2     |
-| **Progress**     | 95%   |
+| **Completed**    | 38    |
+| **Pending**      | 1     |
+| **Progress**     | 97%   |
 
 ## Current Focus
 
-Phase 3 — closing remaining API gaps, prioritized by community impact. Next: #37 queue-pull-consumers.
+Phase 3 — closing remaining API gaps, prioritized by community impact. Next: #38 do-transaction-sync.
 
 ## Issues
 
@@ -70,7 +70,7 @@ Issues ordered by priority — high-impact first.
 | 34 | redirects-file               | completed | low       | _redirects file: static/dynamic redirects, splats, placeholders, rewrite |
 | 35 | crypto-extras                | completed | very low  | crypto.subtle.timingSafeEqual, crypto.DigestStream |
 | 36 | navigator-globals            | completed | very low  | navigator.userAgent, navigator.language, performance.timeOrigin, scheduler.wait |
-| 37 | queue-pull-consumers         | pending | low       | HTTP pull/ack endpoints for queues |
+| 37 | queue-pull-consumers         | completed | low       | HTTP pull/ack endpoints for queues |
 | 38 | do-transaction-sync          | pending | low       | storage.transactionSync() |
 
 ## Dependencies
@@ -164,6 +164,8 @@ Issues ordered by priority — high-impact first.
 - **#36 navigator-globals**: Set `navigator.userAgent` to `"Cloudflare-Workers"` and `navigator.language` to `"en"` via `Object.defineProperty` on `globalThis.navigator` in `plugin.ts`. Set `performance.timeOrigin` to `0` (matching CF semantics where timeOrigin is always 0). Registered `scheduler.wait(ms)` on `globalThis` — returns a `Promise<void>` that resolves after `ms` milliseconds via `setTimeout`. Added 6 tests covering userAgent value, language default, timeOrigin, performance.now(), scheduler.wait delay, and scheduler.wait(0). All 741 tests pass (1 pre-existing workflow failure unrelated).
 
 - **#35 crypto-extras**: Implemented `crypto.subtle.timingSafeEqual(a, b)` using `node:crypto`'s `timingSafeEqual` (Bun-supported). Accepts `ArrayBuffer` or `ArrayBufferView`, throws `TypeError` on mismatched lengths, returns `boolean`. Implemented `DigestStream` extending `WritableStream` — constructor takes algorithm name (`SHA-1`, `SHA-256`, `SHA-384`, `SHA-512`, `MD5`), internally uses `Bun.CryptoHasher`. `digest` property is a `Promise<ArrayBuffer>` resolving on stream close. Supports case-insensitive algorithm names. Both registered on `globalThis.crypto` via `patchGlobalCrypto()` in `plugin.ts`. Added 17 tests covering equal/different/empty buffers, ArrayBufferView/DataView/subarray inputs, SHA-256/SHA-1/SHA-512/MD5 hashes, multiple chunks, pipeTo, empty input, unsupported algorithm, and case-insensitive algorithm names. All 735 tests pass (1 pre-existing workflow failure unrelated).
+
+- **#37 queue-pull-consumers**: Implemented `QueuePullConsumer` class in `runtime/bindings/queue.ts` with `pull()` and `ack()` methods. `pull(options?)` selects visible messages without active leases, generates a UUID `lease_id` per message, stores leases in a `queue_leases` table with expiration timestamp, increments message attempts, and returns messages with `lease_id`, `id`, `timestamp`, `body`, `attempts`. Expired leases are cleaned up on each `pull()` call, making messages visible again after visibility timeout. `v8` content type messages are filtered out (not supported by pull consumers). `ack(request)` processes `acks` (delete message + lease) and `retries` (update `visible_at` + delete lease) — expired leases are ignored. Added HTTP routes in `dev.ts`: `POST /__queues/<name>/messages/pull` and `POST /__queues/<name>/messages/ack`. Added `queue_leases` table to `runMigrations()`. Added 12 new tests (49 total queue tests) covering pull with lease, invisibility window, ack, retry with delay, visibility timeout expiration, v8 rejection, batch_size, expired lease handling, mixed ack/retry, attempts tracking, and content type decoding. All 753 tests pass (1 pre-existing workflow failure unrelated).
 
 ## Lessons Learned
 

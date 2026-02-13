@@ -1,7 +1,7 @@
 import { test, expect, beforeEach, describe } from "bun:test";
 import { Database } from "bun:sqlite";
 import { runMigrations } from "../db";
-import { SqliteQueueProducer, QueueConsumer } from "../bindings/queue";
+import { SqliteQueueProducer, QueueConsumer, QueuePullConsumer } from "../bindings/queue";
 
 let db: Database;
 
@@ -632,5 +632,173 @@ describe("QueueConsumer", () => {
     await Promise.all([p1, p2]);
 
     expect(handlerCallCount).toBe(1);
+  });
+});
+
+describe("QueuePullConsumer", () => {
+  let producer: SqliteQueueProducer;
+  let pullConsumer: QueuePullConsumer;
+
+  beforeEach(() => {
+    producer = new SqliteQueueProducer(db, "pull-queue");
+    pullConsumer = new QueuePullConsumer(db, "pull-queue");
+  });
+
+  test("pull returns visible messages with lease_id", async () => {
+    await producer.send({ key: "value" });
+
+    const result = pullConsumer.pull();
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]!.body).toEqual({ key: "value" });
+    expect(result.messages[0]!.lease_id).toBeDefined();
+    expect(result.messages[0]!.id).toBeDefined();
+    expect(result.messages[0]!.timestamp).toBeDefined();
+    expect(result.messages[0]!.attempts).toBe(1);
+  });
+
+  test("pulled messages are invisible to subsequent pulls", async () => {
+    await producer.send("msg1");
+
+    const first = pullConsumer.pull();
+    expect(first.messages).toHaveLength(1);
+
+    // Second pull should return empty — message is leased
+    const second = pullConsumer.pull();
+    expect(second.messages).toHaveLength(0);
+  });
+
+  test("ack removes message permanently", async () => {
+    await producer.send("to-ack");
+
+    const pulled = pullConsumer.pull();
+    const leaseId = pulled.messages[0]!.lease_id;
+
+    const result = pullConsumer.ack({ acks: [{ lease_id: leaseId }] });
+    expect(result.acked).toBe(1);
+
+    // Message should be gone from DB
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    expect(count.cnt).toBe(0);
+  });
+
+  test("retry makes message visible again after delay", async () => {
+    await producer.send("to-retry");
+
+    const pulled = pullConsumer.pull();
+    const leaseId = pulled.messages[0]!.lease_id;
+
+    const before = Date.now();
+    const result = pullConsumer.ack({ retries: [{ lease_id: leaseId, delay_seconds: 10 }] });
+    expect(result.retried).toBe(1);
+
+    // Message should still exist with future visible_at
+    const row = db.query<{ visible_at: number }, []>("SELECT visible_at FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    expect(row.visible_at).toBeGreaterThanOrEqual(before + 10000);
+
+    // Lease should be cleaned up
+    const leaseCount = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_leases").get()!;
+    expect(leaseCount.cnt).toBe(0);
+  });
+
+  test("visibility timeout expiration makes message visible again", async () => {
+    await producer.send("timeout-msg");
+
+    // Pull with very short visibility timeout (1ms)
+    pullConsumer.pull({ visibility_timeout_ms: 1 });
+
+    // Wait for lease to expire
+    await new Promise(r => setTimeout(r, 10));
+
+    // Message should be visible again
+    const second = pullConsumer.pull();
+    expect(second.messages).toHaveLength(1);
+  });
+
+  test("v8 content type messages are skipped by pull", async () => {
+    await producer.send({ data: "v8" }, { contentType: "v8" });
+    await producer.send({ data: "json" }, { contentType: "json" });
+
+    const result = pullConsumer.pull();
+    // Only json message should be returned, v8 is filtered out
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]!.body).toEqual({ data: "json" });
+  });
+
+  test("pull respects batch_size", async () => {
+    for (let i = 0; i < 5; i++) {
+      await producer.send({ i });
+    }
+
+    const result = pullConsumer.pull({ batch_size: 2 });
+    expect(result.messages).toHaveLength(2);
+  });
+
+  test("ack with expired lease is ignored", async () => {
+    await producer.send("expire-lease");
+
+    // Pull with 1ms timeout
+    const pulled = pullConsumer.pull({ visibility_timeout_ms: 1 });
+    const leaseId = pulled.messages[0]!.lease_id;
+
+    // Wait for lease to expire
+    await new Promise(r => setTimeout(r, 10));
+
+    const result = pullConsumer.ack({ acks: [{ lease_id: leaseId }] });
+    expect(result.acked).toBe(0);
+
+    // Message should still be in the queue
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    expect(count.cnt).toBe(1);
+  });
+
+  test("mixed ack and retry in single request", async () => {
+    await producer.send("ack-me");
+    await producer.send("retry-me");
+
+    const pulled = pullConsumer.pull();
+    expect(pulled.messages).toHaveLength(2);
+
+    const result = pullConsumer.ack({
+      acks: [{ lease_id: pulled.messages[0]!.lease_id }],
+      retries: [{ lease_id: pulled.messages[1]!.lease_id, delay_seconds: 0 }],
+    });
+
+    expect(result.acked).toBe(1);
+    expect(result.retried).toBe(1);
+
+    // One message acked (deleted), one retried (still exists)
+    const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE queue = 'pull-queue'").get()!;
+    expect(count.cnt).toBe(1);
+  });
+
+  test("pull increments attempts on each pull", async () => {
+    await producer.send("multi-pull");
+
+    // First pull
+    const first = pullConsumer.pull({ visibility_timeout_ms: 1 });
+    expect(first.messages[0]!.attempts).toBe(1);
+
+    // Retry via ack endpoint (no delay)
+    pullConsumer.ack({ retries: [{ lease_id: first.messages[0]!.lease_id, delay_seconds: 0 }] });
+
+    // Second pull
+    const second = pullConsumer.pull();
+    expect(second.messages[0]!.attempts).toBe(2);
+  });
+
+  test("pull returns text content correctly", async () => {
+    await producer.send("hello text", { contentType: "text" });
+
+    const result = pullConsumer.pull();
+    expect(result.messages[0]!.body).toBe("hello text");
+  });
+
+  test("pull returns bytes content correctly", async () => {
+    const data = new Uint8Array([1, 2, 3]);
+    await producer.send(data, { contentType: "bytes" });
+
+    const result = pullConsumer.pull();
+    expect(result.messages[0]!.body).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(result.messages[0]!.body as ArrayBuffer)).toEqual(data);
   });
 });

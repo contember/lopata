@@ -111,6 +111,17 @@ export function runMigrations(db: Database): void {
 	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_visible ON queue_messages(queue, visible_at)`);
 
 	db.run(`
+		CREATE TABLE IF NOT EXISTS queue_leases (
+			lease_id TEXT PRIMARY KEY,
+			message_id TEXT NOT NULL,
+			queue TEXT NOT NULL,
+			expires_at INTEGER NOT NULL
+		)
+	`);
+
+	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_leases_queue ON queue_leases(queue)`);
+
+	db.run(`
 		CREATE TABLE IF NOT EXISTS workflow_instances (
 			id TEXT PRIMARY KEY,
 			workflow_name TEXT NOT NULL,

@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 import { ExecutionContext } from "../execution-context";
+import crypto from "node:crypto";
 
 // --- Types ---
 
@@ -338,5 +339,157 @@ export class QueueConsumer {
         }
       }
     }
+  }
+}
+
+// --- Pull Consumer ---
+
+export interface PullMessage {
+  lease_id: string;
+  id: string;
+  timestamp: string; // ISO 8601
+  body: unknown;
+  attempts: number;
+}
+
+export interface PullResponse {
+  messages: PullMessage[];
+}
+
+export interface AckRequest {
+  acks?: { lease_id: string }[];
+  retries?: { lease_id: string; delay_seconds?: number }[];
+}
+
+export interface PullRequest {
+  batch_size?: number;
+  visibility_timeout_ms?: number;
+}
+
+const DEFAULT_VISIBILITY_TIMEOUT_MS = 30_000;
+const DEFAULT_PULL_BATCH_SIZE = 10;
+
+export class QueuePullConsumer {
+  private db: Database;
+  private queueName: string;
+
+  constructor(db: Database, queueName: string) {
+    this.db = db;
+    this.queueName = queueName;
+  }
+
+  pull(options?: PullRequest): PullResponse {
+    const batchSize = options?.batch_size ?? DEFAULT_PULL_BATCH_SIZE;
+    const visibilityTimeoutMs = options?.visibility_timeout_ms ?? DEFAULT_VISIBILITY_TIMEOUT_MS;
+    const now = Date.now();
+
+    // Clean up expired leases — make messages visible again
+    this.db.run(
+      "DELETE FROM queue_leases WHERE queue = ? AND expires_at <= ?",
+      [this.queueName, now],
+    );
+
+    // Select visible messages that don't have an active lease
+    const rows = this.db.query<
+      { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
+      [string, number, string, number, number]
+    >(
+      `SELECT id, body, content_type, attempts, created_at FROM queue_messages
+       WHERE queue = ? AND visible_at <= ?
+       AND id NOT IN (SELECT message_id FROM queue_leases WHERE queue = ? AND expires_at > ?)
+       ORDER BY visible_at LIMIT ?`,
+    ).all(this.queueName, now, this.queueName, now, batchSize);
+
+    if (rows.length === 0) {
+      return { messages: [] };
+    }
+
+    // Reject v8 content type
+    const v8Messages = rows.filter(r => r.content_type === "v8");
+    const validRows = rows.filter(r => r.content_type !== "v8");
+
+    const messages: PullMessage[] = [];
+
+    const insertLease = this.db.prepare(
+      "INSERT INTO queue_leases (lease_id, message_id, queue, expires_at) VALUES (?, ?, ?, ?)",
+    );
+    const updateAttempts = this.db.prepare(
+      "UPDATE queue_messages SET attempts = attempts + 1 WHERE id = ?",
+    );
+
+    const tx = this.db.transaction(() => {
+      for (const row of validRows) {
+        const leaseId = crypto.randomUUID();
+        const expiresAt = now + visibilityTimeoutMs;
+
+        insertLease.run(leaseId, row.id, this.queueName, expiresAt);
+        updateAttempts.run(row.id);
+
+        const body = decodeBody(row.body, row.content_type);
+
+        messages.push({
+          lease_id: leaseId,
+          id: row.id,
+          timestamp: new Date(row.created_at).toISOString(),
+          body,
+          attempts: row.attempts + 1,
+        });
+      }
+    });
+    tx();
+
+    return { messages };
+  }
+
+  ack(request: AckRequest): { acked: number; retried: number } {
+    let acked = 0;
+    let retried = 0;
+    const now = Date.now();
+
+    const tx = this.db.transaction(() => {
+      // Process acks
+      if (request.acks) {
+        for (const { lease_id } of request.acks) {
+          // Find the lease
+          const lease = this.db.query<
+            { message_id: string },
+            [string, string, number]
+          >(
+            "SELECT message_id FROM queue_leases WHERE lease_id = ? AND queue = ? AND expires_at > ?",
+          ).get(lease_id, this.queueName, now);
+
+          if (lease) {
+            this.db.run("DELETE FROM queue_messages WHERE id = ?", [lease.message_id]);
+            this.db.run("DELETE FROM queue_leases WHERE lease_id = ?", [lease_id]);
+            acked++;
+          }
+        }
+      }
+
+      // Process retries
+      if (request.retries) {
+        for (const { lease_id, delay_seconds } of request.retries) {
+          const lease = this.db.query<
+            { message_id: string },
+            [string, string, number]
+          >(
+            "SELECT message_id FROM queue_leases WHERE lease_id = ? AND queue = ? AND expires_at > ?",
+          ).get(lease_id, this.queueName, now);
+
+          if (lease) {
+            const delay = delay_seconds ?? 0;
+            this.db.run(
+              "UPDATE queue_messages SET visible_at = ? WHERE id = ?",
+              [now + delay * 1000, lease.message_id],
+            );
+            this.db.run("DELETE FROM queue_leases WHERE lease_id = ?", [lease_id]);
+            retried++;
+          }
+        }
+      }
+    });
+    tx();
+
+    return { acked, retried };
   }
 }

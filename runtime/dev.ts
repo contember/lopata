@@ -2,7 +2,8 @@
 import "./plugin";
 import { autoLoadConfig } from "./config";
 import { buildEnv, wireClassRefs } from "./env";
-import { QueueConsumer } from "./bindings/queue";
+import { QueueConsumer, QueuePullConsumer } from "./bindings/queue";
+import type { PullRequest, AckRequest } from "./bindings/queue";
 import { createScheduledController, startCronScheduler } from "./bindings/scheduled";
 import { getDatabase } from "./db";
 import { ExecutionContext } from "./execution-context";
@@ -100,6 +101,28 @@ const server = Bun.serve({
     // Dashboard API routes
     if (url.pathname.startsWith("/__dashboard/api")) {
       return handleDashboardRequest(request);
+    }
+
+    // Queue pull consumer endpoints: POST /__queues/<name>/messages/pull and /ack
+    const queuePullMatch = url.pathname.match(/^\/__queues\/([^/]+)\/messages\/(pull|ack)$/);
+    if (queuePullMatch && request.method === "POST") {
+      const queueName = decodeURIComponent(queuePullMatch[1]!);
+      const action = queuePullMatch[2]!;
+      const queueDb = getDatabase();
+      const pullConsumer = new QueuePullConsumer(queueDb, queueName);
+
+      try {
+        const body = await request.json() as PullRequest | AckRequest;
+        if (action === "pull") {
+          const result = pullConsumer.pull(body as PullRequest);
+          return Response.json(result);
+        } else {
+          const result = pullConsumer.ack(body as AckRequest);
+          return Response.json(result);
+        }
+      } catch (err) {
+        return Response.json({ error: String(err) }, { status: 400 });
+      }
     }
 
     // Manual trigger: GET /__scheduled?cron=<expression>
