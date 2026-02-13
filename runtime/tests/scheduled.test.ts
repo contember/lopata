@@ -52,6 +52,93 @@ describe("parseCron", () => {
     const cron = parseCron("*/5 * * * *");
     expect(cron.expression).toBe("*/5 * * * *");
   });
+
+  test("@daily expands to 0 0 * * *", () => {
+    const cron = parseCron("@daily");
+    expect(cron.expression).toBe("@daily");
+    expect(cron.minute).toEqual({ type: "values", values: [0] });
+    expect(cron.hour).toEqual({ type: "values", values: [0] });
+    expect(cron.dayOfMonth.type).toBe("any");
+    expect(cron.month.type).toBe("any");
+    expect(cron.dayOfWeek.type).toBe("any");
+  });
+
+  test("@midnight is same as @daily", () => {
+    const cron = parseCron("@midnight");
+    expect(cron.minute).toEqual({ type: "values", values: [0] });
+    expect(cron.hour).toEqual({ type: "values", values: [0] });
+  });
+
+  test("@hourly expands to 0 * * * *", () => {
+    const cron = parseCron("@hourly");
+    expect(cron.minute).toEqual({ type: "values", values: [0] });
+    expect(cron.hour.type).toBe("any");
+  });
+
+  test("@weekly expands to 0 0 * * 0", () => {
+    const cron = parseCron("@weekly");
+    expect(cron.minute).toEqual({ type: "values", values: [0] });
+    expect(cron.hour).toEqual({ type: "values", values: [0] });
+    expect(cron.dayOfWeek).toEqual({ type: "values", values: [0] });
+  });
+
+  test("@monthly expands to 0 0 1 * *", () => {
+    const cron = parseCron("@monthly");
+    expect(cron.dayOfMonth).toEqual({ type: "values", values: [1] });
+  });
+
+  test("@yearly expands to 0 0 1 1 *", () => {
+    const cron = parseCron("@yearly");
+    expect(cron.dayOfMonth).toEqual({ type: "values", values: [1] });
+    expect(cron.month).toEqual({ type: "values", values: [1] });
+  });
+
+  test("@annually is same as @yearly", () => {
+    const a = parseCron("@annually");
+    const y = parseCron("@yearly");
+    expect(a.minute).toEqual(y.minute);
+    expect(a.hour).toEqual(y.hour);
+    expect(a.dayOfMonth).toEqual(y.dayOfMonth);
+    expect(a.month).toEqual(y.month);
+    expect(a.dayOfWeek).toEqual(y.dayOfWeek);
+  });
+
+  test("parses day-of-week names", () => {
+    const cron = parseCron("0 0 * * MON");
+    expect(cron.dayOfWeek).toEqual({ type: "values", values: [1] });
+  });
+
+  test("parses day-of-week name range", () => {
+    const cron = parseCron("0 0 * * MON-FRI");
+    expect(cron.dayOfWeek).toEqual({ type: "values", values: [1, 2, 3, 4, 5] });
+  });
+
+  test("parses month names", () => {
+    const cron = parseCron("0 0 1 JAN *");
+    expect(cron.month).toEqual({ type: "values", values: [1] });
+  });
+
+  test("parses month name range", () => {
+    const cron = parseCron("0 0 1 MAR-JUN *");
+    expect(cron.month).toEqual({ type: "values", values: [3, 4, 5, 6] });
+  });
+
+  test("parses comma-separated day names", () => {
+    const cron = parseCron("0 0 * * MON,WED,FRI");
+    expect(cron.dayOfWeek).toEqual({ type: "values", values: [1, 3, 5] });
+  });
+
+  test("day/month names are case-insensitive", () => {
+    const cron = parseCron("0 0 * jan sun");
+    expect(cron.month).toEqual({ type: "values", values: [1] });
+    expect(cron.dayOfWeek).toEqual({ type: "values", values: [0] });
+  });
+
+  test("special strings are case-insensitive", () => {
+    const cron = parseCron("@DAILY");
+    expect(cron.minute).toEqual({ type: "values", values: [0] });
+    expect(cron.hour).toEqual({ type: "values", values: [0] });
+  });
 });
 
 describe("cronMatchesDate", () => {
@@ -108,6 +195,26 @@ describe("cronMatchesDate", () => {
     expect(cronMatchesDate(cron, new Date(2025, 0, 1, 1, 0))).toBe(false);
     expect(cronMatchesDate(cron, new Date(2025, 0, 1, 0, 1))).toBe(false);
   });
+
+  test("day name MON matches Monday", () => {
+    const cron = parseCron("0 0 * * MON");
+    // 2025-01-06 is a Monday
+    expect(cronMatchesDate(cron, new Date(2025, 0, 6, 0, 0))).toBe(true);
+    // 2025-01-07 is a Tuesday
+    expect(cronMatchesDate(cron, new Date(2025, 0, 7, 0, 0))).toBe(false);
+  });
+
+  test("month name JUN matches June", () => {
+    const cron = parseCron("0 0 1 JUN *");
+    expect(cronMatchesDate(cron, new Date(2025, 5, 1, 0, 0))).toBe(true);
+    expect(cronMatchesDate(cron, new Date(2025, 0, 1, 0, 0))).toBe(false);
+  });
+
+  test("@daily matches midnight", () => {
+    const cron = parseCron("@daily");
+    expect(cronMatchesDate(cron, new Date(2025, 0, 1, 0, 0))).toBe(true);
+    expect(cronMatchesDate(cron, new Date(2025, 0, 1, 12, 0))).toBe(false);
+  });
 });
 
 describe("ScheduledController", () => {
@@ -121,5 +228,10 @@ describe("ScheduledController", () => {
   test("noRetry is callable (no-op in dev)", () => {
     const controller = createScheduledController("* * * * *", Date.now());
     expect(() => controller.noRetry()).not.toThrow();
+  });
+
+  test("type property returns 'scheduled'", () => {
+    const controller = createScheduledController("* * * * *", Date.now());
+    expect(controller.type).toBe("scheduled");
   });
 });

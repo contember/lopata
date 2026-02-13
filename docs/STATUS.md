@@ -5,13 +5,13 @@
 | Metric           | Value |
 | ---------------- | ----- |
 | **Total Issues** | 30    |
-| **Completed**    | 28    |
-| **Pending**      | 2     |
-| **Progress**     | 93%   |
+| **Completed**    | 29    |
+| **Pending**      | 1     |
+| **Progress**     | 97%   |
 
 ## Current Focus
 
-Next: **#29 scheduled-gaps** — Special cron strings (@daily), day/month names.
+Next: **#25 images-transforms** — Basic transforms via Sharp, AVIF dimensions.
 
 ## Issues
 
@@ -54,7 +54,7 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 | 24 | static-assets-gaps           | completed | ETag, Cache-Control, _headers, run_worker_first, 307 fix, hierarchical 404 |
 | 22 | service-bindings-gaps        | completed | RPC property access, async consistency, subrequest limits, TCP stub |
 | 28 | config-gaps                  | completed | wrangler.toml, env-specific config, global env import |
-| 29 | scheduled-gaps               | pending | Special cron strings (@daily), day/month names |
+| 29 | scheduled-gaps               | completed | Special cron strings, day/month names, controller.type |
 | 25 | images-transforms            | pending | Basic transforms via Sharp, AVIF dimensions |
 
 ## Dependencies
@@ -124,6 +124,8 @@ Issues ordered by priority — high-impact gaps first, optional/low-priority las
 - **#22 service-bindings-gaps**: RPC property access now returns thenables — `await binding.prop` reads a property from the target, `await binding.method(args)` calls it. All RPC returns wrapped in `Promise.resolve()` for async consistency (matching CF behavior where everything crosses a process boundary). Added `ServiceBindingLimits` with configurable `maxSubrequests` (default 1000) and `maxRpcPayloadSize` (default 32 MiB). Subrequest count tracked across both `fetch()` and RPC calls. `connect()` stub throws with clear error. Promise protocol safety: proxy's own `then`/`catch`/`finally` return `undefined` so the proxy itself is not auto-unwrapped. Request/Response/ReadableStream pass through as RPC arguments (in-process, no serialization needed). Added 15 new tests (31 total service binding tests). All 473 tests pass.
 
 - **#28 config-gaps**: Added lightweight TOML parser in `config.ts` supporting key/value pairs, basic/literal strings, numbers, booleans, arrays, inline tables, tables, and array of tables — enough for wrangler.toml configs. Added `autoLoadConfig(baseDir)` that auto-detects config format: tries `wrangler.jsonc`, then `wrangler.json`, then `wrangler.toml`. Added environment-specific config: `env` field in WranglerConfig with `[env.<name>]` sections (TOML) or `"env": { "<name>": {} }` (JSON); `--env <name>` CLI flag in `dev.ts` selects environment; env-specific values override top-level config. Added `compatibility_date` and `compatibility_flags` to WranglerConfig (parsed and accepted, not enforced). Added `.env` file support as fallback when `.dev.vars` doesn't exist — `.dev.vars` takes priority (matching CF behavior). `buildEnv()` now accepts a directory path and auto-detects `.dev.vars`/`.env`. Added `env` export to `cloudflare:workers` plugin via getter on `globalEnv` — `import { env } from "cloudflare:workers"` works. Fixed JSONC comment stripping to respect string literals (no longer breaks URLs with `//`). Added 27 new tests (30 total config tests, 15 total env-vars tests). All 500 tests pass.
+
+- **#29 scheduled-gaps**: Added special cron string aliases (`@daily`/`@midnight`, `@hourly`, `@weekly`, `@monthly`, `@yearly`/`@annually`) — resolved to standard 5-field expressions before parsing, with original alias preserved in `expression` field. Added day-of-week names (`MON`–`SUN`) and month names (`JAN`–`DEC`) support in cron fields — case-insensitive, works in single values, ranges, and comma-separated lists. Added `type: "scheduled"` property to `ScheduledController` interface and `createScheduledController()`. Added 18 new tests (36 total scheduled tests). All 518 tests pass.
 
 ## Lessons Learned
 
