@@ -1,3 +1,5 @@
+import { ExecutionContext } from "../execution-context";
+
 export interface ScheduledController {
   readonly scheduledTime: number;
   readonly cron: string;
@@ -131,7 +133,7 @@ export function createScheduledController(cron: string, scheduledTime: number): 
   };
 }
 
-type ScheduledHandler = (controller: ScheduledController, env: Record<string, unknown>, ctx: { waitUntil: (p: Promise<unknown>) => void; passThroughOnException: () => void }) => Promise<void>;
+type ScheduledHandler = (controller: ScheduledController, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
 
 export function startCronScheduler(
   crons: string[],
@@ -146,14 +148,13 @@ export function startCronScheduler(
     for (const cron of parsed) {
       if (cronMatchesDate(cron, now)) {
         const controller = createScheduledController(cron.expression, now.getTime());
-        const ctx = {
-          waitUntil(_promise: Promise<unknown>) {},
-          passThroughOnException() {},
-        };
+        const ctx = new ExecutionContext();
         console.log(`[bunflare] Cron triggered: ${cron.expression}`);
-        handler(controller, env, ctx).catch((err) => {
-          console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err);
-        });
+        handler(controller, env, ctx)
+          .then(() => ctx._awaitAll())
+          .catch((err) => {
+            console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err);
+          });
       }
     }
   }, 60_000);

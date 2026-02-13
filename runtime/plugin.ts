@@ -21,14 +21,11 @@ plugin({
         DurableObject: DurableObjectBase,
         WorkflowEntrypoint: WorkflowEntrypointBase,
         WorkerEntrypoint: class WorkerEntrypoint {
-          env: unknown;
-          ctx: unknown;
-          constructor(env?: unknown) {
+          protected ctx: unknown;
+          protected env: unknown;
+          constructor(ctx: unknown, env: unknown) {
+            this.ctx = ctx;
             this.env = env;
-            this.ctx = {
-              waitUntil(_promise: Promise<unknown>) {},
-              passThroughOnException() {},
-            };
           }
         },
         WebSocketRequestResponsePair,

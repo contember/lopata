@@ -144,7 +144,7 @@ describe("Service Binding", () => {
   describe("Named entrypoint (RPC)", () => {
     class MyEntrypoint {
       env: Record<string, unknown>;
-      constructor(env: Record<string, unknown>) {
+      constructor(_ctx: unknown, env: Record<string, unknown>) {
         this.env = env;
       }
       greet(name: string) {

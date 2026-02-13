@@ -5,6 +5,8 @@ import { buildEnv, wireClassRefs } from "./env";
 import { QueueConsumer } from "./bindings/queue";
 import { createScheduledController, startCronScheduler } from "./bindings/scheduled";
 import { getDatabase } from "./db";
+import { ExecutionContext } from "./execution-context";
+import { addCfProperty } from "./request-cf";
 import path from "node:path";
 
 // Parse --env flag from CLI args
@@ -28,17 +30,42 @@ const workerModule = await import(workerPath);
 // 4. Wire DO and Workflow class references
 wireClassRefs(registry, workerModule, env);
 
-// 5. Get the default export (fetch handler)
-const handler = workerModule.default;
-if (!handler?.fetch) {
-  throw new Error("Worker module must export a default object with a fetch() method");
+// 5. Get the default export and detect class-based vs object-based
+const defaultExport = workerModule.default;
+
+function isEntrypointClass(exp: unknown): exp is new (ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
+  return typeof exp === "function" && exp.prototype &&
+    typeof exp.prototype.fetch === "function";
+}
+
+const classBasedExport = isEntrypointClass(defaultExport);
+
+if (!classBasedExport && !defaultExport?.fetch) {
+  throw new Error("Worker module must export a default object with a fetch() method, or a class with a fetch() method on its prototype");
+}
+
+// Helper to get the scheduled/queue handler from class or object exports
+function getHandler(name: string): ((...args: unknown[]) => Promise<void>) | undefined {
+  if (classBasedExport) {
+    if (typeof defaultExport.prototype[name] === "function") {
+      return (...args: unknown[]) => {
+        const ctx = new ExecutionContext();
+        const instance = new (defaultExport as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env);
+        return (instance[name] as (...a: unknown[]) => Promise<void>)(...args);
+      };
+    }
+    return undefined;
+  }
+  const method = (defaultExport as Record<string, unknown>)?.[name];
+  return typeof method === "function" ? method.bind(defaultExport) : undefined;
 }
 
 // 6. Start queue consumers
-if (registry.queueConsumers.length > 0 && workerModule.default?.queue) {
+const queueHandler = getHandler("queue");
+if (registry.queueConsumers.length > 0 && queueHandler) {
   const db = getDatabase();
   for (const config of registry.queueConsumers) {
-    const consumer = new QueueConsumer(db, config, workerModule.default.queue.bind(workerModule.default), env);
+    const consumer = new QueueConsumer(db, config, queueHandler as any, env);
     consumer.start();
     console.log(`[bunflare] Queue consumer started: ${config.queue}`);
   }
@@ -46,8 +73,9 @@ if (registry.queueConsumers.length > 0 && workerModule.default?.queue) {
 
 // 7. Start cron scheduler
 const crons = config.triggers?.crons ?? [];
-if (crons.length > 0 && workerModule.default?.scheduled) {
-  startCronScheduler(crons, workerModule.default.scheduled.bind(workerModule.default), env);
+const scheduledHandler = getHandler("scheduled");
+if (crons.length > 0 && scheduledHandler) {
+  startCronScheduler(crons, scheduledHandler as any, env);
   for (const cron of crons) {
     console.log(`[bunflare] Cron registered: ${cron}`);
   }
@@ -59,22 +87,34 @@ const port = parseInt(process.env.PORT ?? "8787", 10);
 Bun.serve({
   port,
   async fetch(request) {
-    const ctx = {
-      waitUntil(_promise: Promise<unknown>) {},
-      passThroughOnException() {},
-    };
+    const ctx = new ExecutionContext();
+    addCfProperty(request);
 
     // Manual trigger: GET /__scheduled?cron=<expression>
     const url = new URL(request.url);
     if (url.pathname === "/__scheduled") {
-      const scheduledHandler = workerModule.default?.scheduled;
-      if (!scheduledHandler) {
+      let handler: Function | undefined;
+      if (classBasedExport) {
+        const proto = (defaultExport as { prototype: Record<string, unknown> }).prototype;
+        if (typeof proto.scheduled === "function") {
+          const instance = new (defaultExport as new (ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, env);
+          handler = instance.scheduled!.bind(instance);
+        }
+      } else {
+        const obj = defaultExport as Record<string, unknown>;
+        if (typeof obj.scheduled === "function") {
+          handler = (obj.scheduled as Function).bind(obj);
+        }
+      }
+
+      if (!handler) {
         return new Response("No scheduled handler defined", { status: 404 });
       }
       const cronExpr = url.searchParams.get("cron") ?? "* * * * *";
       const controller = createScheduledController(cronExpr, Date.now());
       try {
-        await scheduledHandler.call(workerModule.default, controller, env, ctx);
+        await handler(controller, env, ctx);
+        await ctx._awaitAll();
         return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 });
       } catch (err) {
         console.error("[bunflare] Scheduled handler error:", err);
@@ -87,11 +127,20 @@ Bun.serve({
     const hasAssets = registry.staticAssets && !config.assets?.binding;
     const workerFirst = hasAssets && shouldRunWorkerFirst(runWorkerFirst, url.pathname);
 
+    const callFetch = async (req: Request) => {
+      if (classBasedExport) {
+        const instance = new (defaultExport as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env);
+        return await (instance.fetch as (r: Request) => Promise<Response>)(req);
+      }
+      return await (defaultExport as { fetch: Function }).fetch(req, env, ctx) as Response;
+    };
+
     if (workerFirst) {
       // Worker first, fall back to assets
       try {
-        const workerResponse = await handler.fetch(request, env, ctx);
+        const workerResponse = await callFetch(request);
         if (workerResponse.status !== 404) {
+          ctx._awaitAll().catch(() => {});
           return workerResponse;
         }
       } catch (err) {
@@ -110,7 +159,9 @@ Bun.serve({
     }
 
     try {
-      return await handler.fetch(request, env, ctx);
+      const response = await callFetch(request);
+      ctx._awaitAll().catch(() => {});
+      return response;
     } catch (err) {
       console.error("[bunflare] Request error:", err);
       return new Response("Internal Server Error", { status: 500 });

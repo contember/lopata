@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
+import { ExecutionContext } from "../execution-context";
 
 // --- Types ---
 
@@ -39,7 +40,7 @@ interface ConsumerConfig {
   retentionPeriodSeconds?: number; // default 345600 (4 days), matching CF default
 }
 
-type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: { waitUntil(p: Promise<unknown>): void }) => Promise<void>;
+type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>;
 
 // --- Limits ---
 
@@ -290,12 +291,7 @@ export class QueueConsumer {
       },
     };
 
-    const waitUntilPromises: Promise<unknown>[] = [];
-    const ctx = {
-      waitUntil(p: Promise<unknown>) {
-        waitUntilPromises.push(p);
-      },
-    };
+    const ctx = new ExecutionContext();
 
     let handlerError = false;
     try {
@@ -307,9 +303,7 @@ export class QueueConsumer {
     }
 
     // Wait for all waitUntil promises to settle (best-effort)
-    if (waitUntilPromises.length > 0) {
-      await Promise.allSettled(waitUntilPromises);
-    }
+    await ctx._awaitAll();
 
     // Process message outcomes — per-message decision overrides batch decision
     for (const row of rows) {

@@ -8,6 +8,8 @@
  * - `.connect()` — stub for TCP socket (throws — not supported in dev)
  */
 
+import { ExecutionContext } from "../execution-context";
+
 type WorkerModule = Record<string, unknown>;
 
 export interface ServiceBindingLimits {
@@ -64,7 +66,7 @@ export class ServiceBinding {
     }
   }
 
-  private _getTarget(): Record<string, unknown> {
+  private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
     if (!this._workerModule) {
       throw new Error(`Service binding "${this._serviceName}" is not wired — target worker not loaded`);
     }
@@ -73,24 +75,34 @@ export class ServiceBinding {
       if (!cls) {
         throw new Error(`Entrypoint "${this._entrypoint}" not exported from worker module`);
       }
-      return new cls(this._env);
+      return new cls(ctx ?? new ExecutionContext(), this._env);
     }
-    return this._workerModule.default as Record<string, unknown>;
+    // Default export: could be class-based or object-based
+    const def = this._workerModule.default;
+    if (typeof def === "function" && def.prototype && typeof def.prototype.fetch === "function") {
+      return new (def as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx ?? new ExecutionContext(), this._env);
+    }
+    return def as Record<string, unknown>;
   }
 
   async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
     this._checkSubrequestLimit();
-    const target = this._getTarget();
+    const ctx = new ExecutionContext();
+    const target = this._getTarget(ctx);
     if (!target?.fetch || typeof target.fetch !== "function") {
       throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`);
     }
     const url = input instanceof URL ? input.toString() : input;
     const request = typeof url === "string" ? new Request(url, init) : url;
-    const ctx = {
-      waitUntil(_promise: Promise<unknown>) {},
-      passThroughOnException() {},
-    };
-    return target.fetch(request, this._env, ctx) as Promise<Response>;
+    // Class-based entrypoints receive (request) — env/ctx via constructor
+    // Object-based entrypoints receive (request, env, ctx)
+    const def = this._workerModule?.default;
+    const isClass = (this._entrypoint || (typeof def === "function" && def.prototype?.fetch));
+    const response = isClass
+      ? await (target.fetch as (r: Request) => Promise<Response>)(request)
+      : await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, this._env, ctx);
+    ctx._awaitAll().catch(() => {});
+    return response;
   }
 
   connect(_address: string | { hostname: string; port: number }): never {
