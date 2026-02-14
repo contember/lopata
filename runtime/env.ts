@@ -10,6 +10,8 @@ import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
+import { DockerManager } from "./bindings/container-docker";
+import { ContainerBase } from "./bindings/container";
 import type { WorkerRegistry } from "./worker-registry";
 import { getDatabase, getDataDir } from "./db";
 
@@ -58,6 +60,7 @@ interface ServiceBindingEntry {
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
+  containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[];
   queueConsumers: ConsumerConfig[];
   serviceBindings: ServiceBindingEntry[];
   staticAssets: StaticAssets | null;
@@ -65,7 +68,7 @@ interface ClassRegistry {
 
 export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
-  const registry: ClassRegistry = { durableObjects: [], workflows: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
+  const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
 
   // Environment variables from config
   if (config.vars) {
@@ -169,6 +172,42 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
     env[config.images.binding] = new ImagesBinding();
   }
 
+  // Containers — create DO namespaces for container classes
+  const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name));
+  for (const container of config.containers ?? []) {
+    // Skip if this class is already defined as a DO binding (avoid double-creating)
+    if (doClassNames.has(container.class_name)) {
+      // Find the existing namespace and register container config on it
+      const existing = registry.durableObjects.find(d => d.className === container.class_name);
+      if (existing) {
+        registry.containers.push({
+          className: container.class_name,
+          image: container.image,
+          maxInstances: container.max_instances,
+          namespace: existing.namespace,
+        });
+        console.log(`[bunflare] Container: ${container.class_name} (reusing DO binding, image: ${container.image})`);
+      }
+    } else {
+      // Create a new DO namespace for this container
+      const bindingName = container.name ?? container.class_name;
+      console.log(`[bunflare] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`);
+      const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir());
+      env[bindingName] = namespace;
+      registry.durableObjects.push({
+        bindingName,
+        className: container.class_name,
+        namespace,
+      });
+      registry.containers.push({
+        className: container.class_name,
+        image: container.image,
+        maxInstances: container.max_instances,
+        namespace,
+      });
+    }
+  }
+
   // Static assets
   if (config.assets) {
     const assetsDir = path.resolve(config.assets.directory);
@@ -207,6 +246,18 @@ export function wireClassRefs(
     entry.binding._setClass(cls as any, env);
     entry.binding.resumeInterrupted();
     console.log(`[bunflare] Wired Workflow class: ${entry.className}`);
+  }
+
+  // Wire container configs onto namespaces
+  const dockerManager = new DockerManager();
+  for (const entry of registry.containers) {
+    entry.namespace._setContainerConfig({
+      className: entry.className,
+      image: entry.image,
+      maxInstances: entry.maxInstances,
+      dockerManager,
+    });
+    console.log(`[bunflare] Wired container config: ${entry.className} (image: ${entry.image})`);
   }
 
   // Wire service bindings

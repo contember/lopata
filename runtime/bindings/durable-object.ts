@@ -1,6 +1,8 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import type { ContainerContext } from "./container";
+import type { ContainerConfig } from "./container";
 
 // --- SQL Storage Cursor ---
 
@@ -483,6 +485,7 @@ interface AcceptedWebSocket {
 export class DurableObjectStateImpl {
   readonly id: DurableObjectIdImpl;
   readonly storage: SqliteDurableObjectStorage;
+  container?: ContainerContext;
   private _concurrencyGate: Promise<void> | null = null;
   private _acceptedWebSockets: Set<AcceptedWebSocket> = new Set();
   private _autoResponsePair: WebSocketRequestResponsePair | null = null;
@@ -697,6 +700,8 @@ export class DurableObjectNamespaceImpl {
   private _lastActivity = new Map<string, number>();
   private _evictionTimer: ReturnType<typeof setInterval> | null = null;
   private _evictionTimeoutMs: number;
+  private _containerConfig?: ContainerConfig;
+  private _containerRuntimes = new Map<string, import("./container").ContainerRuntime>();
 
   constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits) {
     this.db = db;
@@ -715,6 +720,11 @@ export class DurableObjectNamespaceImpl {
     this._env = env;
     // Restore persisted alarms on startup
     this._restoreAlarms();
+  }
+
+  /** Set container config for this namespace (makes it a container namespace) */
+  _setContainerConfig(config: ContainerConfig) {
+    this._containerConfig = config;
   }
 
   /** @internal Restore all persisted alarms for this namespace */
@@ -796,7 +806,30 @@ export class DurableObjectNamespaceImpl {
     if (doId) this._knownIds.set(idStr, doId);
 
     const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir, this.limits);
+
+    // Wire container runtime if this is a container namespace
+    if (this._containerConfig) {
+      const { ContainerRuntime, ContainerContext } = require("./container") as typeof import("./container");
+      const runtime = new ContainerRuntime(
+        this._containerConfig.className,
+        idStr,
+        this._containerConfig.image,
+        this._containerConfig.dockerManager,
+      );
+      this._containerRuntimes.set(idStr, runtime);
+      state.container = new ContainerContext(runtime);
+    }
+
     const instance = new this._class(state, this._env);
+
+    // Wire container runtime to ContainerBase instance
+    if (this._containerConfig && this._containerRuntimes.has(idStr)) {
+      const { ContainerBase } = require("./container") as typeof import("./container");
+      if (instance instanceof ContainerBase) {
+        instance._wireRuntime(this._containerRuntimes.get(idStr)!);
+      }
+    }
+
     // Wire instance resolver for WebSocket handler delegation
     state._setInstanceResolver(() => this.instances.get(idStr) ?? null);
     // Wire alarm callback
@@ -843,6 +876,11 @@ export class DurableObjectNamespaceImpl {
     }
     for (const timer of this.alarmTimers.values()) clearTimeout(timer);
     this.alarmTimers.clear();
+    // Cleanup container runtimes
+    for (const [idStr, runtime] of this._containerRuntimes) {
+      runtime.cleanup().catch(() => {});
+      this._containerRuntimes.delete(idStr);
+    }
     // Keep instances with active WebSockets alive; evict the rest
     for (const [idStr, instance] of this.instances) {
       const state = instance.ctx as DurableObjectStateImpl;

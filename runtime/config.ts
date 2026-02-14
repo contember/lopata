@@ -31,6 +31,13 @@ export interface WranglerConfig {
   images?: {
     binding: string;
   };
+  containers?: {
+    class_name: string;
+    image: string;
+    max_instances?: number;
+    instance_type?: string;
+    name?: string;
+  }[];
   migrations?: { tag: string; new_classes?: string[]; new_sqlite_classes?: string[] }[];
   env?: Record<string, Partial<Omit<WranglerConfig, "env">>>;
 }

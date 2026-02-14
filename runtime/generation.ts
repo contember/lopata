@@ -10,6 +10,7 @@ import { getDatabase } from "./db";
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
   workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[];
+  containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[];
   queueConsumers: { queue: string; maxBatchSize: number; maxBatchTimeout: number; maxRetries: number; deadLetterQueue: string | null }[];
   serviceBindings: { bindingName: string; serviceName: string; entrypoint?: string; proxy: Record<string, unknown> }[];
   staticAssets: { fetch(req: Request): Promise<Response> } | null;

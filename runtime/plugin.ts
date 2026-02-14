@@ -1,6 +1,7 @@
 import { plugin } from "bun";
 import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/durable-object";
 import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
+import { ContainerBase, getContainer, getRandom } from "./bindings/container";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { HTMLRewriter } from "./bindings/html-rewriter";
 import { WebSocketPair } from "./bindings/websocket-pair";
@@ -106,6 +107,17 @@ plugin({
       });
       return {
         exports,
+        loader: "object",
+      };
+    });
+
+    build.module("@cloudflare/containers", () => {
+      return {
+        exports: {
+          Container: ContainerBase,
+          getContainer,
+          getRandom,
+        },
         loader: "object",
       };
     });
