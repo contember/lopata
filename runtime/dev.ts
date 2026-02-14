@@ -13,11 +13,15 @@ import { handleDashboardRequest, dashboardHtml, setDashboardConfig, setGeneratio
 import { CFWebSocket } from "./bindings/websocket-pair";
 import path from "node:path";
 
-// Parse --env flag from CLI args
-const envFlag = (() => {
-  const idx = process.argv.indexOf("--env");
+// Parse CLI flags
+function parseFlag(name: string): string | undefined {
+  const idx = process.argv.indexOf(name);
   return idx !== -1 ? process.argv[idx + 1] : undefined;
-})();
+}
+
+const envFlag = parseFlag("--env");
+const listenFlag = parseFlag("--listen");
+const portFlag = parseFlag("--port");
 
 const baseDir = path.resolve(import.meta.dir, "..");
 const watchers: FileWatcher[] = [];
@@ -127,10 +131,12 @@ if (bunflareConfig) {
 }
 
 // 4. Start server — one Bun.serve(), delegates to active generation
-const port = parseInt(process.env.PORT ?? "8787", 10);
+const port = parseInt(portFlag ?? process.env.PORT ?? "8787", 10);
+const hostname = listenFlag ?? process.env.HOST ?? "localhost";
 
 const server = Bun.serve({
   port,
+  hostname,
   routes: {
     "/__dashboard": dashboardHtml,
   },
@@ -219,5 +225,5 @@ const server = Bun.serve({
   },
 });
 
-console.log(`[bunflare] Server running at http://localhost:${port}`);
-console.log(`[bunflare] Dashboard: http://localhost:${port}/__dashboard`);
+console.log(`[bunflare] Server running at http://${hostname}:${port}`);
+console.log(`[bunflare] Dashboard: http://${hostname}:${port}/__dashboard`);
