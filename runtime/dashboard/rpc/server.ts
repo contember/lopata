@@ -9,6 +9,7 @@ import { handlers as d1 } from "./handlers/d1";
 import { handlers as cache } from "./handlers/cache";
 import { handlers as generations } from "./handlers/generations";
 import { handlers as workers } from "./handlers/workers";
+import { handlers as traces } from "./handlers/traces";
 
 const allHandlers = {
   ...overview,
@@ -21,6 +22,7 @@ const allHandlers = {
   ...cache,
   ...generations,
   ...workers,
+  ...traces,
 };
 
 export type Procedures = {
@@ -40,6 +42,9 @@ function json(data: unknown, status = 200): Response {
 export async function dispatch(request: Request, ctx: HandlerContext): Promise<Response> {
   try {
     const body = await request.json() as { procedure: string; input: unknown };
+    if (!body.procedure || typeof body.procedure !== "string") {
+      return json({ error: "procedure must be a string" }, 400);
+    }
     const handler = allHandlers[body.procedure as keyof typeof allHandlers];
     if (!handler) return json({ error: `Unknown procedure: ${body.procedure}` }, 404);
     const result = await (handler as Function)(body.input ?? {}, ctx);

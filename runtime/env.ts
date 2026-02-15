@@ -14,6 +14,7 @@ import { DockerManager } from "./bindings/container-docker";
 import { ContainerBase } from "./bindings/container";
 import type { WorkerRegistry } from "./worker-registry";
 import { getDatabase, getDataDir } from "./db";
+import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from "./tracing/instrument";
 
 /**
  * Global reference to the built env object. Used by cloudflare:workers `env` export.
@@ -96,20 +97,26 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   const db = getDatabase();
   for (const kv of config.kv_namespaces ?? []) {
     console.log(`[bunflare] KV namespace: ${kv.binding}`);
-    env[kv.binding] = new SqliteKVNamespace(db, kv.id);
+    env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
+      type: "kv", name: kv.binding,
+      methods: ["get", "getWithMetadata", "put", "delete", "list"],
+    });
   }
 
   // R2 buckets
   for (const r2 of config.r2_buckets ?? []) {
     console.log(`[bunflare] R2 bucket: ${r2.binding} (${r2.bucket_name})`);
-    env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, getDataDir());
+    env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, getDataDir()), {
+      type: "r2", name: r2.binding,
+      methods: ["get", "put", "delete", "list", "head", "createMultipartUpload"],
+    });
   }
 
   // Durable Objects
   for (const doBinding of config.durable_objects?.bindings ?? []) {
     console.log(`[bunflare] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`);
     const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir());
-    env[doBinding.name] = namespace;
+    env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name);
     registry.durableObjects.push({
       bindingName: doBinding.name,
       className: doBinding.class_name,
@@ -121,7 +128,10 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   for (const wf of config.workflows ?? []) {
     console.log(`[bunflare] Workflow: ${wf.binding} -> ${wf.class_name}`);
     const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name, wf.limits);
-    env[wf.binding] = binding;
+    env[wf.binding] = instrumentBinding(binding, {
+      type: "workflow", name: wf.binding,
+      methods: ["create", "get"],
+    });
     registry.workflows.push({
       bindingName: wf.binding,
       className: wf.class_name,
@@ -132,13 +142,16 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   // D1 databases
   for (const d1 of config.d1_databases ?? []) {
     console.log(`[bunflare] D1 database: ${d1.binding} (${d1.database_name})`);
-    env[d1.binding] = openD1Database(getDataDir(), d1.database_name);
+    env[d1.binding] = instrumentD1(openD1Database(getDataDir(), d1.database_name), d1.binding);
   }
 
   // Queue producers
   for (const producer of config.queues?.producers ?? []) {
     console.log(`[bunflare] Queue producer: ${producer.binding} -> ${producer.queue}`);
-    env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0);
+    env[producer.binding] = instrumentBinding(new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0), {
+      type: "queue", name: producer.binding,
+      methods: ["send", "sendBatch"],
+    });
   }
 
   // Queue consumers (configs — actual consumers started in dev.ts after worker import)
@@ -157,7 +170,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   for (const svc of config.services ?? []) {
     console.log(`[bunflare] Service binding: ${svc.binding} -> ${svc.service}${svc.entrypoint ? ` (${svc.entrypoint})` : ""}`);
     const proxy = createServiceBinding(svc.service, svc.entrypoint);
-    env[svc.binding] = proxy;
+    env[svc.binding] = instrumentServiceBinding(proxy as object, svc.service) as Record<string, unknown>;
     registry.serviceBindings.push({
       bindingName: svc.binding,
       serviceName: svc.service,
@@ -169,7 +182,10 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   // Images binding
   if (config.images) {
     console.log(`[bunflare] Images binding: ${config.images.binding}`);
-    env[config.images.binding] = new ImagesBinding();
+    env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
+      type: "images", name: config.images.binding,
+      methods: ["info"],
+    });
   }
 
   // Containers — create DO namespaces for container classes
@@ -193,7 +209,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
       const bindingName = container.name ?? container.class_name;
       console.log(`[bunflare] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`);
       const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir());
-      env[bindingName] = namespace;
+      env[bindingName] = instrumentDONamespace(namespace, container.class_name);
       registry.durableObjects.push({
         bindingName,
         className: container.class_name,
@@ -215,7 +231,10 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
     registry.staticAssets = assets;
     if (config.assets.binding) {
       console.log(`[bunflare] Static assets: ${config.assets.binding} -> ${config.assets.directory}`);
-      env[config.assets.binding] = assets;
+      env[config.assets.binding] = instrumentBinding(assets, {
+        type: "assets", name: config.assets.binding,
+        methods: ["fetch"],
+      });
     } else {
       console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`);
     }

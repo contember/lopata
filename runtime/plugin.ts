@@ -9,10 +9,28 @@ import { IdentityTransformStream, FixedLengthStream } from "./bindings/cf-stream
 import { patchGlobalCrypto } from "./bindings/crypto-extras";
 import { getDatabase } from "./db";
 import { globalEnv } from "./env";
+import { instrumentBinding } from "./tracing/instrument";
 
-// Register global `caches` object (CacheStorage)
+// Register global `caches` object (CacheStorage) with tracing
+const rawCacheStorage = new SqliteCacheStorage(getDatabase());
+const cacheMethods = ["match", "put", "delete"];
+
+// Instrument the default cache
+rawCacheStorage.default = instrumentBinding(rawCacheStorage.default, {
+  type: "cache", name: "default", methods: cacheMethods,
+}) as typeof rawCacheStorage.default;
+
+// Wrap open() to return instrumented caches
+const originalOpen = rawCacheStorage.open.bind(rawCacheStorage);
+rawCacheStorage.open = async (cacheName: string) => {
+  const cache = await originalOpen(cacheName);
+  return instrumentBinding(cache, {
+    type: "cache", name: cacheName, methods: cacheMethods,
+  });
+};
+
 Object.defineProperty(globalThis, "caches", {
-  value: new SqliteCacheStorage(getDatabase()),
+  value: rawCacheStorage,
   writable: false,
   configurable: true,
 });

@@ -178,6 +178,9 @@ export interface WorkerInfo {
   bindings: WorkerBinding[];
 }
 
+// Traces (re-export from tracing module)
+export type { TraceSummary, TraceDetail, SpanData, SpanEventData, TraceEvent } from "../../tracing/types";
+
 // ─── Handler context ─────────────────────────────────────────────────
 
 import type { WranglerConfig } from "../../config";

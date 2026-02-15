@@ -11,6 +11,8 @@ import { getDatabase } from "./db";
 import { addCfProperty } from "./request-cf";
 import { handleDashboardRequest, dashboardHtml, setDashboardConfig, setGenerationManager, setWorkerRegistry } from "./dashboard/api";
 import { CFWebSocket } from "./bindings/websocket-pair";
+import { getTraceStore } from "./tracing/store";
+import type { TraceEvent } from "./tracing/types";
 import path from "node:path";
 
 // Parse CLI flags
@@ -172,6 +174,13 @@ const server = Bun.serve({
       }
     }
 
+    // Dashboard trace WebSocket stream
+    if (url.pathname === "/__dashboard/api/traces/ws") {
+      const upgraded = server.upgrade(request, { data: { type: "trace-stream", _url: request.url } as any });
+      if (!upgraded) return new Response("WebSocket upgrade failed", { status: 500 });
+      return undefined as unknown as Response;
+    }
+
     // Manual trigger: GET /__scheduled?cron=<expression>
     if (url.pathname === "/__scheduled") {
       const gen = manager.active;
@@ -190,11 +199,104 @@ const server = Bun.serve({
   },
   websocket: {
     open(ws) {
-      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
-      // Forward messages from cfSocket → real client
+      const data = ws.data as unknown as Record<string, unknown>;
+      if (data.type === "trace-stream") {
+        // Trace streaming WebSocket
+        const store = getTraceStore();
+
+        let filter: { path?: string; status?: string; attributeFilters?: Array<{ key: string; value: string; type: "include" | "exclude" }> } = {};
+        let buffer: TraceEvent[] = [];
+        const MAX_BUFFER = 1000;
+
+        // Track which traceIds pass/fail the filter so child spans don't leak
+        const allowedTraces = new Set<string>();
+        const excludedTraces = new Set<string>();
+
+        function isRootSpanFiltered(span: { name: string; status: string; parentSpanId: string | null; attributes: Record<string, unknown> }): boolean {
+          if (filter.status && filter.status !== "all") {
+            if (span.status !== "unset" && span.status !== filter.status) return true;
+          }
+          if (filter.path) {
+            if (!matchGlob(span.name, filter.path)) return true;
+          }
+          if (filter.attributeFilters && filter.attributeFilters.length > 0) {
+            const attrs = span.attributes;
+            for (const af of filter.attributeFilters) {
+              const val = attrs[af.key];
+              const matches = val !== undefined && String(val).toLowerCase().includes(af.value.toLowerCase());
+              if (af.type === "include" && !matches) return true;
+              if (af.type === "exclude" && matches) return true;
+            }
+          }
+          return false;
+        }
+
+        const unsubscribe = store.subscribe((event) => {
+          // Determine traceId for this event
+          const traceId = event.type === "span.event" ? event.event.traceId
+            : event.span.traceId;
+
+          // For root spans, evaluate filter and track decision
+          if ((event.type === "span.start" || event.type === "span.end") && event.span.parentSpanId === null) {
+            if (isRootSpanFiltered(event.span)) {
+              excludedTraces.add(traceId);
+              allowedTraces.delete(traceId);
+              return;
+            }
+            excludedTraces.delete(traceId);
+            allowedTraces.add(traceId);
+          } else {
+            // Child span or event: check if its trace was already filtered
+            if (excludedTraces.has(traceId)) return;
+            // If we haven't seen the root span yet, allow it through
+          }
+
+          if (buffer.length < MAX_BUFFER) {
+            buffer.push(event);
+          }
+        });
+
+        const interval = setInterval(() => {
+          if (buffer.length > 0) {
+            ws.send(JSON.stringify({ type: "batch", events: buffer }));
+            buffer = [];
+          }
+        }, 500);
+
+        // Send initial traces (after filter is available from query params)
+        try {
+          // Parse filter from initial connection URL if provided
+          const reqUrl = new URL((data as any)._url ?? "ws://localhost");
+          const statusParam = reqUrl.searchParams.get("status");
+          const pathParam = reqUrl.searchParams.get("path");
+          if (statusParam) filter.status = statusParam;
+          if (pathParam) filter.path = pathParam;
+        } catch {}
+
+        const since = Date.now() - 5 * 60 * 1000;
+        const recent = store.getRecentTraces(since, 200);
+        ws.send(JSON.stringify({ type: "initial", traces: recent }));
+
+        // Store cleanup handles on ws.data
+        (data as any)._traceCleanup = { unsubscribe, interval };
+        (data as any)._setFilter = (f: typeof filter) => {
+          filter = f;
+          // Reset trace tracking when filter changes
+          allowedTraces.clear();
+          excludedTraces.clear();
+          // Re-send filtered initial traces so the client replaces stale data
+          const freshSince = Date.now() - 5 * 60 * 1000;
+          const freshTraces = store.getRecentTraces(freshSince, 200);
+          ws.send(JSON.stringify({ type: "initial", traces: freshTraces }));
+        };
+        return;
+      }
+
+      // CF WebSocket bridge
+      const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket;
       cfSocket.addEventListener("message", (ev: Event) => {
-        const data = (ev as MessageEvent).data;
-        ws.send(data);
+        const msgData = (ev as MessageEvent).data;
+        ws.send(msgData);
       });
       cfSocket.addEventListener("close", (ev: Event) => {
         const ce = ev as CloseEvent;
@@ -202,7 +304,19 @@ const server = Bun.serve({
       });
     },
     message(ws, message) {
-      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
+      const data = ws.data as unknown as Record<string, unknown>;
+      if (data.type === "trace-stream") {
+        try {
+          const msg = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
+          if (msg.type === "filter") {
+            const setFilter = (data as any)._setFilter;
+            if (setFilter) setFilter({ path: msg.path, status: msg.status, attributeFilters: msg.attributeFilters });
+          }
+        } catch {}
+        return;
+      }
+
+      const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket;
       if (cfSocket._peer && cfSocket._peer._accepted) {
         cfSocket._peer._dispatchWSEvent({ type: "message", data: typeof message === "string" ? message : message.buffer as ArrayBuffer });
       } else if (cfSocket._peer) {
@@ -210,7 +324,17 @@ const server = Bun.serve({
       }
     },
     close(ws, code, reason) {
-      const cfSocket = (ws.data as unknown as { cfSocket: CFWebSocket }).cfSocket;
+      const data = ws.data as unknown as Record<string, unknown>;
+      if (data.type === "trace-stream") {
+        const cleanup = (data as any)._traceCleanup;
+        if (cleanup) {
+          cleanup.unsubscribe();
+          clearInterval(cleanup.interval);
+        }
+        return;
+      }
+
+      const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket;
       if (cfSocket._peer && cfSocket._peer.readyState !== 3 /* CLOSED */) {
         const evt = { type: "close" as const, code: code ?? 1000, reason: reason ?? "", wasClean: true };
         if (cfSocket._peer._accepted) {
@@ -227,3 +351,13 @@ const server = Bun.serve({
 
 console.log(`[bunflare] Server running at http://${hostname}:${port}`);
 console.log(`[bunflare] Dashboard: http://${hostname}:${port}/__dashboard`);
+
+function matchGlob(text: string, pattern: string): boolean {
+  // Placeholder approach: protect ** before escaping special chars
+  const regex = pattern
+    .replace(/\*\*/g, "\0")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\0/g, ".*")
+    .replace(/\*/g, "[^/]*");
+  return new RegExp(`^${regex}`).test(text);
+}

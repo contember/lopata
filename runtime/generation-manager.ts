@@ -95,7 +95,7 @@ export class GenerationManager {
 
     // 6. Create new generation
     const genId = this.nextGenId++;
-    const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config);
+    const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config, this.workerName);
     this.generations.set(genId, gen);
 
     // 7. Drain old generation

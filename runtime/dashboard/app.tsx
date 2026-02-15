@@ -9,9 +9,11 @@ import { WorkflowsView } from "./views/workflows";
 import { D1View } from "./views/d1";
 import { CacheView } from "./views/cache";
 import { WorkersView } from "./views/workers";
+import { TracesView } from "./views/traces";
 
 const NAV_ITEMS = [
   { path: "/", label: "Overview", icon: "◉" },
+  { path: "/traces", label: "Traces", icon: "⟡" },
   { path: "/workers", label: "Workers", icon: "⊡" },
   { path: "/kv", label: "KV", icon: "⬡" },
   { path: "/r2", label: "R2", icon: "◧" },
@@ -28,6 +30,7 @@ function App() {
 
   function renderView() {
     if (route === "/" || route === "") return <HomeView />;
+    if (route.startsWith("/traces")) return <TracesView />;
     if (route.startsWith("/workers")) return <WorkersView />;
     if (route.startsWith("/kv")) return <KvView route={route} />;
     if (route.startsWith("/r2")) return <R2View route={route} />;

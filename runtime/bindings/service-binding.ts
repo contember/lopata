@@ -9,6 +9,7 @@
  */
 
 import { ExecutionContext } from "../execution-context";
+import { getActiveContext, runWithContext } from "../tracing/context";
 
 type WorkerModule = Record<string, unknown>;
 
@@ -98,8 +99,8 @@ export class ServiceBinding {
 
   async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
     this._checkSubrequestLimit();
-    const ctx = new ExecutionContext();
-    const target = this._getTarget(ctx);
+    const execCtx = new ExecutionContext();
+    const target = this._getTarget(execCtx);
     if (!target?.fetch || typeof target.fetch !== "function") {
       throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`);
     }
@@ -110,11 +111,21 @@ export class ServiceBinding {
     const { workerModule, env } = this._resolve();
     const def = workerModule.default;
     const isClass = (this._entrypoint || (typeof def === "function" && def.prototype?.fetch));
-    const response = isClass
-      ? await (target.fetch as (r: Request) => Promise<Response>)(request)
-      : await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, ctx);
-    ctx._awaitAll().catch(() => {});
-    return response;
+
+    // Propagate trace context to target worker so child spans link correctly
+    const parentCtx = getActiveContext();
+    const doCall = async () => {
+      const response = isClass
+        ? await (target.fetch as (r: Request) => Promise<Response>)(request)
+        : await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, execCtx);
+      execCtx._awaitAll().catch(() => {});
+      return response;
+    };
+
+    if (parentCtx) {
+      return runWithContext(parentCtx, doCall);
+    }
+    return doCall();
   }
 
   connect(_address: string | { hostname: string; port: number }): never {
@@ -159,7 +170,12 @@ export class ServiceBinding {
           if (typeof member !== "function") {
             throw new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`);
           }
-          const result = (member as (...a: unknown[]) => unknown).call(target, ...args);
+          // Propagate trace context so child spans link correctly
+          const parentCtx = getActiveContext();
+          const doCall = () => (member as (...a: unknown[]) => unknown).call(target, ...args);
+          const result = parentCtx
+            ? runWithContext(parentCtx, doCall)
+            : doCall();
           // CF always wraps in Promise for async consistency
           return Promise.resolve(result);
         };
