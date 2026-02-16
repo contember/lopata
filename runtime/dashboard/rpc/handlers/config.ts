@@ -66,6 +66,15 @@ export const handlers = {
           if (items.length) groups.push({ title: "Bindings", items });
           break;
         }
+
+        case "containers": {
+          const items = (config.containers ?? []).map(c => ({
+            name: c.name ?? c.class_name,
+            value: `${c.image}${c.max_instances ? ` · max ${c.max_instances}` : ""}`,
+          }));
+          if (items.length) groups.push({ title: "Containers", items });
+          break;
+        }
       }
     }
 

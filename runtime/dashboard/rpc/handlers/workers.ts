@@ -22,6 +22,9 @@ function extractBindings(config: WranglerConfig): WorkerBinding[] {
   for (const w of config.workflows ?? []) {
     bindings.push({ type: "workflow", name: w.binding, target: w.class_name, href: `#/workflows/${encodeURIComponent(w.binding)}` });
   }
+  for (const c of config.containers ?? []) {
+    bindings.push({ type: "container", name: c.name ?? c.class_name, target: c.image, href: `#/containers/${encodeURIComponent(c.class_name)}` });
+  }
   for (const s of config.services ?? []) {
     const target = s.entrypoint ? `${s.service}#${s.entrypoint}` : s.service;
     bindings.push({ type: "service", name: s.binding, target, href: null });

@@ -8,6 +8,7 @@ const CARDS = [
   { key: "queue", label: "Queues", path: "/queue", icon: "☰" },
   { key: "do", label: "Durable Objects", path: "/do", icon: "⬢" },
   { key: "workflows", label: "Workflows", path: "/workflows", icon: "⇶" },
+  { key: "containers", label: "Containers", path: "/containers", icon: "▣" },
   { key: "d1", label: "D1 Databases", path: "/d1", icon: "⊞" },
   { key: "cache", label: "Cache Names", path: "/cache", icon: "◎" },
 ] as const;

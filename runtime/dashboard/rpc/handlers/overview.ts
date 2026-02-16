@@ -15,6 +15,7 @@ export const handlers = {
       d1Count = readdirSync(d1Dir).filter(f => f.endsWith(".sqlite")).length;
     }
 
+    const dbContainers = new Set<string>();
     const dbKv = new Set(db.query<{ namespace: string }, []>("SELECT DISTINCT namespace FROM kv").all().map(r => r.namespace));
     const dbR2 = new Set(db.query<{ bucket: string }, []>("SELECT DISTINCT bucket FROM r2_objects").all().map(r => r.bucket));
     const dbQueue = new Set(db.query<{ queue: string }, []>("SELECT DISTINCT queue FROM queue_messages").all().map(r => r.queue));
@@ -27,6 +28,7 @@ export const handlers = {
       for (const p of config.queues?.producers ?? []) dbQueue.add(p.queue);
       for (const b of config.durable_objects?.bindings ?? []) dbDo.add(b.class_name);
       for (const w of config.workflows ?? []) dbWorkflows.add(w.binding);
+      for (const c of config.containers ?? []) dbContainers.add(c.class_name);
       d1Count = Math.max(d1Count, (config.d1_databases ?? []).length);
     }
 
@@ -36,6 +38,7 @@ export const handlers = {
       queue: dbQueue.size,
       do: dbDo.size,
       workflows: dbWorkflows.size,
+      containers: dbContainers.size,
       d1: d1Count,
       cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
       errors: getTraceStore().getErrorCount(),

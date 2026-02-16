@@ -20,9 +20,26 @@ export interface OverviewData {
   do: number;
   workflows: number;
   d1: number;
+  containers: number;
   cache: number;
   errors: number;
   generations: GenerationInfo[];
+}
+
+// Containers
+export interface ContainerSummary {
+  className: string;
+  image: string;
+  maxInstances: number | null;
+  bindingName: string;
+  runningCount: number;
+}
+
+export interface ContainerInstance {
+  name: string;
+  state: string;
+  exitCode: number | null;
+  ports: Record<string, string>;
 }
 
 // KV

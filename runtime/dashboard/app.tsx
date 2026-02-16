@@ -6,6 +6,7 @@ import { R2View } from "./views/r2";
 import { QueueView } from "./views/queue";
 import { DoView } from "./views/do";
 import { WorkflowsView } from "./views/workflows";
+import { ContainersView } from "./views/containers";
 import { D1View } from "./views/d1";
 import { CacheView } from "./views/cache";
 import { WorkersView } from "./views/workers";
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { path: "/queue", label: "Queues", icon: "☰" },
   { path: "/do", label: "Durable Objects", icon: "⬢" },
   { path: "/workflows", label: "Workflows", icon: "⇶" },
+  { path: "/containers", label: "Containers", icon: "▣" },
   { path: "/d1", label: "D1", icon: "⊞" },
   { path: "/cache", label: "Cache", icon: "◎" },
 ];
@@ -40,6 +42,7 @@ function App() {
     if (route.startsWith("/queue")) return <QueueView route={route} />;
     if (route.startsWith("/do")) return <DoView route={route} />;
     if (route.startsWith("/workflows")) return <WorkflowsView route={route} />;
+    if (route.startsWith("/containers")) return <ContainersView route={route} />;
     if (route.startsWith("/d1")) return <D1View route={route} />;
     if (route.startsWith("/cache")) return <CacheView route={route} />;
     return <div class="p-8 text-gray-400">Page not found</div>;

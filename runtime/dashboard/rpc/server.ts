@@ -9,6 +9,7 @@ import { handlers as d1 } from "./handlers/d1";
 import { handlers as cache } from "./handlers/cache";
 import { handlers as generations } from "./handlers/generations";
 import { handlers as workers } from "./handlers/workers";
+import { handlers as containers } from "./handlers/containers";
 import { handlers as traces } from "./handlers/traces";
 import { handlers as config } from "./handlers/config";
 import { handlers as errors } from "./handlers/errors";
@@ -24,6 +25,7 @@ const allHandlers = {
   ...cache,
   ...generations,
   ...workers,
+  ...containers,
   ...traces,
   ...config,
   ...errors,
