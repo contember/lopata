@@ -1,33 +1,30 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+/** Mutable ref shared across all spans in the same trace. Allows fetch()
+ *  call-site stacks captured in sub-spans to be visible in the root span's
+ *  error handler. */
+export interface FetchStackRef {
+  current: Error | null;
+}
+
 export interface SpanContext {
   traceId: string;
   spanId: string;
+  /** Shared ref to the last stack captured at an outbound fetch() call site.
+   *  Used to reconstruct async stack traces broken by .then() in third-party
+   *  libraries (e.g. GraphQL clients). The synchronous stack at the fetch()
+   *  call still contains the user's code frames — we stitch it onto caught
+   *  errors. */
+  fetchStack: FetchStackRef;
 }
 
 const storage = new AsyncLocalStorage<SpanContext>();
 
-// Fallback context for spans that skip ALS (to preserve async stack traces).
-// ALS.run() in Bun/JSC destroys async stack frames after real I/O.
-// The main request span uses this fallback; sub-spans (binding instrumentation)
-// use ALS normally. With concurrent requests the fallback may produce wrong
-// parent references, but that's acceptable for a dev server.
-let fallbackContext: SpanContext | undefined = undefined;
-
 export function getActiveContext(): SpanContext | undefined {
-  return storage.getStore() ?? fallbackContext;
+  return storage.getStore();
 }
 
-export function runWithContext<T>(ctx: SpanContext, fn: () => T, skipAls = false): T {
-  if (skipAls) {
-    const prev = fallbackContext;
-    fallbackContext = ctx;
-    try {
-      return fn();
-    } finally {
-      fallbackContext = prev;
-    }
-  }
+export function runWithContext<T>(ctx: SpanContext, fn: () => T): T {
   return storage.run(ctx, fn);
 }
 

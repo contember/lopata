@@ -10,6 +10,7 @@ import { patchGlobalCrypto } from "./bindings/crypto-extras";
 import { getDatabase } from "./db";
 import { globalEnv } from "./env";
 import { instrumentBinding } from "./tracing/instrument";
+import { getActiveContext } from "./tracing/context";
 
 // Register global `caches` object (CacheStorage) with tracing
 const rawCacheStorage = new SqliteCacheStorage(getDatabase());
@@ -98,6 +99,20 @@ Object.defineProperty(globalThis, "scheduler", {
   writable: false,
   configurable: true,
 });
+
+// Wrap globalThis.fetch to capture call-site stacks for async stack reconstruction.
+// When third-party libraries (graphql clients, SDKs) use .then() internally,
+// JSC/Bun loses async stack frames. But at the point of the fetch() call, the
+// user's code IS in the synchronous call stack. We capture it here and stitch
+// it onto caught errors later.
+const _originalFetch = globalThis.fetch;
+globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
+  const ctx = getActiveContext();
+  if (ctx) {
+    ctx.fetchStack.current = new Error();
+  }
+  return _originalFetch(input, init);
+}) as typeof globalThis.fetch;
 
 plugin({
   name: "cloudflare-workers-shim",

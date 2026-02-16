@@ -7,10 +7,6 @@ export interface SpanOptions {
   kind?: SpanData["kind"];
   attributes?: Record<string, unknown>;
   workerName?: string;
-  /** Skip ALS.run() to preserve async stack traces. ALS in Bun/JSC
-   *  destroys async frames after real I/O. Use for the main request span;
-   *  sub-spans (binding instrumentation) should keep ALS for correct parenting. */
-  skipAls?: boolean;
 }
 
 export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>): Promise<T> {
@@ -38,8 +34,13 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
 
   store.insertSpan(span);
 
+  // Share fetchStack ref across all spans in the same trace so that
+  // fetch call-site stacks captured in sub-spans are visible in the root
+  // span's error handler.
+  const fetchStack = parent?.fetchStack ?? { current: null };
+
   try {
-    const result = await runWithContext({ traceId, spanId }, () => fn(), opts.skipAls);
+    const result = await runWithContext({ traceId, spanId, fetchStack }, () => fn());
     if (result instanceof Response && result.status >= 500) {
       store.setSpanStatus(spanId, "error", `HTTP ${result.status}`);
     }

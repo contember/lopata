@@ -7,6 +7,7 @@ import { ExecutionContext } from "./execution-context";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
 import { startSpan, setSpanAttribute, persistError } from "./tracing/span";
+import { getActiveContext } from "./tracing/context";
 import { renderErrorPage } from "./error-page/build";
 
 interface ClassRegistry {
@@ -120,8 +121,13 @@ export class Generation {
         };
 
         const handleError = async (err: unknown): Promise<Response> => {
-          if (callerStack && err instanceof Error) {
-            stitchAsyncStack(err, callerStack);
+          if (err instanceof Error) {
+            // Prefer fetch call-site stack — it shows the user's code that
+            // triggered the outbound call (e.g. graphql client → user handler).
+            // Fall back to callerStack which only shows bunflare entry frames.
+            const ctx = getActiveContext();
+            const fetchCallStack = ctx?.fetchStack.current;
+            stitchAsyncStack(err, fetchCallStack ?? callerStack);
           }
           console.error("[bunflare] Request error:\n" + (err instanceof Error ? err.stack : String(err)));
           return renderErrorPage(err, request, this.env, this.config, this.workerName);
@@ -173,7 +179,6 @@ export class Generation {
         kind: "server",
         attributes: { "http.method": request.method, "http.url": request.url },
         workerName: this.workerName,
-        skipAls: true,
       }, handler);
     } finally {
       this.activeRequests--;
@@ -187,7 +192,6 @@ export class Generation {
       kind: "server",
       attributes: { cron: cronExpr },
       workerName: this.workerName,
-      skipAls: true,
     }, async () => {
       const ctx = new ExecutionContext();
       let handler: Function | undefined;
@@ -304,11 +308,15 @@ export class Generation {
 
 /**
  * Stitch a pre-captured caller stack onto an error whose async stack was
- * destroyed by .then()/.catch() boundaries (e.g. Hono's dispatch).
+ * destroyed by .then()/.catch() boundaries (e.g. Hono's dispatch) or by
+ * ALS.run() in Bun/JSC.
+ *
  * Only appends if the error's stack looks truncated (few frames or contains
- * processTicksAndRejections).
+ * processTicksAndRejections). Strips bunflare runtime frames from the
+ * captured stack so only user/library code is shown.
  */
-function stitchAsyncStack(err: Error, callerError: Error): void {
+function stitchAsyncStack(err: Error, callerError: Error | null): void {
+  if (!callerError) return;
   if (!err.stack || !callerError.stack) return;
   // Already stitched
   if (err.stack.includes("--- async ---")) return;
@@ -319,7 +327,12 @@ function stitchAsyncStack(err: Error, callerError: Error): void {
   if (!looksShort) return;
 
   const callerLines = callerError.stack.split("\n").slice(1);
-  err.stack += "\n    --- async ---\n" + callerLines.join("\n");
+
+  // Strip bunflare runtime frames — keep only user/library code
+  const filtered = callerLines.filter(l => !l.includes("/bunflare/runtime/"));
+  if (filtered.length === 0) return;
+
+  err.stack += "\n    --- async ---\n" + filtered.join("\n");
 }
 
 function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {
