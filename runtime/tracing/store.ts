@@ -85,6 +85,14 @@ export class TraceStore {
     }
   }
 
+  getSpanStatus(spanId: string): string | null {
+    return this.db.prepare<{ status: string }, [string]>("SELECT status FROM spans WHERE span_id = ?").get(spanId)?.status ?? null;
+  }
+
+  setSpanStatus(spanId: string, status: "ok" | "error", statusMessage: string | null): void {
+    this.db.prepare("UPDATE spans SET status = ?, status_message = ? WHERE span_id = ?").run(status, statusMessage, spanId);
+  }
+
   updateAttributes(spanId: string, attrs: Record<string, unknown>): void {
     this.updateAttributesStmt.run(JSON.stringify(attrs), spanId);
   }

@@ -36,7 +36,8 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
 
   try {
     const result = await runWithContext({ traceId, spanId }, () => fn());
-    store.endSpan(spanId, Date.now(), "ok");
+    const currentStatus = store.getSpanStatus(spanId);
+    store.endSpan(spanId, Date.now(), currentStatus === "error" ? "error" : "ok");
     return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -52,6 +53,13 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
     });
     throw err;
   }
+}
+
+export function setSpanStatus(status: "ok" | "error", message?: string): void {
+  const ctx = getActiveContext();
+  if (!ctx) return;
+  const store = getTraceStore();
+  store.setSpanStatus(ctx.spanId, status, message ?? null);
 }
 
 export function setSpanAttribute(key: string, value: unknown): void {

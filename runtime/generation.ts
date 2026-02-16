@@ -6,7 +6,7 @@ import { startCronScheduler, createScheduledController } from "./bindings/schedu
 import { ExecutionContext } from "./execution-context";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
-import { startSpan, setSpanAttribute } from "./tracing/span";
+import { startSpan, setSpanAttribute, setSpanStatus } from "./tracing/span";
 import { renderErrorPage } from "./error-page/build";
 
 interface ClassRegistry {
@@ -85,17 +85,13 @@ export class Generation {
   async callFetch(request: Request, server: any): Promise<Response | undefined> {
     this.activeRequests++;
     const ctx = new ExecutionContext();
-    // Capture caller stack before async boundary so we can stitch it onto errors
-    const asyncContext = new Error();
     try {
       const url = new URL(request.url);
 
-      return await startSpan({
-        name: `${request.method} ${url.pathname}`,
-        kind: "server",
-        attributes: { "http.method": request.method, "http.url": request.url },
-        workerName: this.workerName,
-      }, async () => {
+      // Skip tracing for internal/infrastructure paths (Bun HMR, browser probes, etc.)
+      const skipTracing = url.pathname.startsWith("/_bun/") || url.pathname.startsWith("/.well-known/");
+
+      const handler = async () => {
         const callWorkerFetch = async (req: Request) => {
           if (this.classBasedExport) {
             const instance = new (this.defaultExport as new (ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, this.env);
@@ -132,7 +128,8 @@ export class Generation {
             }
           } catch (err) {
             console.error("[bunflare] Request error:", err);
-            stitchAsyncStack(err, asyncContext);
+            const message = err instanceof Error ? err.message : String(err);
+            setSpanStatus("error", message);
             return renderErrorPage(err, request, this.env, this.config, this.workerName);
           }
           return await this.registry.staticAssets!.fetch(request);
@@ -153,10 +150,22 @@ export class Generation {
           return result;
         } catch (err) {
           console.error("[bunflare] Request error:", err);
-          stitchAsyncStack(err, asyncContext);
+          const message = err instanceof Error ? err.message : String(err);
+          setSpanStatus("error", message);
           return renderErrorPage(err, request, this.env, this.config, this.workerName);
         }
-      });
+      };
+
+      if (skipTracing) {
+        return await handler();
+      }
+
+      return await startSpan({
+        name: `${request.method} ${url.pathname}`,
+        kind: "server",
+        attributes: { "http.method": request.method, "http.url": request.url },
+        workerName: this.workerName,
+      }, handler);
     } finally {
       this.activeRequests--;
     }
@@ -279,16 +288,6 @@ export class Generation {
       createdAt: this.createdAt,
       activeRequests: this.activeRequests,
     };
-  }
-}
-
-/** Append the pre-await caller stack onto a caught error so async context is visible */
-function stitchAsyncStack(err: unknown, asyncContext: Error): void {
-  if (err instanceof Error && asyncContext.stack) {
-    const contextLines = asyncContext.stack.split("\n").slice(1); // skip "Error" line
-    if (contextLines.length > 0) {
-      err.stack += "\n    --- async ---\n" + contextLines.join("\n");
-    }
   }
 }
 
