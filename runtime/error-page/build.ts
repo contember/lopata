@@ -281,11 +281,30 @@ export async function renderErrorPage(
     // Don't let persistence failure break the error response
   }
 
-  const script = `<script>window.__BUNFLARE_ERROR__ = ${JSON.stringify(data).replace(/</g, "\\u003c")};</script>`;
-  const html = errorPageHtml.replace("</head>", `${script}\n</head>`);
+  const wantsHtml = (request.headers.get("Accept") ?? "").includes("text/html");
 
-  return new Response(html, {
+  if (wantsHtml && errorPageHtml) {
+    const script = `<script>window.__BUNFLARE_ERROR__ = ${JSON.stringify(data).replace(/</g, "\\u003c")};</script>`;
+    const html = errorPageHtml.replace("</head>", `${script}\n</head>`);
+
+    return new Response(html, {
+      status: 500,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+  }
+
+  // Text-only error response for non-HTML clients (curl, fetch, APIs, etc.)
+  let text = `${data.error.name}: ${data.error.message}\n`;
+  if (displayFrames.length > 0) {
+    text += "\nStack:\n";
+    for (const f of displayFrames) {
+      text += `  at ${f.function} (${f.file}:${f.line}:${f.column})\n`;
+    }
+  }
+  text += `\n${data.request.method} ${data.request.url}\n`;
+
+  return new Response(text, {
     status: 500,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }
