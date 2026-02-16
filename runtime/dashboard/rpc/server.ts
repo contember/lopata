@@ -10,6 +10,7 @@ import { handlers as cache } from "./handlers/cache";
 import { handlers as generations } from "./handlers/generations";
 import { handlers as workers } from "./handlers/workers";
 import { handlers as traces } from "./handlers/traces";
+import { handlers as config } from "./handlers/config";
 
 const allHandlers = {
   ...overview,
@@ -23,6 +24,7 @@ const allHandlers = {
   ...generations,
   ...workers,
   ...traces,
+  ...config,
 };
 
 export type Procedures = {

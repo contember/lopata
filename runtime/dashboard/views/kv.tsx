@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { formatBytes } from "../lib";
 import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
 import type { KvValue } from "../rpc/types";
-import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
+import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo } from "../components";
 
 export function KvView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -15,21 +15,40 @@ export function KvView({ route }: { route: string }) {
 
 function KvNamespaceList() {
   const { data: namespaces } = useQuery("kv.listNamespaces");
+  const { data: configGroups } = useQuery("config.forService", { type: "kv" });
+
+  const totalKeys = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
-      {!namespaces?.length ? (
-        <EmptyState message="No KV namespaces found" />
-      ) : (
-        <Table
-          headers={["Namespace", "Keys"]}
-          rows={namespaces.map(ns => [
-            <TableLink href={`#/kv/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
-            <span class="font-bold text-lg">{ns.count}</span>,
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!namespaces?.length ? (
+            <EmptyState message="No KV namespaces found" />
+          ) : (
+            <Table
+              headers={["Namespace", "Keys"]}
+              rows={namespaces.map(ns => [
+                <TableLink href={`#/kv/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
+                <span class="tabular-nums">{ns.count}</span>,
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Key-value storage for fast, globally distributed reads."
+          stats={[
+            { label: "Namespaces", value: namespaces?.length ?? 0 },
+            { label: "Total keys", value: totalKeys.toLocaleString() },
+          ]}
+          configGroups={configGroups}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/kv/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/kv/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }

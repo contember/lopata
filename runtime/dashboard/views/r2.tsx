@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatBytes } from "../lib";
 import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo } from "../components";
 
 export function R2View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -12,22 +12,43 @@ export function R2View({ route }: { route: string }) {
 
 function R2BucketList() {
   const { data: buckets } = useQuery("r2.listBuckets");
+  const { data: configGroups } = useQuery("config.forService", { type: "r2" });
+
+  const totalObjects = buckets?.reduce((s, b) => s + b.count, 0) ?? 0;
+  const totalSize = buckets?.reduce((s, b) => s + b.total_size, 0) ?? 0;
 
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="R2 Buckets" subtitle={`${buckets?.length ?? 0} bucket(s)`} />
-      {!buckets?.length ? (
-        <EmptyState message="No R2 buckets found" />
-      ) : (
-        <Table
-          headers={["Bucket", "Objects", "Total Size"]}
-          rows={buckets.map(b => [
-            <TableLink href={`#/r2/${encodeURIComponent(b.bucket)}`}>{b.bucket}</TableLink>,
-            <span class="font-bold text-lg">{b.count}</span>,
-            formatBytes(b.total_size),
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!buckets?.length ? (
+            <EmptyState message="No R2 buckets found" />
+          ) : (
+            <Table
+              headers={["Bucket", "Objects", "Total Size"]}
+              rows={buckets.map(b => [
+                <TableLink href={`#/r2/${encodeURIComponent(b.bucket)}`}>{b.bucket}</TableLink>,
+                <span class="tabular-nums">{b.count}</span>,
+                formatBytes(b.total_size),
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Object storage with S3-compatible API. Zero egress fees."
+          stats={[
+            { label: "Buckets", value: buckets?.length ?? 0 },
+            { label: "Objects", value: totalObjects.toLocaleString() },
+            { label: "Storage", value: formatBytes(totalSize) },
+          ]}
+          configGroups={configGroups}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/r2/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/r2/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }

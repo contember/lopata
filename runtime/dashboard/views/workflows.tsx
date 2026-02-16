@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge, ServiceInfo } from "../components";
 
 const WORKFLOW_STATUS_COLORS: Record<string, string> = {
   running: "bg-accent-blue text-ink",
@@ -20,24 +20,46 @@ export function WorkflowsView({ route }: { route: string }) {
 
 function WorkflowList() {
   const { data: workflows } = useQuery("workflows.list");
+  const { data: configGroups } = useQuery("config.forService", { type: "workflows" });
+
+  const totalInstances = workflows?.reduce((s, w) => s + w.total, 0) ?? 0;
+  const totalRunning = workflows?.reduce((s, w) => s + (w.byStatus.running ?? 0), 0) ?? 0;
+  const totalErrored = workflows?.reduce((s, w) => s + (w.byStatus.errored ?? 0), 0) ?? 0;
 
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} />
-      {!workflows?.length ? (
-        <EmptyState message="No workflow instances found" />
-      ) : (
-        <Table
-          headers={["Workflow", "Total", "Running", "Complete", "Errored"]}
-          rows={workflows.map(w => [
-            <TableLink href={`#/workflows/${encodeURIComponent(w.name)}`}>{w.name}</TableLink>,
-            <span class="font-bold">{w.total}</span>,
-            w.byStatus.running ?? 0,
-            w.byStatus.complete ?? 0,
-            w.byStatus.errored ?? 0,
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!workflows?.length ? (
+            <EmptyState message="No workflow instances found" />
+          ) : (
+            <Table
+              headers={["Workflow", "Total", "Running", "Complete", "Errored"]}
+              rows={workflows.map(w => [
+                <TableLink href={`#/workflows/${encodeURIComponent(w.name)}`}>{w.name}</TableLink>,
+                <span class="tabular-nums">{w.total}</span>,
+                w.byStatus.running ?? 0,
+                w.byStatus.complete ?? 0,
+                w.byStatus.errored ?? 0,
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Durable execution engine for multi-step tasks."
+          stats={[
+            { label: "Instances", value: totalInstances.toLocaleString() },
+            { label: "Running", value: totalRunning.toLocaleString() },
+            { label: "Errored", value: totalErrored.toLocaleString() },
+          ]}
+          configGroups={configGroups}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/workflows/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/workflows/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -60,7 +82,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
         <select
           value={statusFilter}
           onChange={e => setStatusFilter((e.target as HTMLSelectElement).value)}
-          class="bg-surface-raised border-none rounded-2xl px-5 py-3 text-sm outline-none focus:bg-white focus:shadow-focus transition-all appearance-none pr-10"
+          class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all appearance-none pr-10"
         >
           <option value="">All statuses</option>
           <option value="running">Running</option>
@@ -82,7 +104,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
             inst.status === "running" ? (
               <button
                 onClick={() => handleTerminate(inst.id)}
-                class="text-red-400 hover:text-red-600 text-xs font-medium rounded-full px-3 py-1 hover:bg-red-50 transition-all"
+                class="text-red-400 hover:text-red-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-50 transition-all"
               >
                 Terminate
               </button>
@@ -113,23 +135,23 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
       </div>
 
       {data.params && (
-        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
           <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Parameters</h3>
           <CodeBlock>{data.params}</CodeBlock>
         </div>
       )}
 
       {data.output && (
-        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
           <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Output</h3>
           <CodeBlock>{data.output}</CodeBlock>
         </div>
       )}
 
       {data.error && (
-        <div class="mb-6 bg-white rounded-card shadow-card p-5">
+        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
           <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Error</h3>
-          <pre class="bg-red-50 rounded-2xl p-5 text-xs text-red-600 overflow-x-auto font-mono">{data.error}</pre>
+          <pre class="bg-red-50 rounded-lg p-4 text-xs text-red-600 overflow-x-auto font-mono">{data.error}</pre>
         </div>
       )}
 

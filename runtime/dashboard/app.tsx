@@ -44,35 +44,35 @@ function App() {
 
   return (
     <div class="flex h-full">
-      <nav class="w-60 flex-shrink-0 bg-white rounded-card shadow-card flex flex-col m-3 mr-0">
-        <div class="p-6 pb-4">
+      <nav class="w-56 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col">
+        <div class="p-5 pb-4">
           <a href="#/" class="flex items-center gap-2.5 no-underline">
-            <span class="w-10 h-10 rounded-full bg-accent-lime flex items-center justify-center text-lg">🔥</span>
+            <span class="w-8 h-8 rounded-lg bg-ink flex items-center justify-center text-sm text-white">B</span>
             <div>
-              <div class="text-lg font-bold text-ink">Bunflare</div>
-              <div class="text-[11px] text-gray-400 font-medium">Dev Dashboard</div>
+              <div class="text-sm font-semibold text-ink">Bunflare</div>
+              <div class="text-[11px] text-gray-400">Dev Dashboard</div>
             </div>
           </a>
         </div>
-        <div class="flex-1 overflow-y-auto scrollbar-thin px-3 py-2">
+        <div class="flex-1 overflow-y-auto scrollbar-thin px-3 py-1">
           {NAV_ITEMS.map(item => (
             <a
               key={item.path}
               href={`#${item.path}`}
-              class={`flex items-center gap-3 px-4 py-2.5 mb-1 text-sm no-underline rounded-2xl transition-all ${
+              class={`flex items-center gap-2.5 px-3 py-2 mb-0.5 text-sm no-underline rounded-md transition-colors ${
                 activeSection === item.path
-                  ? "bg-accent-lime text-ink font-semibold shadow-lime-glow"
-                  : "text-gray-500 hover:bg-surface-raised hover:text-ink"
+                  ? "bg-gray-100 text-ink font-medium"
+                  : "text-gray-500 hover:bg-gray-50 hover:text-ink"
               }`}
             >
-              <span class="w-5 text-center text-base">{item.icon}</span>
+              <span class="w-4 text-center text-sm opacity-60">{item.icon}</span>
               {item.label}
             </a>
           ))}
         </div>
       </nav>
 
-      <main class="flex-1 overflow-y-auto scrollbar-thin">
+      <main class="flex-1 overflow-y-auto scrollbar-thin bg-surface">
         {renderView()}
       </main>
     </div>

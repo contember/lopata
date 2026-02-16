@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo } from "../components";
 
 const HTTP_STATUS_COLORS: Record<string, string> = {
   "2xx": "bg-emerald-100 text-emerald-700",
@@ -24,20 +24,37 @@ export function CacheView({ route }: { route: string }) {
 function CacheNameList() {
   const { data: caches } = useQuery("cache.listCaches");
 
+  const totalEntries = caches?.reduce((s, c) => s + c.count, 0) ?? 0;
+
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} />
-      {!caches?.length ? (
-        <EmptyState message="No cache entries found" />
-      ) : (
-        <Table
-          headers={["Cache Name", "Entries"]}
-          rows={caches.map(c => [
-            <TableLink href={`#/cache/${encodeURIComponent(c.cache_name)}`}>{c.cache_name}</TableLink>,
-            <span class="font-bold text-lg">{c.count}</span>,
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!caches?.length ? (
+            <EmptyState message="No cache entries found" />
+          ) : (
+            <Table
+              headers={["Cache Name", "Entries"]}
+              rows={caches.map(c => [
+                <TableLink href={`#/cache/${encodeURIComponent(c.cache_name)}`}>{c.cache_name}</TableLink>,
+                <span class="tabular-nums">{c.count}</span>,
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Cache API for programmatic HTTP response caching."
+          stats={[
+            { label: "Caches", value: caches?.length ?? 0 },
+            { label: "Entries", value: totalEntries.toLocaleString() },
+          ]}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/cache/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/cache/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -62,7 +79,7 @@ function CacheEntryList({ name }: { name: string }) {
           headers={["URL", "Status", "Expires", ""]}
           rows={entries.map(e => [
             <span class="font-mono text-xs max-w-md truncate block">{e.url}</span>,
-            <span class={`inline-flex px-3.5 py-1 rounded-full text-xs font-semibold ${httpStatusColor(e.status)}`}>{e.status}</span>,
+            <span class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${httpStatusColor(e.status)}`}>{e.status}</span>,
             e.expires_at ? new Date(e.expires_at * 1000).toLocaleString() : "—",
             <DeleteButton onClick={() => handleDelete(e.url)} />,
           ])}

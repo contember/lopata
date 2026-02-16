@@ -1,6 +1,6 @@
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo } from "../components";
 
 export function DoView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -12,21 +12,40 @@ export function DoView({ route }: { route: string }) {
 
 function DoNamespaceList() {
   const { data: namespaces } = useQuery("do.listNamespaces");
+  const { data: configGroups } = useQuery("config.forService", { type: "do" });
+
+  const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
-      {!namespaces?.length ? (
-        <EmptyState message="No Durable Object namespaces found" />
-      ) : (
-        <Table
-          headers={["Namespace", "Instances"]}
-          rows={namespaces.map(ns => [
-            <TableLink href={`#/do/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
-            <span class="font-bold text-lg">{ns.count}</span>,
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!namespaces?.length ? (
+            <EmptyState message="No Durable Object namespaces found" />
+          ) : (
+            <Table
+              headers={["Namespace", "Instances"]}
+              rows={namespaces.map(ns => [
+                <TableLink href={`#/do/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
+                <span class="tabular-nums">{ns.count}</span>,
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Durable Objects provide strongly consistent coordination."
+          stats={[
+            { label: "Namespaces", value: namespaces?.length ?? 0 },
+            { label: "Instances", value: totalInstances.toLocaleString() },
+          ]}
+          configGroups={configGroups}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/durable-objects/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/durable_objects/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }
@@ -44,7 +63,7 @@ function DoInstanceList({ ns }: { ns: string }) {
           headers={["Instance ID", "Storage Keys", "Alarm"]}
           rows={instances.map(inst => [
             <TableLink href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} mono>{inst.id}</TableLink>,
-            <span class="font-bold">{inst.key_count}</span>,
+            <span class="tabular-nums">{inst.key_count}</span>,
             inst.alarm ? formatTime(inst.alarm) : "—",
           ])}
         />
@@ -73,7 +92,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
         { label: id.slice(0, 16) + "..." },
       ]} />
       {data.alarm && (
-        <div class="mb-6 px-6 py-4 bg-accent-lime rounded-2xl text-sm font-medium text-ink shadow-lime-glow">
+        <div class="mb-6 px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium text-ink">
           Alarm set for: {formatTime(data.alarm)}
         </div>
       )}

@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge, ServiceInfo } from "../components";
 
 const QUEUE_STATUS_COLORS: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -18,23 +18,46 @@ export function QueueView({ route }: { route: string }) {
 
 function QueueList() {
   const { data: queues } = useQuery("queue.listQueues");
+  const { data: configGroups } = useQuery("config.forService", { type: "queue" });
+
+  const totalPending = queues?.reduce((s, q) => s + q.pending, 0) ?? 0;
+  const totalAcked = queues?.reduce((s, q) => s + q.acked, 0) ?? 0;
+  const totalFailed = queues?.reduce((s, q) => s + q.failed, 0) ?? 0;
 
   return (
-    <div class="p-8">
+    <div class="p-8 max-w-5xl mx-auto">
       <PageHeader title="Queues" subtitle={`${queues?.length ?? 0} queue(s)`} />
-      {!queues?.length ? (
-        <EmptyState message="No queues found" />
-      ) : (
-        <Table
-          headers={["Queue", "Pending", "Acked", "Failed"]}
-          rows={queues.map(q => [
-            <TableLink href={`#/queue/${encodeURIComponent(q.queue)}`}>{q.queue}</TableLink>,
-            <span class="font-bold">{q.pending}</span>,
-            <span class="font-bold">{q.acked}</span>,
-            <span class="font-bold">{q.failed}</span>,
-          ])}
+      <div class="flex gap-6 items-start">
+        <div class="flex-1 min-w-0">
+          {!queues?.length ? (
+            <EmptyState message="No queues found" />
+          ) : (
+            <Table
+              headers={["Queue", "Pending", "Acked", "Failed"]}
+              rows={queues.map(q => [
+                <TableLink href={`#/queue/${encodeURIComponent(q.queue)}`}>{q.queue}</TableLink>,
+                <span class="tabular-nums">{q.pending}</span>,
+                <span class="tabular-nums">{q.acked}</span>,
+                <span class="tabular-nums">{q.failed}</span>,
+              ])}
+            />
+          )}
+        </div>
+        <ServiceInfo
+          description="Message queues for asynchronous task processing."
+          stats={[
+            { label: "Pending", value: totalPending.toLocaleString() },
+            { label: "Processed", value: totalAcked.toLocaleString() },
+            { label: "Failed", value: totalFailed.toLocaleString() },
+            { label: "Queues", value: queues?.length ?? 0 },
+          ]}
+          configGroups={configGroups}
+          links={[
+            { label: "Documentation", href: "https://developers.cloudflare.com/queues/" },
+            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/queues/" },
+          ]}
         />
-      )}
+      </div>
     </div>
   );
 }
