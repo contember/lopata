@@ -273,19 +273,21 @@ const server = Bun.serve({
           if (pathParam) filter.path = pathParam;
         } catch {}
 
-        const since = Date.now() - 5 * 60 * 1000;
+        let sinceMs = 15 * 60 * 1000; // default 15 minutes
+        const since = Date.now() - sinceMs;
         const recent = store.getRecentTraces(since, 200);
         ws.send(JSON.stringify({ type: "initial", traces: recent }));
 
         // Store cleanup handles on ws.data
         (data as any)._traceCleanup = { unsubscribe, interval };
-        (data as any)._setFilter = (f: typeof filter) => {
+        (data as any)._setFilter = (f: typeof filter & { sinceMs?: number }) => {
           filter = f;
+          if (f.sinceMs !== undefined) sinceMs = f.sinceMs;
           // Reset trace tracking when filter changes
           allowedTraces.clear();
           excludedTraces.clear();
           // Re-send filtered initial traces so the client replaces stale data
-          const freshSince = Date.now() - 5 * 60 * 1000;
+          const freshSince = sinceMs > 0 ? Date.now() - sinceMs : 0;
           const freshTraces = store.getRecentTraces(freshSince, 200);
           ws.send(JSON.stringify({ type: "initial", traces: freshTraces }));
         };
@@ -310,7 +312,7 @@ const server = Bun.serve({
           const msg = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
           if (msg.type === "filter") {
             const setFilter = (data as any)._setFilter;
-            if (setFilter) setFilter({ path: msg.path, status: msg.status, attributeFilters: msg.attributeFilters });
+            if (setFilter) setFilter({ path: msg.path, status: msg.status, attributeFilters: msg.attributeFilters, sinceMs: msg.sinceMs });
           }
         } catch {}
         return;

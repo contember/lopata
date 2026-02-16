@@ -31,10 +31,17 @@ function emitTraceEvents(events: TraceEvent[]): void {
 
 // ─── WebSocket hook ──────────────────────────────────────────────────
 
+interface TraceFilter {
+  path?: string;
+  status?: string;
+  attributeFilters?: AttributeFilter[];
+  sinceMs?: number;
+}
+
 interface TraceStreamState {
   traces: Map<string, TraceSummary>;
-  filter: { path?: string; status?: string; attributeFilters?: AttributeFilter[] };
-  setFilter: (f: { path?: string; status?: string; attributeFilters?: AttributeFilter[] }) => void;
+  filter: TraceFilter;
+  setFilter: (f: TraceFilter) => void;
   wsStatus: WsStatus;
 }
 
@@ -42,7 +49,7 @@ function useTraceStream(): TraceStreamState {
   const [traces, setTraces] = useState<Map<string, TraceSummary>>(new Map());
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const wsRef = useRef<WebSocket | null>(null);
-  const filterRef = useRef<{ path?: string; status?: string; attributeFilters?: AttributeFilter[] }>({});
+  const filterRef = useRef<TraceFilter>({ sinceMs: 15 * 60 * 1000 });
   const closedRef = useRef(false);
 
   const connect = useCallback(() => {
@@ -125,9 +132,8 @@ function useTraceStream(): TraceStreamState {
     ws.onopen = () => {
       setWsStatus("live");
       const f = filterRef.current;
-      if (f.path || f.status || (f.attributeFilters && f.attributeFilters.length > 0)) {
-        ws.send(JSON.stringify({ type: "filter", ...f }));
-      }
+      // Always send filter on connect to sync time range with server
+      ws.send(JSON.stringify({ type: "filter", ...f }));
     };
   }, []);
 
@@ -140,7 +146,7 @@ function useTraceStream(): TraceStreamState {
     };
   }, [connect]);
 
-  const setFilter = useCallback((f: { path?: string; status?: string; attributeFilters?: AttributeFilter[] }) => {
+  const setFilter = useCallback((f: TraceFilter) => {
     filterRef.current = f;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "filter", ...f }));
@@ -152,11 +158,22 @@ function useTraceStream(): TraceStreamState {
 
 // ─── Main View ───────────────────────────────────────────────────────
 
+const TIME_RANGE_OPTIONS = [
+  { label: "5m", ms: 5 * 60 * 1000 },
+  { label: "15m", ms: 15 * 60 * 1000 },
+  { label: "30m", ms: 30 * 60 * 1000 },
+  { label: "1h", ms: 60 * 60 * 1000 },
+  { label: "6h", ms: 6 * 60 * 60 * 1000 },
+  { label: "24h", ms: 24 * 60 * 60 * 1000 },
+  { label: "All", ms: 0 },
+];
+
 export function TracesView() {
   const { traces, setFilter, wsStatus } = useTraceStream();
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [pathFilter, setPathFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [timeRangeMs, setTimeRangeMs] = useState(15 * 60 * 1000);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<TraceSummary[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
@@ -165,10 +182,22 @@ export function TracesView() {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearTraces = useMutation("traces.clear");
 
+  const buildFilter = (path: string, status: string, attrs: AttributeFilter[], sinceMs: number): TraceFilter => ({
+    path: path || undefined,
+    status: status === "all" ? undefined : status,
+    attributeFilters: attrs,
+    sinceMs: sinceMs || undefined,
+  });
+
   const handleFilterChange = (path: string, status: string) => {
     setPathFilter(path);
     setStatusFilter(status);
-    setFilter({ path: path || undefined, status: status === "all" ? undefined : status, attributeFilters });
+    setFilter(buildFilter(path, status, attributeFilters, timeRangeMs));
+  };
+
+  const handleTimeRangeChange = (ms: number) => {
+    setTimeRangeMs(ms);
+    setFilter(buildFilter(pathFilter, statusFilter, attributeFilters, ms));
   };
 
   // Debounced search
@@ -192,13 +221,13 @@ export function TracesView() {
   const addAttributeFilter = (key: string, value: string, type: "include" | "exclude") => {
     const next = [...attributeFilters, { key, value, type }];
     setAttributeFilters(next);
-    setFilter({ path: pathFilter || undefined, status: statusFilter === "all" ? undefined : statusFilter, attributeFilters: next });
+    setFilter(buildFilter(pathFilter, statusFilter, next, timeRangeMs));
   };
 
   const removeAttributeFilter = (index: number) => {
     const next = attributeFilters.filter((_, i) => i !== index);
     setAttributeFilters(next);
-    setFilter({ path: pathFilter || undefined, status: statusFilter === "all" ? undefined : statusFilter, attributeFilters: next });
+    setFilter(buildFilter(pathFilter, statusFilter, next, timeRangeMs));
   };
 
   const displayTraces = searchResults ?? Array.from(traces.values()).sort((a, b) => b.startTime - a.startTime);
@@ -219,7 +248,7 @@ export function TracesView() {
         </div>
         <button
           onClick={() => { clearTraces.mutate(); setSelectedTraceId(null); }}
-          class="rounded-full px-5 py-2 text-sm font-medium bg-surface-raised text-gray-500 hover:bg-red-50 hover:text-red-600 transition-all"
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
         >
           Clear all
         </button>
@@ -231,9 +260,9 @@ export function TracesView() {
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            class={`px-4 py-2 text-sm font-medium border-b-2 transition-all ${
+            class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab
-                ? "border-blue-500 text-blue-600"
+                ? "border-ink text-ink"
                 : "border-transparent text-gray-400 hover:text-gray-600"
             }`}
           >
@@ -251,24 +280,39 @@ export function TracesView() {
               placeholder="Search traces..."
               value={searchQuery}
               onInput={e => handleSearchChange((e.target as HTMLInputElement).value)}
-              class="bg-surface-raised border-none rounded-2xl px-5 py-3 text-sm outline-none focus:bg-white focus:shadow-focus transition-all w-72"
+              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all w-72"
             />
             <input
               type="text"
               placeholder="Filter by path (e.g. /api/*)"
               value={pathFilter}
               onInput={e => handleFilterChange((e.target as HTMLInputElement).value, statusFilter)}
-              class="bg-surface-raised border-none rounded-2xl px-5 py-3 text-sm outline-none focus:bg-white focus:shadow-focus transition-all w-72"
+              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all w-72"
             />
             <select
               value={statusFilter}
               onChange={e => handleFilterChange(pathFilter, (e.target as HTMLSelectElement).value)}
-              class="bg-surface-raised border-none rounded-2xl px-5 py-3 text-sm outline-none focus:bg-white focus:shadow-focus transition-all"
+              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all"
             >
               <option value="all">All statuses</option>
               <option value="ok">OK</option>
               <option value="error">Error</option>
             </select>
+            <div class="flex items-center bg-white border border-gray-200 rounded-lg overflow-hidden">
+              {TIME_RANGE_OPTIONS.map(opt => (
+                <button
+                  key={opt.label}
+                  onClick={() => handleTimeRangeChange(opt.ms)}
+                  class={`px-2.5 py-2 text-xs font-medium transition-colors ${
+                    timeRangeMs === opt.ms
+                      ? "bg-gray-900 text-white"
+                      : "text-gray-500 hover:bg-gray-50 hover:text-gray-700"
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Attribute filter pills */}
@@ -277,11 +321,11 @@ export function TracesView() {
               {attributeFilters.map((f, i) => (
                 <span
                   key={i}
-                  class={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
-                    f.type === "include" ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                  class={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${
+                    f.type === "include" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
                   }`}
                 >
-                  {f.type === "include" ? "+" : "−"} {f.key}={f.value}
+                  {f.type === "include" ? "+" : "\u2212"} {f.key}={f.value}
                   <button
                     onClick={() => removeAttributeFilter(i)}
                     class="ml-1 hover:opacity-70"
@@ -302,16 +346,16 @@ export function TracesView() {
                 {searchQuery ? "No matching traces found." : "No traces yet. Make some requests to see them here."}
               </div>
             ) : (
-              <div class="bg-white rounded-card shadow-card overflow-hidden">
+              <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
                 <table class="w-full text-sm">
                   <thead>
                     <tr class="border-b border-gray-100">
-                      <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Status</th>
-                      <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Name</th>
-                      <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Worker</th>
-                      <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold" style={{ minWidth: "140px" }}>Duration</th>
-                      <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Spans</th>
-                      <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Time</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Status</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Worker</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium" style={{ minWidth: "140px" }}>Duration</th>
+                      <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Spans</th>
+                      <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -319,36 +363,36 @@ export function TracesView() {
                       <tr
                         key={trace.traceId}
                         onClick={() => setSelectedTraceId(trace.traceId)}
-                        class={`border-b border-gray-50 cursor-pointer transition-all hover:bg-surface-raised ${
-                          selectedTraceId === trace.traceId ? "bg-accent-lime/10" : ""
+                        class={`border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50 ${
+                          selectedTraceId === trace.traceId ? "bg-gray-50" : ""
                         }`}
                       >
-                        <td class="px-5 py-3">
+                        <td class="px-4 py-2.5">
                           <TraceStatusBadge status={trace.status} />
                         </td>
-                        <td class="px-5 py-3">
-                          <span class="font-semibold text-ink">{trace.rootSpanName}</span>
+                        <td class="px-4 py-2.5">
+                          <span class="font-medium text-ink">{trace.rootSpanName}</span>
                           {trace.status === "error" && trace.statusMessage && (
                             <span class="ml-2 text-xs text-red-400">{trace.statusMessage}</span>
                           )}
                         </td>
-                        <td class="px-5 py-3">
+                        <td class="px-4 py-2.5">
                           {trace.workerName && (
-                            <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium bg-surface-raised text-gray-500">
+                            <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500">
                               {trace.workerName}
                             </span>
                           )}
                         </td>
-                        <td class="px-5 py-3">
+                        <td class="px-4 py-2.5">
                           <DurationBar durationMs={trace.durationMs} maxDuration={maxDuration} />
                         </td>
-                        <td class="px-5 py-3 text-right text-gray-500">
+                        <td class="px-4 py-2.5 text-right text-gray-500">
                           {trace.spanCount}
                           {trace.errorCount > 0 && (
                             <span class="ml-1 text-red-400">({trace.errorCount} err)</span>
                           )}
                         </td>
-                        <td class="px-5 py-3 text-right font-mono text-xs text-gray-400">
+                        <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">
                           {formatTimestamp(trace.startTime)}
                         </td>
                       </tr>
@@ -414,35 +458,35 @@ function SpansListTab() {
       {spans.length === 0 && !isLoading ? (
         <div class="text-gray-400 font-medium text-center py-12">No spans recorded yet.</div>
       ) : (
-        <div class="bg-white rounded-card shadow-card overflow-hidden">
+        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Status</th>
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Name</th>
-                <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Duration</th>
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Worker</th>
-                <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Time</th>
-                <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Trace</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Status</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
+                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Duration</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Worker</th>
+                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
+                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Trace</th>
               </tr>
             </thead>
             <tbody>
               {spans.map(span => (
-                <tr key={span.spanId} class="border-b border-gray-50 hover:bg-surface-raised transition-all">
-                  <td class="px-5 py-3"><TraceStatusBadge status={span.status} /></td>
-                  <td class="px-5 py-3 font-semibold text-ink">{span.name}</td>
-                  <td class="px-5 py-3 text-right font-mono text-xs text-gray-500">
+                <tr key={span.spanId} class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                  <td class="px-4 py-2.5"><TraceStatusBadge status={span.status} /></td>
+                  <td class="px-4 py-2.5 font-medium text-ink">{span.name}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-500">
                     {span.durationMs !== null ? formatDuration(span.durationMs) : "..."}
                   </td>
-                  <td class="px-5 py-3">
+                  <td class="px-4 py-2.5">
                     {span.workerName && (
-                      <span class="inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium bg-surface-raised text-gray-500">
+                      <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500">
                         {span.workerName}
                       </span>
                     )}
                   </td>
-                  <td class="px-5 py-3 text-right font-mono text-xs text-gray-400">{formatTimestamp(span.startTime)}</td>
-                  <td class="px-5 py-3 text-right">
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">{formatTimestamp(span.startTime)}</td>
+                  <td class="px-4 py-2.5 text-right">
                     <button
                       onClick={() => setSelectedTraceId(span.traceId)}
                       class="text-blue-500 hover:text-blue-700 text-xs font-mono"
@@ -455,11 +499,11 @@ function SpansListTab() {
             </tbody>
           </table>
           {cursor && (
-            <div class="p-4 text-center">
+            <div class="p-4 text-center border-t border-gray-100">
               <button
                 onClick={() => loadSpans(cursor)}
                 disabled={isLoading}
-                class="text-sm text-blue-500 hover:text-blue-700 disabled:text-gray-300"
+                class="text-sm text-gray-500 hover:text-ink disabled:text-gray-300"
               >
                 {isLoading ? "Loading..." : "Load more"}
               </button>
@@ -512,27 +556,27 @@ function LogsListTab() {
       {logs.length === 0 && !isLoading ? (
         <div class="text-gray-400 font-medium text-center py-12">No log events recorded yet.</div>
       ) : (
-        <div class="bg-white rounded-card shadow-card overflow-hidden">
+        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <table class="w-full text-sm">
             <thead>
               <tr class="border-b border-gray-100">
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Level</th>
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Name</th>
-                <th class="text-left px-5 py-3 text-xs text-gray-400 font-semibold">Message</th>
-                <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Time</th>
-                <th class="text-right px-5 py-3 text-xs text-gray-400 font-semibold">Span / Trace</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Level</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
+                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Message</th>
+                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
+                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Span / Trace</th>
               </tr>
             </thead>
             <tbody>
               {logs.map(log => (
-                <tr key={log.id} class="border-b border-gray-50 hover:bg-surface-raised transition-all">
-                  <td class="px-5 py-3">
+                <tr key={log.id} class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                  <td class="px-4 py-2.5">
                     {log.level ? <EventLevelBadge level={log.level} /> : <span class="text-gray-300">-</span>}
                   </td>
-                  <td class="px-5 py-3 font-semibold text-ink">{log.name}</td>
-                  <td class="px-5 py-3 text-gray-600 font-mono text-xs truncate max-w-[300px]">{log.message ?? ""}</td>
-                  <td class="px-5 py-3 text-right font-mono text-xs text-gray-400">{formatTimestamp(log.timestamp)}</td>
-                  <td class="px-5 py-3 text-right font-mono text-xs text-gray-400">
+                  <td class="px-4 py-2.5 font-medium text-ink">{log.name}</td>
+                  <td class="px-4 py-2.5 text-gray-600 font-mono text-xs truncate max-w-[300px]">{log.message ?? ""}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">{formatTimestamp(log.timestamp)}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">
                     {log.traceId.slice(0, 8)}...
                   </td>
                 </tr>
@@ -540,11 +584,11 @@ function LogsListTab() {
             </tbody>
           </table>
           {cursor && (
-            <div class="p-4 text-center">
+            <div class="p-4 text-center border-t border-gray-100">
               <button
                 onClick={() => loadLogs(cursor)}
                 disabled={isLoading}
-                class="text-sm text-blue-500 hover:text-blue-700 disabled:text-gray-300"
+                class="text-sm text-gray-500 hover:text-ink disabled:text-gray-300"
               >
                 {isLoading ? "Loading..." : "Load more"}
               </button>
@@ -679,38 +723,38 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
     <>
       {/* Backdrop */}
       <div
-        class="fixed inset-0 bg-black/20 z-40"
+        class="fixed inset-0 bg-black/10 z-40"
         onClick={onClose}
       />
       {/* Drawer */}
-      <div class="fixed right-0 top-0 bottom-0 w-[720px] max-w-[90vw] bg-white shadow-2xl z-50 flex flex-col overflow-hidden animate-slide-in">
+      <div class="fixed right-0 top-0 bottom-0 w-[720px] max-w-[90vw] bg-white border-l border-gray-200 z-50 flex flex-col overflow-hidden animate-slide-in">
         {/* Header */}
-        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200">
           <div>
             <div class="text-xs text-gray-400 font-mono">Trace {traceId.slice(0, 12)}...</div>
-            <div class="text-sm font-semibold text-ink mt-0.5">
+            <div class="text-sm font-medium text-ink mt-0.5">
               {spans.find(s => !s.parentSpanId)?.name ?? "Loading..."}
             </div>
           </div>
-          <button onClick={onClose} class="w-8 h-8 flex items-center justify-center rounded-full hover:bg-surface-raised transition-all text-gray-400 hover:text-ink">
+          <button onClick={onClose} class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors text-gray-400 hover:text-ink">
             &times;
           </button>
         </div>
 
         {/* Content */}
-        <div class="flex-1 overflow-y-auto scrollbar-thin p-6">
+        <div class="flex-1 overflow-y-auto scrollbar-thin p-5">
           {isLoading ? (
             <div class="text-gray-400 text-sm">Loading trace...</div>
           ) : (
             <div>
               {/* Timeline header */}
-              <div class="flex items-center justify-between mb-4">
+              <div class="flex items-center justify-between mb-3">
                 <span class="text-xs text-gray-400 font-mono">0ms</span>
                 <span class="text-xs text-gray-400 font-mono">{formatDuration(traceDuration)}</span>
               </div>
 
               {/* Waterfall */}
-              <div class="space-y-1">
+              <div class="space-y-0.5">
                 {flatSpans.map(({ span, depth }) => {
                   const offset = ((span.startTime - traceStart) / traceDuration) * 100;
                   const width = (((span.endTime ?? Date.now()) - span.startTime) / traceDuration) * 100;
@@ -720,13 +764,13 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
                   const isCollapsed = collapsedSpans.has(span.spanId);
                   const parentAttrs = getParentAttributes(span);
 
-                  // Key attributes to show in the bar (feature 6)
+                  // Key attributes to show in the bar
                   const keyAttrs = width > 5 ? getKeyAttributes(span.attributes, 2) : [];
 
                   return (
                     <div key={span.spanId}>
                       <div
-                        class="flex items-center cursor-pointer hover:bg-surface-raised rounded-lg py-1 px-1 transition-all"
+                        class="flex items-center cursor-pointer hover:bg-gray-50 rounded-md py-1 px-1 transition-colors"
                         onClick={() => setExpandedSpan(isExpanded ? null : span.spanId)}
                       >
                         {/* Span name with collapse toggle */}
@@ -743,7 +787,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
                           <span class="truncate">{span.name}</span>
                         </div>
                         {/* Bar area */}
-                        <div class="flex-1 h-6 relative bg-surface-raised rounded">
+                        <div class="flex-1 h-6 relative bg-gray-50 rounded">
                           <div
                             class={`absolute top-0.5 bottom-0.5 rounded flex items-center overflow-hidden ${
                               span.status === "error" ? "bg-red-400" :
@@ -783,7 +827,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
 
                       {/* Expanded detail */}
                       {isExpanded && (
-                        <div class="bg-surface-raised rounded-lg p-4 mt-1 mb-2" style={{ marginLeft: `${200 + depth * 16}px` }}>
+                        <div class="bg-gray-50 border border-gray-100 rounded-lg p-4 mt-1 mb-2" style={{ marginLeft: `${200 + depth * 16}px` }}>
                           <div class="text-xs space-y-2">
                             {/* Timing section */}
                             <div class="grid grid-cols-2 gap-x-4 gap-y-1">
@@ -829,7 +873,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
                                               onClick={(e) => { e.stopPropagation(); onAddAttributeFilter(k, String(v), "exclude"); }}
                                               class="text-red-500 hover:text-red-700 px-0.5"
                                               title="Exclude filter"
-                                            >−</button>
+                                            >{"\u2212"}</button>
                                           </span>
                                         </td>
                                         <td class="py-0.5 font-mono break-all"><AttributeValue value={v} /></td>
@@ -844,9 +888,9 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
                               <div>
                                 <div class="text-gray-400 mb-1">Events:</div>
                                 {spanEvents.map(ev => (
-                                  <div key={ev.id} class={`py-1 px-2 rounded mb-1 ${ev.name === "exception" ? "bg-red-50" : "bg-gray-50"}`}>
+                                  <div key={ev.id} class={`py-1 px-2 rounded-md mb-1 ${ev.name === "exception" ? "bg-red-50" : "bg-white border border-gray-100"}`}>
                                     <div class="flex items-center gap-2">
-                                      <span class="font-semibold">{ev.name}</span>
+                                      <span class="font-medium">{ev.name}</span>
                                       {ev.level && <EventLevelBadge level={ev.level} />}
                                       <span class="text-gray-400 font-mono ml-auto">
                                         +{Math.round(ev.timestamp - span.startTime)}ms
@@ -897,7 +941,7 @@ function AttributeValue({ value }: { value: unknown }) {
   }
   if (typeof value === "object") {
     return (
-      <pre class="text-gray-800 bg-gray-100 p-1.5 rounded overflow-x-auto text-[11px] max-h-40">
+      <pre class="text-gray-800 bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40">
         {JSON.stringify(value, null, 2)}
       </pre>
     );
@@ -911,7 +955,7 @@ function AttributeValue({ value }: { value: unknown }) {
     try {
       const parsed = JSON.parse(str);
       return (
-        <pre class="text-gray-800 bg-gray-100 p-1.5 rounded overflow-x-auto text-[11px] max-h-40">
+        <pre class="text-gray-800 bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40">
           {JSON.stringify(parsed, null, 2)}
         </pre>
       );
@@ -919,7 +963,7 @@ function AttributeValue({ value }: { value: unknown }) {
   }
   // Multiline
   if (str.includes("\n")) {
-    return <pre class="text-ink bg-gray-100 p-1.5 rounded overflow-x-auto text-[11px] max-h-40 whitespace-pre-wrap">{str}</pre>;
+    return <pre class="text-ink bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40 whitespace-pre-wrap">{str}</pre>;
   }
   return <span class="text-ink">{str}</span>;
 }
@@ -950,7 +994,7 @@ function DurationBar({ durationMs, maxDuration }: { durationMs: number | null; m
   return (
     <div class="flex items-center gap-2">
       <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-        <div class="h-full bg-blue-400 rounded-full" style={{ width: `${pct}%` }} />
+        <div class="h-full bg-gray-400 rounded-full" style={{ width: `${pct}%` }} />
       </div>
       <span class="text-xs text-gray-500 font-mono whitespace-nowrap w-14 text-right">{formatDuration(durationMs)}</span>
     </div>
@@ -960,14 +1004,14 @@ function DurationBar({ durationMs, maxDuration }: { durationMs: number | null; m
 function EventLevelBadge({ level }: { level: string }) {
   const upper = level.toUpperCase();
   const colors: Record<string, string> = {
-    ERROR: "bg-red-100 text-red-700",
-    WARN: "bg-orange-100 text-orange-700",
-    WARNING: "bg-orange-100 text-orange-700",
-    INFO: "bg-blue-100 text-blue-700",
-    DEBUG: "bg-gray-100 text-gray-500",
+    ERROR: "bg-red-50 text-red-700",
+    WARN: "bg-orange-50 text-orange-700",
+    WARNING: "bg-orange-50 text-orange-700",
+    INFO: "bg-blue-50 text-blue-700",
+    DEBUG: "bg-gray-50 text-gray-500",
   };
   return (
-    <span class={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-semibold ${colors[upper] ?? "bg-gray-100 text-gray-500"}`}>
+    <span class={`inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium ${colors[upper] ?? "bg-gray-50 text-gray-500"}`}>
       {upper}
     </span>
   );
@@ -975,12 +1019,12 @@ function EventLevelBadge({ level }: { level: string }) {
 
 function TraceStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
-    ok: "bg-emerald-100 text-emerald-700",
-    error: "bg-red-100 text-red-700",
+    ok: "bg-emerald-50 text-emerald-700",
+    error: "bg-red-50 text-red-700",
     unset: "bg-gray-100 text-gray-500",
   };
   return (
-    <span class={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-semibold ${colors[status] ?? colors.unset} ${status === "unset" ? "animate-pulse" : ""}`}>
+    <span class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${colors[status] ?? colors.unset} ${status === "unset" ? "animate-pulse" : ""}`}>
       {status === "unset" ? "running" : status}
     </span>
   );
