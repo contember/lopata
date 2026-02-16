@@ -40,11 +40,11 @@ declare global {
 
 function Section({ title, open, children }: { title: string; open?: boolean; children: preact.ComponentChildren }) {
   return (
-    <details open={open} class="bg-white rounded-2xl shadow-card overflow-hidden">
-      <summary class="px-6 py-4 cursor-pointer select-none text-sm font-semibold text-ink hover:bg-surface-raised transition-colors">
+    <details open={open} class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <summary class="px-5 py-3 cursor-pointer select-none text-sm font-semibold text-ink hover:bg-gray-50 transition-colors">
         {title}
       </summary>
-      <div class="border-t border-surface-dim">
+      <div class="border-t border-gray-100">
         {children}
       </div>
     </details>
@@ -57,7 +57,7 @@ function CodeBlock({ frame }: { frame: StackFrame }) {
 
   return (
     <div class="mb-4 last:mb-0">
-      <div class="px-4 py-2 bg-surface-dim text-xs font-medium text-ink-muted" style="font-family: 'JetBrains Mono', monospace;">
+      <div class="px-4 py-2 bg-gray-50 text-xs font-medium text-ink-muted" style="font-family: 'JetBrains Mono', monospace;">
         {frame.file}:{frame.line}:{frame.column}
         {frame.function && <span class="ml-2 text-gray-400">in {frame.function}</span>}
       </div>
@@ -69,7 +69,7 @@ function CodeBlock({ frame }: { frame: StackFrame }) {
             return (
               <div
                 key={i}
-                class={isError ? "bg-red-100 border-l-4 border-error-red" : "hover:bg-surface-raised"}
+                class={isError ? "bg-red-50 border-l-4 border-error-red" : "hover:bg-gray-50"}
               >
                 <span class={`inline-block w-12 text-right pr-3 select-none ${isError ? "text-error-red font-bold" : "text-gray-400"}`}>
                   {lineNum}
@@ -87,18 +87,18 @@ function CodeBlock({ frame }: { frame: StackFrame }) {
 function KeyValueTable({ data, mask }: { data: Record<string, string>; mask?: boolean }) {
   const entries = Object.entries(data);
   if (entries.length === 0) {
-    return <div class="px-6 py-4 text-sm text-gray-400">No entries</div>;
+    return <div class="px-4 py-3 text-sm text-gray-400">No entries</div>;
   }
 
   return (
     <table class="w-full text-sm">
       <tbody>
         {entries.map(([key, value]) => (
-          <tr key={key} class="border-b border-surface-dim last:border-0 hover:bg-surface-raised transition-colors">
-            <td class="px-6 py-2 font-medium text-ink-muted whitespace-nowrap align-top" style="font-family: 'JetBrains Mono', monospace; width: 1%;">
+          <tr key={key} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
+            <td class="px-4 py-2 font-medium text-ink-muted whitespace-nowrap align-top" style="font-family: 'JetBrains Mono', monospace; width: 1%;">
               {key}
             </td>
-            <td class="px-6 py-2 text-ink break-all" style="font-family: 'JetBrains Mono', monospace;">
+            <td class="px-4 py-2 text-ink break-all" style="font-family: 'JetBrains Mono', monospace;">
               {value}
             </td>
           </tr>
@@ -120,20 +120,20 @@ function App() {
   return (
     <div class="min-h-full p-6 max-w-5xl mx-auto flex flex-col gap-4">
       {/* Error header */}
-      <div class="bg-white rounded-2xl shadow-card overflow-hidden border-l-4 border-error-red">
-        <div class="px-6 py-5">
-          <div class="flex items-center gap-3 mb-2">
-            <span class="w-8 h-8 rounded-full bg-error-bg flex items-center justify-center text-error-red text-sm font-bold">!</span>
+      <div class="bg-white rounded-lg border border-gray-200 overflow-hidden border-l-4 border-l-error-red">
+        <div class="px-5 py-4">
+          <div class="flex items-center gap-2.5 mb-1.5">
+            <span class="w-6 h-6 rounded-md bg-red-50 flex items-center justify-center text-error-red text-xs font-bold">!</span>
             <span class="text-xs font-semibold uppercase tracking-wider text-error-red">{error.name}</span>
           </div>
-          <h1 class="text-xl font-bold text-ink m-0 leading-snug break-words">{error.message}</h1>
+          <h1 class="text-lg font-bold text-ink m-0 leading-snug break-words">{error.message}</h1>
         </div>
       </div>
 
       {/* Source Code */}
       {error.frames.length > 0 && (
         <Section title="Source Code" open>
-          <div class="divide-y divide-surface-dim">
+          <div class="divide-y divide-gray-100">
             {error.frames.map((frame, i) => (
               <CodeBlock key={i} frame={frame} />
             ))}
@@ -143,7 +143,7 @@ function App() {
 
       {/* Stack Trace */}
       <Section title="Stack Trace" open>
-        <div class="px-6 py-4 overflow-x-auto scrollbar-thin">
+        <div class="px-4 py-3 overflow-x-auto scrollbar-thin">
           <pre class="text-xs text-ink-muted leading-5 m-0 whitespace-pre-wrap break-words" style="font-family: 'JetBrains Mono', monospace;">
             {error.stack}
           </pre>
@@ -152,8 +152,8 @@ function App() {
 
       {/* Request */}
       <Section title="Request" open>
-        <div class="px-6 py-3 border-b border-surface-dim">
-          <span class="inline-block px-2 py-0.5 rounded bg-accent-lime text-xs font-bold mr-2">{request.method}</span>
+        <div class="px-4 py-2.5 border-b border-gray-100">
+          <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-bold mr-2">{request.method}</span>
           <span class="text-sm break-all" style="font-family: 'JetBrains Mono', monospace;">{request.url}</span>
         </div>
         <KeyValueTable data={request.headers} />
@@ -167,17 +167,17 @@ function App() {
       {/* Bindings */}
       <Section title="Bindings">
         {bindings.length === 0 ? (
-          <div class="px-6 py-4 text-sm text-gray-400">No bindings configured</div>
+          <div class="px-4 py-3 text-sm text-gray-400">No bindings configured</div>
         ) : (
           <table class="w-full text-sm">
             <tbody>
               {bindings.map((b) => (
-                <tr key={b.name} class="border-b border-surface-dim last:border-0 hover:bg-surface-raised transition-colors">
-                  <td class="px-6 py-2 font-medium text-ink-muted whitespace-nowrap" style="font-family: 'JetBrains Mono', monospace;">
+                <tr key={b.name} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
+                  <td class="px-4 py-2 font-medium text-ink-muted whitespace-nowrap" style="font-family: 'JetBrains Mono', monospace;">
                     {b.name}
                   </td>
-                  <td class="px-6 py-2">
-                    <span class="inline-block px-2 py-0.5 rounded bg-surface-dim text-xs font-medium text-ink-muted">{b.type}</span>
+                  <td class="px-4 py-2">
+                    <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-medium text-gray-600">{b.type}</span>
                   </td>
                 </tr>
               ))}
