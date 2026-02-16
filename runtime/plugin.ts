@@ -104,27 +104,23 @@ plugin({
   setup(build) {
     build.module("cloudflare:workers", () => {
       // Use a getter so `env` always returns the latest built env object
-      const exports: Record<string, unknown> = {
-        DurableObject: DurableObjectBase,
-        WorkflowEntrypoint: WorkflowEntrypointBase,
-        WorkerEntrypoint: class WorkerEntrypoint {
-          protected ctx: unknown;
-          protected env: unknown;
-          constructor(ctx: unknown, env: unknown) {
-            this.ctx = ctx;
-            this.env = env;
-          }
-        },
-        WebSocketRequestResponsePair,
-        WebSocketPair,
-        RpcTarget: class {},
-      };
-      Object.defineProperty(exports, "env", {
-        get() { return globalEnv; },
-        enumerable: true,
-      });
       return {
-        exports,
+        exports: {
+          DurableObject: DurableObjectBase,
+          WorkflowEntrypoint: WorkflowEntrypointBase,
+          WorkerEntrypoint: class WorkerEntrypoint {
+            protected ctx: unknown;
+            protected env: unknown;
+            constructor(ctx: unknown, env: unknown) {
+              this.ctx = ctx;
+              this.env = env;
+            }
+          },
+          WebSocketRequestResponsePair,
+          WebSocketPair,
+          RpcTarget: class {},
+          env: globalEnv,
+        },
         loader: "object",
       };
     });

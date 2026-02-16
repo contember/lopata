@@ -18,11 +18,16 @@ import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServi
 
 /**
  * Global reference to the built env object. Used by cloudflare:workers `env` export.
+ * Must remain the same object reference — we mutate it in place so that
+ * `import { env } from "cloudflare:workers"` always sees current bindings.
  */
-export let globalEnv: Record<string, unknown> = {};
+export const globalEnv: Record<string, unknown> = {};
 
 export function setGlobalEnv(env: Record<string, unknown>) {
-  globalEnv = env;
+  for (const key of Object.keys(globalEnv)) {
+    delete globalEnv[key];
+  }
+  Object.assign(globalEnv, env);
 }
 
 export function parseDevVars(content: string): Record<string, string> {
@@ -241,7 +246,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   }
 
   // Store reference for cloudflare:workers env export
-  globalEnv = env;
+  setGlobalEnv(env);
 
   return { env, registry };
 }

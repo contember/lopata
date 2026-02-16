@@ -11,17 +11,17 @@
   --color-accent-lime: #DFFF40;
   --color-accent-blue: #9BB5FC;
   --color-accent-olive: #7C8B00;
+  --color-error-red: #DC2626;
+  --color-error-bg: #FEF2F2;
+  --color-error-border: #FECACA;
   --shadow-card: 0px 10px 40px rgba(0, 0, 0, 0.05);
   --shadow-card-hover: 0px 14px 48px rgba(0, 0, 0, 0.1);
-  --shadow-lime-glow: 0 4px 16px rgba(223, 255, 64, 0.3);
-  --shadow-focus: 0 4px 20px rgba(0, 0, 0, 0.08);
-  --shadow-focus-soft: 0 4px 20px rgba(0, 0, 0, 0.05);
   --radius-card: 24px;
 }
 
-/* Scrollbar — not possible via Tailwind */
 .scrollbar-thin::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 .scrollbar-thin::-webkit-scrollbar-track {
   background: transparent;

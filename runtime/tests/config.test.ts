@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
-import { loadConfig, autoLoadConfig, parseTOML } from "../config";
+import { loadConfig, autoLoadConfig } from "../config";
+import { parse as parseTOML } from "smol-toml";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";

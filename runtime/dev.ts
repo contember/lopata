@@ -1,3 +1,6 @@
+// Capture deeper stacks in dev mode (default is 10, async boundaries still truncate)
+Error.stackTraceLimit = 50;
+
 // Plugin is registered via preload (bunfig.toml / --preload flag)
 import "./plugin";
 import { autoLoadConfig, loadConfig } from "./config";
@@ -9,7 +12,7 @@ import { QueuePullConsumer } from "./bindings/queue";
 import type { PullRequest, AckRequest } from "./bindings/queue";
 import { getDatabase } from "./db";
 import { addCfProperty } from "./request-cf";
-import { handleDashboardRequest, dashboardHtml, setDashboardConfig, setGenerationManager, setWorkerRegistry } from "./dashboard/api";
+import { handleDashboardRequest, setDashboardConfig, setGenerationManager, setWorkerRegistry } from "./dashboard/api";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getTraceStore } from "./tracing/store";
 import type { TraceEvent } from "./tracing/types";
@@ -25,7 +28,7 @@ const envFlag = parseFlag("--env");
 const listenFlag = parseFlag("--listen");
 const portFlag = parseFlag("--port");
 
-const baseDir = path.resolve(import.meta.dir, "..");
+const baseDir = process.cwd();
 const watchers: FileWatcher[] = [];
 
 // Try to load bunflare.config.ts for multi-worker mode
@@ -139,16 +142,20 @@ const hostname = listenFlag ?? process.env.HOST ?? "localhost";
 const server = Bun.serve({
   port,
   hostname,
-  routes: {
-    "/__dashboard": dashboardHtml,
-  },
   async fetch(request, server) {
     addCfProperty(request);
 
     const url = new URL(request.url);
 
-    // Dashboard API routes
-    if (url.pathname === "/__dashboard/api/rpc") {
+    // Dashboard trace WebSocket stream (must be before dashboard catch-all for server.upgrade)
+    if (url.pathname === "/__dashboard/api/traces/ws") {
+      const upgraded = server.upgrade(request, { data: { type: "trace-stream", _url: request.url } as any });
+      if (!upgraded) return new Response("WebSocket upgrade failed", { status: 500 });
+      return undefined as unknown as Response;
+    }
+
+    // Dashboard routes (HTML, assets, API)
+    if (url.pathname.startsWith("/__dashboard")) {
       return handleDashboardRequest(request);
     }
 
@@ -172,13 +179,6 @@ const server = Bun.serve({
       } catch (err) {
         return Response.json({ error: String(err) }, { status: 400 });
       }
-    }
-
-    // Dashboard trace WebSocket stream
-    if (url.pathname === "/__dashboard/api/traces/ws") {
-      const upgraded = server.upgrade(request, { data: { type: "trace-stream", _url: request.url } as any });
-      if (!upgraded) return new Response("WebSocket upgrade failed", { status: 500 });
-      return undefined as unknown as Response;
     }
 
     // Manual trigger: GET /__scheduled?cron=<expression>

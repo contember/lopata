@@ -7,6 +7,7 @@ import { ExecutionContext } from "./execution-context";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
 import { startSpan, setSpanAttribute } from "./tracing/span";
+import { renderErrorPage } from "./error-page/build";
 
 interface ClassRegistry {
   durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[];
@@ -84,6 +85,8 @@ export class Generation {
   async callFetch(request: Request, server: any): Promise<Response | undefined> {
     this.activeRequests++;
     const ctx = new ExecutionContext();
+    // Capture caller stack before async boundary so we can stitch it onto errors
+    const asyncContext = new Error();
     try {
       const url = new URL(request.url);
 
@@ -129,7 +132,8 @@ export class Generation {
             }
           } catch (err) {
             console.error("[bunflare] Request error:", err);
-            return new Response("Internal Server Error", { status: 500 });
+            stitchAsyncStack(err, asyncContext);
+            return renderErrorPage(err, request, this.env, this.config, this.workerName);
           }
           return await this.registry.staticAssets!.fetch(request);
         }
@@ -149,7 +153,8 @@ export class Generation {
           return result;
         } catch (err) {
           console.error("[bunflare] Request error:", err);
-          return new Response("Internal Server Error", { status: 500 });
+          stitchAsyncStack(err, asyncContext);
+          return renderErrorPage(err, request, this.env, this.config, this.workerName);
         }
       });
     } finally {
@@ -274,6 +279,16 @@ export class Generation {
       createdAt: this.createdAt,
       activeRequests: this.activeRequests,
     };
+  }
+}
+
+/** Append the pre-await caller stack onto a caught error so async context is visible */
+function stitchAsyncStack(err: unknown, asyncContext: Error): void {
+  if (err instanceof Error && asyncContext.stack) {
+    const contextLines = asyncContext.stack.split("\n").slice(1); // skip "Error" line
+    if (contextLines.length > 0) {
+      err.stack += "\n    --- async ---\n" + contextLines.join("\n");
+    }
   }
 }
 

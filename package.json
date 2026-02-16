@@ -21,6 +21,7 @@
     "html-rewriter-wasm": "^0.4.1",
     "preact": "^10.28.3",
     "sharp": "^0.34.5",
+    "smol-toml": "^1.6.0",
     "tailwindcss": "^4.1.18"
   }
 }
