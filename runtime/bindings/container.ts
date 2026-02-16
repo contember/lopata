@@ -97,6 +97,23 @@ export class ContainerRuntime {
 
     this._transition("running");
 
+    // Check if a container with this name already exists (e.g. after process crash)
+    const existing = await this._docker.inspect(this._containerName);
+    if (existing) {
+      if (existing.state === "running") {
+        // Recover port mappings from the running container
+        this._hostPorts.clear();
+        this._recoverPortMappings(existing.ports);
+        await this.onStart?.();
+        this._startHealthCheck();
+        this._startMonitor();
+        this.renewActivityTimeout();
+        return;
+      }
+      // Container exists but isn't running — remove it before creating a new one
+      await this._docker.remove(this._containerName);
+    }
+
     // Determine ports to expose
     const ports = new Set<number>([this.defaultPort, ...this.requiredPorts]);
     this._hostPorts.clear();
@@ -271,6 +288,21 @@ export class ContainerRuntime {
   }
 
   // ─── Private ────────────────────────────────────────────────────────────
+
+  /**
+   * Recover host port mappings from docker inspect Ports object.
+   * Format: { "8080/tcp": [{ "HostIp": "...", "HostPort": "49152" }], ... }
+   */
+  private _recoverPortMappings(ports: Record<string, unknown>) {
+    for (const [key, bindings] of Object.entries(ports)) {
+      if (!Array.isArray(bindings) || bindings.length === 0) continue;
+      const containerPort = parseInt(key, 10);
+      if (isNaN(containerPort)) continue;
+      const hostPort = parseInt(bindings[0].HostPort, 10);
+      if (isNaN(hostPort)) continue;
+      this._hostPorts.set(containerPort, hostPort);
+    }
+  }
 
   private _startHealthCheck() {
     if (this._healthCheckTimer) clearInterval(this._healthCheckTimer);
