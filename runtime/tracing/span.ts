@@ -7,6 +7,10 @@ export interface SpanOptions {
   kind?: SpanData["kind"];
   attributes?: Record<string, unknown>;
   workerName?: string;
+  /** Skip ALS.run() to preserve async stack traces. ALS in Bun/JSC
+   *  destroys async frames after real I/O. Use for the main request span;
+   *  sub-spans (binding instrumentation) should keep ALS for correct parenting. */
+  skipAls?: boolean;
 }
 
 export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>): Promise<T> {
@@ -35,7 +39,7 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
   store.insertSpan(span);
 
   try {
-    const result = await runWithContext({ traceId, spanId }, () => fn());
+    const result = await runWithContext({ traceId, spanId }, () => fn(), opts.skipAls);
     if (result instanceof Response && result.status >= 500) {
       store.setSpanStatus(spanId, "error", `HTTP ${result.status}`);
     }
@@ -85,4 +89,42 @@ export function addSpanEvent(name: string, level: string, message: string, attrs
     message,
     attributes: attrs ?? {},
   });
+}
+
+/** Persist an error to the errors table, linking it to the current trace/span context. */
+export function persistError(error: unknown, source: string, workerName?: string): void {
+  try {
+    const err = error instanceof Error ? error : new Error(String(error));
+    const ctx = getActiveContext();
+    const store = getTraceStore();
+    store.insertError({
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      errorName: err.name,
+      errorMessage: err.message,
+      workerName: workerName ?? null,
+      traceId: ctx?.traceId ?? null,
+      spanId: ctx?.spanId ?? null,
+      source,
+      data: JSON.stringify({
+        error: {
+          name: err.name,
+          message: err.message,
+          stack: err.stack ?? String(error),
+          frames: [],
+        },
+        request: { method: "", url: "", headers: {} },
+        env: {},
+        bindings: [],
+        runtime: {
+          bunVersion: Bun.version,
+          platform: process.platform,
+          arch: process.arch,
+          workerName,
+        },
+      }),
+    });
+  } catch {
+    // Never let error persistence break the caller
+  }
 }

@@ -3,6 +3,7 @@ import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
+import { persistError } from "../tracing/span";
 
 // --- SQL Storage Cursor ---
 
@@ -529,14 +530,16 @@ export class DurableObjectStateImpl {
 
   /** @internal Enqueue a request — ensures serial execution (E-order) */
   _enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this._requestQueue.then(async () => {
+    const execute = async (): Promise<T> => {
+      await this._requestQueue;
       this._activeRequests++;
       try {
         return await fn();
       } finally {
         this._activeRequests--;
       }
-    });
+    };
+    const result = execute();
     this._requestQueue = result.then(() => {}, () => {}); // swallow errors for queue
     return result;
   }
@@ -777,6 +780,7 @@ export class DurableObjectNamespaceImpl {
           });
         }
       } catch (e) {
+        persistError(e, "alarm");
         if (retryCount < MAX_ALARM_RETRIES) {
           // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
           const backoffMs = Math.pow(2, retryCount) * 1000;

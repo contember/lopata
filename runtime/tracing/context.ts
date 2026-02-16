@@ -7,11 +7,27 @@ export interface SpanContext {
 
 const storage = new AsyncLocalStorage<SpanContext>();
 
+// Fallback context for spans that skip ALS (to preserve async stack traces).
+// ALS.run() in Bun/JSC destroys async stack frames after real I/O.
+// The main request span uses this fallback; sub-spans (binding instrumentation)
+// use ALS normally. With concurrent requests the fallback may produce wrong
+// parent references, but that's acceptable for a dev server.
+let fallbackContext: SpanContext | undefined = undefined;
+
 export function getActiveContext(): SpanContext | undefined {
-  return storage.getStore();
+  return storage.getStore() ?? fallbackContext;
 }
 
-export function runWithContext<T>(ctx: SpanContext, fn: () => T): T {
+export function runWithContext<T>(ctx: SpanContext, fn: () => T, skipAls = false): T {
+  if (skipAls) {
+    const prev = fallbackContext;
+    fallbackContext = ctx;
+    try {
+      return fn();
+    } finally {
+      fallbackContext = prev;
+    }
+  }
   return storage.run(ctx, fn);
 }
 

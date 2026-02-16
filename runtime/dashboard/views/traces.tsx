@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "preact/hooks";
 import { useMutation } from "../rpc/hooks";
-import type { TraceSummary, SpanData, SpanEventData, TraceEvent } from "../rpc/types";
+import type { TraceSummary, SpanData, SpanEventData, TraceEvent, TraceErrorSummary } from "../rpc/types";
 import { rpc } from "../rpc/client";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -603,6 +603,14 @@ function LogsListTab() {
 
 // ─── Trace Detail Drawer ─────────────────────────────────────────────
 
+const SOURCE_BADGE_COLORS: Record<string, string> = {
+  fetch: "bg-blue-100 text-blue-700",
+  scheduled: "bg-purple-100 text-purple-700",
+  queue: "bg-orange-100 text-orange-700",
+  alarm: "bg-yellow-100 text-yellow-700",
+  workflow: "bg-emerald-100 text-emerald-700",
+};
+
 function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
   traceId: string;
   onClose: () => void;
@@ -610,6 +618,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
 }) {
   const [spans, setSpans] = useState<SpanData[]>([]);
   const [events, setEvents] = useState<SpanEventData[]>([]);
+  const [traceErrors, setTraceErrors] = useState<TraceErrorSummary[]>([]);
   const [expandedSpan, setExpandedSpan] = useState<string | null>(null);
   const [collapsedSpans, setCollapsedSpans] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
@@ -624,6 +633,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
       setEvents(data.events);
       setIsLoading(false);
     });
+    rpc("traces.errors", { traceId }).then(setTraceErrors).catch(() => {});
   }, [traceId]);
 
   // Live updates via WS event bus
@@ -747,6 +757,33 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
             <div class="text-gray-400 text-sm">Loading trace...</div>
           ) : (
             <div>
+              {/* Linked errors */}
+              {traceErrors.length > 0 && (
+                <div class="mb-4">
+                  <div class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Errors ({traceErrors.length})</div>
+                  <div class="space-y-1">
+                    {traceErrors.map(err => (
+                      <a
+                        key={err.id}
+                        href={`#/errors?id=${err.id}`}
+                        class="flex items-center gap-2 px-3 py-2 rounded-md bg-red-50 border border-red-100 text-xs no-underline hover:bg-red-100 transition-colors"
+                      >
+                        {err.source && (
+                          <span class={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            SOURCE_BADGE_COLORS[err.source] ?? "bg-red-100 text-red-700"
+                          }`}>
+                            {err.source}
+                          </span>
+                        )}
+                        <span class="font-medium text-red-700">{err.errorName}</span>
+                        <span class="text-red-500 truncate">{err.errorMessage}</span>
+                        <span class="text-red-400 font-mono ml-auto flex-shrink-0">{formatTimestamp(err.timestamp)}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Timeline header */}
               <div class="flex items-center justify-between mb-3">
                 <span class="text-xs text-gray-400 font-mono">0ms</span>

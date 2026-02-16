@@ -1,6 +1,7 @@
 import type { HandlerContext, OverviewData } from "../types";
 import { getAllConfigs } from "../types";
 import { getDatabase, getDataDir } from "../../../db";
+import { getTraceStore } from "../../../tracing/store";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 
@@ -37,6 +38,7 @@ export const handlers = {
       workflows: dbWorkflows.size,
       d1: d1Count,
       cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
+      errors: getTraceStore().getErrorCount(),
       generations: ctx.manager ? ctx.manager.list() : [],
       ...(ctx.registry ? {
         workers: Array.from(ctx.registry.listManagers()).map(([name, mgr]) => ({

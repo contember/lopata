@@ -11,6 +11,7 @@ import { handlers as generations } from "./handlers/generations";
 import { handlers as workers } from "./handlers/workers";
 import { handlers as traces } from "./handlers/traces";
 import { handlers as config } from "./handlers/config";
+import { handlers as errors } from "./handlers/errors";
 
 const allHandlers = {
   ...overview,
@@ -25,6 +26,7 @@ const allHandlers = {
   ...workers,
   ...traces,
   ...config,
+  ...errors,
 };
 
 export type Procedures = {

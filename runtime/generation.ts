@@ -6,7 +6,7 @@ import { startCronScheduler, createScheduledController } from "./bindings/schedu
 import { ExecutionContext } from "./execution-context";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
-import { startSpan, setSpanAttribute, setSpanStatus } from "./tracing/span";
+import { startSpan, setSpanAttribute, persistError } from "./tracing/span";
 import { renderErrorPage } from "./error-page/build";
 
 interface ClassRegistry {
@@ -91,6 +91,12 @@ export class Generation {
       // Skip tracing for internal/infrastructure paths (Bun HMR, browser probes, etc.)
       const skipTracing = url.pathname.startsWith("/_bun/") || url.pathname.startsWith("/.well-known/");
 
+      // Capture caller stack before entering the worker — frameworks like Hono
+      // use .then()/.catch() internally which destroys async stack traces in Bun.
+      // We stitch this context onto caught errors so the error page shows the
+      // full call chain even when the engine loses it.
+      const callerStack = skipTracing ? null : new Error();
+
       const handler = async () => {
         const callWorkerFetch = async (req: Request) => {
           if (this.classBasedExport) {
@@ -113,6 +119,14 @@ export class Generation {
           return response;
         };
 
+        const handleError = async (err: unknown): Promise<Response> => {
+          if (callerStack && err instanceof Error) {
+            stitchAsyncStack(err, callerStack);
+          }
+          console.error("[bunflare] Request error:\n" + (err instanceof Error ? err.stack : String(err)));
+          return renderErrorPage(err, request, this.env, this.config, this.workerName);
+        };
+
         const runWorkerFirst = this.config.assets?.run_worker_first;
         const hasAssets = this.registry.staticAssets && !this.config.assets?.binding;
         const workerFirst = hasAssets && shouldRunWorkerFirst(runWorkerFirst, url.pathname);
@@ -127,10 +141,7 @@ export class Generation {
               return result;
             }
           } catch (err) {
-            console.error("[bunflare] Request error:", err);
-            const message = err instanceof Error ? err.message : String(err);
-            setSpanStatus("error", message);
-            return renderErrorPage(err, request, this.env, this.config, this.workerName);
+            return handleError(err);
           }
           return await this.registry.staticAssets!.fetch(request);
         }
@@ -149,10 +160,7 @@ export class Generation {
           ctx._awaitAll().catch(() => {});
           return result;
         } catch (err) {
-          console.error("[bunflare] Request error:", err);
-          const message = err instanceof Error ? err.message : String(err);
-          setSpanStatus("error", message);
-          return renderErrorPage(err, request, this.env, this.config, this.workerName);
+          return handleError(err);
         }
       };
 
@@ -165,6 +173,7 @@ export class Generation {
         kind: "server",
         attributes: { "http.method": request.method, "http.url": request.url },
         workerName: this.workerName,
+        skipAls: true,
       }, handler);
     } finally {
       this.activeRequests--;
@@ -178,6 +187,7 @@ export class Generation {
       kind: "server",
       attributes: { cron: cronExpr },
       workerName: this.workerName,
+      skipAls: true,
     }, async () => {
       const ctx = new ExecutionContext();
       let handler: Function | undefined;
@@ -204,6 +214,7 @@ export class Generation {
         return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 });
       } catch (err) {
         console.error("[bunflare] Scheduled handler error:", err);
+        persistError(err, "scheduled", this.workerName);
         throw err;
       }
     });
@@ -289,6 +300,26 @@ export class Generation {
       activeRequests: this.activeRequests,
     };
   }
+}
+
+/**
+ * Stitch a pre-captured caller stack onto an error whose async stack was
+ * destroyed by .then()/.catch() boundaries (e.g. Hono's dispatch).
+ * Only appends if the error's stack looks truncated (few frames or contains
+ * processTicksAndRejections).
+ */
+function stitchAsyncStack(err: Error, callerError: Error): void {
+  if (!err.stack || !callerError.stack) return;
+  // Already stitched
+  if (err.stack.includes("--- async ---")) return;
+
+  const errFrames = err.stack.split("\n").filter(l => l.trim().startsWith("at "));
+  // Only stitch when the stack looks truncated (≤5 real frames or has processTicksAndRejections)
+  const looksShort = errFrames.length <= 5 || err.stack.includes("processTicksAndRejections");
+  if (!looksShort) return;
+
+  const callerLines = callerError.stack.split("\n").slice(1);
+  err.stack += "\n    --- async ---\n" + callerLines.join("\n");
 }
 
 function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {

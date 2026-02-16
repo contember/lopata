@@ -52,4 +52,22 @@ export function runTracingMigrations(db: Database): void {
   `);
   db.run("CREATE INDEX IF NOT EXISTS idx_events_span ON span_events(span_id)");
   db.run("CREATE INDEX IF NOT EXISTS idx_events_trace ON span_events(trace_id)");
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS errors (
+      id TEXT PRIMARY KEY,
+      timestamp INTEGER NOT NULL,
+      error_name TEXT NOT NULL,
+      error_message TEXT NOT NULL,
+      request_method TEXT,
+      request_url TEXT,
+      worker_name TEXT,
+      trace_id TEXT,
+      span_id TEXT,
+      source TEXT,
+      data TEXT NOT NULL
+    )
+  `);
+  db.run("CREATE INDEX IF NOT EXISTS idx_errors_timestamp ON errors(timestamp DESC)");
+  db.run("CREATE INDEX IF NOT EXISTS idx_errors_trace ON errors(trace_id)");
 }

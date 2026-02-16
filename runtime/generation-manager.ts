@@ -10,6 +10,59 @@ function isEntrypointClass(exp: unknown): exp is new (ctx: ExecutionContext, env
     typeof exp.prototype.fetch === "function";
 }
 
+/**
+ * Detect and patch web frameworks (Hono, etc.) that use .then()/.catch()
+ * for request dispatch. This breaks async stack traces in Bun because
+ * errors that propagate through .then() callbacks lose their async context.
+ *
+ * err.stack is set once at Error creation and doesn't change, but Bun
+ * appends async frames (callers) only when the error is caught via `await`,
+ * not via `.catch()`. The user's error handler may re-throw inside .catch(),
+ * which creates a new rejection without those async frames.
+ *
+ * Fix: wrap each route handler with try/catch to snapshot err.stack
+ * (which includes async frames at that point) before the error enters
+ * the .then()/.catch() chain. If the error handler re-throws, we
+ * restore the full stack.
+ */
+function patchFrameworkDispatch(defaultExport: Record<string, unknown>): void {
+  if (typeof defaultExport.fetch !== "function") return;
+
+  // Detect Hono by characteristic properties
+  const isHono = "routes" in defaultExport && "router" in defaultExport && "_basePath" in defaultExport;
+  if (!isHono) return;
+
+  const app = defaultExport as Record<string, any>;
+  const routes: { handler: Function }[] = app.routes;
+  if (!Array.isArray(routes)) return;
+
+  // Wrap each route handler to capture err.stack before .then() destroys it
+  for (const route of routes) {
+    const orig = route.handler;
+    route.handler = async function (this: unknown, c: unknown, next: unknown) {
+      try {
+        return await orig.call(this, c, next);
+      } catch (err: unknown) {
+        // Save the full stack (with async frames) before .then()/.catch() strips them
+        if (err instanceof Error) {
+          (err as any).__asyncStack = err.stack;
+        }
+        throw err;
+      }
+    };
+  }
+
+  // Patch error handler: if the user's handler re-throws, restore the saved stack
+  const origErrorHandler = app.errorHandler;
+  app.errorHandler = (err: unknown, c: unknown) => {
+    if (err instanceof Error && (err as any).__asyncStack) {
+      err.stack = (err as any).__asyncStack;
+      delete (err as any).__asyncStack;
+    }
+    return origErrorHandler(err, c);
+  };
+}
+
 export class GenerationManager {
   private generations = new Map<number, Generation>();
   private nextGenId = 1;
@@ -91,6 +144,13 @@ export class GenerationManager {
 
     if (!classBasedExport && !defaultExport?.fetch) {
       throw new Error("Worker module must export a default object with a fetch() method, or a class with a fetch() method on its prototype");
+    }
+
+    // 5b. Patch frameworks that use .then()/.catch() for dispatch (e.g. Hono)
+    // This destroys async stack traces in Bun. We replace their fetch with an
+    // async wrapper so errors propagate through proper await chains.
+    if (!classBasedExport) {
+      patchFrameworkDispatch(defaultExport);
     }
 
     // 6. Create new generation

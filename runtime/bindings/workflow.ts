@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { persistError } from "../tracing/span";
 
 // --- Limits ---
 
@@ -716,6 +717,7 @@ export class SqliteWorkflowBinding {
         db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
           .run(message, errorName, Date.now(), id);
         console.error(`[workflow] failed ${id}:`, err);
+        persistError(err, "workflow");
       } finally {
         eventWaiters.delete(id);
         abortControllers.delete(id);

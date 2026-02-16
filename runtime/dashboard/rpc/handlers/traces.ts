@@ -48,6 +48,14 @@ export const handlers = {
     return store.listAllLogs({ limit: input.limit ?? 50, cursor: input.cursor });
   },
 
+  "traces.errors"(input: { traceId: string }) {
+    if (!input.traceId || typeof input.traceId !== "string") {
+      throw new Error("traceId is required and must be a string");
+    }
+    const store = getTraceStore();
+    return store.getErrorsForTrace(input.traceId);
+  },
+
   "traces.clear"(_input: {}): { ok: true } {
     const store = getTraceStore();
     store.clearTraces();

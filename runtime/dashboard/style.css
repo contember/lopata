@@ -2,21 +2,21 @@
 @source "./";
 
 @theme {
-  --color-surface: #ECEEF2;
-  --color-surface-raised: #F2F4F6;
-  --color-surface-hover: #E8EAEE;
-  --color-surface-dim: #E6E8EC;
+  --color-surface: #f9fafb;
+  --color-surface-raised: #f3f4f6;
+  --color-surface-hover: #f3f4f6;
+  --color-surface-dim: #e5e7eb;
   --color-ink: #1A1A1A;
   --color-ink-muted: #333333;
   --color-accent-lime: #DFFF40;
   --color-accent-blue: #9BB5FC;
   --color-accent-olive: #7C8B00;
-  --shadow-card: 0px 10px 40px rgba(0, 0, 0, 0.05);
-  --shadow-card-hover: 0px 14px 48px rgba(0, 0, 0, 0.1);
-  --shadow-lime-glow: 0 4px 16px rgba(223, 255, 64, 0.3);
-  --shadow-focus: 0 4px 20px rgba(0, 0, 0, 0.08);
-  --shadow-focus-soft: 0 4px 20px rgba(0, 0, 0, 0.05);
-  --radius-card: 24px;
+  --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+  --shadow-lime-glow: none;
+  --shadow-focus: 0 0 0 2px rgba(0, 0, 0, 0.06);
+  --shadow-focus-soft: 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --radius-card: 10px;
 }
 
 /* Scrollbar — not possible via Tailwind */

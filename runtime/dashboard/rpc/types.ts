@@ -21,6 +21,7 @@ export interface OverviewData {
   workflows: number;
   d1: number;
   cache: number;
+  errors: number;
   generations: GenerationInfo[];
 }
 
@@ -176,6 +177,65 @@ export interface WorkerInfo {
   name: string;
   isMain: boolean;
   bindings: WorkerBinding[];
+}
+
+// Errors
+export interface ErrorSummary {
+  id: string;
+  timestamp: number;
+  errorName: string;
+  errorMessage: string;
+  requestMethod: string | null;
+  requestUrl: string | null;
+  workerName: string | null;
+  traceId: string | null;
+  spanId: string | null;
+  source: string | null;
+}
+
+export interface ErrorDetail {
+  id: string;
+  timestamp: number;
+  traceId: string | null;
+  spanId: string | null;
+  source: string | null;
+  data: {
+    error: {
+      name: string;
+      message: string;
+      stack: string;
+      frames: Array<{
+        file: string;
+        line: number;
+        column: number;
+        function: string;
+        source?: string[];
+        sourceLine?: number;
+      }>;
+    };
+    request: {
+      method: string;
+      url: string;
+      headers: Record<string, string>;
+    };
+    env: Record<string, string>;
+    bindings: Array<{ name: string; type: string }>;
+    runtime: {
+      bunVersion: string;
+      platform: string;
+      arch: string;
+      workerName?: string;
+      configName?: string;
+    };
+  };
+}
+
+export interface TraceErrorSummary {
+  id: string;
+  timestamp: number;
+  errorName: string;
+  errorMessage: string;
+  source: string | null;
 }
 
 // Traces (re-export from tracing module)

@@ -1,5 +1,7 @@
 import { join } from "node:path";
 import type { WranglerConfig } from "../config";
+import { getTraceStore } from "../tracing/store";
+import { getActiveContext } from "../tracing/context";
 
 interface StackFrame {
   file: string;
@@ -205,6 +207,26 @@ export async function renderErrorPage(
       configName: config.name,
     },
   };
+
+  // Persist error to tracing store
+  try {
+    const ctx = getActiveContext();
+    getTraceStore().insertError({
+      id: crypto.randomUUID(),
+      timestamp: Date.now(),
+      errorName: data.error.name,
+      errorMessage: data.error.message,
+      requestMethod: data.request.method,
+      requestUrl: data.request.url,
+      workerName: data.runtime.workerName ?? null,
+      traceId: ctx?.traceId ?? null,
+      spanId: ctx?.spanId ?? null,
+      source: "fetch",
+      data: JSON.stringify(data),
+    });
+  } catch {
+    // Don't let persistence failure break the error response
+  }
 
   const script = `<script>window.__BUNFLARE_ERROR__ = ${JSON.stringify(data).replace(/</g, "\\u003c")};</script>`;
   const html = errorPageHtml.replace("</head>", `${script}\n</head>`);

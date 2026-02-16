@@ -25,10 +25,10 @@ export function WorkersView() {
           {workers.map(w => (
             <div key={w.name}>
               <div class="flex items-center gap-3 mb-4">
-                <span class="w-8 h-8 rounded-full bg-surface-raised flex items-center justify-center text-base">⊡</span>
+                <span class="w-7 h-7 rounded-md bg-gray-100 flex items-center justify-center text-sm">⊡</span>
                 <h2 class="text-lg font-bold text-ink">{w.name}</h2>
                 {w.isMain && (
-                  <span class="px-3 py-1 rounded-full text-xs font-semibold bg-accent-lime text-ink">main</span>
+                  <span class="px-2 py-0.5 rounded-md text-xs font-medium bg-gray-900 text-white">main</span>
                 )}
                 <span class="text-xs text-gray-400">{w.bindings.length} binding(s)</span>
               </div>

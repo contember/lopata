@@ -303,6 +303,109 @@ export class TraceStore {
     this.startTimeCache.clear();
   }
 
+  // ─── Error persistence ──────────────────────────────────────────────
+
+  insertError(opts: {
+    id: string;
+    timestamp: number;
+    errorName: string;
+    errorMessage: string;
+    requestMethod?: string | null;
+    requestUrl?: string | null;
+    workerName?: string | null;
+    traceId?: string | null;
+    spanId?: string | null;
+    source?: string | null;
+    data: string;
+  }): void {
+    this.db.prepare(
+      `INSERT INTO errors (id, timestamp, error_name, error_message, request_method, request_url, worker_name, trace_id, span_id, source, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      opts.id, opts.timestamp, opts.errorName, opts.errorMessage,
+      opts.requestMethod ?? null, opts.requestUrl ?? null, opts.workerName ?? null,
+      opts.traceId ?? null, opts.spanId ?? null, opts.source ?? null, opts.data,
+    );
+    this.enforceErrorCap();
+  }
+
+  listErrors(opts: { limit?: number; cursor?: string }): { items: Array<{ id: string; timestamp: number; errorName: string; errorMessage: string; requestMethod: string | null; requestUrl: string | null; workerName: string | null; traceId: string | null; spanId: string | null; source: string | null }>; cursor: string | null } {
+    const limit = opts.limit ?? 50;
+    const { time: cursorTime, id: cursorId } = parseCursor(opts.cursor);
+
+    const rows = this.db.prepare<Record<string, unknown>, [number, number, string, number]>(`
+      SELECT id, timestamp, error_name, error_message, request_method, request_url, worker_name, trace_id, span_id, source
+      FROM errors
+      WHERE timestamp < ? OR (timestamp = ? AND id < ?)
+      ORDER BY timestamp DESC, id DESC
+      LIMIT ?
+    `).all(cursorTime, cursorTime, cursorId, limit + 1);
+
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map(r => ({
+      id: r.id as string,
+      timestamp: r.timestamp as number,
+      errorName: r.error_name as string,
+      errorMessage: r.error_message as string,
+      requestMethod: r.request_method as string | null,
+      requestUrl: r.request_url as string | null,
+      workerName: r.worker_name as string | null,
+      traceId: r.trace_id as string | null,
+      spanId: r.span_id as string | null,
+      source: r.source as string | null,
+    }));
+
+    const last = items[items.length - 1];
+    const cursor = hasMore && last ? buildCursor(last.timestamp, last.id) : null;
+    return { items, cursor };
+  }
+
+  getError(id: string): { id: string; timestamp: number; traceId: string | null; spanId: string | null; source: string | null; data: unknown } | null {
+    const row = this.db.prepare<Record<string, unknown>, [string]>(
+      "SELECT id, timestamp, trace_id, span_id, source, data FROM errors WHERE id = ?"
+    ).get(id);
+    if (!row) return null;
+    return {
+      id: row.id as string,
+      timestamp: row.timestamp as number,
+      traceId: row.trace_id as string | null,
+      spanId: row.span_id as string | null,
+      source: row.source as string | null,
+      data: JSON.parse(row.data as string),
+    };
+  }
+
+  getErrorsForTrace(traceId: string): Array<{ id: string; timestamp: number; errorName: string; errorMessage: string; source: string | null }> {
+    return this.db.prepare<Record<string, unknown>, [string]>(
+      "SELECT id, timestamp, error_name, error_message, source FROM errors WHERE trace_id = ? ORDER BY timestamp ASC"
+    ).all(traceId).map(r => ({
+      id: r.id as string,
+      timestamp: r.timestamp as number,
+      errorName: r.error_name as string,
+      errorMessage: r.error_message as string,
+      source: r.source as string | null,
+    }));
+  }
+
+  deleteError(id: string): void {
+    this.db.prepare("DELETE FROM errors WHERE id = ?").run(id);
+  }
+
+  clearErrors(): void {
+    this.db.run("DELETE FROM errors");
+  }
+
+  getErrorCount(): number {
+    return this.db.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM errors").get()?.cnt ?? 0;
+  }
+
+  private enforceErrorCap(): void {
+    const count = this.db.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM errors").get()?.cnt ?? 0;
+    if (count <= 1000) return;
+    this.db.prepare(
+      "DELETE FROM errors WHERE id IN (SELECT id FROM errors ORDER BY timestamp ASC LIMIT 50)"
+    ).run();
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };

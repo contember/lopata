@@ -1,4 +1,5 @@
 import { ExecutionContext } from "../execution-context";
+import { persistError } from "../tracing/span";
 
 export interface ScheduledController {
   readonly scheduledTime: number;
@@ -154,6 +155,7 @@ export function startCronScheduler(
           .then(() => ctx._awaitAll())
           .catch((err) => {
             console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err);
+            persistError(err, "scheduled");
           });
       }
     }

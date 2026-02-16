@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 import { ExecutionContext } from "../execution-context";
 import crypto from "node:crypto";
+import { persistError } from "../tracing/span";
 
 // --- Types ---
 
@@ -299,6 +300,7 @@ export class QueueConsumer {
       await this.handler(batch, this.env, ctx);
     } catch (err) {
       console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err);
+      persistError(err, "queue");
       // On handler error, retry all messages
       handlerError = true;
     }
