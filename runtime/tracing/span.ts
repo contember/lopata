@@ -36,6 +36,9 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
 
   try {
     const result = await runWithContext({ traceId, spanId }, () => fn());
+    if (result instanceof Response && result.status >= 500) {
+      store.setSpanStatus(spanId, "error", `HTTP ${result.status}`);
+    }
     const currentStatus = store.getSpanStatus(spanId);
     store.endSpan(spanId, Date.now(), currentStatus === "error" ? "error" : "ok");
     return result;
