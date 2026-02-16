@@ -1,13 +1,23 @@
 import { useState, useEffect } from "preact/hooks";
 import { useMutation } from "../rpc/hooks";
-import type { ErrorSummary, ErrorDetail } from "../rpc/types";
+import type { ErrorSummary, ErrorDetail, SpanData } from "../rpc/types";
 import { rpc } from "../rpc/client";
+import { navigate } from "../lib";
+import { formatDuration } from "./trace-waterfall";
 
-export function ErrorsView() {
+export function ErrorsView({ route }: { route: string }) {
+  const parts = route.split("/").filter(Boolean);
+  // /errors → list, /errors/{id} → detail
+  if (parts.length >= 2) return <ErrorDetailPage errorId={decodeURIComponent(parts[1]!)} />;
+  return <ErrorList />;
+}
+
+// ─── Error List ──────────────────────────────────────────────────────
+
+function ErrorList() {
   const [errors, setErrors] = useState<ErrorSummary[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const clearErrors = useMutation("errors.clear");
 
   const loadErrors = (cur?: string) => {
@@ -29,14 +39,13 @@ export function ErrorsView() {
     clearErrors.mutate().then(() => {
       setErrors([]);
       setCursor(null);
-      setSelectedId(null);
     });
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = (id: string, e: Event) => {
+    e.stopPropagation();
     rpc("errors.delete", { id }).then(() => {
-      setErrors(prev => prev.filter(e => e.id !== id));
-      if (selectedId === id) setSelectedId(null);
+      setErrors(prev => prev.filter(err => err.id !== id));
     });
   };
 
@@ -79,10 +88,8 @@ export function ErrorsView() {
                 {errors.map(err => (
                   <tr
                     key={err.id}
-                    onClick={() => setSelectedId(err.id)}
-                    class={`border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50 ${
-                      selectedId === err.id ? "bg-gray-50" : ""
-                    }`}
+                    onClick={() => navigate(`/errors/${err.id}`)}
+                    class="border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50"
                   >
                     <td class="px-4 py-2.5">
                       <SourceBadge source={err.source} />
@@ -124,7 +131,7 @@ export function ErrorsView() {
                     </td>
                     <td class="px-4 py-2.5 text-right">
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleDelete(err.id); }}
+                        onClick={(e) => handleDelete(err.id, e)}
                         class="text-gray-300 hover:text-red-500 transition-colors"
                         title="Delete error"
                       >
@@ -152,242 +159,385 @@ export function ErrorsView() {
           <div class="text-gray-400 text-sm text-center py-12">Loading errors...</div>
         )}
       </div>
-
-      {selectedId && (
-        <ErrorDrawer
-          errorId={selectedId}
-          onClose={() => setSelectedId(null)}
-          onDelete={(id) => handleDelete(id)}
-        />
-      )}
     </div>
   );
 }
 
-// ─── Error Detail Drawer ──────────────────────────────────────────────
+// ─── Error Detail Page ───────────────────────────────────────────────
 
-function ErrorDrawer({ errorId, onClose, onDelete }: {
-  errorId: string;
-  onClose: () => void;
-  onDelete: (id: string) => void;
-}) {
+function ErrorDetailPage({ errorId }: { errorId: string }) {
   const [detail, setDetail] = useState<ErrorDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [traceSpans, setTraceSpans] = useState<SpanData[] | null>(null);
 
   useEffect(() => {
     setIsLoading(true);
+    setTraceSpans(null);
     rpc("errors.get", { id: errorId }).then(data => {
-      setDetail(data as ErrorDetail);
+      const d = data as ErrorDetail;
+      setDetail(d);
       setIsLoading(false);
+      if (d.traceId) {
+        rpc("traces.getTrace", { traceId: d.traceId }).then(trace => {
+          setTraceSpans(trace.spans);
+        }).catch(() => {});
+      }
     }).catch(() => setIsLoading(false));
   }, [errorId]);
 
+  const handleDelete = () => {
+    rpc("errors.delete", { id: errorId }).then(() => {
+      navigate("/errors");
+    });
+  };
+
+  if (isLoading) {
+    return <div class="p-8 text-gray-400 text-sm">Loading error details...</div>;
+  }
+
+  if (!detail) {
+    return <div class="p-8 text-gray-400 text-sm">Error not found.</div>;
+  }
+
+  const { data } = detail;
+
   return (
-    <>
-      <div class="fixed inset-0 bg-black/10 z-40" onClick={onClose} />
-      <div class="fixed right-0 top-0 bottom-0 w-[720px] max-w-[90vw] bg-white border-l border-gray-200 z-50 flex flex-col overflow-hidden animate-slide-in">
-        {/* Header */}
-        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200">
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 text-xs">
-              <span class="text-gray-400 font-mono">Error {errorId.slice(0, 12)}...</span>
-              {detail?.source && <SourceBadge source={detail.source} />}
-              {detail?.traceId && (
-                <a
-                  href={`#/traces?trace=${detail.traceId}`}
-                  class="text-blue-500 hover:text-blue-700 font-mono"
-                >
-                  Trace {detail.traceId.slice(0, 8)}...
-                </a>
-              )}
-            </div>
-            <div class="text-sm font-medium text-red-600 mt-0.5 truncate">
-              {detail?.data.error.name ?? "Loading..."}: {detail?.data.error.message ? truncate(detail.data.error.message, 60) : ""}
-            </div>
-          </div>
-          <div class="flex items-center gap-2 flex-shrink-0 ml-3">
-            <button
-              onClick={() => { onDelete(errorId); onClose(); }}
-              class="px-2 py-1 text-xs rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-            >
-              Delete
-            </button>
-            <button onClick={onClose} class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors text-gray-400 hover:text-ink">
-              &times;
-            </button>
-          </div>
+    <div class="p-6 max-w-5xl mx-auto flex flex-col gap-4">
+      {/* Breadcrumb + actions */}
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2 text-sm text-gray-400">
+          <a href="#/errors" class="text-gray-500 hover:text-ink no-underline font-medium transition-colors">Errors</a>
+          <span class="text-gray-300">/</span>
+          <span class="text-ink font-semibold">{errorId.slice(0, 12)}...</span>
         </div>
+        <button
+          onClick={handleDelete}
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+        >
+          Delete
+        </button>
+      </div>
 
-        {/* Content */}
-        <div class="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-6">
-          {isLoading ? (
-            <div class="text-gray-400 text-sm">Loading error details...</div>
-          ) : detail ? (
-            <>
-              {/* Error section */}
-              <Section title="Error">
-                <div class="space-y-3">
-                  <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-                    <span class="text-gray-400">Name:</span>
-                    <span class="text-red-600 font-medium">{detail.data.error.name}</span>
-                    <span class="text-gray-400">Message:</span>
-                    <span class="text-ink">{detail.data.error.message}</span>
-                    <span class="text-gray-400">Time:</span>
-                    <span class="text-ink font-mono">{new Date(detail.timestamp).toLocaleString()}</span>
-                    {detail.source && (
-                      <>
-                        <span class="text-gray-400">Source:</span>
-                        <span class="text-ink">{detail.source}</span>
-                      </>
-                    )}
-                    {detail.traceId && (
-                      <>
-                        <span class="text-gray-400">Trace:</span>
-                        <a href={`#/traces?trace=${detail.traceId}`} class="text-blue-500 hover:text-blue-700 font-mono">
-                          {detail.traceId}
-                        </a>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Stack trace with source preview */}
-                  {detail.data.error.frames.length > 0 && (
-                    <div>
-                      <div class="text-xs text-gray-400 mb-2">Stack Trace:</div>
-                      <div class="space-y-2">
-                        {detail.data.error.frames.map((frame, i) => (
-                          <div key={i} class="text-xs">
-                            <div class="flex items-baseline gap-2 text-gray-600">
-                              <span class="font-medium text-ink">{frame.function}</span>
-                              <span class="text-gray-400 font-mono text-[11px] truncate">
-                                {frame.file}:{frame.line}:{frame.column}
-                              </span>
-                            </div>
-                            {frame.source && (
-                              <pre class="mt-1 bg-gray-900 text-gray-300 p-3 rounded-md overflow-x-auto text-[11px] leading-5">
-                                {frame.source.map((line, j) => (
-                                  <div key={j} class={j === frame.sourceLine ? "bg-red-900/40 text-white -mx-3 px-3" : ""}>
-                                    <span class="inline-block w-8 text-right mr-3 text-gray-500 select-none">
-                                      {(frame.line - (frame.sourceLine ?? 0) + j)}
-                                    </span>
-                                    {line}
-                                  </div>
-                                ))}
-                              </pre>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Raw stack */}
-                  {detail.data.error.frames.length === 0 && detail.data.error.stack && (
-                    <div>
-                      <div class="text-xs text-gray-400 mb-1">Stack:</div>
-                      <pre class="text-[11px] text-gray-600 bg-gray-50 p-3 rounded-md overflow-x-auto whitespace-pre-wrap">
-                        {detail.data.error.stack}
-                      </pre>
-                    </div>
-                  )}
-                </div>
-              </Section>
-
-              {/* Request section — only show if there's actual request data */}
-              {detail.data.request.method && detail.data.request.url && (
-                <Section title="Request">
-                  <div class="space-y-2 text-xs">
-                    <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-                      <span class="text-gray-400">Method:</span>
-                      <span class="font-medium text-ink">{detail.data.request.method}</span>
-                      <span class="text-gray-400">URL:</span>
-                      <span class="text-ink font-mono break-all">{detail.data.request.url}</span>
-                    </div>
-                    {Object.keys(detail.data.request.headers).length > 0 && (
-                      <div>
-                        <div class="text-gray-400 mb-1">Headers:</div>
-                        <table class="w-full">
-                          <tbody>
-                            {Object.entries(detail.data.request.headers).map(([k, v]) => (
-                              <tr key={k}>
-                                <td class="py-0.5 pr-3 text-gray-400 font-mono whitespace-nowrap align-top">{k}</td>
-                                <td class="py-0.5 font-mono text-ink break-all">{v}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </div>
-                </Section>
-              )}
-
-              {/* Environment section */}
-              {Object.keys(detail.data.env).length > 0 && (
-                <Section title="Environment">
-                  <table class="w-full text-xs">
-                    <tbody>
-                      {Object.entries(detail.data.env).map(([k, v]) => (
-                        <tr key={k}>
-                          <td class="py-0.5 pr-3 text-gray-400 font-mono whitespace-nowrap align-top">{k}</td>
-                          <td class="py-0.5 font-mono text-ink break-all">{v}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </Section>
-              )}
-
-              {/* Bindings section */}
-              {detail.data.bindings.length > 0 && (
-                <Section title="Bindings">
-                  <div class="flex flex-wrap gap-2">
-                    {detail.data.bindings.map(b => (
-                      <span key={b.name} class="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs bg-gray-50 border border-gray-100">
-                        <span class="text-gray-400">{b.type}</span>
-                        <span class="font-medium text-ink">{b.name}</span>
-                      </span>
-                    ))}
-                  </div>
-                </Section>
-              )}
-
-              {/* Runtime section */}
-              <Section title="Runtime">
-                <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-                  <span class="text-gray-400">Bun:</span>
-                  <span class="text-ink font-mono">{detail.data.runtime.bunVersion}</span>
-                  <span class="text-gray-400">Platform:</span>
-                  <span class="text-ink">{detail.data.runtime.platform} / {detail.data.runtime.arch}</span>
-                  {detail.data.runtime.workerName && (
-                    <>
-                      <span class="text-gray-400">Worker:</span>
-                      <span class="text-ink">{detail.data.runtime.workerName}</span>
-                    </>
-                  )}
-                  {detail.data.runtime.configName && (
-                    <>
-                      <span class="text-gray-400">Config:</span>
-                      <span class="text-ink">{detail.data.runtime.configName}</span>
-                    </>
-                  )}
-                </div>
-              </Section>
-            </>
-          ) : (
-            <div class="text-gray-400 text-sm">Error not found.</div>
-          )}
+      {/* Error header */}
+      <div class="bg-white rounded-lg border border-gray-200 overflow-hidden border-l-4 border-l-red-500">
+        <div class="px-5 py-4">
+          <div class="flex items-center gap-2.5 mb-1.5">
+            <span class="w-6 h-6 rounded-md bg-red-50 flex items-center justify-center text-red-500 text-xs font-bold">!</span>
+            <span class="text-xs font-semibold uppercase tracking-wider text-red-500">{data.error.name}</span>
+            {detail.source && <SourceBadge source={detail.source} />}
+          </div>
+          <CollapsibleMessage message={data.error.message} />
         </div>
       </div>
-      <style>{`
-        @keyframes slide-in {
-          from { transform: translateX(100%); }
-          to { transform: translateX(0); }
-        }
-        .animate-slide-in {
-          animation: slide-in 0.2s ease-out;
-        }
-      `}</style>
+
+      {/* Source Code */}
+      {data.error.frames.length > 0 && (
+        <Section title="Source Code" open>
+          <FrameList frames={data.error.frames} />
+        </Section>
+      )}
+
+      {/* Stack Trace */}
+      <Section title="Stack Trace">
+        <div class="px-4 py-3 overflow-x-auto scrollbar-thin">
+          <pre class="text-xs text-gray-500 leading-5 m-0 whitespace-pre-wrap break-words font-mono">
+            {data.error.stack}
+          </pre>
+        </div>
+      </Section>
+
+      {/* Trace */}
+      {traceSpans && traceSpans.length > 0 && (
+        <Section title="Trace" open>
+          <SimpleTraceWaterfall spans={traceSpans} highlightSpanId={detail.spanId} />
+        </Section>
+      )}
+
+      {/* Request */}
+      {data.request.method && data.request.url && (
+        <Section title="Request" open>
+          <div class="px-4 py-2.5 border-b border-gray-100">
+            <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-bold mr-2">{data.request.method}</span>
+            <span class="text-sm break-all font-mono">{data.request.url}</span>
+          </div>
+          <KeyValueTable data={data.request.headers} />
+        </Section>
+      )}
+
+      {/* Environment */}
+      {Object.keys(data.env).length > 0 && (
+        <Section title="Environment">
+          <KeyValueTable data={data.env} />
+        </Section>
+      )}
+
+      {/* Bindings */}
+      {data.bindings.length > 0 && (
+        <Section title="Bindings">
+          {data.bindings.length === 0 ? (
+            <div class="px-4 py-3 text-sm text-gray-400">No bindings configured</div>
+          ) : (
+            <table class="w-full text-sm">
+              <tbody>
+                {data.bindings.map((b) => (
+                  <tr key={b.name} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
+                    <td class="px-4 py-2 font-medium text-gray-500 whitespace-nowrap font-mono">
+                      {b.name}
+                    </td>
+                    <td class="px-4 py-2">
+                      <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-medium text-gray-600">{b.type}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Section>
+      )}
+
+      {/* Runtime */}
+      <Section title="Runtime">
+        <KeyValueTable
+          data={{
+            "Bun": data.runtime.bunVersion,
+            "Platform": `${data.runtime.platform} / ${data.runtime.arch}`,
+            ...(data.runtime.workerName ? { "Worker": data.runtime.workerName } : {}),
+            ...(data.runtime.configName ? { "Config": data.runtime.configName } : {}),
+          }}
+        />
+      </Section>
+    </div>
+  );
+}
+
+// ─── Simplified Trace Waterfall (matches standalone error page) ──────
+
+function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; highlightSpanId: string | null }) {
+  if (spans.length === 0) return null;
+
+  const traceStart = Math.min(...spans.map(s => s.startTime));
+  const traceEnd = Math.max(...spans.map(s => s.endTime ?? Date.now()));
+  const traceDuration = traceEnd - traceStart || 1;
+
+  const childMap = new Map<string | null, SpanData[]>();
+  for (const s of spans) {
+    const key = s.parentSpanId;
+    if (!childMap.has(key)) childMap.set(key, []);
+    childMap.get(key)!.push(s);
+  }
+
+  function flatten(parentId: string | null, depth: number): Array<{ span: SpanData; depth: number }> {
+    const children = childMap.get(parentId) ?? [];
+    const result: Array<{ span: SpanData; depth: number }> = [];
+    for (const child of children) {
+      result.push({ span: child, depth });
+      result.push(...flatten(child.spanId, depth + 1));
+    }
+    return result;
+  }
+
+  const flatSpans = flatten(null, 0);
+
+  return (
+    <div class="px-4 py-3">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs text-gray-400 font-mono">0ms</span>
+        <span class="text-xs text-gray-400 font-mono">{formatDuration(traceDuration)}</span>
+      </div>
+      <div class="space-y-0.5">
+        {flatSpans.map(({ span, depth }) => {
+          const offset = ((span.startTime - traceStart) / traceDuration) * 100;
+          const width = (((span.endTime ?? Date.now()) - span.startTime) / traceDuration) * 100;
+          const isHighlighted = highlightSpanId === span.spanId;
+
+          return (
+            <div
+              key={span.spanId}
+              class={`flex items-center py-1 px-1 rounded-md ${isHighlighted ? "bg-red-50 ring-1 ring-red-300" : ""}`}
+            >
+              <div
+                class="w-[180px] flex-shrink-0 truncate text-xs text-ink font-mono"
+                style={{ paddingLeft: `${depth * 14}px` }}
+              >
+                {span.name}
+              </div>
+              <div class="flex-1 h-5 relative bg-gray-50 rounded">
+                <div
+                  class={`absolute top-0.5 bottom-0.5 rounded ${
+                    span.status === "error" ? "bg-red-400" :
+                    span.status === "ok" ? "bg-emerald-400" :
+                    "bg-gray-300"
+                  }`}
+                  style={{ left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
+                />
+                <span
+                  class="absolute top-0.5 text-[10px] text-gray-500 whitespace-nowrap font-mono"
+                  style={{ left: `${offset + width + 1}%` }}
+                >
+                  {span.durationMs != null ? formatDuration(span.durationMs) : "..."}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Shared Components (matching standalone error page style) ────────
+
+function Section({ title, open, children }: { title: string; open?: boolean; children: any }) {
+  return (
+    <details open={open} class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <summary class="px-5 py-3 cursor-pointer select-none text-sm font-semibold text-ink hover:bg-gray-50 transition-colors">
+        {title}
+      </summary>
+      <div class="border-t border-gray-100">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+type FrameData = ErrorDetail["data"]["error"]["frames"][0];
+
+const LIBRARY_PATH_RE = /\/node_modules\//;
+
+function isLibraryFrame(frame: FrameData): boolean {
+  return LIBRARY_PATH_RE.test(frame.file);
+}
+
+const HL_RE = /(\/\/.*$|\/\*.*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b)|(\b(?:const|let|var|function|return|if|else|for|while|do|class|new|import|export|from|default|async|await|throw|try|catch|finally|switch|case|break|continue|typeof|instanceof|in|of|yield|static|extends|super|void|delete|enum|interface|type|as|declare|readonly)\b)|(\b(?:true|false|null|undefined|this|NaN|Infinity)\b)/g;
+
+function highlightLine(line: string) {
+  const parts: preact.ComponentChildren[] = [];
+  let last = 0;
+  for (const m of line.matchAll(HL_RE)) {
+    if (m.index! > last) parts.push(line.slice(last, m.index));
+    const t = m[0];
+    const c = m[1] ? "#6b7280" : m[2] ? "#16a34a" : m[3] ? "#d97706" : m[4] ? "#7c3aed" : m[5] ? "#2563eb" : undefined;
+    parts.push(c ? <span style={{ color: c }}>{t}</span> : t);
+    last = m.index! + t.length;
+  }
+  if (last < line.length) parts.push(line.slice(last));
+  return parts.length > 0 ? parts : line;
+}
+
+function FrameList({ frames }: { frames: FrameData[] }) {
+  return (
+    <div class="divide-y divide-gray-100">
+      {frames.map((frame, i) => (
+        <CodeBlock key={i} frame={frame} defaultOpen={!isLibraryFrame(frame)} />
+      ))}
+    </div>
+  );
+}
+
+function CodeBlock({ frame, defaultOpen }: { frame: FrameData; defaultOpen: boolean }) {
+  if (!frame.source || frame.source.length === 0) return null;
+  const startLine = frame.line - (frame.sourceLine ?? 0);
+
+  return (
+    <details open={defaultOpen}>
+      <summary class="px-4 py-2 bg-gray-50 text-xs font-medium text-gray-500 font-mono cursor-pointer select-none hover:bg-gray-100 transition-colors">
+        {frame.file}:{frame.line}:{frame.column}
+        {frame.function && <span class="ml-2 text-gray-400">in {frame.function}</span>}
+      </summary>
+      <div class="overflow-x-auto scrollbar-thin">
+        <pre class="text-xs leading-5 m-0 font-mono">
+          {frame.source.map((line, i) => {
+            const lineNum = startLine + i;
+            const isError = i === frame.sourceLine;
+            return (
+              <div
+                key={i}
+                class={isError ? "bg-red-50 border-l-4 border-red-500" : "border-l-4 border-transparent hover:bg-gray-50"}
+              >
+                <span class={`inline-block w-12 text-right pr-3 select-none ${isError ? "text-red-500 font-bold" : "text-gray-400"}`}>
+                  {lineNum}
+                </span>
+                <span class={`text-ink${isError ? " font-medium" : ""}`}>{highlightLine(line)}</span>
+              </div>
+            );
+          })}
+        </pre>
+      </div>
+    </details>
+  );
+}
+
+function KeyValueTable({ data }: { data: Record<string, string> }) {
+  const entries = Object.entries(data);
+  if (entries.length === 0) {
+    return <div class="px-4 py-3 text-sm text-gray-400">No entries</div>;
+  }
+
+  return (
+    <table class="w-full text-sm">
+      <tbody>
+        {entries.map(([key, value]) => (
+          <tr key={key} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
+            <td class="px-4 py-2 font-medium text-gray-500 whitespace-nowrap align-top font-mono" style="width: 1%;">
+              {key}
+            </td>
+            <td class="px-4 py-2 text-ink break-all font-mono">
+              {value}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const MAX_COLLAPSED_LINES = 10;
+
+function CollapsibleMessage({ message }: { message: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const nlIndex = message.indexOf("\n");
+
+  if (nlIndex === -1) {
+    return <h1 class="text-lg font-bold text-ink m-0 leading-snug break-words">{message}</h1>;
+  }
+
+  const firstLine = message.slice(0, nlIndex);
+  const rest = message.slice(nlIndex + 1);
+  const restLines = rest.split("\n");
+  const needsCollapse = restLines.length > MAX_COLLAPSED_LINES;
+
+  return (
+    <>
+      <h1 class="text-lg font-bold text-ink m-0 leading-snug break-words">{firstLine}</h1>
+      <div class="relative mt-2">
+        <pre
+          class="text-xs text-gray-500 m-0 whitespace-pre-wrap break-words leading-5 overflow-hidden transition-all font-mono"
+          style={{
+            maxHeight: !expanded && needsCollapse ? `${MAX_COLLAPSED_LINES * 1.25}rem` : "none",
+          }}
+        >
+          {rest}
+        </pre>
+        {needsCollapse && !expanded && (
+          <div
+            class="absolute bottom-0 left-0 right-0 h-16 flex items-end justify-center pb-2 cursor-pointer"
+            style="background: linear-gradient(to bottom, transparent, white);"
+            onClick={() => setExpanded(true)}
+          >
+            <span class="text-xs font-medium text-gray-400 hover:text-ink transition-colors">
+              Show all ({restLines.length} lines)
+            </span>
+          </div>
+        )}
+        {needsCollapse && expanded && (
+          <button
+            class="mt-1 text-xs font-medium text-gray-400 hover:text-ink transition-colors"
+            onClick={() => setExpanded(false)}
+          >
+            Collapse
+          </button>
+        )}
+      </div>
     </>
   );
 }
@@ -412,17 +562,6 @@ function SourceBadge({ source }: { source: string | null }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: any }) {
-  return (
-    <div>
-      <h3 class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">{title}</h3>
-      <div class="bg-gray-50 border border-gray-100 rounded-lg p-4">
-        {children}
-      </div>
-    </div>
-  );
-}
-
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
   return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}.${d.getMilliseconds().toString().padStart(3, "0")}`;
@@ -436,8 +575,4 @@ function truncateUrl(url: string): string {
   } catch {
     return url.length > 50 ? url.slice(0, 50) + "..." : url;
   }
-}
-
-function truncate(s: string, len: number): string {
-  return s.length > len ? s.slice(0, len) + "..." : s;
 }

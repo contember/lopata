@@ -33,6 +33,20 @@ interface ErrorPageData {
     workerName?: string;
     configName?: string;
   };
+  trace?: {
+    traceId: string;
+    spanId: string | null;
+    spans: Array<{
+      spanId: string;
+      traceId: string;
+      parentSpanId: string | null;
+      name: string;
+      status: string;
+      startTime: number;
+      endTime: number | null;
+      durationMs: number | null;
+    }>;
+  };
 }
 
 // ─── Pre-built error page HTML ────────────────────────────────────────────
@@ -134,12 +148,18 @@ async function enrichFrameWithSource(frame: StackFrame): Promise<void> {
 
 const SENSITIVE_KEYS = /SECRET|KEY|TOKEN|PASSWORD|API|PRIVATE/i;
 
+function maskValue(value: string): string {
+  const show = 3;
+  if (value.length <= show * 2 + 3) return "***";
+  return value.slice(0, show) + "***" + value.slice(-show);
+}
+
 function maskEnv(env: Record<string, unknown>): Record<string, string> {
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (typeof value === "object") continue; // skip bindings
     const strVal = String(value);
-    masked[key] = SENSITIVE_KEYS.test(key) ? "***" : strVal;
+    masked[key] = SENSITIVE_KEYS.test(key) ? maskValue(strVal) : strVal;
   }
   return masked;
 }
@@ -180,6 +200,13 @@ export async function renderErrorPage(
   const framesToEnrich = frames.slice(0, 10);
   await Promise.all(framesToEnrich.map(enrichFrameWithSource));
 
+  // Strip cwd prefix from paths for display
+  const cwdPrefix = process.cwd() + "/";
+  const displayFrames = framesToEnrich.filter(f => f.source).map(f => ({
+    ...f,
+    file: f.file.startsWith(cwdPrefix) ? f.file.slice(cwdPrefix.length) : f.file,
+  }));
+
   const headers: Record<string, string> = {};
   request.headers.forEach((value, key) => {
     headers[key] = value;
@@ -190,7 +217,7 @@ export async function renderErrorPage(
       name: err.name,
       message: err.message,
       stack: err.stack ?? String(error),
-      frames: framesToEnrich.filter(f => f.source),
+      frames: displayFrames,
     },
     request: {
       method: request.method,
@@ -207,6 +234,32 @@ export async function renderErrorPage(
       configName: config.name,
     },
   };
+
+  // Attach trace data if available
+  try {
+    const ctx = getActiveContext();
+    if (ctx?.traceId) {
+      const traceDetail = getTraceStore().getTrace(ctx.traceId);
+      if (traceDetail.spans.length > 0) {
+        data.trace = {
+          traceId: ctx.traceId,
+          spanId: ctx.spanId ?? null,
+          spans: traceDetail.spans.map(s => ({
+            spanId: s.spanId,
+            traceId: s.traceId,
+            parentSpanId: s.parentSpanId,
+            name: s.name,
+            status: s.status,
+            startTime: s.startTime,
+            endTime: s.endTime,
+            durationMs: s.durationMs,
+          })),
+        };
+      }
+    }
+  } catch {
+    // Don't break error page if trace fetch fails
+  }
 
   // Persist error to tracing store
   try {

@@ -32,7 +32,7 @@ function App() {
 
   function renderView() {
     if (route === "/" || route === "") return <HomeView />;
-    if (route.startsWith("/errors")) return <ErrorsView />;
+    if (route.startsWith("/errors")) return <ErrorsView route={route} />;
     if (route.startsWith("/traces")) return <TracesView />;
     if (route.startsWith("/workers")) return <WorkersView />;
     if (route.startsWith("/kv")) return <KvView route={route} />;
