@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
 import { persistError } from "../tracing/span";
+import { warnInvalidRpcArgs, warnInvalidRpcReturn } from "../rpc-validate";
 
 // --- SQL Storage Cursor ---
 
@@ -493,7 +494,7 @@ export class DurableObjectStateImpl {
   private _hibernatableTimeout: number | null = null;
   private _limits: Required<DurableObjectLimits>;
   private _instanceResolver: (() => DurableObjectBase | null) | null = null;
-  private _requestQueue: Promise<void> = Promise.resolve();
+  private _lockTail: Promise<void> = Promise.resolve();
   private _activeRequests = 0;
 
   constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
@@ -528,20 +529,18 @@ export class DurableObjectStateImpl {
     return this._activeRequests > 0;
   }
 
-  /** @internal Enqueue a request — ensures serial execution (E-order) */
-  _enqueue<T>(fn: () => Promise<T>): Promise<T> {
-    const execute = async (): Promise<T> => {
-      await this._requestQueue;
-      this._activeRequests++;
-      try {
-        return await fn();
-      } finally {
-        this._activeRequests--;
-      }
+  /** @internal Acquire the serial-execution lock. Caller awaits this, then runs work in its own async stack. */
+  async _lock(): Promise<() => void> {
+    let unlockNext: () => void;
+    const nextTail = new Promise<void>(r => { unlockNext = r; });
+    const ready = this._lockTail;
+    this._lockTail = nextTail;
+    await ready;
+    this._activeRequests++;
+    return () => {
+      this._activeRequests--;
+      unlockNext!();
     };
-    const result = execute();
-    this._requestQueue = result.then(() => {}, () => {}); // swallow errors for queue
-    return result;
   }
 
   /** @internal Set the instance resolver for WebSocket handler delegation */
@@ -762,8 +761,9 @@ export class DurableObjectNamespaceImpl {
 
     const state = instance.ctx as DurableObjectStateImpl;
 
-    // Run alarm through the request queue (serialized)
-    await state._enqueue(async () => {
+    // Acquire the serial-execution lock
+    const unlock = await state._lock();
+    try {
       await state._waitForReady();
 
       // Delete alarm from DB before calling handler (matching CF behavior)
@@ -797,7 +797,9 @@ export class DurableObjectNamespaceImpl {
         }
         // After max retries, alarm is discarded
       }
-    });
+    } finally {
+      unlock();
+    }
   }
 
   /** @internal Get or create a DO instance by id string */
@@ -950,35 +952,44 @@ export class DurableObjectNamespaceImpl {
 
         // stub.fetch() — calls the DO's fetch() handler
         if (prop === "fetch") {
-          return (input: RequestInfo | URL, init?: RequestInit) => {
+          return async (input: RequestInfo | URL, init?: RequestInit) => {
             const instance = self._getOrCreateInstance(idStr, id)!;
             const state = instance.ctx as DurableObjectStateImpl;
             self._lastActivity.set(idStr, Date.now());
-            return state._enqueue(async () => {
+            const unlock = await state._lock();
+            try {
               await state._waitForReady();
               const fetchFn = (instance as unknown as Record<string, unknown>).fetch;
               if (typeof fetchFn !== "function") {
                 throw new Error("Durable Object does not implement fetch()");
               }
               const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
-              return (fetchFn as (req: Request) => Promise<Response>).call(instance, request);
-            });
+              return await (fetchFn as (req: Request) => Promise<Response>).call(instance, request);
+            } finally {
+              unlock();
+            }
           };
         }
 
         // RPC: return a callable that also acts as a thenable for property access
-        const rpcCallable = (...args: unknown[]) => {
+        const rpcCallable = async (...args: unknown[]) => {
+          warnInvalidRpcArgs(args, String(prop));
           const instance = self._getOrCreateInstance(idStr, id)!;
           const state = instance.ctx as DurableObjectStateImpl;
           self._lastActivity.set(idStr, Date.now());
-          return state._enqueue(async () => {
+          const unlock = await state._lock();
+          try {
             await state._waitForReady();
             const val = (instance as unknown as Record<string, unknown>)[prop as string];
             if (typeof val === "function") {
-              return (val as (...a: unknown[]) => unknown).call(instance, ...args);
+              const result = await (val as (...a: unknown[]) => unknown).call(instance, ...args);
+              warnInvalidRpcReturn(result, String(prop));
+              return result;
             }
             throw new Error(`"${String(prop)}" is not a method on the Durable Object`);
-          });
+          } finally {
+            unlock();
+          }
         };
 
         // Make it thenable for property access: `await stub.myProp`
@@ -989,14 +1000,20 @@ export class DurableObjectNamespaceImpl {
           const instance = self._getOrCreateInstance(idStr, id)!;
           const state = instance.ctx as DurableObjectStateImpl;
           self._lastActivity.set(idStr, Date.now());
-          const promise = state._enqueue(async () => {
-            await state._waitForReady();
-            const val = (instance as unknown as Record<string, unknown>)[prop as string];
-            if (typeof val === "function") {
-              return val.bind(instance);
+          const promise = (async () => {
+            const unlock = await state._lock();
+            try {
+              await state._waitForReady();
+              const val = (instance as unknown as Record<string, unknown>)[prop as string];
+              if (typeof val === "function") {
+                return val.bind(instance);
+              }
+              warnInvalidRpcReturn(val, String(prop));
+              return val;
+            } finally {
+              unlock();
             }
-            return val;
-          });
+          })();
           return promise.then(onFulfilled, onRejected);
         };
 

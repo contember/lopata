@@ -10,6 +10,7 @@
 
 import { ExecutionContext } from "../execution-context";
 import { getActiveContext, runWithContext } from "../tracing/context";
+import { warnInvalidRpcArgs, warnInvalidRpcReturn } from "../rpc-validate";
 
 type WorkerModule = Record<string, unknown>;
 
@@ -165,6 +166,7 @@ export class ServiceBinding {
         // If awaited → RPC property read (returns Promise of the property value)
         const rpcCallable = (...args: unknown[]) => {
           self._checkSubrequestLimit();
+          warnInvalidRpcArgs(args, prop);
           const target = self._getTarget();
           const member = target[prop];
           if (typeof member !== "function") {
@@ -177,7 +179,10 @@ export class ServiceBinding {
             ? runWithContext(parentCtx, doCall)
             : doCall();
           // CF always wraps in Promise for async consistency
-          return Promise.resolve(result);
+          return Promise.resolve(result).then((r) => {
+            warnInvalidRpcReturn(r, prop);
+            return r;
+          });
         };
 
         // Make it thenable for property access: `await binding.prop`
@@ -194,6 +199,7 @@ export class ServiceBinding {
                 // If it's a function, resolve with a stub that can be called
                 resolve(member.bind(target));
               } else {
+                warnInvalidRpcReturn(member, prop);
                 resolve(member);
               }
             } catch (e) {
