@@ -33,25 +33,25 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --color-surface: #0b1120;
-    --color-surface-raised: #1f2937;
-    --color-surface-hover: #1f2937;
-    --color-surface-dim: #374151;
-    --color-ink: #f3f4f6;
-    --color-ink-muted: #d1d5db;
-    --color-panel: #111827;
-    --color-panel-secondary: #1f2937;
-    --color-panel-hover: #1f2937;
-    --color-panel-active: #374151;
-    --color-border: #374151;
-    --color-border-subtle: #1f2937;
-    --color-border-row: #111827;
-    --color-text-secondary: #9ca3af;
-    --color-text-muted: #6b7280;
-    --color-text-dim: #4b5563;
-    --color-text-data: #d1d5db;
-    --color-bar: #1f2937;
-    --color-code-bg: #1f2937;
+    --color-surface: #0c0c0c;
+    --color-surface-raised: #1a1a1a;
+    --color-surface-hover: #1e1e1e;
+    --color-surface-dim: #2a2a2a;
+    --color-ink: #f5f5f5;
+    --color-ink-muted: #d4d4d4;
+    --color-panel: #161616;
+    --color-panel-secondary: #1a1a1a;
+    --color-panel-hover: #1e1e1e;
+    --color-panel-active: #2a2a2a;
+    --color-border: #2a2a2a;
+    --color-border-subtle: #1e1e1e;
+    --color-border-row: #141414;
+    --color-text-secondary: #a3a3a3;
+    --color-text-muted: #737373;
+    --color-text-dim: #525252;
+    --color-text-data: #d4d4d4;
+    --color-bar: #1c1c1c;
+    --color-code-bg: #1c1c1c;
     --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
     --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
     --shadow-focus: 0 0 0 2px rgba(255, 255, 255, 0.1);
