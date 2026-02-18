@@ -151,6 +151,12 @@ const TABS: { key: Tab; label: string }[] = [
 
 export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
   const [tab, setTab] = useState<Tab>("data");
+  const [consoleSql, setConsoleSql] = useState("");
+
+  const openInConsole = (sql: string) => {
+    setConsoleSql(sql);
+    setTab("sql");
+  };
 
   return (
     <div>
@@ -171,17 +177,17 @@ export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
         ))}
       </div>
 
-      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} />}
+      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} />}
       {tab === "schema" && <SchemaBrowserTab tables={tables} />}
-      {tab === "sql" && <SqlConsoleTab execQuery={execQuery} />}
+      {tab === "sql" && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} />}
     </div>
   );
 }
 
 // ─── SqlConsoleTab ───────────────────────────────────────────────────
 
-function SqlConsoleTab({ execQuery }: { execQuery: (sql: string) => Promise<QueryResult> }) {
-  const [sql, setSql] = useState("");
+function SqlConsoleTab({ execQuery, initialSql }: { execQuery: (sql: string) => Promise<QueryResult>; initialSql?: string }) {
+  const [sql, setSql] = useState(initialSql ?? "");
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -335,7 +341,7 @@ function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
 
 // ─── DataBrowserTab ──────────────────────────────────────────────────
 
-function DataBrowserTab({ tables, execQuery }: { tables?: D1Table[] | null; execQuery: (sql: string) => Promise<QueryResult> }) {
+function DataBrowserTab({ tables, execQuery, onOpenInConsole }: { tables?: D1Table[] | null; execQuery: (sql: string) => Promise<QueryResult>; onOpenInConsole: (sql: string) => void }) {
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
 
   // Auto-select first table
@@ -356,7 +362,7 @@ function DataBrowserTab({ tables, execQuery }: { tables?: D1Table[] | null; exec
       />
       <div class="flex-1 min-w-0">
         {tableInfo ? (
-          <TableDataView table={tableInfo} execQuery={execQuery} />
+          <TableDataView table={tableInfo} execQuery={execQuery} onOpenInConsole={onOpenInConsole} />
         ) : (
           <div class="text-center py-16 text-gray-400 text-sm font-medium">
             {tables?.length ? "Select a table" : "No tables found"}
@@ -408,7 +414,7 @@ function TableSidebar({ tables, selected, onSelect }: {
 
 // ─── TableDataView ───────────────────────────────────────────────────
 
-function TableDataView({ table, execQuery }: { table: D1Table; execQuery: (sql: string) => Promise<QueryResult> }) {
+function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; execQuery: (sql: string) => Promise<QueryResult>; onOpenInConsole: (sql: string) => void }) {
   const schema = parseCreateTable(table.sql);
   const pkCols = schema.primaryKeys.length > 0 ? schema.primaryKeys : ["rowid"];
   const needsRowid = schema.primaryKeys.length === 0;
@@ -541,6 +547,11 @@ function TableDataView({ table, execQuery }: { table: D1Table; execQuery: (sql: 
   const displayCols = columns.filter(c => !(needsRowid && c === "rowid"));
   const activeFilterCount = Object.values(filters).filter(v => v.trim()).length;
 
+  // Current query SQL (for display / open-in-console)
+  const where = buildWhereClause(filters);
+  const orderBy = sortCol ? ` ORDER BY ${quoteId(sortCol)} ${sortDir}` : "";
+  const currentSql = `SELECT * FROM ${quoteId(table.name)}${where}${orderBy}`;
+
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const rangeStart = totalCount === 0 ? 0 : offset + 1;
@@ -590,6 +601,16 @@ function TableDataView({ table, execQuery }: { table: D1Table; execQuery: (sql: 
             Refresh
           </button>
         </div>
+      </div>
+
+      {/* Current SQL */}
+      <div
+        onClick={() => onOpenInConsole(currentSql)}
+        class="mb-4 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg flex items-center gap-2 cursor-pointer hover:bg-gray-100 hover:border-gray-300 transition-colors group"
+        title="Open in SQL Console"
+      >
+        <code class="flex-1 text-xs font-mono text-gray-500 truncate">{currentSql}</code>
+        <span class="text-xs text-gray-300 group-hover:text-gray-500 transition-colors flex-shrink-0">&rarr; SQL Console</span>
       </div>
 
       {/* Error banner */}
