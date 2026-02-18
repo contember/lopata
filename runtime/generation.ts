@@ -233,7 +233,7 @@ export class Generation {
     if (this.registry.queueConsumers.length > 0 && queueHandler) {
       const db = getDatabase();
       for (const config of this.registry.queueConsumers) {
-        const consumer = new QueueConsumer(db, config, queueHandler as any, this.env);
+        const consumer = new QueueConsumer(db, config, queueHandler as any, this.env, this.workerName);
         consumer.start();
         this.queueConsumers.push(consumer);
       }
@@ -243,7 +243,7 @@ export class Generation {
       const crons = this.config.triggers?.crons ?? [];
       const scheduledHandler = this.getHandler("scheduled");
       if (crons.length > 0 && scheduledHandler) {
-        this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env);
+        this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env, this.workerName);
       }
     }
   }

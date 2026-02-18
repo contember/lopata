@@ -1,5 +1,5 @@
 import { ExecutionContext } from "../execution-context";
-import { persistError } from "../tracing/span";
+import { startSpan, persistError } from "../tracing/span";
 
 export interface ScheduledController {
   readonly scheduledTime: number;
@@ -140,6 +140,7 @@ export function startCronScheduler(
   crons: string[],
   handler: ScheduledHandler,
   env: Record<string, unknown>,
+  workerName?: string,
 ): NodeJS.Timer {
   const parsed = crons.map(parseCron);
 
@@ -151,12 +152,18 @@ export function startCronScheduler(
         const controller = createScheduledController(cron.expression, now.getTime());
         const ctx = new ExecutionContext();
         console.log(`[bunflare] Cron triggered: ${cron.expression}`);
-        handler(controller, env, ctx)
-          .then(() => ctx._awaitAll())
-          .catch((err) => {
-            console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err);
-            persistError(err, "scheduled");
-          });
+        startSpan({
+          name: "scheduled",
+          kind: "server",
+          attributes: { cron: cron.expression },
+          workerName,
+        }, async () => {
+          await handler(controller, env, ctx);
+          await ctx._awaitAll();
+        }).catch((err) => {
+          console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err);
+          persistError(err, "scheduled", workerName);
+        });
       }
     }
   }, 60_000);

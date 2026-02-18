@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUIDv7 } from "bun";
 import { ExecutionContext } from "../execution-context";
 import crypto from "node:crypto";
-import { persistError } from "../tracing/span";
+import { startSpan, persistError } from "../tracing/span";
 
 // --- Types ---
 
@@ -192,6 +192,7 @@ export class QueueConsumer {
   private config: ConsumerConfig;
   private handler: QueueHandler;
   private env: Record<string, unknown>;
+  private workerName: string | undefined;
   private timer: ReturnType<typeof setInterval> | null = null;
   private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -202,11 +203,13 @@ export class QueueConsumer {
     config: ConsumerConfig,
     handler: QueueHandler,
     env: Record<string, unknown>,
+    workerName?: string,
   ) {
     this.db = db;
     this.config = config;
     this.handler = handler;
     this.env = env;
+    this.workerName = workerName;
   }
 
   start(intervalMs: number = 1000): void {
@@ -296,17 +299,24 @@ export class QueueConsumer {
     const ctx = new ExecutionContext();
 
     let handlerError = false;
-    try {
-      await this.handler(batch, this.env, ctx);
-    } catch (err) {
-      console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err);
-      persistError(err, "queue");
-      // On handler error, retry all messages
-      handlerError = true;
-    }
+    await startSpan({
+      name: `queue ${this.config.queue}`,
+      kind: "server",
+      attributes: { "messaging.queue": this.config.queue, "messaging.batch_size": messages.length },
+      workerName: this.workerName,
+    }, async () => {
+      try {
+        await this.handler(batch, this.env, ctx);
+      } catch (err) {
+        console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err);
+        persistError(err, "queue", this.workerName);
+        // On handler error, retry all messages
+        handlerError = true;
+      }
 
-    // Wait for all waitUntil promises to settle (best-effort)
-    await ctx._awaitAll();
+      // Wait for all waitUntil promises to settle (best-effort)
+      await ctx._awaitAll();
+    });
 
     // Process message outcomes — per-message decision overrides batch decision
     for (const row of rows) {
