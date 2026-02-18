@@ -1,6 +1,6 @@
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, SqlBrowser } from "../components";
 
 export function DoView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -75,6 +75,8 @@ function DoInstanceList({ ns }: { ns: string }) {
 function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
   const { data, refetch } = useQuery("do.getInstance", { ns, id });
   const deleteEntry = useMutation("do.deleteEntry");
+  const { data: sqlTables } = useQuery("do.listSqlTables", { ns, id });
+  const query = useMutation("do.sqlQuery");
 
   const handleDelete = async (key: string) => {
     if (!confirm(`Delete storage key "${key}"?`)) return;
@@ -107,6 +109,17 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
             <DeleteButton onClick={() => handleDelete(e.key)} />,
           ])}
         />
+      )}
+
+      {/* SQL Storage */}
+      {sqlTables && sqlTables.length > 0 && (
+        <div class="mt-8">
+          <SqlBrowser
+            tables={sqlTables}
+            onRunQuery={(sql) => query.mutate({ ns, id, sql })}
+            query={query}
+          />
+        </div>
       )}
     </div>
   );

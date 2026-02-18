@@ -1,6 +1,9 @@
-import type { HandlerContext, DoNamespace, DoInstance, DoDetail, OkResponse } from "../types";
+import type { HandlerContext, DoNamespace, DoInstance, DoDetail, OkResponse, D1Table, QueryResult } from "../types";
 import { getAllConfigs } from "../types";
-import { getDatabase } from "../../../db";
+import { getDatabase, getDataDir } from "../../../db";
+import { Database } from "bun:sqlite";
+import { join } from "node:path";
+import { existsSync } from "node:fs";
 
 export const handlers = {
   "do.listNamespaces"(_input: {}, ctx: HandlerContext): DoNamespace[] {
@@ -54,5 +57,46 @@ export const handlers = {
     const db = getDatabase();
     db.prepare("DELETE FROM do_storage WHERE namespace = ? AND id = ? AND key = ?").run(ns, id, key);
     return { ok: true };
+  },
+
+  "do.listSqlTables"({ ns, id }: { ns: string; id: string }): D1Table[] {
+    const dbPath = join(getDataDir(), "do-sql", ns, `${id}.sqlite`);
+    if (!existsSync(dbPath)) return [];
+
+    const dodb = new Database(dbPath);
+    try {
+      const tables = dodb.query<{ name: string; sql: string }, []>(
+        "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+      ).all();
+
+      return tables.map(t => {
+        const row = dodb.query<{ count: number }, []>(`SELECT COUNT(*) as count FROM "${t.name}"`).get();
+        return { name: t.name, sql: t.sql, rows: row?.count ?? 0 };
+      });
+    } finally {
+      dodb.close();
+    }
+  },
+
+  "do.sqlQuery"({ ns, id, sql }: { ns: string; id: string; sql: string }): QueryResult {
+    if (!sql) throw new Error("Missing sql field");
+
+    const dbPath = join(getDataDir(), "do-sql", ns, `${id}.sqlite`);
+    if (!existsSync(dbPath)) throw new Error("SQL database not found for this instance");
+
+    const dodb = new Database(dbPath);
+    try {
+      const stmt = dodb.prepare(sql);
+      if (stmt.columnNames.length > 0) {
+        const rows = stmt.all() as Record<string, unknown>[];
+        return { columns: stmt.columnNames, rows, count: rows.length };
+      } else {
+        stmt.run();
+        const changes = dodb.query<{ c: number }, []>("SELECT changes() as c").get()?.c ?? 0;
+        return { columns: [], rows: [], count: changes, message: `${changes} row(s) affected` };
+      }
+    } finally {
+      dodb.close();
+    }
   },
 };
