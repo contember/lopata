@@ -13,7 +13,8 @@
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "COUNTER", "class_name": "Counter" }
+      { "name": "COUNTER", "class_name": "Counter" },
+      { "name": "ERROR_BRIDGE", "class_name": "ErrorBridge" }
     ]
   },
   "workflows": [
@@ -31,9 +32,18 @@
     { "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
   ],
   "services": [
-    { "binding": "ECHO", "service": "echo-worker" }
+    { "binding": "ECHO", "service": "echo-worker" },
+    { "binding": "FAILING", "service": "failing-worker" }
   ],
+  "containers": [
+    { "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
   "migrations": [
-    { "tag": "v1", "new_classes": ["Counter"] }
+    { "tag": "v1", "new_classes": ["Counter"] },
+    { "tag": "v2", "new_classes": ["MyContainer"] },
+    { "tag": "v3", "new_classes": ["ErrorBridge"] }
   ]
 }

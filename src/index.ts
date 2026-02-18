@@ -597,6 +597,10 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log(`[scheduled] Cron fired: ${controller.cron} at ${new Date(controller.scheduledTime).toISOString()}`);
+  },
+
   async queue(batch: MessageBatch, env: Env): Promise<void> {
     for (const msg of batch.messages) {
       console.log(
