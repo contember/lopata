@@ -4,12 +4,15 @@
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./src/index");
-		durableNamespaces: "Counter";
+		durableNamespaces: "Counter" | "ErrorBridge";
 	}
 	interface Env {
 		KV: KVNamespace;
 		R2: R2Bucket;
 		COUNTER: DurableObjectNamespace<import("./src/index").Counter>;
+		ERROR_BRIDGE: DurableObjectNamespace<import("./src/index").ErrorBridge>;
+		FAILING: Service;
+		MY_CONTAINER: DurableObjectNamespace<import("./src/index").MyContainer>;
 		MY_WORKFLOW: Workflow<Parameters<import("./src/index").MyWorkflow['run']>[0]['payload']>;
 		MY_QUEUE: Queue;
 		DB: D1Database;
@@ -10923,4 +10926,33 @@ declare abstract class WorkflowInstance {
         type: string;
         payload: unknown;
     }): Promise<void>;
+}
+
+declare module '@cloudflare/containers' {
+    import { DurableObject } from 'cloudflare:workers';
+    export abstract class Container<Env = Cloudflare.Env> extends DurableObject<Env> {
+        defaultPort: number;
+        requiredPorts: number[];
+        sleepAfter?: string | number;
+        envVars: Record<string, string>;
+        entrypoint?: string[];
+        enableInternet: boolean;
+        pingEndpoint: string;
+        onStart(): void | Promise<void>;
+        onStop(): void | Promise<void>;
+        onError(error: Error): void | Promise<void>;
+        onActivityExpired(): void | Promise<void>;
+        fetch(request: Request): Response | Promise<Response>;
+        containerFetch(input: RequestInfo | URL, init?: RequestInit, port?: number): Promise<Response>;
+        switchPort(request: Request, port: number): Promise<Response>;
+        startAndWaitForPorts(options?: { envVars?: Record<string, string> }): Promise<void>;
+        start(options?: { envVars?: Record<string, string> }): void;
+        stop(signal?: number): Promise<void>;
+        destroy(): Promise<void>;
+        getState(): { status: string; lastChange: number; exitCode?: number };
+        renewActivityTimeout(): void;
+        schedule(when: number | Date, callback: string, payload?: unknown): Promise<void>;
+    }
+    export function getContainer(binding: any, name?: string): unknown;
+    export function getRandom(binding: any, instances?: number): unknown;
 }
