@@ -1,4 +1,5 @@
-import { useQuery, useMutation } from "../rpc/hooks";
+import { useQuery } from "../rpc/hooks";
+import { rpc } from "../rpc/client";
 import { Breadcrumb, PageHeader, Table, TableLink, ServiceInfo, EmptyState, SqlBrowser } from "../components";
 
 export function D1View({ route }: { route: string }) {
@@ -50,15 +51,13 @@ function D1DatabaseList() {
 
 function D1DatabaseDetail({ dbName }: { dbName: string }) {
   const { data: tables } = useQuery("d1.listTables", { dbName });
-  const query = useMutation("d1.query");
 
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "D1", href: "#/d1" }, { label: dbName }]} />
       <SqlBrowser
         tables={tables}
-        onRunQuery={(sql) => query.mutate({ dbName, sql })}
-        query={query}
+        execQuery={(sql) => rpc("d1.query", { dbName, sql })}
       />
     </div>
   );
