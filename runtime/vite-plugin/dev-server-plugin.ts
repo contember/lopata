@@ -99,6 +99,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
       // reads from this, bridging the Vite SSR runner ↔ native module graphs.
       setGlobalEnv(env);
       (globalThis as any).__bunflare_env = env;
+      (globalThis as any).__bunflare_startSpan = startSpan;
+      (globalThis as any).__bunflare_setSpanStatus = spanMod.setSpanStatus;
 
       // Propagate string vars/secrets to process.env so libraries
       // that read process.env (e.g. better-auth, Sentry) see them.
