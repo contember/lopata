@@ -1,11 +1,22 @@
 import { useQuery } from "../rpc/hooks";
 import { rpc } from "../rpc/client";
 import { Breadcrumb, PageHeader, Table, TableLink, ServiceInfo, EmptyState, SqlBrowser } from "../components";
+import { parseHashRoute } from "../lib";
+import type { Tab } from "../sql-browser";
 
 export function D1View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
   if (parts.length === 1) return <D1DatabaseList />;
-  if (parts.length >= 2) return <D1DatabaseDetail dbName={decodeURIComponent(parts[1]!)} />;
+  if (parts.length >= 2) {
+    const dbName = decodeURIComponent(parts[1]!);
+    // parts[2] = tab (data/schema/sql), parts[3] = tableName
+    const { query } = parseHashRoute(location.hash);
+    const rawTab = parts[2] as Tab | undefined;
+    const tab: Tab = rawTab === "schema" || rawTab === "sql" ? rawTab : "data";
+    const tableName = parts[3] ? decodeURIComponent(parts[3]) : null;
+    const basePath = `/d1/${encodeURIComponent(dbName)}`;
+    return <D1DatabaseDetail dbName={dbName} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />;
+  }
   return null;
 }
 
@@ -49,7 +60,13 @@ function D1DatabaseList() {
   );
 }
 
-function D1DatabaseDetail({ dbName }: { dbName: string }) {
+function D1DatabaseDetail({ dbName, basePath, routeTab, routeTable, routeQuery }: {
+  dbName: string;
+  basePath: string;
+  routeTab: Tab;
+  routeTable: string | null;
+  routeQuery: URLSearchParams;
+}) {
   const { data: tables } = useQuery("d1.listTables", { dbName });
 
   return (
@@ -58,6 +75,10 @@ function D1DatabaseDetail({ dbName }: { dbName: string }) {
       <SqlBrowser
         tables={tables}
         execQuery={(sql) => rpc("d1.query", { dbName, sql })}
+        basePath={basePath}
+        routeTab={routeTab}
+        routeTable={routeTable}
+        routeQuery={routeQuery}
       />
     </div>
   );

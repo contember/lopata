@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import type { D1Table, QueryResult } from "./rpc/types";
+import { navigate, replaceRoute } from "./lib";
 
 // ─── Schema parsing ──────────────────────────────────────────────────
 
@@ -287,6 +288,10 @@ function useBrowserHistory() {
 export interface SqlBrowserProps {
   tables?: D1Table[] | null;
   execQuery: (sql: string) => Promise<QueryResult>;
+  basePath?: string;
+  routeTab?: Tab;
+  routeTable?: string | null;
+  routeQuery?: URLSearchParams;
 }
 
 type SortDir = "ASC" | "DESC";
@@ -295,7 +300,7 @@ const PAGE_SIZE = 50;
 
 // ─── SqlBrowser (main container) ─────────────────────────────────────
 
-type Tab = "data" | "schema" | "sql";
+export type Tab = "data" | "schema" | "sql";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "data", label: "Data Browser" },
@@ -303,15 +308,22 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "sql", label: "SQL Console" },
 ];
 
-export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
-  const [tab, setTab] = useState<Tab>("data");
+export function SqlBrowser({ tables, execQuery, basePath, routeTab, routeTable, routeQuery }: SqlBrowserProps) {
+  const [localTab, setLocalTab] = useState<Tab>("data");
+  const tab = basePath ? (routeTab ?? "data") : localTab;
   const [consoleSql, setConsoleSql] = useState("");
   const history = useHistory();
   const browserHistory = useBrowserHistory();
 
+  const switchTab = (t: Tab) => {
+    if (basePath) navigate(basePath + "/" + t);
+    else setLocalTab(t);
+  };
+
   const openInConsole = (sql: string) => {
     setConsoleSql(sql);
-    setTab("sql");
+    if (basePath) navigate(basePath + "/sql");
+    else setLocalTab("sql");
   };
 
   return (
@@ -321,7 +333,7 @@ export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
         {TABS.map(t => (
           <button
             key={t.key}
-            onClick={() => setTab(t.key)}
+            onClick={() => switchTab(t.key)}
             class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
               tab === t.key
                 ? "border-ink text-ink"
@@ -333,7 +345,7 @@ export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
         ))}
       </div>
 
-      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} history={history} browserHistory={browserHistory} />}
+      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} history={history} browserHistory={browserHistory} basePath={basePath} routeTable={routeTable} routeQuery={routeQuery} />}
       {tab === "schema" && <SchemaBrowserTab tables={tables} />}
       {tab === "sql" && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} history={history} />}
     </div>
@@ -531,49 +543,87 @@ function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
 
 // ─── DataBrowserTab ──────────────────────────────────────────────────
 
-interface RestoredState {
-  filters: Record<string, string>;
-  sortCol: string | null;
-  sortDir: SortDir;
-}
-
-function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHistory }: {
+function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHistory, basePath, routeTable, routeQuery }: {
   tables?: D1Table[] | null;
   execQuery: (sql: string) => Promise<QueryResult>;
   onOpenInConsole: (sql: string) => void;
   history: ReturnType<typeof useHistory>;
   browserHistory: ReturnType<typeof useBrowserHistory>;
+  basePath?: string;
+  routeTable?: string | null;
+  routeQuery?: URLSearchParams;
 }) {
-  const [selectedTable, setSelectedTable] = useState<string | null>(null);
-  const [restoredState, setRestoredState] = useState<RestoredState | null>(null);
+  // Table selection: URL-driven when basePath is set, local state otherwise
+  const [localTable, setLocalTable] = useState<string | null>(null);
+  const [localRestoredState, setLocalRestoredState] = useState<{ filters: Record<string, string>; sortCol: string | null; sortDir: SortDir } | null>(null);
+  const selectedTable = basePath ? (routeTable ?? null) : localTable;
 
   // Auto-select first table
   useEffect(() => {
     if (!selectedTable && tables?.length) {
-      setSelectedTable(tables[0]!.name);
+      if (basePath) {
+        replaceRoute(basePath + "/data/" + encodeURIComponent(tables[0]!.name));
+      } else {
+        setLocalTable(tables[0]!.name);
+      }
     }
-  }, [tables]);
+  }, [tables, selectedTable, basePath]);
 
   const tableInfo = tables?.find(t => t.name === selectedTable) ?? null;
 
   const handleRestoreHistory = (entry: BrowserHistoryEntry) => {
-    setSelectedTable(entry.table);
-    setRestoredState({ filters: entry.filters, sortCol: entry.sortCol, sortDir: entry.sortDir });
-  };
-
-  const handleNavigateFK = (targetTable: string, targetColumn: string, value: unknown) => {
-    // Only navigate if target table exists
-    if (tables?.some(t => t.name === targetTable)) {
-      setSelectedTable(targetTable);
-      setRestoredState({ filters: { [targetColumn]: `=${String(value)}` }, sortCol: null, sortDir: "ASC" });
+    if (basePath) {
+      const params = new URLSearchParams();
+      for (const [col, val] of Object.entries(entry.filters)) {
+        if (val.trim()) params.set("f." + col, val);
+      }
+      if (entry.sortCol) {
+        params.set("s", entry.sortCol);
+        params.set("d", entry.sortDir);
+      }
+      const qs = params.toString();
+      navigate(basePath + "/data/" + encodeURIComponent(entry.table) + (qs ? "?" + qs : ""));
+    } else {
+      setLocalTable(entry.table);
+      setLocalRestoredState({ filters: entry.filters, sortCol: entry.sortCol, sortDir: entry.sortDir });
     }
   };
 
-  // Clear restored state once it's been consumed (table changed by user)
-  const handleTableSelect = (name: string) => {
-    setSelectedTable(name);
-    setRestoredState(null);
+  const handleNavigateFK = (targetTable: string, targetColumn: string, value: unknown) => {
+    if (!tables?.some(t => t.name === targetTable)) return;
+    if (basePath) {
+      const params = new URLSearchParams();
+      params.set("f." + targetColumn, `=${String(value)}`);
+      navigate(basePath + "/data/" + encodeURIComponent(targetTable) + "?" + params.toString());
+    } else {
+      setLocalTable(targetTable);
+      setLocalRestoredState({ filters: { [targetColumn]: `=${String(value)}` }, sortCol: null, sortDir: "ASC" });
+    }
   };
+
+  const handleTableSelect = (name: string) => {
+    if (basePath) {
+      navigate(basePath + "/data/" + encodeURIComponent(name));
+    } else {
+      setLocalTable(name);
+      setLocalRestoredState(null);
+    }
+  };
+
+  // Build effective query: from URL route or from local restored state
+  const effectiveQuery = (() => {
+    if (basePath) return routeQuery;
+    if (!localRestoredState) return undefined;
+    const params = new URLSearchParams();
+    for (const [col, val] of Object.entries(localRestoredState.filters)) {
+      if (val.trim()) params.set("f." + col, val);
+    }
+    if (localRestoredState.sortCol) {
+      params.set("s", localRestoredState.sortCol);
+      params.set("d", localRestoredState.sortDir);
+    }
+    return params;
+  })();
 
   return (
     <div class="flex gap-5">
@@ -585,7 +635,7 @@ function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHi
       <div class="flex-1 min-w-0">
         {tableInfo ? (
           <TableDataView
-            key={restoredState ? JSON.stringify(restoredState) : tableInfo.name}
+            key={tableInfo.name + "?" + (effectiveQuery?.toString() ?? "")}
             table={tableInfo}
             execQuery={execQuery}
             onOpenInConsole={onOpenInConsole}
@@ -593,7 +643,8 @@ function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHi
             browserHistory={browserHistory}
             onRestoreHistory={handleRestoreHistory}
             onNavigateFK={handleNavigateFK}
-            initialState={restoredState}
+            basePath={basePath}
+            routeQuery={effectiveQuery}
           />
         ) : (
           <div class="text-center py-16 text-gray-400 text-sm font-medium">
@@ -646,7 +697,7 @@ function TableSidebar({ tables, selected, onSelect }: {
 
 // ─── TableDataView ───────────────────────────────────────────────────
 
-function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, onNavigateFK, initialState }: {
+function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, onNavigateFK, basePath, routeQuery }: {
   table: D1Table;
   execQuery: (sql: string) => Promise<QueryResult>;
   onOpenInConsole: (sql: string) => void;
@@ -654,7 +705,8 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
   browserHistory: ReturnType<typeof useBrowserHistory>;
   onRestoreHistory: (entry: BrowserHistoryEntry) => void;
   onNavigateFK: (targetTable: string, targetColumn: string, value: unknown) => void;
-  initialState: RestoredState | null;
+  basePath?: string;
+  routeQuery?: URLSearchParams;
 }) {
   const schema = parseCreateTable(table.sql);
   const pkCols = schema.primaryKeys.length > 0 ? schema.primaryKeys : ["rowid"];
@@ -666,17 +718,34 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
     if (col.foreignKey) fkMap.set(col.name, col.foreignKey);
   }
 
+  // Initialize state from URL query params
+  const initFilters = (): Record<string, string> => {
+    const f: Record<string, string> = {};
+    if (routeQuery) {
+      for (const [key, val] of routeQuery.entries()) {
+        if (key.startsWith("f.")) f[key.slice(2)] = val;
+      }
+    }
+    return f;
+  };
+
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [totalCount, setTotalCount] = useState<number>(table.rows);
-  const [offset, setOffset] = useState(0);
-  const [sortCol, setSortCol] = useState<string | null>(initialState?.sortCol ?? null);
-  const [sortDir, setSortDir] = useState<SortDir>(initialState?.sortDir ?? "ASC");
+  const [offset, setOffset] = useState(() => {
+    const o = routeQuery?.get("o");
+    return o ? parseInt(o, 10) || 0 : 0;
+  });
+  const [sortCol, setSortCol] = useState<string | null>(() => routeQuery?.get("s") ?? null);
+  const [sortDir, setSortDir] = useState<SortDir>(() => {
+    const d = routeQuery?.get("d");
+    return d === "DESC" ? "DESC" : "ASC";
+  });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInsert, setShowInsert] = useState(false);
-  const [filters, setFilters] = useState<Record<string, string>>(initialState?.filters ?? {});
-  const [showFilters, setShowFilters] = useState(initialState ? Object.keys(initialState.filters).length > 0 : false);
+  const [filters, setFilters] = useState<Record<string, string>>(initFilters);
+  const [showFilters, setShowFilters] = useState(() => Object.keys(initFilters()).length > 0);
   const [showFilterHelp, setShowFilterHelp] = useState(false);
   const [showBrowserHistory, setShowBrowserHistory] = useState(false);
 
@@ -690,6 +759,28 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
 
   // Export dropdown
   const [showExport, setShowExport] = useState(false);
+
+  // Sync state → URL via replaceState (no history entry)
+  const syncUrlRef = useRef(false);
+  useEffect(() => {
+    // Skip the first render (initial mount uses URL → state)
+    if (!syncUrlRef.current) {
+      syncUrlRef.current = true;
+      return;
+    }
+    if (!basePath) return;
+    const params = new URLSearchParams();
+    for (const [col, val] of Object.entries(filters)) {
+      if (val.trim()) params.set("f." + col, val);
+    }
+    if (sortCol) {
+      params.set("s", sortCol);
+      params.set("d", sortDir);
+    }
+    if (offset > 0) params.set("o", String(offset));
+    const qs = params.toString();
+    replaceRoute(basePath + "/data/" + encodeURIComponent(table.name) + (qs ? "?" + qs : ""));
+  }, [filters, sortCol, sortDir, offset, basePath, table.name]);
 
   const filtersKey = JSON.stringify(filters);
   const loadGenRef = useRef(0);
@@ -734,14 +825,6 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
       if (gen === loadGenRef.current) setLoading(false);
     }
   }, [table.name, sortCol, sortDir, filtersKey, needsRowid, execQuery]);
-
-  // Reset filters when switching tables
-  useEffect(() => {
-    setFilters({});
-    setShowFilters(false);
-    setSortCol(null);
-    setSelectedRows(new Set());
-  }, [table.name]);
 
   // Reload when table, sort, or filters change
   useEffect(() => {

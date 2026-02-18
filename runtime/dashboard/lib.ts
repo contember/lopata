@@ -16,6 +16,19 @@ export function navigate(path: string) {
   location.hash = path;
 }
 
+export function replaceRoute(path: string) {
+  history.replaceState(null, "", "#" + path);
+}
+
+export function parseHashRoute(hash: string): { segments: string[]; query: URLSearchParams } {
+  const raw = hash.startsWith("#") ? hash.slice(1) : hash;
+  const qIdx = raw.indexOf("?");
+  const pathname = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+  const queryStr = qIdx >= 0 ? raw.slice(qIdx + 1) : "";
+  const segments = pathname.split("/").filter(Boolean);
+  return { segments, query: new URLSearchParams(queryStr) };
+}
+
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
