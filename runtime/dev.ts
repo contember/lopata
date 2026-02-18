@@ -40,6 +40,16 @@ if (bunflareConfig) {
   // ─── Multi-worker mode ─────────────────────────────────────────
   console.log("[bunflare] Multi-worker mode (bunflare.config.ts found)");
 
+  // Create executor factory based on isolation mode
+  let executorFactory: import("./bindings/do-executor").DOExecutorFactory | undefined;
+  if (bunflareConfig.isolation === "isolated") {
+    const { WorkerExecutorFactory } = await import("./bindings/do-executor-worker");
+    executorFactory = new WorkerExecutorFactory();
+    console.log("[bunflare] DO isolation: isolated (Worker threads)");
+  } else if (bunflareConfig.isolation && bunflareConfig.isolation !== "dev") {
+    console.warn(`[bunflare] Unknown isolation mode "${bunflareConfig.isolation}", using "dev"`);
+  }
+
   const registry = new WorkerRegistry();
 
   // Load main worker config
@@ -53,6 +63,8 @@ if (bunflareConfig) {
     workerRegistry: registry,
     isMain: true,
     cron: bunflareConfig.cron,
+    executorFactory,
+    configPath: bunflareConfig.main,
   });
   registry.register(mainConfig.name, mainManager, true);
 
@@ -67,6 +79,8 @@ if (bunflareConfig) {
       workerRegistry: registry,
       isMain: false,
       cron: bunflareConfig.cron,
+      executorFactory,
+      configPath: workerDef.config,
     });
     registry.register(workerDef.name, auxManager);
 

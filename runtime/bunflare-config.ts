@@ -11,6 +11,12 @@ export interface BunflareConfig {
   }>;
   /** Enable real cron scheduling based on wrangler triggers.crons (default: false) */
   cron?: boolean;
+  /**
+   * DO isolation mode:
+   * - "dev" (default) — all DO instances run in-process (fast, shared memory, hot reload)
+   * - "isolated" — each DO instance runs in a separate Bun Worker thread (faithful to CF production)
+   */
+  isolation?: "dev" | "isolated";
 }
 
 export function defineConfig(config: BunflareConfig): BunflareConfig {

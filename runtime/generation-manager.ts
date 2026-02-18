@@ -3,6 +3,7 @@ import type { WranglerConfig } from "./config";
 import { buildEnv, wireClassRefs, setGlobalEnv } from "./env";
 import { Generation, type GenerationInfo } from "./generation";
 import { ExecutionContext } from "./execution-context";
+import type { DOExecutorFactory } from "./bindings/do-executor";
 import type { WorkerRegistry } from "./worker-registry";
 
 function isEntrypointClass(exp: unknown): exp is new (ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
@@ -79,8 +80,11 @@ export class GenerationManager {
   readonly workerRegistry: WorkerRegistry | undefined;
   readonly isMain: boolean;
   readonly cronEnabled: boolean;
+  readonly executorFactory: DOExecutorFactory | undefined;
+  /** @internal Path to the wrangler config file (for isolated mode worker threads) */
+  _configPath: string = "";
 
-  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean; cron?: boolean }) {
+  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean; cron?: boolean; executorFactory?: DOExecutorFactory; configPath?: string }) {
     this.config = config;
     this.baseDir = baseDir;
     this.workerPath = path.resolve(baseDir, config.main);
@@ -88,6 +92,8 @@ export class GenerationManager {
     this.workerRegistry = options?.workerRegistry;
     this.isMain = options?.isMain ?? true;
     this.cronEnabled = options?.cron ?? false;
+    this.executorFactory = options?.executorFactory;
+    this._configPath = options?.configPath ?? "";
   }
 
   /** The currently active generation (receives new requests) */
@@ -129,8 +135,13 @@ export class GenerationManager {
     // 1. Import fresh worker module using cache-busting query string
     const workerModule = await import(`${this.workerPath}?v=${Date.now()}`);
 
+    // 1b. Configure executor factory with module/config paths (for isolated mode)
+    if (this.executorFactory && "configure" in this.executorFactory) {
+      (this.executorFactory as any).configure(this.workerPath, this._configPath);
+    }
+
     // 2. Build new env with fresh binding instances (same underlying DB)
-    const { env, registry } = buildEnv(this.config, this.baseDir);
+    const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory);
 
     // 3. Wire DO and Workflow class references
     wireClassRefs(registry, workerModule, env, this.workerRegistry);

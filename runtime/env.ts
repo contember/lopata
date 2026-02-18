@@ -12,6 +12,7 @@ import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
 import { DockerManager } from "./bindings/container-docker";
 import { ContainerBase } from "./bindings/container";
+import type { DOExecutorFactory } from "./bindings/do-executor";
 import type { WorkerRegistry } from "./worker-registry";
 import { getDatabase, getDataDir } from "./db";
 import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from "./tracing/instrument";
@@ -72,7 +73,7 @@ interface ClassRegistry {
   staticAssets: StaticAssets | null;
 }
 
-export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Record<string, unknown>; registry: ClassRegistry } {
+export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFactory?: DOExecutorFactory): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
   const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
 
@@ -120,7 +121,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
   // Durable Objects
   for (const doBinding of config.durable_objects?.bindings ?? []) {
     console.log(`[bunflare] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`);
-    const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir());
+    const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory);
     env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name);
     registry.durableObjects.push({
       bindingName: doBinding.name,
@@ -213,7 +214,7 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
       // Create a new DO namespace for this container
       const bindingName = container.name ?? container.class_name;
       console.log(`[bunflare] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`);
-      const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir());
+      const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory);
       env[bindingName] = instrumentDONamespace(namespace, container.class_name);
       registry.durableObjects.push({
         bindingName,
@@ -243,6 +244,16 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string): { env: Re
     } else {
       console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`);
     }
+  }
+
+  // Version metadata binding
+  if (config.version_metadata) {
+    const binding = config.version_metadata.binding;
+    env[binding] = {
+      id: "local-dev",
+      tag: "",
+      timestamp: new Date().toISOString(),
+    };
   }
 
   // Store reference for cloudflare:workers env export

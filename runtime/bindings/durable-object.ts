@@ -3,8 +3,8 @@ import { mkdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
+import type { DOExecutor, DOExecutorFactory } from "./do-executor";
 import { persistError } from "../tracing/span";
-import { warnInvalidRpcArgs, warnInvalidRpcReturn } from "../rpc-validate";
 
 // --- SQL Storage Cursor ---
 
@@ -689,7 +689,7 @@ const STUB_PROPS = new Set(["id", "name", "fetch"]);
 // --- Namespace ---
 
 export class DurableObjectNamespaceImpl {
-  private instances = new Map<string, DurableObjectBase>();
+  private _executors = new Map<string, DOExecutor>();
   private _stubs = new Map<string, unknown>();
   private _knownIds = new Map<string, DurableObjectIdImpl>();
   private _class?: new (ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase;
@@ -703,17 +703,28 @@ export class DurableObjectNamespaceImpl {
   private _evictionTimer: ReturnType<typeof setInterval> | null = null;
   private _evictionTimeoutMs: number;
   private _containerConfig?: ContainerConfig;
-  private _containerRuntimes = new Map<string, import("./container").ContainerRuntime>();
+  private _factoryOverride?: DOExecutorFactory;
+  private _defaultFactory?: DOExecutorFactory;
 
-  constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits) {
+  constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory) {
     this.db = db;
     this.namespaceName = namespaceName;
     this.dataDir = dataDir;
     this.limits = limits;
+    this._factoryOverride = factory;
     this._evictionTimeoutMs = limits?.evictionTimeoutMs ?? 120_000;
     if (this._evictionTimeoutMs > 0) {
       this._evictionTimer = setInterval(() => this._evictIdle(), 30_000);
     }
+  }
+
+  private _getFactory(): DOExecutorFactory {
+    if (this._factoryOverride) return this._factoryOverride;
+    if (!this._defaultFactory) {
+      const { InProcessExecutorFactory } = require("./do-executor-inprocess") as typeof import("./do-executor-inprocess");
+      this._defaultFactory = new InProcessExecutorFactory();
+    }
+    return this._defaultFactory;
   }
 
   /** Called after worker module is loaded to wire the actual class */
@@ -755,126 +766,91 @@ export class DurableObjectNamespaceImpl {
 
   /** @internal Fire the alarm handler on a DO instance */
   private async _fireAlarm(idStr: string, retryCount: number): Promise<void> {
-    // Get or create the DO instance
-    const instance = this._getOrCreateInstance(idStr);
-    if (!instance) return;
+    const executor = this._getOrCreateExecutor(idStr);
+    if (!executor) return;
 
-    const state = instance.ctx as DurableObjectStateImpl;
+    this._lastActivity.set(idStr, Date.now());
 
-    // Acquire the serial-execution lock
-    const unlock = await state._lock();
+    // Delete alarm from DB before calling handler (matching CF behavior)
+    this.db
+      .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
+      .run(this.namespaceName, idStr);
+
     try {
-      await state._waitForReady();
-
-      // Delete alarm from DB before calling handler (matching CF behavior)
-      this.db
-        .query("DELETE FROM do_alarms WHERE namespace = ? AND id = ?")
-        .run(this.namespaceName, idStr);
-
-      try {
-        const alarmFn = (instance as unknown as Record<string, unknown>).alarm;
-        if (typeof alarmFn === "function") {
-          await alarmFn.call(instance, {
-            retryCount,
-            isRetry: retryCount > 0,
-          });
-        }
-      } catch (e) {
-        persistError(e, "alarm");
-        if (retryCount < MAX_ALARM_RETRIES) {
-          // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
-          const backoffMs = Math.pow(2, retryCount) * 1000;
-          const retryTime = Date.now() + backoffMs;
-          // Re-persist alarm for retry
-          this.db
-            .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
-            .run(this.namespaceName, idStr, retryTime);
-          const timer = setTimeout(() => {
-            this.alarmTimers.delete(idStr);
-            this._fireAlarm(idStr, retryCount + 1);
-          }, backoffMs);
-          this.alarmTimers.set(idStr, timer);
-        }
-        // After max retries, alarm is discarded
+      await executor.executeAlarm(retryCount);
+    } catch (e) {
+      persistError(e, "alarm");
+      if (retryCount < MAX_ALARM_RETRIES) {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+        const backoffMs = Math.pow(2, retryCount) * 1000;
+        const retryTime = Date.now() + backoffMs;
+        // Re-persist alarm for retry
+        this.db
+          .query("INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)")
+          .run(this.namespaceName, idStr, retryTime);
+        const timer = setTimeout(() => {
+          this.alarmTimers.delete(idStr);
+          this._fireAlarm(idStr, retryCount + 1);
+        }, backoffMs);
+        this.alarmTimers.set(idStr, timer);
       }
-    } finally {
-      unlock();
+      // After max retries, alarm is discarded
     }
   }
 
-  /** @internal Get or create a DO instance by id string */
-  private _getOrCreateInstance(idStr: string, doId?: DurableObjectIdImpl): DurableObjectBase | null {
-    if (this.instances.has(idStr)) return this.instances.get(idStr)!;
+  /** @internal Get or create a DO executor by id string */
+  private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
+    if (this._executors.has(idStr)) return this._executors.get(idStr)!;
     if (!this._class) return null;
 
     // Use provided doId, or look up known id (preserves name after eviction), or create new
     const id = doId ?? this._knownIds.get(idStr) ?? new DurableObjectIdImpl(idStr);
     if (doId) this._knownIds.set(idStr, doId);
 
-    const state = new DurableObjectStateImpl(id, this.db, this.namespaceName, this.dataDir, this.limits);
-
-    // Wire container runtime if this is a container namespace
-    if (this._containerConfig) {
-      const { ContainerRuntime, ContainerContext } = require("./container") as typeof import("./container");
-      const runtime = new ContainerRuntime(
-        this._containerConfig.className,
-        idStr,
-        this._containerConfig.image,
-        this._containerConfig.dockerManager,
-      );
-      this._containerRuntimes.set(idStr, runtime);
-      state.container = new ContainerContext(runtime);
-    }
-
-    const instance = new this._class(state, this._env);
-
-    // Wire container runtime to ContainerBase instance
-    if (this._containerConfig && this._containerRuntimes.has(idStr)) {
-      const { ContainerBase } = require("./container") as typeof import("./container");
-      if (instance instanceof ContainerBase) {
-        instance._wireRuntime(this._containerRuntimes.get(idStr)!);
-      }
-    }
-
-    // Wire instance resolver for WebSocket handler delegation
-    state._setInstanceResolver(() => this.instances.get(idStr) ?? null);
-    // Wire alarm callback
-    state.storage._setAlarmCallback((time) => {
-      if (time === null) {
-        const t = this.alarmTimers.get(idStr);
-        if (t) clearTimeout(t);
-        this.alarmTimers.delete(idStr);
-      } else {
-        this._scheduleAlarmTimer(idStr, time);
-      }
+    const executor = this._getFactory().create({
+      id,
+      db: this.db,
+      namespaceName: this.namespaceName,
+      cls: this._class,
+      env: this._env,
+      dataDir: this.dataDir,
+      limits: this.limits,
+      containerConfig: this._containerConfig,
+      onAlarmSet: (time) => {
+        if (time === null) {
+          const t = this.alarmTimers.get(idStr);
+          if (t) clearTimeout(t);
+          this.alarmTimers.delete(idStr);
+        } else {
+          this._scheduleAlarmTimer(idStr, time);
+        }
+      },
     });
-    this.instances.set(idStr, instance);
+
+    this._executors.set(idStr, executor);
     this._lastActivity.set(idStr, Date.now());
-    return instance;
+    return executor;
   }
 
-  /** @internal Evict idle instances */
+  /** @internal Evict idle executors */
   private _evictIdle() {
     const now = Date.now();
     for (const [idStr, lastActivity] of this._lastActivity) {
       if (now - lastActivity < this._evictionTimeoutMs) continue;
-      const instance = this.instances.get(idStr);
-      if (!instance) continue;
-      const state = instance.ctx as DurableObjectStateImpl;
-      // Skip if blockConcurrencyWhile is active
-      if (state._isBlocked()) continue;
-      // Skip if there are active requests
-      if (state._hasActiveRequests()) continue;
-      // Skip if instance has accepted WebSockets
-      if (state.getWebSockets().length > 0) continue;
+      const executor = this._executors.get(idStr);
+      if (!executor) continue;
+      if (executor.isBlocked()) continue;
+      if (executor.isActive()) continue;
+      if (executor.activeWebSocketCount() > 0) continue;
       // Evict
-      this.instances.delete(idStr);
+      executor.dispose().catch(() => {});
+      this._executors.delete(idStr);
       this._lastActivity.delete(idStr);
       // _knownIds and alarmTimers survive eviction
     }
   }
 
-  /** @internal Destroy this namespace: clear timers, evict instances without active WebSockets */
+  /** @internal Destroy this namespace: clear timers, evict executors without active WebSockets */
   destroy(): void {
     if (this._evictionTimer) {
       clearInterval(this._evictionTimer);
@@ -882,16 +858,11 @@ export class DurableObjectNamespaceImpl {
     }
     for (const timer of this.alarmTimers.values()) clearTimeout(timer);
     this.alarmTimers.clear();
-    // Cleanup container runtimes
-    for (const [idStr, runtime] of this._containerRuntimes) {
-      runtime.cleanup().catch(() => {});
-      this._containerRuntimes.delete(idStr);
-    }
-    // Keep instances with active WebSockets alive; evict the rest
-    for (const [idStr, instance] of this.instances) {
-      const state = instance.ctx as DurableObjectStateImpl;
-      if (state.getWebSockets().length === 0) {
-        this.instances.delete(idStr);
+    // Dispose executors without active WebSockets; keep the rest alive
+    for (const [idStr, executor] of this._executors) {
+      if (executor.activeWebSocketCount() === 0) {
+        executor.dispose().catch(() => {});
+        this._executors.delete(idStr);
       }
     }
     this._lastActivity.clear();
@@ -899,7 +870,18 @@ export class DurableObjectNamespaceImpl {
 
   /** @internal Get a raw instance for testing (no proxy) */
   _getInstance(idStr: string): DurableObjectBase | null {
-    return this.instances.get(idStr) ?? null;
+    const executor = this._executors.get(idStr);
+    if (!executor) return null;
+    // InProcessExecutor exposes _rawInstance
+    if ("_rawInstance" in executor) {
+      return (executor as any)._rawInstance;
+    }
+    return null;
+  }
+
+  /** @internal Get the executor for a given id */
+  _getExecutor(idStr: string): DOExecutor | null {
+    return this._executors.get(idStr) ?? null;
   }
 
   newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
@@ -933,13 +915,13 @@ export class DurableObjectNamespaceImpl {
     // Store the known id (preserves name)
     this._knownIds.set(idStr, id);
 
-    // Ensure instance exists
-    this._getOrCreateInstance(idStr, id);
+    // Ensure executor exists
+    this._getOrCreateExecutor(idStr, id);
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
 
-    // Return a Proxy stub that lazily resolves instances (survives eviction)
+    // Return a Proxy stub that lazily resolves executors (survives eviction)
     const stub = new Proxy({} as Record<string, unknown>, {
       get(_target, prop: string | symbol) {
         // Non-RPC props (Promise protocol, symbols, conversion)
@@ -953,43 +935,18 @@ export class DurableObjectNamespaceImpl {
         // stub.fetch() — calls the DO's fetch() handler
         if (prop === "fetch") {
           return async (input: RequestInfo | URL, init?: RequestInit) => {
-            const instance = self._getOrCreateInstance(idStr, id)!;
-            const state = instance.ctx as DurableObjectStateImpl;
+            const executor = self._getOrCreateExecutor(idStr, id)!;
             self._lastActivity.set(idStr, Date.now());
-            const unlock = await state._lock();
-            try {
-              await state._waitForReady();
-              const fetchFn = (instance as unknown as Record<string, unknown>).fetch;
-              if (typeof fetchFn !== "function") {
-                throw new Error("Durable Object does not implement fetch()");
-              }
-              const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
-              return await (fetchFn as (req: Request) => Promise<Response>).call(instance, request);
-            } finally {
-              unlock();
-            }
+            const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init);
+            return await executor.executeFetch(request);
           };
         }
 
         // RPC: return a callable that also acts as a thenable for property access
         const rpcCallable = async (...args: unknown[]) => {
-          warnInvalidRpcArgs(args, String(prop));
-          const instance = self._getOrCreateInstance(idStr, id)!;
-          const state = instance.ctx as DurableObjectStateImpl;
+          const executor = self._getOrCreateExecutor(idStr, id)!;
           self._lastActivity.set(idStr, Date.now());
-          const unlock = await state._lock();
-          try {
-            await state._waitForReady();
-            const val = (instance as unknown as Record<string, unknown>)[prop as string];
-            if (typeof val === "function") {
-              const result = await (val as (...a: unknown[]) => unknown).call(instance, ...args);
-              warnInvalidRpcReturn(result, String(prop));
-              return result;
-            }
-            throw new Error(`"${String(prop)}" is not a method on the Durable Object`);
-          } finally {
-            unlock();
-          }
+          return await executor.executeRpc(String(prop), args);
         };
 
         // Make it thenable for property access: `await stub.myProp`
@@ -997,23 +954,9 @@ export class DurableObjectNamespaceImpl {
           onFulfilled?: ((value: unknown) => unknown) | null,
           onRejected?: ((reason: unknown) => unknown) | null,
         ) => {
-          const instance = self._getOrCreateInstance(idStr, id)!;
-          const state = instance.ctx as DurableObjectStateImpl;
+          const executor = self._getOrCreateExecutor(idStr, id)!;
           self._lastActivity.set(idStr, Date.now());
-          const promise = (async () => {
-            const unlock = await state._lock();
-            try {
-              await state._waitForReady();
-              const val = (instance as unknown as Record<string, unknown>)[prop as string];
-              if (typeof val === "function") {
-                return val.bind(instance);
-              }
-              warnInvalidRpcReturn(val, String(prop));
-              return val;
-            } finally {
-              unlock();
-            }
-          })();
+          const promise = executor.executeRpcGet(String(prop));
           return promise.then(onFulfilled, onRejected);
         };
 
