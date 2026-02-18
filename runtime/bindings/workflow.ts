@@ -468,7 +468,7 @@ export class SqliteWorkflowInstance {
     ac?.abort();
   }
 
-  async restart(): Promise<void> {
+  async restart(options?: { fromStep?: string }): Promise<void> {
     if (!this.binding) throw new Error("Cannot restart: instance not associated with a workflow binding. Use the binding's get() method.");
     const cls = this.binding._getClass();
     const env = this.binding._getEnv();
@@ -489,8 +489,19 @@ export class SqliteWorkflowInstance {
     const abortController = new AbortController();
     abortControllers.set(this.instanceId, abortController);
 
-    // Clear cached steps for this instance
-    this.db.query("DELETE FROM workflow_steps WHERE instance_id = ?").run(this.instanceId);
+    if (options?.fromStep) {
+      // Partial restart: find the step and delete it + all subsequent steps
+      const step = this.db
+        .query("SELECT completed_at FROM workflow_steps WHERE instance_id = ? AND step_name = ?")
+        .get(this.instanceId, options.fromStep) as { completed_at: number } | null;
+      if (!step) throw new Error(`Step "${options.fromStep}" not found in workflow instance ${this.instanceId}`);
+      this.db
+        .query("DELETE FROM workflow_steps WHERE instance_id = ? AND completed_at >= ?")
+        .run(this.instanceId, step.completed_at);
+    } else {
+      // Full restart: clear all cached steps
+      this.db.query("DELETE FROM workflow_steps WHERE instance_id = ?").run(this.instanceId);
+    }
 
     this.db
       .query("UPDATE workflow_instances SET status = 'running', output = NULL, error = NULL, error_name = NULL, updated_at = ? WHERE id = ?")
