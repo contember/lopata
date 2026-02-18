@@ -14,10 +14,11 @@ import { TracesView } from "./views/traces";
 import { ErrorsView } from "./views/errors";
 import { ScheduledView } from "./views/scheduled";
 import { EmailView } from "./views/email";
+import { AiView } from "./views/ai";
 
 const NAV_ITEMS = [
   { path: "/", label: "Overview", icon: "◉" },
-  { path: "/errors", label: "Errors", icon: "⚠" },
+  { path: "/errors", label: "Errors", icon: "⚠\uFE0E" },
   { path: "/traces", label: "Traces", icon: "⟡" },
   { path: "/workers", label: "Workers", icon: "⊡" },
   { path: "/kv", label: "KV", icon: "⬡" },
@@ -28,8 +29,9 @@ const NAV_ITEMS = [
   { path: "/containers", label: "Containers", icon: "▣" },
   { path: "/d1", label: "D1", icon: "⊞" },
   { path: "/cache", label: "Cache", icon: "◎" },
-  { path: "/scheduled", label: "Scheduled", icon: "⏱" },
-  { path: "/email", label: "Email", icon: "✉" },
+  { path: "/scheduled", label: "Scheduled", icon: "⏱\uFE0E" },
+  { path: "/email", label: "Email", icon: "✉\uFE0E" },
+  { path: "/ai", label: "AI", icon: "⚡" },
 ];
 
 function App() {
@@ -51,6 +53,7 @@ function App() {
     if (route.startsWith("/cache")) return <CacheView route={route} />;
     if (route.startsWith("/scheduled")) return <ScheduledView route={route} />;
     if (route.startsWith("/email")) return <EmailView route={route} />;
+    if (route.startsWith("/ai")) return <AiView route={route} />;
     return <div class="p-8 text-text-muted">Page not found</div>;
   }
 

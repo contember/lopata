@@ -15,6 +15,7 @@ import { handlers as config } from "./handlers/config";
 import { handlers as errors } from "./handlers/errors";
 import { handlers as scheduled } from "./handlers/scheduled";
 import { handlers as email } from "./handlers/email";
+import { handlers as ai } from "./handlers/ai";
 
 const allHandlers = {
   ...overview,
@@ -33,6 +34,7 @@ const allHandlers = {
   ...errors,
   ...scheduled,
   ...email,
+  ...ai,
 };
 
 export type Procedures = {

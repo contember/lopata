@@ -25,7 +25,15 @@ export interface OverviewData {
   errors: number;
   scheduled: number;
   email: number;
+  ai: number;
   generations: GenerationInfo[];
+  runtime: {
+    bunVersion: string;
+    platform: string;
+    arch: string;
+    pid: number;
+    cwd: string;
+  };
 }
 
 // Containers
@@ -256,6 +264,19 @@ export interface TraceErrorSummary {
   errorName: string;
   errorMessage: string;
   source: string | null;
+}
+
+// AI
+export interface AiRequest {
+  id: string;
+  model: string;
+  input_summary: string | null;
+  output_summary: string | null;
+  duration_ms: number;
+  status: string;
+  error: string | null;
+  is_streaming: number;
+  created_at: number;
 }
 
 // Email

@@ -87,6 +87,28 @@ export const handlers = {
           break;
         }
 
+        case "ai": {
+          if (config.ai) {
+            groups.push({ title: "Bindings", items: [{ name: config.ai.binding, value: "Workers AI" }] });
+          }
+          break;
+        }
+
+        case "hyperdrive": {
+          const items = (config.hyperdrive ?? []).map(hd => {
+            let value = hd.id;
+            if (hd.localConnectionString) {
+              try {
+                const url = new URL(hd.localConnectionString);
+                value += ` · ${url.hostname}`;
+              } catch {}
+            }
+            return { name: hd.binding, value };
+          });
+          if (items.length) groups.push({ title: "Bindings", items });
+          break;
+        }
+
         case "email": {
           const items = (config.send_email ?? []).map(e => {
             let value = e.destination_address ?? "any destination";

@@ -8,6 +8,8 @@ import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { openD1Database } from "./bindings/d1";
 import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
 import { SendEmailBinding } from "./bindings/email";
+import { HyperdriveBinding } from "./bindings/hyperdrive";
+import { AiBinding } from "./bindings/ai";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
@@ -201,6 +203,24 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFa
     env[email.name] = instrumentBinding(
       new SendEmailBinding(db, email.name, email.destination_address, email.allowed_destination_addresses),
       { type: "email", name: email.name, methods: ["send"] },
+    );
+  }
+
+  // Hyperdrive
+  for (const hd of config.hyperdrive ?? []) {
+    const connStr = hd.localConnectionString ?? "";
+    console.log(`[bunflare] Hyperdrive: ${hd.binding}`);
+    env[hd.binding] = new HyperdriveBinding(connStr);
+  }
+
+  // Workers AI
+  if (config.ai) {
+    const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID) as string | undefined;
+    const apiToken = (env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN) as string | undefined;
+    console.log(`[bunflare] AI binding: ${config.ai.binding}`);
+    env[config.ai.binding] = instrumentBinding(
+      new AiBinding(db, accountId, apiToken),
+      { type: "ai", name: config.ai.binding, methods: ["run", "models"] },
     );
   }
 

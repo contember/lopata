@@ -204,6 +204,20 @@ export function runMigrations(db: Database): void {
 			created_at INTEGER NOT NULL
 		)
 	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS ai_requests (
+			id TEXT PRIMARY KEY,
+			model TEXT NOT NULL,
+			input_summary TEXT,
+			output_summary TEXT,
+			duration_ms INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'ok',
+			error TEXT,
+			is_streaming INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL
+		)
+	`);
 }
 
 /** Returns the path to the .bunflare data directory. */

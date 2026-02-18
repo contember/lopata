@@ -24,6 +24,12 @@ export interface WranglerConfig {
     destination_address?: string;
     allowed_destination_addresses?: string[];
   }[];
+  ai?: { binding: string };
+  hyperdrive?: {
+    binding: string;
+    id: string;
+    localConnectionString?: string;
+  }[];
   services?: { binding: string; service: string; entrypoint?: string }[];
   triggers?: { crons?: string[] };
   vars?: Record<string, string>;

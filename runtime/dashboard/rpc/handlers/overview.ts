@@ -33,6 +33,7 @@ export const handlers = {
     }
 
     const emailCount = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM email_messages").get()?.count ?? 0;
+    const aiCount = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM ai_requests").get()?.count ?? 0;
 
     return {
       kv: dbKv.size,
@@ -46,7 +47,15 @@ export const handlers = {
       errors: getTraceStore().getErrorCount(),
       scheduled: getAllConfigs(ctx).reduce((sum, cfg) => sum + (cfg.triggers?.crons?.length ?? 0), 0),
       email: emailCount,
+      ai: aiCount,
       generations: ctx.manager ? ctx.manager.list() : [],
+      runtime: {
+        bunVersion: Bun.version,
+        platform: process.platform,
+        arch: process.arch,
+        pid: process.pid,
+        cwd: process.cwd(),
+      },
       ...(ctx.registry ? {
         workers: Array.from(ctx.registry.listManagers()).map(([name, mgr]) => ({
           workerName: name,
