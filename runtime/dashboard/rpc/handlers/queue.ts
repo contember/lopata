@@ -1,6 +1,7 @@
 import type { HandlerContext, QueueInfo, QueueMessage, OkResponse } from "../types";
 import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
+import { randomUUIDv7 } from "bun";
 import type { SQLQueryBindings } from "bun:sqlite";
 
 export const handlers = {
@@ -46,6 +47,33 @@ export const handlers = {
   "queue.deleteMessage"({ queue, id }: { queue: string; id: string }): OkResponse {
     const db = getDatabase();
     db.prepare("DELETE FROM queue_messages WHERE queue = ? AND id = ?").run(queue, id);
+    return { ok: true };
+  },
+
+  "queue.publishMessage"({ queue, body, contentType = "json" }: { queue: string; body: string; contentType?: string }): OkResponse {
+    const db = getDatabase();
+    const now = Date.now();
+    let encoded: Uint8Array;
+    if (contentType === "json") {
+      // Validate JSON
+      JSON.parse(body);
+      encoded = new TextEncoder().encode(body);
+    } else {
+      encoded = new TextEncoder().encode(body);
+    }
+    db.run(
+      "INSERT INTO queue_messages (id, queue, body, content_type, attempts, status, visible_at, created_at) VALUES (?, ?, ?, ?, 0, 'pending', ?, ?)",
+      [randomUUIDv7(), queue, encoded, contentType, now, now],
+    );
+    return { ok: true };
+  },
+
+  "queue.requeueMessage"({ queue, id }: { queue: string; id: string }): OkResponse {
+    const db = getDatabase();
+    const now = Date.now();
+    db.prepare(
+      "UPDATE queue_messages SET status = 'pending', attempts = 0, visible_at = ?, completed_at = NULL WHERE queue = ? AND id = ?",
+    ).run(now, queue, id);
     return { ok: true };
   },
 };
