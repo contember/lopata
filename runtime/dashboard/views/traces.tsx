@@ -659,7 +659,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
         onClick={onClose}
       />
       {/* Drawer */}
-      <div class="fixed right-0 top-0 bottom-0 w-[720px] max-w-[90vw] bg-white border-l border-gray-200 z-50 flex flex-col overflow-hidden animate-slide-in">
+      <div class="fixed right-0 top-0 bottom-0 w-[960px] max-w-[90vw] bg-white border-l border-gray-200 z-50 flex flex-col overflow-hidden animate-slide-in">
         {/* Header */}
         <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200">
           <div>

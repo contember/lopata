@@ -177,18 +177,20 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 
               {/* Expanded detail */}
               {isExpanded && (
-                <div class="bg-gray-50 border border-gray-100 rounded-lg p-4 mt-1 mb-2" style={{ marginLeft: `${200 + depth * 16}px` }}>
-                  <div class="text-xs space-y-2">
+                <div class="bg-gray-50 border border-gray-100 rounded-lg p-4 mt-1 mb-2 ml-4">
+                  <div class="text-xs space-y-3">
                     {/* Timing section */}
-                    <div class="grid grid-cols-2 gap-x-4 gap-y-1">
-                      <div><span class="text-gray-400">Kind:</span> <span class="text-ink">{span.kind}</span></div>
-                      <div><span class="text-gray-400">Status:</span> <TraceStatusBadge status={span.status} /></div>
-                      <div><span class="text-gray-400">Start:</span> <span class="text-ink font-mono">{formatTimestamp(span.startTime)}</span></div>
-                      <div><span class="text-gray-400">End:</span> <span class="text-ink font-mono">{span.endTime ? formatTimestamp(span.endTime) : "..."}</span></div>
-                      <div><span class="text-gray-400">Duration:</span> <span class="text-ink font-mono">{span.durationMs !== null ? formatDuration(span.durationMs) : "..."}</span></div>
-                      <div><span class="text-gray-400">Trace ID:</span> <span class="text-ink font-mono">{span.traceId.slice(0, 16)}...</span></div>
+                    <div class="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1.5 items-baseline">
+                      <span class="text-gray-400">Kind:</span> <span class="text-ink">{span.kind}</span>
+                      <span class="text-gray-400">Status:</span> <TraceStatusBadge status={span.status} />
+                      <span class="text-gray-400">Start:</span> <span class="text-ink font-mono">{formatTimestamp(span.startTime)}</span>
+                      <span class="text-gray-400">End:</span> <span class="text-ink font-mono">{span.endTime ? formatTimestamp(span.endTime) : "..."}</span>
+                      <span class="text-gray-400">Duration:</span> <span class="text-ink font-mono">{span.durationMs !== null ? formatDuration(span.durationMs) : "..."}</span>
+                      <span class="text-gray-400">Trace ID:</span> <span class="text-ink font-mono">{span.traceId.slice(0, 16)}...</span>
                       {span.parentSpanId && (
-                        <div><span class="text-gray-400">Parent:</span> <span class="text-ink font-mono">{span.parentSpanId.slice(0, 16)}...</span></div>
+                        <>
+                          <span class="text-gray-400">Parent:</span> <span class="text-ink font-mono">{span.parentSpanId.slice(0, 16)}...</span>
+                        </>
                       )}
                     </div>
                     {span.statusMessage && (
@@ -198,43 +200,50 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                       </div>
                     )}
                     {/* Attributes (filtered: inherited removed) */}
-                    {Object.keys(span.attributes).length > 0 && (
-                      <div>
-                        <div class="text-gray-400 mb-1">Attributes:</div>
-                        <table class="w-full">
-                          <tbody>
-                            {Object.entries(span.attributes)
-                              .filter(([k, v]) => {
-                                const parentVal = parentAttrs[k];
-                                return parentVal === undefined || JSON.stringify(parentVal) !== JSON.stringify(v);
-                              })
-                              .map(([k, v]) => (
-                              <tr key={k} class="group">
-                                <td class="py-0.5 pr-3 text-gray-400 font-mono align-top whitespace-nowrap">
-                                  {k}
-                                  {/* Quick filter buttons — only when handler provided */}
-                                  {onAddAttributeFilter && (
-                                    <span class="invisible group-hover:visible ml-1">
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); onAddAttributeFilter(k, String(v), "include"); }}
-                                        class="text-emerald-500 hover:text-emerald-700 px-0.5"
-                                        title="Include filter"
-                                      >+</button>
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); onAddAttributeFilter(k, String(v), "exclude"); }}
-                                        class="text-red-500 hover:text-red-700 px-0.5"
-                                        title="Exclude filter"
-                                      >{"\u2212"}</button>
-                                    </span>
+                    {Object.keys(span.attributes).length > 0 && (() => {
+                      const filteredAttrs = Object.entries(span.attributes).filter(([k, v]) => {
+                        const parentVal = parentAttrs[k];
+                        return parentVal === undefined || JSON.stringify(parentVal) !== JSON.stringify(v);
+                      });
+                      if (filteredAttrs.length === 0) return null;
+                      return (
+                        <div>
+                          <div class="text-gray-400 mb-1.5 font-medium">Attributes:</div>
+                          <div class="space-y-1.5">
+                            {filteredAttrs.map(([k, v]) => {
+                              const isComplex = typeof v === "object" || (typeof v === "string" && (v.includes("\n") || (v.startsWith("{") || v.startsWith("[")) && v.length > 2));
+                              return (
+                                <div key={k} class="group">
+                                  <div class="flex items-center gap-1.5">
+                                    <span class="text-gray-500 font-mono text-[11px]">{k}</span>
+                                    {onAddAttributeFilter && (
+                                      <span class="invisible group-hover:visible flex gap-0.5">
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); onAddAttributeFilter(k, String(v), "include"); }}
+                                          class="text-emerald-500 hover:text-emerald-700 text-[10px] leading-none"
+                                          title="Include filter"
+                                        >+</button>
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); onAddAttributeFilter(k, String(v), "exclude"); }}
+                                          class="text-red-500 hover:text-red-700 text-[10px] leading-none"
+                                          title="Exclude filter"
+                                        >{"\u2212"}</button>
+                                      </span>
+                                    )}
+                                    {!isComplex && (
+                                      <span class="font-mono text-[11px] ml-auto"><AttributeValue value={v} /></span>
+                                    )}
+                                  </div>
+                                  {isComplex && (
+                                    <div class="mt-0.5 font-mono text-[11px]"><AttributeValue value={v} /></div>
                                   )}
-                                </td>
-                                <td class="py-0.5 font-mono break-all"><AttributeValue value={v} /></td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {/* Events */}
                     {spanEvents.length > 0 && (
                       <div>
@@ -268,6 +277,31 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 
 const URL_REGEX = /^https?:\/\/[^\s]+$/;
 
+function CollapsibleBlock({ content, lines }: { content: string; lines: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = lines > 8;
+
+  return (
+    <div class="relative">
+      <pre
+        class={`text-gray-800 bg-white border border-gray-200 p-2 rounded-md overflow-x-auto text-[11px] whitespace-pre-wrap break-all ${
+          isLong && !expanded ? "max-h-[160px] overflow-hidden" : ""
+        }`}
+      >{content}</pre>
+      {isLong && (
+        <button
+          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+          class={`text-[10px] text-blue-500 hover:text-blue-700 font-medium mt-0.5 ${
+            !expanded ? "absolute bottom-0 left-0 right-0 pt-6 pb-1 text-center bg-gradient-to-t from-white via-white/90 to-transparent rounded-b-md" : ""
+          }`}
+        >
+          {expanded ? "Show less" : `Show all (${lines} lines)`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function AttributeValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
     return <span class="text-gray-400 italic">null</span>;
@@ -279,11 +313,9 @@ export function AttributeValue({ value }: { value: unknown }) {
     return <span class="text-purple-600">{value}</span>;
   }
   if (typeof value === "object") {
-    return (
-      <pre class="text-gray-800 bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40">
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    );
+    const formatted = JSON.stringify(value, null, 2);
+    const lines = formatted.split("\n").length;
+    return <CollapsibleBlock content={formatted} lines={lines} />;
   }
   const str = String(value);
   if (URL_REGEX.test(str)) {
@@ -293,16 +325,15 @@ export function AttributeValue({ value }: { value: unknown }) {
   if ((str.startsWith("{") || str.startsWith("[")) && str.length > 2) {
     try {
       const parsed = JSON.parse(str);
-      return (
-        <pre class="text-gray-800 bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40">
-          {JSON.stringify(parsed, null, 2)}
-        </pre>
-      );
+      const formatted = JSON.stringify(parsed, null, 2);
+      const lines = formatted.split("\n").length;
+      return <CollapsibleBlock content={formatted} lines={lines} />;
     } catch {}
   }
   // Multiline
   if (str.includes("\n")) {
-    return <pre class="text-ink bg-gray-50 border border-gray-100 p-1.5 rounded-md overflow-x-auto text-[11px] max-h-40 whitespace-pre-wrap">{str}</pre>;
+    const lines = str.split("\n").length;
+    return <CollapsibleBlock content={str} lines={lines} />;
   }
   return <span class="text-ink">{str}</span>;
 }
