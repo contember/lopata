@@ -128,6 +128,102 @@ function buildWhereClause(filters: Record<string, string>): string {
   return conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
 }
 
+// ─── Query history (localStorage) ────────────────────────────────────
+
+interface HistoryEntry {
+  sql: string;
+  ts: number;
+}
+
+const HISTORY_KEY = "bunflare-sql-history";
+const HISTORY_MAX = 100;
+
+function loadHistory(): HistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToHistory(sql: string): HistoryEntry[] {
+  const trimmed = sql.trim();
+  if (!trimmed) return loadHistory();
+  const entries = loadHistory();
+  // Deduplicate: remove existing entry with same SQL
+  const filtered = entries.filter(e => e.sql !== trimmed);
+  const next = [{ sql: trimmed, ts: Date.now() }, ...filtered].slice(0, HISTORY_MAX);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+  return next;
+}
+
+function clearHistory(): HistoryEntry[] {
+  localStorage.removeItem(HISTORY_KEY);
+  return [];
+}
+
+function useHistory() {
+  const [entries, setEntries] = useState<HistoryEntry[]>(() => loadHistory());
+  const add = useCallback((sql: string) => {
+    setEntries(saveToHistory(sql));
+  }, []);
+  const clear = useCallback(() => {
+    setEntries(clearHistory());
+  }, []);
+  return { entries, add, clear };
+}
+
+// ─── Browser history (structured, localStorage) ─────────────────────
+
+interface BrowserHistoryEntry {
+  table: string;
+  filters: Record<string, string>;
+  sortCol: string | null;
+  sortDir: SortDir;
+  ts: number;
+}
+
+const BROWSER_HISTORY_KEY = "bunflare-browser-history";
+const BROWSER_HISTORY_MAX = 50;
+
+function loadBrowserHistory(): BrowserHistoryEntry[] {
+  try {
+    const raw = localStorage.getItem(BROWSER_HISTORY_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveToBrowserHistory(entry: Omit<BrowserHistoryEntry, "ts">): BrowserHistoryEntry[] {
+  const entries = loadBrowserHistory();
+  // Deduplicate by same table + filters + sort
+  const key = JSON.stringify({ t: entry.table, f: entry.filters, s: entry.sortCol, d: entry.sortDir });
+  const filtered = entries.filter(e =>
+    JSON.stringify({ t: e.table, f: e.filters, s: e.sortCol, d: e.sortDir }) !== key
+  );
+  const next = [{ ...entry, ts: Date.now() }, ...filtered].slice(0, BROWSER_HISTORY_MAX);
+  localStorage.setItem(BROWSER_HISTORY_KEY, JSON.stringify(next));
+  return next;
+}
+
+function clearBrowserHistory(): BrowserHistoryEntry[] {
+  localStorage.removeItem(BROWSER_HISTORY_KEY);
+  return [];
+}
+
+function useBrowserHistory() {
+  const [entries, setEntries] = useState<BrowserHistoryEntry[]>(() => loadBrowserHistory());
+  const add = useCallback((entry: Omit<BrowserHistoryEntry, "ts">) => {
+    setEntries(saveToBrowserHistory(entry));
+  }, []);
+  const clear = useCallback(() => {
+    setEntries(clearBrowserHistory());
+  }, []);
+  return { entries, add, clear };
+}
+
 // ─── Types ───────────────────────────────────────────────────────────
 
 export interface SqlBrowserProps {
@@ -152,6 +248,8 @@ const TABS: { key: Tab; label: string }[] = [
 export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
   const [tab, setTab] = useState<Tab>("data");
   const [consoleSql, setConsoleSql] = useState("");
+  const history = useHistory();
+  const browserHistory = useBrowserHistory();
 
   const openInConsole = (sql: string) => {
     setConsoleSql(sql);
@@ -177,23 +275,34 @@ export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
         ))}
       </div>
 
-      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} />}
+      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} history={history} browserHistory={browserHistory} />}
       {tab === "schema" && <SchemaBrowserTab tables={tables} />}
-      {tab === "sql" && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} />}
+      {tab === "sql" && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} history={history} />}
     </div>
   );
 }
 
 // ─── SqlConsoleTab ───────────────────────────────────────────────────
 
-function SqlConsoleTab({ execQuery, initialSql }: { execQuery: (sql: string) => Promise<QueryResult>; initialSql?: string }) {
+function SqlConsoleTab({ execQuery, initialSql, history }: {
+  execQuery: (sql: string) => Promise<QueryResult>;
+  initialSql?: string;
+  history: ReturnType<typeof useHistory>;
+}) {
   const [sql, setSql] = useState(initialSql ?? "");
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Update SQL when initialSql changes (e.g. from "open in console")
+  useEffect(() => {
+    if (initialSql) setSql(initialSql);
+  }, [initialSql]);
 
   const run = async () => {
     if (!sql.trim() || loading) return;
+    history.add(sql);
     setLoading(true);
     setError(null);
     setResult(null);
@@ -226,9 +335,27 @@ function SqlConsoleTab({ execQuery, initialSql }: { execQuery: (sql: string) => 
           >
             {loading ? "Running..." : "Run Query"}
           </button>
+          <button
+            onClick={() => setShowHistory(v => !v)}
+            class={`rounded-md px-3 py-2 text-sm font-medium transition-all ${
+              showHistory
+                ? "bg-ink text-white"
+                : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+            }`}
+          >
+            History{history.entries.length > 0 ? ` (${history.entries.length})` : ""}
+          </button>
           <span class="text-xs text-gray-400">Ctrl+Enter to run</span>
         </div>
       </div>
+
+      {showHistory && (
+        <HistoryPanel
+          entries={history.entries}
+          onSelect={(entry) => { setSql(entry.sql); setShowHistory(false); }}
+          onClear={history.clear}
+        />
+      )}
 
       {error ? (
         <div class="bg-red-50 text-red-600 p-4 rounded-lg text-sm font-medium">{error}</div>
@@ -341,8 +468,21 @@ function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
 
 // ─── DataBrowserTab ──────────────────────────────────────────────────
 
-function DataBrowserTab({ tables, execQuery, onOpenInConsole }: { tables?: D1Table[] | null; execQuery: (sql: string) => Promise<QueryResult>; onOpenInConsole: (sql: string) => void }) {
+interface RestoredState {
+  filters: Record<string, string>;
+  sortCol: string | null;
+  sortDir: SortDir;
+}
+
+function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHistory }: {
+  tables?: D1Table[] | null;
+  execQuery: (sql: string) => Promise<QueryResult>;
+  onOpenInConsole: (sql: string) => void;
+  history: ReturnType<typeof useHistory>;
+  browserHistory: ReturnType<typeof useBrowserHistory>;
+}) {
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
+  const [restoredState, setRestoredState] = useState<RestoredState | null>(null);
 
   // Auto-select first table
   useEffect(() => {
@@ -353,16 +493,36 @@ function DataBrowserTab({ tables, execQuery, onOpenInConsole }: { tables?: D1Tab
 
   const tableInfo = tables?.find(t => t.name === selectedTable) ?? null;
 
+  const handleRestoreHistory = (entry: BrowserHistoryEntry) => {
+    setSelectedTable(entry.table);
+    setRestoredState({ filters: entry.filters, sortCol: entry.sortCol, sortDir: entry.sortDir });
+  };
+
+  // Clear restored state once it's been consumed (table changed by user)
+  const handleTableSelect = (name: string) => {
+    setSelectedTable(name);
+    setRestoredState(null);
+  };
+
   return (
     <div class="flex gap-5">
       <TableSidebar
         tables={tables}
         selected={selectedTable}
-        onSelect={setSelectedTable}
+        onSelect={handleTableSelect}
       />
       <div class="flex-1 min-w-0">
         {tableInfo ? (
-          <TableDataView table={tableInfo} execQuery={execQuery} onOpenInConsole={onOpenInConsole} />
+          <TableDataView
+            key={restoredState ? JSON.stringify(restoredState) : tableInfo.name}
+            table={tableInfo}
+            execQuery={execQuery}
+            onOpenInConsole={onOpenInConsole}
+            history={history}
+            browserHistory={browserHistory}
+            onRestoreHistory={handleRestoreHistory}
+            initialState={restoredState}
+          />
         ) : (
           <div class="text-center py-16 text-gray-400 text-sm font-medium">
             {tables?.length ? "Select a table" : "No tables found"}
@@ -414,7 +574,15 @@ function TableSidebar({ tables, selected, onSelect }: {
 
 // ─── TableDataView ───────────────────────────────────────────────────
 
-function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; execQuery: (sql: string) => Promise<QueryResult>; onOpenInConsole: (sql: string) => void }) {
+function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, initialState }: {
+  table: D1Table;
+  execQuery: (sql: string) => Promise<QueryResult>;
+  onOpenInConsole: (sql: string) => void;
+  history: ReturnType<typeof useHistory>;
+  browserHistory: ReturnType<typeof useBrowserHistory>;
+  onRestoreHistory: (entry: BrowserHistoryEntry) => void;
+  initialState: RestoredState | null;
+}) {
   const schema = parseCreateTable(table.sql);
   const pkCols = schema.primaryKeys.length > 0 ? schema.primaryKeys : ["rowid"];
   const needsRowid = schema.primaryKeys.length === 0;
@@ -423,14 +591,15 @@ function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; 
   const [columns, setColumns] = useState<string[]>([]);
   const [totalCount, setTotalCount] = useState<number>(table.rows);
   const [offset, setOffset] = useState(0);
-  const [sortCol, setSortCol] = useState<string | null>(null);
-  const [sortDir, setSortDir] = useState<SortDir>("ASC");
+  const [sortCol, setSortCol] = useState<string | null>(initialState?.sortCol ?? null);
+  const [sortDir, setSortDir] = useState<SortDir>(initialState?.sortDir ?? "ASC");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInsert, setShowInsert] = useState(false);
-  const [filters, setFilters] = useState<Record<string, string>>({});
-  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState<Record<string, string>>(initialState?.filters ?? {});
+  const [showFilters, setShowFilters] = useState(initialState ? Object.keys(initialState.filters).length > 0 : false);
   const [showFilterHelp, setShowFilterHelp] = useState(false);
+  const [showBrowserHistory, setShowBrowserHistory] = useState(false);
 
   const filtersKey = JSON.stringify(filters);
   const loadGenRef = useRef(0);
@@ -463,6 +632,10 @@ function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; 
       setOffset(newOffset);
       if (countRes.rows?.[0]) {
         setTotalCount(Number(countRes.rows[0].cnt));
+      }
+      // Save to browser history when there are filters or sort
+      if (where || orderBy) {
+        browserHistory.add({ table: table.name, filters, sortCol, sortDir });
       }
     } catch (e: any) {
       if (gen !== loadGenRef.current) return;
@@ -584,6 +757,16 @@ function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; 
             ?
           </button>
           <button
+            onClick={() => setShowBrowserHistory(v => !v)}
+            class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
+              showBrowserHistory
+                ? "bg-ink text-white"
+                : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+            }`}
+          >
+            History{browserHistory.entries.length > 0 ? ` (${browserHistory.entries.length})` : ""}
+          </button>
+          <button
             onClick={() => setShowInsert(!showInsert)}
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showInsert
@@ -612,6 +795,16 @@ function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; 
         <code class="flex-1 text-xs font-mono text-gray-500 truncate">{currentSql}</code>
         <span class="text-xs text-gray-300 group-hover:text-gray-500 transition-colors flex-shrink-0">&rarr; SQL Console</span>
       </div>
+
+      {/* Browser history */}
+      {showBrowserHistory && (
+        <BrowserHistoryPanel
+          entries={browserHistory.entries}
+          currentTable={table.name}
+          onSelect={(entry) => { onRestoreHistory(entry); setShowBrowserHistory(false); }}
+          onClear={browserHistory.clear}
+        />
+      )}
 
       {/* Error banner */}
       {error && (
@@ -720,6 +913,123 @@ function TableDataView({ table, execQuery, onOpenInConsole }: { table: D1Table; 
       </div>
 
       {showFilterHelp && <FilterHelpModal onClose={() => setShowFilterHelp(false)} />}
+    </div>
+  );
+}
+
+// ─── HistoryPanel ────────────────────────────────────────────────────
+
+function HistoryPanel({ entries, onSelect, onClear }: {
+  entries: HistoryEntry[];
+  onSelect: (entry: HistoryEntry) => void;
+  onClear: () => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <div class="bg-white rounded-lg border border-gray-200 p-5 mb-6 text-center text-sm text-gray-400">
+        No history yet
+      </div>
+    );
+  }
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return isToday ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+  };
+
+  return (
+    <div class="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50/50">
+        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Query History</span>
+        <button onClick={onClear} class="text-xs text-gray-400 hover:text-red-500 transition-colors">Clear all</button>
+      </div>
+      <div class="max-h-64 overflow-y-auto divide-y divide-gray-50">
+        {entries.map((entry, i) => (
+          <button
+            key={i}
+            onClick={() => onSelect(entry)}
+            class="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors flex items-center gap-3 group"
+          >
+            <code class="flex-1 text-xs font-mono text-gray-600 truncate group-hover:text-ink transition-colors">{entry.sql}</code>
+            <span class="text-[10px] text-gray-300 tabular-nums flex-shrink-0">{formatTime(entry.ts)}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── BrowserHistoryPanel ─────────────────────────────────────────────
+
+function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }: {
+  entries: BrowserHistoryEntry[];
+  currentTable: string;
+  onSelect: (entry: BrowserHistoryEntry) => void;
+  onClear: () => void;
+}) {
+  if (entries.length === 0) {
+    return (
+      <div class="bg-white rounded-lg border border-gray-200 p-5 mb-4 text-center text-sm text-gray-400">
+        No history yet — filter or sort a table to save an entry
+      </div>
+    );
+  }
+
+  const formatTime = (ts: number) => {
+    const d = new Date(ts);
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return isToday ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+  };
+
+  const formatFilters = (filters: Record<string, string>) => {
+    const parts = Object.entries(filters).filter(([, v]) => v.trim());
+    if (parts.length === 0) return null;
+    return parts.map(([col, val]) => `${col}: ${val}`).join(", ");
+  };
+
+  return (
+    <div class="bg-white rounded-lg border border-gray-200 mb-4 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50/50">
+        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Browser History</span>
+        <button onClick={onClear} class="text-xs text-gray-400 hover:text-red-500 transition-colors">Clear all</button>
+      </div>
+      <div class="max-h-64 overflow-y-auto divide-y divide-gray-50">
+        {entries.map((entry, i) => {
+          const filterStr = formatFilters(entry.filters);
+          const isSameTable = entry.table === currentTable;
+          return (
+            <button
+              key={i}
+              onClick={() => onSelect(entry)}
+              class="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors group"
+            >
+              <div class="flex items-center gap-2 mb-1">
+                <span class={`font-mono text-xs font-semibold ${isSameTable ? "text-ink" : "text-accent-olive"}`}>{entry.table}</span>
+                <span class="text-[10px] text-gray-300 tabular-nums">{formatTime(entry.ts)}</span>
+              </div>
+              <div class="flex flex-wrap gap-x-3 gap-y-0.5">
+                {filterStr && (
+                  <span class="text-xs text-gray-500">
+                    <span class="text-gray-400">filter:</span>{" "}
+                    <span class="font-mono">{filterStr}</span>
+                  </span>
+                )}
+                {entry.sortCol && (
+                  <span class="text-xs text-gray-500">
+                    <span class="text-gray-400">order:</span>{" "}
+                    <span class="font-mono">{entry.sortCol} {entry.sortDir}</span>
+                  </span>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
