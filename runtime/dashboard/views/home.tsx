@@ -11,6 +11,7 @@ const CARDS = [
   { key: "containers", label: "Containers", path: "/containers", icon: "▣" },
   { key: "d1", label: "D1 Databases", path: "/d1", icon: "⊞" },
   { key: "cache", label: "Cache Names", path: "/cache", icon: "◎" },
+  { key: "scheduled", label: "Scheduled", path: "/scheduled", icon: "⏱" },
 ] as const;
 
 export function HomeView() {

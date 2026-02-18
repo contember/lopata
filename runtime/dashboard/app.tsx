@@ -12,6 +12,7 @@ import { CacheView } from "./views/cache";
 import { WorkersView } from "./views/workers";
 import { TracesView } from "./views/traces";
 import { ErrorsView } from "./views/errors";
+import { ScheduledView } from "./views/scheduled";
 
 const NAV_ITEMS = [
   { path: "/", label: "Overview", icon: "◉" },
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { path: "/containers", label: "Containers", icon: "▣" },
   { path: "/d1", label: "D1", icon: "⊞" },
   { path: "/cache", label: "Cache", icon: "◎" },
+  { path: "/scheduled", label: "Scheduled", icon: "⏱" },
 ];
 
 function App() {
@@ -45,6 +47,7 @@ function App() {
     if (route.startsWith("/containers")) return <ContainersView route={route} />;
     if (route.startsWith("/d1")) return <D1View route={route} />;
     if (route.startsWith("/cache")) return <CacheView route={route} />;
+    if (route.startsWith("/scheduled")) return <ScheduledView route={route} />;
     return <div class="p-8 text-gray-400">Page not found</div>;
   }
 

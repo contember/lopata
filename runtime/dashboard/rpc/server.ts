@@ -13,6 +13,7 @@ import { handlers as containers } from "./handlers/containers";
 import { handlers as traces } from "./handlers/traces";
 import { handlers as config } from "./handlers/config";
 import { handlers as errors } from "./handlers/errors";
+import { handlers as scheduled } from "./handlers/scheduled";
 
 const allHandlers = {
   ...overview,
@@ -29,6 +30,7 @@ const allHandlers = {
   ...traces,
   ...config,
   ...errors,
+  ...scheduled,
 };
 
 export type Procedures = {

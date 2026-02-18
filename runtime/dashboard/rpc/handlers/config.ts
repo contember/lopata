@@ -75,6 +75,17 @@ export const handlers = {
           if (items.length) groups.push({ title: "Containers", items });
           break;
         }
+
+        case "scheduled": {
+          const crons = config.triggers?.crons ?? [];
+          if (crons.length) {
+            groups.push({
+              title: "Cron Triggers",
+              items: crons.map((c, i) => ({ name: `Trigger ${i + 1}`, value: c })),
+            });
+          }
+          break;
+        }
       }
     }
 

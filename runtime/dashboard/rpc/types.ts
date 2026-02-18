@@ -23,6 +23,7 @@ export interface OverviewData {
   containers: number;
   cache: number;
   errors: number;
+  scheduled: number;
   generations: GenerationInfo[];
 }
 
