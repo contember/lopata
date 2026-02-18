@@ -12,3 +12,4 @@ export { TableLink } from "./table-link";
 export { StatusBadge } from "./status-badge";
 export { ServiceInfo } from "./service-info";
 export { SqlBrowser } from "../sql-browser/index";
+export { KeyValueTable } from "./key-value-table";

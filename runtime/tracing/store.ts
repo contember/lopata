@@ -398,6 +398,15 @@ export class TraceStore {
     return this.db.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM errors").get()?.cnt ?? 0;
   }
 
+  getErrorCountsByWorker(): Record<string, number> {
+    const rows = this.db.prepare<{ worker_name: string; cnt: number }, []>(
+      "SELECT COALESCE(worker_name, '') as worker_name, COUNT(*) as cnt FROM errors GROUP BY worker_name"
+    ).all();
+    const map: Record<string, number> = {};
+    for (const r of rows) map[r.worker_name] = r.cnt;
+    return map;
+  }
+
   private enforceErrorCap(): void {
     const count = this.db.prepare<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM errors").get()?.cnt ?? 0;
     if (count <= 1000) return;

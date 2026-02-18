@@ -33,7 +33,21 @@ export interface OverviewData {
     arch: string;
     pid: number;
     cwd: string;
+    uptime: number;
+    startedAt: number;
+    memory: {
+      rss: number;
+      heapUsed: number;
+      heapTotal: number;
+      external: number;
+    };
+    cpuUsage: {
+      user: number;
+      system: number;
+    };
+    env: Record<string, string>;
   };
+  workerErrors: Record<string, number>;
 }
 
 // Containers

@@ -5,19 +5,14 @@ import { parseHashRoute } from "../lib";
 import type { Tab } from "../sql-browser/index";
 
 export function D1View({ route }: { route: string }) {
-  const parts = route.split("/").filter(Boolean);
-  if (parts.length === 1) return <D1DatabaseList />;
-  if (parts.length >= 2) {
-    const dbName = decodeURIComponent(parts[1]!);
-    // parts[2] = tab (data/schema/sql), parts[3] = tableName
-    const { query } = parseHashRoute(location.hash);
-    const rawTab = parts[2] as Tab | undefined;
-    const tab: Tab = rawTab === "schema" || rawTab === "sql" ? rawTab : "data";
-    const tableName = parts[3] ? decodeURIComponent(parts[3]) : null;
-    const basePath = `/d1/${encodeURIComponent(dbName)}`;
-    return <D1DatabaseDetail dbName={dbName} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />;
-  }
-  return null;
+  const { segments, query } = parseHashRoute(route);
+  if (segments.length <= 1) return <D1DatabaseList />;
+  const dbName = decodeURIComponent(segments[1]!);
+  const rawTab = segments[2] as Tab | undefined;
+  const tab: Tab = rawTab === "schema" || rawTab === "sql" ? rawTab : "data";
+  const tableName = segments[3] ? decodeURIComponent(segments[3]) : null;
+  const basePath = `/d1/${encodeURIComponent(dbName)}`;
+  return <D1DatabaseDetail dbName={dbName} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />;
 }
 
 function D1DatabaseList() {

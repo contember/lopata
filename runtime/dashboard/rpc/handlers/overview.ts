@@ -45,17 +45,42 @@ export const handlers = {
       d1: d1Count,
       cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
       errors: getTraceStore().getErrorCount(),
+      workerErrors: getTraceStore().getErrorCountsByWorker(),
       scheduled: getAllConfigs(ctx).reduce((sum, cfg) => sum + (cfg.triggers?.crons?.length ?? 0), 0),
       email: emailCount,
       ai: aiCount,
       generations: ctx.manager ? ctx.manager.list() : [],
-      runtime: {
-        bunVersion: Bun.version,
-        platform: process.platform,
-        arch: process.arch,
-        pid: process.pid,
-        cwd: process.cwd(),
-      },
+      runtime: (() => {
+        const mem = process.memoryUsage();
+        const cpu = process.cpuUsage();
+        const envPassthrough: Record<string, string> = {};
+        for (const key of [
+          "NODE_ENV", "BUN_ENV", "SHELL", "TERM", "LANG", "HOME", "USER",
+          "PATH", "EDITOR", "TZ",
+        ]) {
+          if (process.env[key]) envPassthrough[key] = process.env[key]!;
+        }
+        return {
+          bunVersion: Bun.version,
+          platform: process.platform,
+          arch: process.arch,
+          pid: process.pid,
+          cwd: process.cwd(),
+          uptime: process.uptime(),
+          startedAt: Date.now() - process.uptime() * 1000,
+          memory: {
+            rss: mem.rss,
+            heapUsed: mem.heapUsed,
+            heapTotal: mem.heapTotal,
+            external: mem.external,
+          },
+          cpuUsage: {
+            user: cpu.user,
+            system: cpu.system,
+          },
+          env: envPassthrough,
+        };
+      })(),
       ...(ctx.registry ? {
         workers: Array.from(ctx.registry.listManagers()).map(([name, mgr]) => ({
           workerName: name,

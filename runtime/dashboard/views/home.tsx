@@ -1,54 +1,22 @@
 import type { OverviewData, WorkerInfo } from "../rpc/types";
 import { useQuery } from "../rpc/hooks";
-import { StatusBadge, KeyValueTable } from "../components";
+import { StatusBadge } from "../components";
 
-type Card = {
-  key: string;
-  label: string;
-  path: string;
-  icon: string;
-  color: string;
-};
+/* ── Inventory items ── */
 
-const CARD_GROUPS: { label: string; cards: Card[] }[] = [
-  {
-    label: "Observability",
-    cards: [
-      { key: "errors", label: "Errors", path: "/errors", icon: "⚠\uFE0E", color: "text-red-400" },
-    ],
-  },
-  {
-    label: "Storage",
-    cards: [
-      { key: "kv", label: "KV Namespaces", path: "/kv", icon: "⬡", color: "text-blue-400" },
-      { key: "r2", label: "R2 Buckets", path: "/r2", icon: "◧", color: "text-violet-400" },
-      { key: "d1", label: "D1 Databases", path: "/d1", icon: "⊞", color: "text-cyan-400" },
-      { key: "cache", label: "Cache Names", path: "/cache", icon: "◎", color: "text-teal-400" },
-    ],
-  },
-  {
-    label: "Compute",
-    cards: [
-      { key: "do", label: "Durable Objects", path: "/do", icon: "⬢", color: "text-emerald-400" },
-      { key: "workflows", label: "Workflows", path: "/workflows", icon: "⇶", color: "text-amber-400" },
-      { key: "containers", label: "Containers", path: "/containers", icon: "▣", color: "text-indigo-400" },
-      { key: "scheduled", label: "Scheduled", path: "/scheduled", icon: "⏱\uFE0E", color: "text-orange-400" },
-    ],
-  },
-  {
-    label: "Messaging",
-    cards: [
-      { key: "queue", label: "Queues", path: "/queue", icon: "☰", color: "text-yellow-400" },
-      { key: "email", label: "Email", path: "/email", icon: "✉\uFE0E", color: "text-pink-400" },
-    ],
-  },
-  {
-    label: "AI",
-    cards: [
-      { key: "ai", label: "AI Requests", path: "/ai", icon: "⚡", color: "text-purple-400" },
-    ],
-  },
-];
+const INVENTORY = [
+  { key: "kv", label: "KV", path: "/kv", icon: "⬡", color: "text-blue-400" },
+  { key: "r2", label: "R2", path: "/r2", icon: "◧", color: "text-violet-400" },
+  { key: "d1", label: "D1", path: "/d1", icon: "⊞", color: "text-cyan-400" },
+  { key: "cache", label: "Cache", path: "/cache", icon: "◎", color: "text-teal-400" },
+  { key: "do", label: "DO", path: "/do", icon: "⬢", color: "text-emerald-400" },
+  { key: "workflows", label: "Workflows", path: "/workflows", icon: "⇶", color: "text-amber-400" },
+  { key: "containers", label: "Containers", path: "/containers", icon: "▣", color: "text-indigo-400" },
+  { key: "scheduled", label: "Scheduled", path: "/scheduled", icon: "⏱\uFE0E", color: "text-orange-400" },
+  { key: "queue", label: "Queues", path: "/queue", icon: "☰", color: "text-yellow-400" },
+  { key: "email", label: "Email", path: "/email", icon: "✉\uFE0E", color: "text-pink-400" },
+  { key: "ai", label: "AI", path: "/ai", icon: "⚡", color: "text-purple-400" },
+] as const;
 
 const BINDING_COLORS: Record<string, string> = {
   kv: "bg-blue-500/15 text-blue-400",
@@ -59,98 +27,261 @@ const BINDING_COLORS: Record<string, string> = {
   workflow: "bg-amber-500/15 text-amber-400",
   service: "bg-neutral-500/15 text-neutral-400",
   images: "bg-pink-500/15 text-pink-400",
+  container: "bg-indigo-500/15 text-indigo-400",
+  ai: "bg-purple-500/15 text-purple-400",
 };
+
+/* ── Formatters ── */
+
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`;
+  return `${(b / 1073741824).toFixed(2)} GB`;
+}
+
+function fmtUptime(s: number): string {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+    m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  const p: string[] = [];
+  if (d) p.push(`${d}d`);
+  if (h) p.push(`${h}h`);
+  if (m) p.push(`${m}m`);
+  p.push(`${sec}s`);
+  return p.join(" ");
+}
+
+function fmtMicros(us: number): string {
+  if (us < 1000) return `${us}µs`;
+  if (us < 1_000_000) return `${(us / 1000).toFixed(1)}ms`;
+  return `${(us / 1_000_000).toFixed(2)}s`;
+}
+
+/* ── Gauge with semantic color ── */
+
+function gaugeColor(pct: number): string {
+  if (pct > 90) return "bg-red-500";
+  if (pct > 70) return "bg-amber-500";
+  return "bg-blue-500";
+}
+
+function MiniGauge({ value, max, label }: { value: number; max: number; label: string }) {
+  const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+  return (
+    <div>
+      <div class="flex justify-between items-baseline mb-1.5">
+        <span class="text-xs text-text-muted">{label}</span>
+        <span class="text-xs font-mono tabular-nums text-ink">{fmtBytes(value)}</span>
+      </div>
+      <div class="h-2 rounded-full bg-bar overflow-hidden">
+        <div class={`h-full rounded-full transition-all ${gaugeColor(pct)}`} style={{ width: `${Math.max(pct, 2)}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function Kv({ k, v }: { k: string; v: string }) {
+  return (
+    <div class="flex justify-between items-baseline gap-6 py-0.5">
+      <span class="text-xs text-text-muted shrink-0">{k}</span>
+      <span class="text-xs font-mono tabular-nums text-ink truncate text-right" title={v}>{v}</span>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: any }) {
+  return (
+    <div>
+      <h2 class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-3">{title}</h2>
+      {children}
+    </div>
+  );
+}
+
+/* ── Main view ── */
 
 export function HomeView() {
   const { data } = useQuery("overview.get");
   const { data: workers } = useQuery("workers.list");
 
+  if (!data) {
+    return (
+      <div class="p-8 lg:p-10">
+        <h1 class="text-2xl font-bold text-ink mb-1">Overview</h1>
+        <p class="text-sm text-text-muted">Loading...</p>
+      </div>
+    );
+  }
+
+  const rt = data.runtime;
+  const hasErrors = data.errors > 0;
+  const envEntries = Object.entries(rt.env).filter(([k]) => k !== "PATH");
+
   return (
-    <div class="p-8">
-      <div class="mb-8">
-        <h1 class="text-2xl font-bold text-ink">Overview</h1>
-        <p class="text-sm text-text-muted mt-1">Bunflare Dev Dashboard</p>
+    <div class="p-8 lg:p-10 max-w-[1600px]">
+      {/* ── Header ── */}
+      <div class="flex items-start gap-4 mb-8">
+        <div class="flex-1">
+          <h1 class="text-2xl font-bold text-ink">Overview</h1>
+          <p class="text-sm text-text-muted mt-1">
+            Bun {rt.bunVersion} &middot; {rt.platform}/{rt.arch} &middot; up {fmtUptime(rt.uptime)}
+          </p>
+        </div>
+        <a
+          href="#/errors"
+          class={`flex items-center gap-2.5 px-4 py-2 rounded-full text-sm font-medium no-underline transition-colors ${
+            hasErrors
+              ? "bg-red-500/10 text-red-400 hover:bg-red-500/20"
+              : "bg-emerald-500/10 text-emerald-400"
+          }`}
+        >
+          <span class={`w-2.5 h-2.5 rounded-full ${hasErrors ? "bg-red-500" : "bg-emerald-500"}`} />
+          {hasErrors ? `${data.errors} error${data.errors > 1 ? "s" : ""}` : "Healthy"}
+        </a>
       </div>
 
-      {!data ? (
-        <div class="text-text-muted font-medium">Loading...</div>
-      ) : (
-        <div class="flex flex-col gap-8">
-          {CARD_GROUPS.map(group => (
-            <div key={group.label}>
-              <h2 class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-3">{group.label}</h2>
-              <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {group.cards.map(card => {
-                  const count = data[card.key as keyof OverviewData] as number;
-                  const active = count > 0;
+      {/* ── Two-column layout ── */}
+      <div class="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-10">
+
+        {/* ── Left: main content ── */}
+        <div class="flex flex-col gap-10">
+
+          {/* ── Health: Errors hero card ── */}
+          {hasErrors && (
+            <a
+              href="#/errors"
+              class="flex items-center gap-5 bg-panel rounded-xl border border-red-500/30 border-l-[3px] border-l-red-500 px-6 py-5 no-underline hover:border-red-500/50 transition-colors"
+            >
+              <span class="text-3xl">⚠︎</span>
+              <div class="flex-1">
+                <div class="text-3xl font-bold text-red-400 tabular-nums">{data.errors}</div>
+                <div class="text-sm text-text-muted mt-0.5">Unresolved errors</div>
+              </div>
+              <span class="text-sm text-text-muted">View all &rarr;</span>
+            </a>
+          )}
+
+          {/* ── Inventory ── */}
+          <Section title="Bindings">
+            <div class="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+              {INVENTORY.map(item => {
+                const count = data[item.key as keyof OverviewData] as number;
+                const active = count > 0;
+                return (
+                  <a
+                    key={item.key}
+                    href={`#${item.path}`}
+                    class={`bg-panel rounded-lg border px-4 py-3 no-underline transition-all hover:shadow-card-hover ${
+                      active
+                        ? "border-border hover:border-text-dim"
+                        : "border-border-subtle opacity-40 hover:opacity-65"
+                    }`}
+                  >
+                    <div class="flex items-center gap-2.5">
+                      <span class={`text-lg leading-none ${active ? item.color : "text-text-dim"}`}>{item.icon}</span>
+                      <span class={`text-xl font-bold tabular-nums leading-none ${active ? "text-ink" : "text-text-dim"}`}>{count}</span>
+                    </div>
+                    <div class="text-xs text-text-muted mt-1.5">{item.label}</div>
+                  </a>
+                );
+              })}
+            </div>
+          </Section>
+
+          {/* ── Workers ── */}
+          <Section title="Workers">
+            {workers && workers.length > 0 ? (
+              <div class="flex flex-col gap-3">
+                {workers.map((w: WorkerInfo) => {
+                  const errCount = data.workerErrors[w.name] ?? 0;
+                  const hasWorkerErrors = errCount > 0;
                   return (
                     <a
-                      key={card.key}
-                      href={`#${card.path}`}
-                      class={`block bg-panel rounded-lg border p-5 no-underline transition-colors group ${
-                        active
-                          ? "border-border hover:border-text-dim"
-                          : "border-border-subtle opacity-50 hover:opacity-75"
+                      key={w.name}
+                      href="#/workers"
+                      class={`group bg-panel rounded-xl border px-5 py-4 no-underline transition-colors ${
+                        hasWorkerErrors
+                          ? "border-red-500/20 hover:border-red-500/40"
+                          : "border-border hover:border-text-dim"
                       }`}
                     >
-                      <div class="flex items-center gap-3">
-                        <span class={`text-3xl ${active ? card.color : "text-text-dim"}`}>{card.icon}</span>
-                        <div>
-                          <div class="text-2xl font-semibold text-ink">{count}</div>
-                          <div class="text-sm text-text-muted">{card.label}</div>
-                        </div>
+                      <div class="flex items-center gap-2.5 mb-2">
+                        <span class={`w-2.5 h-2.5 rounded-full shrink-0 ${hasWorkerErrors ? "bg-red-500" : "bg-emerald-500"}`} />
+                        <span class="text-sm font-semibold text-ink">{w.name}</span>
+                        {w.isMain && (
+                          <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-ink text-surface leading-none">main</span>
+                        )}
+                        {hasWorkerErrors && (
+                          <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-red-500/15 text-red-400 leading-none">
+                            {errCount} err
+                          </span>
+                        )}
+                        <span class="text-xs text-text-muted ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+                          View &rarr;
+                        </span>
                       </div>
+                      {w.bindings.length > 0 && (
+                        <div class="flex flex-wrap gap-1.5 ml-5">
+                          {w.bindings.map(b => (
+                            <span key={b.name} title={b.name}>
+                              <StatusBadge status={b.type} colorMap={BINDING_COLORS} />
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </a>
                   );
                 })}
               </div>
-            </div>
-          ))}
-          {workers && workers.length > 0 && (
-            <div>
-              <h2 class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-3">Workers</h2>
-              <div class="flex flex-col gap-3">
-                {workers.map((w: WorkerInfo) => (
-                  <a
-                    key={w.name}
-                    href="#/workers"
-                    class="block bg-panel rounded-lg border border-border p-4 no-underline hover:border-text-dim transition-colors"
-                  >
-                    <div class="flex items-center gap-2 mb-2">
-                      <span class="text-sm font-semibold text-ink">{w.name}</span>
-                      {w.isMain && (
-                        <span class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-ink text-surface">main</span>
-                      )}
-                      <span class="text-xs text-text-muted">{w.bindings.length} binding(s)</span>
-                    </div>
-                    {w.bindings.length > 0 && (
-                      <div class="flex flex-wrap gap-1.5">
-                        {w.bindings.map(b => (
-                          <span key={b.name} class="inline-flex items-center gap-1.5 text-xs">
-                            <StatusBadge status={b.type} colorMap={BINDING_COLORS} />
-                            <span class="font-mono text-text-secondary">{b.name}</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </a>
-                ))}
+            ) : (
+              <div class="bg-panel rounded-xl border border-border-subtle px-5 py-8 text-center text-sm text-text-muted">
+                No workers configured
               </div>
+            )}
+          </Section>
+        </div>
+
+        {/* ── Right: System sidebar ── */}
+        <div class="flex flex-col gap-5">
+          <div class="bg-panel rounded-xl border border-border p-5">
+            <div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Resources</div>
+            <div class="flex flex-col gap-4">
+              <MiniGauge label="RSS" value={rt.memory.rss} max={512 * 1048576} />
+              <MiniGauge label="Heap" value={rt.memory.heapUsed} max={rt.memory.heapTotal} />
+              <MiniGauge label="External" value={rt.memory.external} max={rt.memory.heapTotal} />
             </div>
-          )}
-          <div>
-            <h2 class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-3">Runtime</h2>
-            <div class="bg-panel rounded-lg border border-border overflow-hidden">
-              <KeyValueTable data={{
-                "Bun": data.runtime.bunVersion,
-                "Platform": `${data.runtime.platform} / ${data.runtime.arch}`,
-                "PID": String(data.runtime.pid),
-                "Working Directory": data.runtime.cwd,
-              }} />
+            <div class="mt-4 pt-4 border-t border-border-subtle flex flex-col gap-2">
+              <Kv k="CPU user" v={fmtMicros(rt.cpuUsage.user)} />
+              <Kv k="CPU system" v={fmtMicros(rt.cpuUsage.system)} />
             </div>
           </div>
+
+          <div class="bg-panel rounded-xl border border-border p-5">
+            <div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Runtime</div>
+            <div class="flex flex-col gap-2">
+              <Kv k="Bun" v={rt.bunVersion} />
+              <Kv k="Platform" v={`${rt.platform}/${rt.arch}`} />
+              <Kv k="PID" v={String(rt.pid)} />
+              <Kv k="Uptime" v={fmtUptime(rt.uptime)} />
+              <Kv k="Started" v={new Date(rt.startedAt).toLocaleTimeString()} />
+              <Kv k="CWD" v={rt.cwd} />
+            </div>
+          </div>
+
+          {envEntries.length > 0 && (
+            <details class="bg-panel rounded-xl border border-border overflow-hidden">
+              <summary class="p-5 cursor-pointer select-none text-xs font-semibold uppercase tracking-wider text-text-muted hover:text-text-secondary transition-colors">
+                Environment ({envEntries.length})
+              </summary>
+              <div class="px-5 pb-5 flex flex-col gap-2">
+                {envEntries.map(([key, value]) => (
+                  <Kv key={key} k={key} v={value} />
+                ))}
+              </div>
+            </details>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
