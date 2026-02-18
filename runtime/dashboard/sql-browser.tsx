@@ -3,12 +3,18 @@ import type { D1Table, QueryResult } from "./rpc/types";
 
 // ─── Schema parsing ──────────────────────────────────────────────────
 
+interface ForeignKeyInfo {
+  targetTable: string;
+  targetColumn: string;
+}
+
 interface ColumnInfo {
   name: string;
   type: string;
   notNull: boolean;
   defaultValue: string | null;
   autoIncrement: boolean;
+  foreignKey: ForeignKeyInfo | null;
 }
 
 interface TableSchema {
@@ -40,6 +46,8 @@ export function parseCreateTable(sql: string): TableSchema {
   }
   if (current.trim()) parts.push(current.trim());
 
+  const foreignKeys: Record<string, ForeignKeyInfo> = {};
+
   for (const part of parts) {
     // Table-level PRIMARY KEY(col1, col2)
     const pkMatch = part.match(/^PRIMARY\s+KEY\s*\((.+)\)/i);
@@ -51,8 +59,15 @@ export function parseCreateTable(sql: string): TableSchema {
       continue;
     }
 
-    // Skip other constraints (UNIQUE, CHECK, FOREIGN KEY)
-    if (/^(UNIQUE|CHECK|FOREIGN\s+KEY|CONSTRAINT)\s/i.test(part)) continue;
+    // Table-level FOREIGN KEY(col) REFERENCES table(col)
+    const fkMatch = part.match(/^(?:CONSTRAINT\s+["'`]?\w+["'`]?\s+)?FOREIGN\s+KEY\s*\(["'`]?(\w+)["'`]?\)\s*REFERENCES\s+["'`]?(\w+)["'`]?\s*\(["'`]?(\w+)["'`]?\)/i);
+    if (fkMatch) {
+      foreignKeys[fkMatch[1]!] = { targetTable: fkMatch[2]!, targetColumn: fkMatch[3]! };
+      continue;
+    }
+
+    // Skip other constraints (UNIQUE, CHECK)
+    if (/^(UNIQUE|CHECK|CONSTRAINT)\s/i.test(part)) continue;
 
     // Column definition
     const colMatch = part.match(/^["'`]?(\w+)["'`]?\s+(.*)/s);
@@ -67,10 +82,23 @@ export function parseCreateTable(sql: string): TableSchema {
     const defaultMatch = rest.match(/\bDEFAULT\s+(\S+)/i);
     const defaultValue = defaultMatch ? defaultMatch[1]! : null;
 
-    columns.push({ name, type, notNull, defaultValue, autoIncrement });
+    // Inline REFERENCES
+    const refMatch = rest.match(/\bREFERENCES\s+["'`]?(\w+)["'`]?\s*\(["'`]?(\w+)["'`]?\)/i);
+    const foreignKey: ForeignKeyInfo | null = refMatch
+      ? { targetTable: refMatch[1]!, targetColumn: refMatch[2]! }
+      : null;
+
+    columns.push({ name, type, notNull, defaultValue, autoIncrement, foreignKey });
 
     if (/\bPRIMARY\s+KEY\b/i.test(rest)) {
       if (!primaryKeys.includes(name)) primaryKeys.push(name);
+    }
+  }
+
+  // Apply table-level FK constraints to columns
+  for (const col of columns) {
+    if (!col.foreignKey && foreignKeys[col.name]) {
+      col.foreignKey = foreignKeys[col.name]!;
     }
   }
 
@@ -126,6 +154,36 @@ function buildWhereClause(filters: Record<string, string>): string {
     if (cond) conditions.push(cond);
   }
   return conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+}
+
+// ─── Export helpers ──────────────────────────────────────────────────
+
+function downloadBlob(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportCSV(columns: string[], rows: Record<string, unknown>[], tableName: string) {
+  const escape = (v: unknown) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+      return `"${s.replace(/"/g, '""')}"`;
+    }
+    return s;
+  };
+  const header = columns.map(escape).join(",");
+  const body = rows.map(row => columns.map(col => escape(row[col])).join(",")).join("\n");
+  downloadBlob(header + "\n" + body, `${tableName}.csv`, "text/csv");
+}
+
+function exportJSON(rows: Record<string, unknown>[], tableName: string) {
+  downloadBlob(JSON.stringify(rows, null, 2), `${tableName}.json`, "application/json");
 }
 
 // ─── Query history (localStorage) ────────────────────────────────────
@@ -448,6 +506,11 @@ function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
                       {col.autoIncrement && (
                         <span class="ml-1.5 text-[10px] font-semibold bg-amber-50 text-amber-600 px-1 py-0.5 rounded">AI</span>
                       )}
+                      {col.foreignKey && (
+                        <span class="ml-1.5 text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded" title={`${col.foreignKey.targetTable}(${col.foreignKey.targetColumn})`}>
+                          FK &rarr; {col.foreignKey.targetTable}
+                        </span>
+                      )}
                     </td>
                     <td class="px-4 py-2 font-mono text-xs text-gray-500">{col.type || "—"}</td>
                     <td class="px-4 py-2 text-xs text-gray-400">{col.notNull ? "NOT NULL" : "NULL"}</td>
@@ -498,6 +561,14 @@ function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHi
     setRestoredState({ filters: entry.filters, sortCol: entry.sortCol, sortDir: entry.sortDir });
   };
 
+  const handleNavigateFK = (targetTable: string, targetColumn: string, value: unknown) => {
+    // Only navigate if target table exists
+    if (tables?.some(t => t.name === targetTable)) {
+      setSelectedTable(targetTable);
+      setRestoredState({ filters: { [targetColumn]: `=${String(value)}` }, sortCol: null, sortDir: "ASC" });
+    }
+  };
+
   // Clear restored state once it's been consumed (table changed by user)
   const handleTableSelect = (name: string) => {
     setSelectedTable(name);
@@ -521,6 +592,7 @@ function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHi
             history={history}
             browserHistory={browserHistory}
             onRestoreHistory={handleRestoreHistory}
+            onNavigateFK={handleNavigateFK}
             initialState={restoredState}
           />
         ) : (
@@ -574,18 +646,25 @@ function TableSidebar({ tables, selected, onSelect }: {
 
 // ─── TableDataView ───────────────────────────────────────────────────
 
-function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, initialState }: {
+function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, onNavigateFK, initialState }: {
   table: D1Table;
   execQuery: (sql: string) => Promise<QueryResult>;
   onOpenInConsole: (sql: string) => void;
   history: ReturnType<typeof useHistory>;
   browserHistory: ReturnType<typeof useBrowserHistory>;
   onRestoreHistory: (entry: BrowserHistoryEntry) => void;
+  onNavigateFK: (targetTable: string, targetColumn: string, value: unknown) => void;
   initialState: RestoredState | null;
 }) {
   const schema = parseCreateTable(table.sql);
   const pkCols = schema.primaryKeys.length > 0 ? schema.primaryKeys : ["rowid"];
   const needsRowid = schema.primaryKeys.length === 0;
+
+  // FK map for quick lookup
+  const fkMap = new Map<string, ForeignKeyInfo>();
+  for (const col of schema.columns) {
+    if (col.foreignKey) fkMap.set(col.name, col.foreignKey);
+  }
 
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
@@ -600,6 +679,17 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
   const [showFilters, setShowFilters] = useState(initialState ? Object.keys(initialState.filters).length > 0 : false);
   const [showFilterHelp, setShowFilterHelp] = useState(false);
   const [showBrowserHistory, setShowBrowserHistory] = useState(false);
+
+  // Bulk select
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const rowKey = (row: Record<string, unknown>) => pkCols.map(pk => String(row[pk] ?? "")).join("\0");
+
+  // Row detail & cell inspector modals
+  const [detailRow, setDetailRow] = useState<Record<string, unknown> | null>(null);
+  const [inspectCell, setInspectCell] = useState<{ column: string; value: unknown } | null>(null);
+
+  // Export dropdown
+  const [showExport, setShowExport] = useState(false);
 
   const filtersKey = JSON.stringify(filters);
   const loadGenRef = useRef(0);
@@ -650,12 +740,14 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
     setFilters({});
     setShowFilters(false);
     setSortCol(null);
+    setSelectedRows(new Set());
   }, [table.name]);
 
   // Reload when table, sort, or filters change
   useEffect(() => {
     setOffset(0);
     setShowInsert(false);
+    setSelectedRows(new Set());
     loadData(0);
   }, [table.name, sortCol, sortDir, filtersKey]);
 
@@ -716,6 +808,46 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
     }
   };
 
+  // Bulk select handlers
+  const toggleRow = (row: Record<string, unknown>) => {
+    const key = rowKey(row);
+    setSelectedRows(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleAll = () => {
+    if (selectedRows.size === rows.length && rows.length > 0) {
+      setSelectedRows(new Set());
+    } else {
+      setSelectedRows(new Set(rows.map(rowKey)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedRows.size === 0) return;
+    if (!confirm(`Delete ${selectedRows.size} row(s)?`)) return;
+    const toDelete = rows.filter(r => selectedRows.has(rowKey(r)));
+    const conditions = toDelete.map(row =>
+      `(${pkCols.map(pk => `${quoteId(pk)} = ${sqlLiteral(row[pk])}`).join(" AND ")})`
+    );
+    const sql = `DELETE FROM ${quoteId(table.name)} WHERE ${conditions.join(" OR ")}`;
+    try {
+      const res = await execQuery(sql);
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      setSelectedRows(new Set());
+      await loadData(offset);
+    } catch (e: any) {
+      setError(e.message ?? String(e));
+    }
+  };
+
   // Columns to display (hide rowid if it was added just for PK tracking)
   const displayCols = columns.filter(c => !(needsRowid && c === "rowid"));
   const activeFilterCount = Object.values(filters).filter(v => v.trim()).length;
@@ -737,6 +869,14 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
         <div class="flex items-center gap-3">
           <h3 class="text-lg font-bold font-mono">{table.name}</h3>
           <span class="text-xs text-gray-400 tabular-nums">{totalCount} row(s)</span>
+          {selectedRows.size > 0 && (
+            <button
+              onClick={handleBulkDelete}
+              class="rounded-md px-3 py-1.5 text-sm font-medium bg-red-500 text-white hover:bg-red-600 transition-all"
+            >
+              Delete selected ({selectedRows.size})
+            </button>
+          )}
         </div>
         <div class="flex items-center gap-2">
           <button
@@ -766,6 +906,34 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
           >
             History{browserHistory.entries.length > 0 ? ` (${browserHistory.entries.length})` : ""}
           </button>
+          <div class="relative">
+            <button
+              onClick={() => setShowExport(v => !v)}
+              class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
+                showExport
+                  ? "bg-ink text-white"
+                  : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+              }`}
+            >
+              Export
+            </button>
+            {showExport && (
+              <div class="absolute right-0 top-full mt-1 bg-white rounded-lg border border-gray-200 shadow-lg z-10 py-1 min-w-[120px]">
+                <button
+                  onClick={() => { exportCSV(displayCols, rows, table.name); setShowExport(false); }}
+                  class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  CSV
+                </button>
+                <button
+                  onClick={() => { exportJSON(rows, table.name); setShowExport(false); }}
+                  class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  JSON
+                </button>
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setShowInsert(!showInsert)}
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
@@ -819,6 +987,14 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-gray-100">
+              <th class="w-10 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={rows.length > 0 && selectedRows.size === rows.length}
+                  onChange={toggleAll}
+                  class="rounded border-gray-300 accent-ink"
+                />
+              </th>
               {displayCols.map(col => (
                 <th
                   key={col}
@@ -826,12 +1002,13 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
                   class="text-left px-4 py-2.5 font-medium text-xs text-gray-400 uppercase tracking-wider font-mono cursor-pointer hover:text-gray-600 select-none"
                 >
                   {col}
+                  {fkMap.has(col) && <span class="ml-1 text-blue-400 text-[10px]" title={`FK → ${fkMap.get(col)!.targetTable}`}>FK</span>}
                   {sortCol === col && (
                     <span class="ml-1">{sortDir === "ASC" ? "\u2191" : "\u2193"}</span>
                   )}
                 </th>
               ))}
-              <th class="w-16 px-4 py-2.5"></th>
+              <th class="w-24 px-4 py-2.5"></th>
             </tr>
             {showFilters && (
               <FilterRow
@@ -844,6 +1021,7 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
                   return next;
                 })}
                 onClearAll={() => setFilters({})}
+                hasCheckboxCol
               />
             )}
           </thead>
@@ -854,28 +1032,46 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
                 displayCols={displayCols}
                 onSave={handleInsert}
                 onCancel={() => setShowInsert(false)}
+                hasCheckboxCol
               />
             )}
             {loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={displayCols.length + 1} class="px-4 py-8 text-center text-gray-400 text-sm">Loading...</td>
+                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-gray-400 text-sm">Loading...</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={displayCols.length + 1} class="px-4 py-8 text-center text-gray-400 text-sm">No rows</td>
+                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-gray-400 text-sm">No rows</td>
               </tr>
             ) : (
               rows.map((row, i) => (
-                <tr key={i} class="group border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+                <tr key={i} class={`group border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${selectedRows.has(rowKey(row)) ? "bg-blue-50/50" : ""}`}>
+                  <td class="px-3 py-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedRows.has(rowKey(row))}
+                      onChange={() => toggleRow(row)}
+                      class="rounded border-gray-300 accent-ink"
+                    />
+                  </td>
                   {displayCols.map(col => (
                     <td key={col} class="px-4 py-0">
                       <EditableCell
                         value={row[col]}
                         onSave={(v) => handleUpdate(row, col, v)}
+                        foreignKey={fkMap.get(col) ?? null}
+                        onNavigateFK={(fk) => onNavigateFK(fk.targetTable, fk.targetColumn, row[col])}
+                        onInspect={() => setInspectCell({ column: col, value: row[col] })}
                       />
                     </td>
                   ))}
-                  <td class="px-4 py-2 text-right">
+                  <td class="px-4 py-2 text-right whitespace-nowrap">
+                    <button
+                      onClick={() => setDetailRow(row)}
+                      class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-gray-100 transition-all mr-1"
+                    >
+                      Detail
+                    </button>
                     <button
                       onClick={() => handleDelete(row)}
                       class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-50 transition-all"
@@ -913,6 +1109,22 @@ function TableDataView({ table, execQuery, onOpenInConsole, history, browserHist
       </div>
 
       {showFilterHelp && <FilterHelpModal onClose={() => setShowFilterHelp(false)} />}
+      {detailRow && (
+        <RowDetailModal
+          columns={displayCols}
+          row={detailRow}
+          fkMap={fkMap}
+          onClose={() => setDetailRow(null)}
+          onNavigateFK={(t, c, v) => { setDetailRow(null); onNavigateFK(t, c, v); }}
+        />
+      )}
+      {inspectCell && (
+        <CellInspectorModal
+          column={inspectCell.column}
+          value={inspectCell.value}
+          onClose={() => setInspectCell(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1036,11 +1248,12 @@ function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }: {
 
 // ─── FilterRow ───────────────────────────────────────────────────────
 
-function FilterRow({ columns, filters, onFilterChange, onClearAll }: {
+function FilterRow({ columns, filters, onFilterChange, onClearAll, hasCheckboxCol }: {
   columns: string[];
   filters: Record<string, string>;
   onFilterChange: (col: string, value: string) => void;
   onClearAll: () => void;
+  hasCheckboxCol?: boolean;
 }) {
   const debounceRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const hasAny = Object.values(filters).some(v => v.trim());
@@ -1054,6 +1267,7 @@ function FilterRow({ columns, filters, onFilterChange, onClearAll }: {
 
   return (
     <tr class="border-b border-gray-100 bg-gray-50/50">
+      {hasCheckboxCol && <th class="w-10 px-3 py-1.5"></th>}
       {columns.map(col => (
         <th key={col} class="px-4 py-1.5">
           <input
@@ -1140,13 +1354,148 @@ function FilterHelpModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+// ─── RowDetailModal ──────────────────────────────────────────────────
+
+function RowDetailModal({ columns, row, fkMap, onClose, onNavigateFK }: {
+  columns: string[];
+  row: Record<string, unknown>;
+  fkMap: Map<string, ForeignKeyInfo>;
+  onClose: () => void;
+  onNavigateFK?: (targetTable: string, targetColumn: string, value: unknown) => void;
+}) {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyValue = (col: string, value: unknown) => {
+    navigator.clipboard.writeText(value === null ? "NULL" : String(value));
+    setCopied(col);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div class="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-bold text-ink">Row Detail</h3>
+          <button onClick={onClose} class="text-gray-400 hover:text-gray-600 text-lg leading-none transition-colors">&times;</button>
+        </div>
+        <div class="overflow-y-auto flex-1 divide-y divide-gray-50">
+          {columns.map(col => {
+            const value = row[col];
+            const fk = fkMap.get(col);
+            const strVal = value === null ? "" : String(value);
+            let formatted = strVal;
+            let isJson = false;
+            if (value !== null && strVal.length > 0) {
+              try { formatted = JSON.stringify(JSON.parse(strVal), null, 2); isJson = true; } catch {}
+            }
+            return (
+              <div key={col} class="px-5 py-3 flex gap-4 group">
+                <div class="w-1/3 flex-shrink-0 flex items-start gap-1.5 pt-0.5">
+                  <span class="font-mono text-xs font-medium text-gray-500">{col}</span>
+                  {fk && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">FK</span>}
+                  {isJson && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">JSON</span>}
+                </div>
+                <div class="flex-1 min-w-0 flex items-start gap-2">
+                  {value === null ? (
+                    <span class="text-gray-300 italic text-xs">NULL</span>
+                  ) : fk && onNavigateFK ? (
+                    <button
+                      onClick={() => { onNavigateFK(fk.targetTable, fk.targetColumn, value); onClose(); }}
+                      class="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline text-left"
+                    >
+                      {strVal} &rarr; {fk.targetTable}
+                    </button>
+                  ) : (
+                    <pre class="font-mono text-xs whitespace-pre-wrap break-all flex-1 min-w-0">{formatted}</pre>
+                  )}
+                  <button
+                    onClick={() => copyValue(col, value)}
+                    class="opacity-0 group-hover:opacity-100 text-[10px] text-gray-400 hover:text-gray-600 flex-shrink-0 px-1 py-0.5 rounded bg-gray-50 hover:bg-gray-100 transition-all"
+                  >
+                    {copied === col ? "ok" : "copy"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CellInspectorModal ─────────────────────────────────────────────
+
+function CellInspectorModal({ column, value, onClose }: {
+  column: string;
+  value: unknown;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const strValue = value === null ? "NULL" : String(value);
+
+  let formatted = strValue;
+  let isJson = false;
+  if (value !== null) {
+    try {
+      formatted = JSON.stringify(JSON.parse(strValue), null, 2);
+      isJson = true;
+    } catch {}
+  }
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(strValue);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div class="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-xl mx-4 max-h-[80vh] flex flex-col">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h3 class="text-sm font-bold text-ink">
+            <span class="font-mono">{column}</span>
+            {isJson && <span class="ml-2 text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">JSON</span>}
+          </h3>
+          <div class="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              class="text-xs font-medium px-2 py-1 rounded bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors"
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+            <button onClick={onClose} class="text-gray-400 hover:text-gray-600 text-lg leading-none transition-colors">&times;</button>
+          </div>
+        </div>
+        <div class="overflow-auto flex-1 p-5">
+          <pre class={`text-xs font-mono whitespace-pre-wrap break-all ${value === null ? "text-gray-300 italic" : ""}`}>{formatted}</pre>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── EditableCell ────────────────────────────────────────────────────
 
-function EditableCell({ value, onSave }: { value: unknown; onSave: (v: unknown) => void }) {
+function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspect }: {
+  value: unknown;
+  onSave: (v: unknown) => void;
+  foreignKey?: ForeignKeyInfo | null;
+  onNavigateFK?: (fk: ForeignKeyInfo) => void;
+  onInspect?: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const [isNull, setIsNull] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const isLong = value !== null && value !== undefined && String(value).length > 80;
 
   const startEdit = () => {
     setIsNull(value === null);
@@ -1203,14 +1552,36 @@ function EditableCell({ value, onSave }: { value: unknown; onSave: (v: unknown) 
   }
 
   return (
-    <div
-      onClick={startEdit}
-      class="cursor-pointer font-mono text-xs py-2 min-h-[2rem] flex items-center"
-    >
-      {value === null ? (
-        <span class="text-gray-300 italic">NULL</span>
-      ) : (
-        <span class="truncate max-w-xs" title={String(value)}>{String(value)}</span>
+    <div class="flex items-center gap-1 font-mono text-xs py-2 min-h-[2rem]">
+      <div
+        onClick={startEdit}
+        class="cursor-pointer flex-1 min-w-0 flex items-center"
+      >
+        {value === null ? (
+          <span class="text-gray-300 italic">NULL</span>
+        ) : foreignKey ? (
+          <span class="truncate max-w-xs text-blue-600" title={String(value)}>{String(value)}</span>
+        ) : (
+          <span class="truncate max-w-xs" title={String(value)}>{String(value)}</span>
+        )}
+      </div>
+      {foreignKey && value != null && onNavigateFK && (
+        <button
+          onClick={e => { e.stopPropagation(); onNavigateFK(foreignKey); }}
+          class="flex-shrink-0 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 hover:text-blue-800 px-1.5 py-0.5 rounded transition-colors"
+          title={`Go to ${foreignKey.targetTable}.${foreignKey.targetColumn}`}
+        >
+          &rarr; {foreignKey.targetTable}
+        </button>
+      )}
+      {isLong && onInspect && (
+        <button
+          onClick={e => { e.stopPropagation(); onInspect(); }}
+          class="flex-shrink-0 text-[10px] text-gray-400 hover:text-gray-600 px-1 py-0.5 rounded hover:bg-gray-100 transition-colors"
+          title="Inspect value"
+        >
+          &#x2922;
+        </button>
       )}
     </div>
   );
@@ -1218,11 +1589,12 @@ function EditableCell({ value, onSave }: { value: unknown; onSave: (v: unknown) 
 
 // ─── InsertRowForm ───────────────────────────────────────────────────
 
-function InsertRowForm({ schema, displayCols, onSave, onCancel }: {
+function InsertRowForm({ schema, displayCols, onSave, onCancel, hasCheckboxCol }: {
   schema: TableSchema;
   displayCols: string[];
   onSave: (values: Record<string, unknown>) => void;
   onCancel: () => void;
+  hasCheckboxCol?: boolean;
 }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [nulls, setNulls] = useState<Record<string, boolean>>(() => {
@@ -1250,6 +1622,7 @@ function InsertRowForm({ schema, displayCols, onSave, onCancel }: {
 
   return (
     <tr class="border-b border-emerald-100 bg-emerald-50/30">
+      {hasCheckboxCol && <td class="w-10 px-3 py-2"></td>}
       {displayCols.map(col => {
         const colInfo = schema.columns.find(c => c.name === col);
         const isAutoInc = colInfo?.autoIncrement ?? false;
