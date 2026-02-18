@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { ForeignKeyInfo } from "./types";
+import { Modal } from "../components/modal";
 
 // ─── RowDetailModal ──────────────────────────────────────────────────
 
@@ -19,58 +20,49 @@ export function RowDetailModal({ columns, row, fkMap, onClose, onNavigateFK }: {
   };
 
   return (
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div class="bg-panel rounded-xl shadow-xl border border-border w-full max-w-lg mx-4 max-h-[80vh] flex flex-col">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
-          <h3 class="text-sm font-bold text-ink">Row Detail</h3>
-          <button onClick={onClose} class="text-text-muted hover:text-text-data text-lg leading-none transition-colors">&times;</button>
-        </div>
-        <div class="overflow-y-auto flex-1 divide-y divide-border-row">
-          {columns.map(col => {
-            const value = row[col];
-            const fk = fkMap.get(col);
-            const strVal = value === null ? "" : String(value);
-            let formatted = strVal;
-            let isJson = false;
-            if (value !== null && strVal.length > 0) {
-              try { formatted = JSON.stringify(JSON.parse(strVal), null, 2); isJson = true; } catch {}
-            }
-            return (
-              <div key={col} class="px-5 py-3 flex gap-4 group">
-                <div class="w-1/3 flex-shrink-0 flex items-start gap-1.5 pt-0.5">
-                  <span class="font-mono text-xs font-medium text-text-secondary">{col}</span>
-                  {fk && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">FK</span>}
-                  {isJson && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">JSON</span>}
-                </div>
-                <div class="flex-1 min-w-0 flex items-start gap-2">
-                  {value === null ? (
-                    <span class="text-text-dim italic text-xs">NULL</span>
-                  ) : fk && onNavigateFK ? (
-                    <button
-                      onClick={() => { onNavigateFK(fk.targetTable, fk.targetColumn, value); onClose(); }}
-                      class="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline text-left"
-                    >
-                      {strVal} &rarr; {fk.targetTable}
-                    </button>
-                  ) : (
-                    <pre class="font-mono text-xs whitespace-pre-wrap break-all flex-1 min-w-0">{formatted}</pre>
-                  )}
-                  <button
-                    onClick={() => copyValue(col, value)}
-                    class="opacity-0 group-hover:opacity-100 text-[10px] text-text-muted hover:text-text-data flex-shrink-0 px-1 py-0.5 rounded bg-panel-secondary hover:bg-panel-hover transition-all"
-                  >
-                    {copied === col ? "ok" : "copy"}
-                  </button>
-                </div>
+    <Modal title="Row Detail" onClose={onClose}>
+      <div class="overflow-y-auto flex-1 divide-y divide-border-row">
+        {columns.map(col => {
+          const value = row[col];
+          const fk = fkMap.get(col);
+          const strVal = value === null ? "" : String(value);
+          let formatted = strVal;
+          let isJson = false;
+          if (value !== null && strVal.length > 0) {
+            try { formatted = JSON.stringify(JSON.parse(strVal), null, 2); isJson = true; } catch {}
+          }
+          return (
+            <div key={col} class="px-5 py-3 flex gap-4 group">
+              <div class="w-1/3 flex-shrink-0 flex items-start gap-1.5 pt-0.5">
+                <span class="font-mono text-xs font-medium text-text-secondary">{col}</span>
+                {fk && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">FK</span>}
+                {isJson && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">JSON</span>}
               </div>
-            );
-          })}
-        </div>
+              <div class="flex-1 min-w-0 flex items-start gap-2">
+                {value === null ? (
+                  <span class="text-text-dim italic text-xs">NULL</span>
+                ) : fk && onNavigateFK ? (
+                  <button
+                    onClick={() => { onNavigateFK(fk.targetTable, fk.targetColumn, value); onClose(); }}
+                    class="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline text-left"
+                  >
+                    {strVal} &rarr; {fk.targetTable}
+                  </button>
+                ) : (
+                  <pre class="font-mono text-xs whitespace-pre-wrap break-all flex-1 min-w-0">{formatted}</pre>
+                )}
+                <button
+                  onClick={() => copyValue(col, value)}
+                  class="opacity-0 group-hover:opacity-100 text-[10px] text-text-muted hover:text-text-data flex-shrink-0 px-1 py-0.5 rounded bg-panel-secondary hover:bg-panel-hover transition-all"
+                >
+                  {copied === col ? "ok" : "copy"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -99,31 +91,26 @@ export function CellInspectorModal({ column, value, onClose }: {
     setTimeout(() => setCopied(false), 1500);
   };
 
+  const titleContent = (
+    <span>
+      <span class="font-mono">{column}</span>
+      {isJson && <span class="ml-2 text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">JSON</span>}
+    </span>
+  );
+
   return (
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div class="bg-panel rounded-xl shadow-xl border border-border w-full max-w-xl mx-4 max-h-[80vh] flex flex-col">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
-          <h3 class="text-sm font-bold text-ink">
-            <span class="font-mono">{column}</span>
-            {isJson && <span class="ml-2 text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">JSON</span>}
-          </h3>
-          <div class="flex items-center gap-2">
-            <button
-              onClick={handleCopy}
-              class="text-xs font-medium px-2 py-1 rounded bg-panel-hover text-text-secondary hover:bg-panel-active transition-colors"
-            >
-              {copied ? "Copied!" : "Copy"}
-            </button>
-            <button onClick={onClose} class="text-text-muted hover:text-text-data text-lg leading-none transition-colors">&times;</button>
-          </div>
+    <Modal title={titleContent} onClose={onClose} maxWidth="max-w-xl">
+      <div class="overflow-auto flex-1 p-5">
+        <div class="flex justify-end mb-3">
+          <button
+            onClick={handleCopy}
+            class="text-xs font-medium px-2 py-1 rounded bg-panel-hover text-text-secondary hover:bg-panel-active transition-colors"
+          >
+            {copied ? "Copied!" : "Copy"}
+          </button>
         </div>
-        <div class="overflow-auto flex-1 p-5">
-          <pre class={`text-xs font-mono whitespace-pre-wrap break-all ${value === null ? "text-text-dim italic" : ""}`}>{formatted}</pre>
-        </div>
+        <pre class={`text-xs font-mono whitespace-pre-wrap break-all ${value === null ? "text-text-dim italic" : ""}`}>{formatted}</pre>
       </div>
-    </div>
+    </Modal>
   );
 }

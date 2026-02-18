@@ -1,4 +1,5 @@
 import { useRef } from "preact/hooks";
+import { Modal } from "../components/modal";
 
 export function FilterRow({ columns, filters, onFilterChange, onClearAll, hasCheckboxCol }: {
   columns: string[];
@@ -69,39 +70,30 @@ const FILTER_HELP: { expr: string; desc: string; example: string }[] = [
 
 export function FilterHelpModal({ onClose }: { onClose: () => void }) {
   return (
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div class="bg-panel rounded-xl shadow-xl border border-border w-full max-w-md mx-4">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
-          <h3 class="text-sm font-bold text-ink">Filter Syntax</h3>
-          <button onClick={onClose} class="text-text-muted hover:text-text-data text-lg leading-none transition-colors">&times;</button>
-        </div>
-        <div class="px-5 py-3">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-xs text-text-muted uppercase tracking-wider">
-                <th class="text-left py-1.5 font-medium">Expression</th>
-                <th class="text-left py-1.5 font-medium">Description</th>
-                <th class="text-left py-1.5 font-medium">Example</th>
+    <Modal title="Filter Syntax" onClose={onClose} maxWidth="max-w-md">
+      <div class="px-5 py-3">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-xs text-text-muted uppercase tracking-wider">
+              <th class="text-left py-1.5 font-medium">Expression</th>
+              <th class="text-left py-1.5 font-medium">Description</th>
+              <th class="text-left py-1.5 font-medium">Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            {FILTER_HELP.map(h => (
+              <tr key={h.expr} class="border-t border-border-row">
+                <td class="py-1.5 pr-3"><code class="text-xs font-mono bg-panel-secondary px-1.5 py-0.5 rounded text-ink">{h.expr}</code></td>
+                <td class="py-1.5 pr-3 text-xs text-text-secondary">{h.desc}</td>
+                <td class="py-1.5"><code class="text-xs font-mono text-text-muted">{h.example}</code></td>
               </tr>
-            </thead>
-            <tbody>
-              {FILTER_HELP.map(h => (
-                <tr key={h.expr} class="border-t border-border-row">
-                  <td class="py-1.5 pr-3"><code class="text-xs font-mono bg-panel-secondary px-1.5 py-0.5 rounded text-ink">{h.expr}</code></td>
-                  <td class="py-1.5 pr-3 text-xs text-text-secondary">{h.desc}</td>
-                  <td class="py-1.5"><code class="text-xs font-mono text-text-muted">{h.example}</code></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div class="px-5 py-3 border-t border-border-subtle text-xs text-text-muted">
-          Filters apply per column. Multiple column filters combine with AND.
-        </div>
+            ))}
+          </tbody>
+        </table>
       </div>
-    </div>
+      <div class="px-5 py-3 border-t border-border-subtle text-xs text-text-muted">
+        Filters apply per column. Multiple column filters combine with AND.
+      </div>
+    </Modal>
   );
 }
