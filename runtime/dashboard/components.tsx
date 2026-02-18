@@ -1,6 +1,6 @@
 // Shared UI components for the dashboard
 
-export { SqlBrowser } from "./sql-browser";
+export { SqlBrowser } from "./sql-browser/index";
 
 export function EmptyState({ message }: { message: string }) {
   return (

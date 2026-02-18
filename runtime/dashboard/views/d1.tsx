@@ -2,7 +2,7 @@ import { useQuery } from "../rpc/hooks";
 import { rpc } from "../rpc/client";
 import { Breadcrumb, PageHeader, Table, TableLink, ServiceInfo, EmptyState, SqlBrowser } from "../components";
 import { parseHashRoute } from "../lib";
-import type { Tab } from "../sql-browser";
+import type { Tab } from "../sql-browser/index";
 
 export function D1View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
