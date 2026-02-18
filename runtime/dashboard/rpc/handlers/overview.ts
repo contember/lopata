@@ -32,6 +32,8 @@ export const handlers = {
       d1Count = Math.max(d1Count, (config.d1_databases ?? []).length);
     }
 
+    const emailCount = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM email_messages").get()?.count ?? 0;
+
     return {
       kv: dbKv.size,
       r2: dbR2.size,
@@ -43,6 +45,7 @@ export const handlers = {
       cache: db.query<{ count: number }, []>("SELECT COUNT(DISTINCT cache_name) as count FROM cache_entries").get()?.count ?? 0,
       errors: getTraceStore().getErrorCount(),
       scheduled: getAllConfigs(ctx).reduce((sum, cfg) => sum + (cfg.triggers?.crons?.length ?? 0), 0),
+      email: emailCount,
       generations: ctx.manager ? ctx.manager.list() : [],
       ...(ctx.registry ? {
         workers: Array.from(ctx.registry.listManagers()).map(([name, mgr]) => ({

@@ -24,6 +24,7 @@ export interface OverviewData {
   cache: number;
   errors: number;
   scheduled: number;
+  email: number;
   generations: GenerationInfo[];
 }
 
@@ -106,6 +107,7 @@ export interface DoNamespace {
 
 export interface DoInstance {
   id: string;
+  name?: string | null;
   key_count: number;
   alarm: number | null;
 }
@@ -254,6 +256,18 @@ export interface TraceErrorSummary {
   errorName: string;
   errorMessage: string;
   source: string | null;
+}
+
+// Email
+export interface EmailRecord {
+  id: string;
+  binding: string;
+  from_addr: string;
+  to_addr: string;
+  raw_size: number;
+  status: string;
+  reject_reason: string | null;
+  created_at: number;
 }
 
 // Traces (re-export from tracing module)

@@ -22,8 +22,7 @@ export function EmailView({ route }: { route: string }) {
 	return <EmailList />;
 }
 
-function SendEmailForm({ onSent }: { onSent: () => void }) {
-	const [open, setOpen] = useState(false);
+function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: () => void; onSent: () => void }) {
 	const [from, setFrom] = useState("sender@example.com");
 	const [to, setTo] = useState("recipient@example.com");
 	const [subject, setSubject] = useState("");
@@ -37,29 +36,20 @@ function SendEmailForm({ onSent }: { onSent: () => void }) {
 		if (result) {
 			setSubject("");
 			setBody("");
-			setOpen(false);
+			onToggle();
 			onSent();
 		} else if (trigger.error) {
 			setError(trigger.error.message);
 		}
 	};
 
-	if (!open) {
-		return (
-			<button
-				onClick={() => setOpen(true)}
-				class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-			>
-				Send test email
-			</button>
-		);
-	}
+	if (!open) return null;
 
 	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-6">
+		<div class="bg-panel border border-border rounded-lg p-4 mb-4">
 			<div class="flex items-center justify-between mb-3">
 				<div class="text-sm font-semibold text-ink">Send test email</div>
-				<button onClick={() => { setOpen(false); setError(""); }} class="text-text-muted hover:text-text-data text-xs font-medium">
+				<button onClick={() => { onToggle(); setError(""); }} class="text-text-muted hover:text-text-data text-xs font-medium">
 					Cancel
 				</button>
 			</div>
@@ -116,6 +106,7 @@ function SendEmailForm({ onSent }: { onSent: () => void }) {
 
 function EmailList() {
 	const [filter, setFilter] = useState("");
+	const [formOpen, setFormOpen] = useState(false);
 	const { data: emails, refetch } = useQuery("email.list", { status: filter || undefined });
 	const { data: stats } = useQuery("email.stats");
 	const { data: configGroups } = useQuery("config.forService", { type: "email" });
@@ -132,6 +123,7 @@ function EmailList() {
 			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
+					<SendEmailForm open={formOpen} onToggle={() => setFormOpen(!formOpen)} onSent={refetch} />
 					<div class="mb-6 flex gap-2 items-center justify-between">
 						<div class="flex gap-2">
 							{["", "received", "sent", "forwarded", "rejected"].map(s => (
@@ -140,7 +132,14 @@ function EmailList() {
 								</PillButton>
 							))}
 						</div>
-						<SendEmailForm onSent={refetch} />
+						{!formOpen && (
+							<button
+								onClick={() => setFormOpen(true)}
+								class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+							>
+								Send test email
+							</button>
+						)}
 					</div>
 					{!emails?.length ? (
 						<EmptyState message="No emails found" />

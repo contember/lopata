@@ -78,6 +78,16 @@ export function runMigrations(db: Database): void {
 	`);
 
 	db.run(`
+		CREATE TABLE IF NOT EXISTS do_instances (
+			namespace TEXT NOT NULL,
+			id TEXT NOT NULL,
+			name TEXT,
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (namespace, id)
+		)
+	`);
+
+	db.run(`
 		CREATE TABLE IF NOT EXISTS do_storage (
 			namespace TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -178,6 +188,20 @@ export function runMigrations(db: Database): void {
 			body BLOB NOT NULL,
 			expires_at INTEGER,
 			PRIMARY KEY (cache_name, url)
+		)
+	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS email_messages (
+			id TEXT PRIMARY KEY,
+			binding TEXT NOT NULL,
+			from_addr TEXT NOT NULL,
+			to_addr TEXT NOT NULL,
+			raw BLOB NOT NULL,
+			raw_size INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'sent',
+			reject_reason TEXT,
+			created_at INTEGER NOT NULL
 		)
 	`);
 }

@@ -3,6 +3,8 @@ import type { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import type { SqliteWorkflowBinding } from "./bindings/workflow";
 import { QueueConsumer } from "./bindings/queue";
 import { startCronScheduler, createScheduledController } from "./bindings/scheduled";
+import { ForwardableEmailMessage } from "./bindings/email";
+import { randomUUIDv7 } from "bun";
 import { ExecutionContext } from "./execution-context";
 import { CFWebSocket } from "./bindings/websocket-pair";
 import { getDatabase } from "./db";
@@ -222,6 +224,55 @@ export class Generation {
       } catch (err) {
         console.error("[bunflare] Scheduled handler error:", err);
         persistError(err, "scheduled", this.workerName);
+        throw err;
+      }
+    });
+  }
+
+  /** Handle incoming email — dispatches to the worker's email() handler */
+  async callEmail(rawBytes: Uint8Array, from: string, to: string): Promise<Response> {
+    return startSpan({
+      name: "email",
+      kind: "server",
+      attributes: { "email.from": from, "email.to": to },
+      workerName: this.workerName,
+    }, async () => {
+      const ctx = new ExecutionContext();
+      let handler: Function | undefined;
+      if (this.classBasedExport) {
+        const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype;
+        if (typeof proto.email === "function") {
+          const instance = new (this.defaultExport as new (ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env);
+          handler = instance.email!.bind(instance);
+        }
+      } else {
+        const obj = this.defaultExport as Record<string, unknown>;
+        if (typeof obj.email === "function") {
+          handler = (obj.email as Function).bind(obj);
+        }
+      }
+
+      if (!handler) {
+        return new Response("No email handler defined", { status: 404 });
+      }
+
+      // Persist incoming email to DB
+      const db = getDatabase();
+      const messageId = randomUUIDv7();
+      db.run(
+        "INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+        [messageId, "_incoming", from, to, rawBytes, rawBytes.byteLength, Date.now()],
+      );
+
+      const message = new ForwardableEmailMessage(db, messageId, from, to, rawBytes);
+
+      try {
+        await handler(message, this.env, ctx);
+        await ctx._awaitAll();
+        return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 });
+      } catch (err) {
+        console.error("[bunflare] Email handler error:", err);
+        persistError(err, "email", this.workerName);
         throw err;
       }
     });

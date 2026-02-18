@@ -197,6 +197,16 @@ const server = Bun.serve({
       }
     }
 
+    // Email handler: POST /cdn-cgi/handler/email?from=...&to=...
+    if (url.pathname === "/cdn-cgi/handler/email" && request.method === "POST") {
+      const gen = manager.active;
+      if (!gen) return new Response("No active generation", { status: 503 });
+      const from = url.searchParams.get("from") ?? "";
+      const to = url.searchParams.get("to") ?? "";
+      const raw = await request.arrayBuffer();
+      return gen.callEmail(new Uint8Array(raw), from, to);
+    }
+
     // Manual trigger: GET /__scheduled?cron=<expression>
     if (url.pathname === "/__scheduled") {
       const gen = manager.active;

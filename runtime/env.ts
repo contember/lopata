@@ -7,6 +7,7 @@ import { DurableObjectNamespaceImpl } from "./bindings/durable-object";
 import { SqliteWorkflowBinding } from "./bindings/workflow";
 import { openD1Database } from "./bindings/d1";
 import { SqliteQueueProducer, QueueConsumer } from "./bindings/queue";
+import { SendEmailBinding } from "./bindings/email";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
@@ -192,6 +193,15 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFa
       type: "images", name: config.images.binding,
       methods: ["info"],
     });
+  }
+
+  // Send email bindings
+  for (const email of config.send_email ?? []) {
+    console.log(`[bunflare] Send email binding: ${email.name}`);
+    env[email.name] = instrumentBinding(
+      new SendEmailBinding(db, email.name, email.destination_address, email.allowed_destination_addresses),
+      { type: "email", name: email.name, methods: ["send"] },
+    );
   }
 
   // Containers — create DO namespaces for container classes

@@ -1,5 +1,6 @@
 export { Counter } from "./counter";
 export { ErrorBridge } from "./error-bridge";
+export { SqlNotes } from "./notes";
 export { MyWorkflow } from "./workflow";
 export { MyContainer } from "./container";
 
@@ -147,6 +148,29 @@ function indexPage(): Response {
     <button type="button" onclick="api('POST','/counter/'+formVal('do-name')+'/increment')">INCREMENT</button>
     <button type="button" onclick="api('POST','/counter/'+formVal('do-name')+'/decrement')">DECREMENT</button>
     <button type="button" class="danger" onclick="api('POST','/counter/'+formVal('do-name')+'/reset')">RESET</button>
+  </form>
+</div>
+
+<h2>SQL Notes (DO with SQLite)</h2>
+<div class="section">
+  <div class="links">
+    <a href="#" onclick="api('GET','/notes/my-notebook');return false">LIST notes</a>
+  </div>
+  <form onsubmit="api('POST','/notes/'+formVal('notes-ns'),{title:formVal('note-title'),body:formVal('note-body')});return false">
+    <label>Notebook <input id="notes-ns" value="my-notebook"></label>
+    <label>Title <input id="note-title" value="Hello"></label>
+    <label>Body <textarea id="note-body">First note using DO SQLite!</textarea></label>
+    <button type="submit">Create note</button>
+  </form>
+  <form onsubmit="api('GET','/notes/'+formVal('notes-ns2')+'/'+formVal('note-get-id'));return false" style="margin-top:0.5rem">
+    <label>Notebook <input id="notes-ns2" value="my-notebook"></label>
+    <label>ID <input id="note-get-id" value="1" type="number"></label>
+    <button type="submit" class="secondary">GET by ID</button>
+  </form>
+  <form onsubmit="api('DELETE','/notes/'+formVal('notes-ns3')+'/'+formVal('note-del-id'));return false" style="margin-top:0.5rem">
+    <label>Notebook <input id="notes-ns3" value="my-notebook"></label>
+    <label>ID <input id="note-del-id" value="1" type="number"></label>
+    <button type="submit" class="danger">DELETE</button>
   </form>
 </div>
 
@@ -523,6 +547,33 @@ export default {
       }
     }
 
+    // ── SQL Notes DO ──
+    const notesMatch = path.match(/^\/notes\/([^/]+)(\/(\d+))?$/);
+    if (notesMatch) {
+      const name = decodeURIComponent(notesMatch[1]!);
+      const noteId = notesMatch[3] ? parseInt(notesMatch[3]) : null;
+      const id = env.SQL_NOTES.idFromName(name);
+      const stub = env.SQL_NOTES.get(id);
+
+      if (!noteId && method === "GET") {
+        const notes = await stub.list();
+        return Response.json({ notebook: name, notes });
+      }
+      if (!noteId && method === "POST") {
+        const body = (await request.json()) as { title: string; body?: string };
+        const note = await stub.create(body.title, body.body ?? "");
+        return Response.json(note, { status: 201 });
+      }
+      if (noteId && method === "GET") {
+        const note = await stub.get(noteId);
+        return Response.json(note);
+      }
+      if (noteId && method === "DELETE") {
+        await stub.remove(noteId);
+        return Response.json({ deleted: noteId });
+      }
+    }
+
     // ── Queue ──
     if (path === "/queue/send" && method === "POST") {
       const body = await request.json();
@@ -599,6 +650,33 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     console.log(`[scheduled] Cron fired: ${controller.cron} at ${new Date(controller.scheduledTime).toISOString()}`);
+  },
+
+  async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
+    console.log(`[email] Received from: ${message.from}, to: ${message.to}, size: ${message.rawSize}`);
+    const subject = message.headers.get("subject") ?? "(no subject)";
+    console.log(`[email] Subject: ${subject}`);
+
+    // Example: forward emails addressed to forward@
+    if (message.to.startsWith("forward@")) {
+      await message.forward("admin@example.com");
+      console.log("[email] Forwarded to admin@example.com");
+      return;
+    }
+
+    // Example: reject emails addressed to reject@
+    if (message.to.startsWith("reject@")) {
+      message.setReject("Address not accepted");
+      console.log("[email] Rejected");
+      return;
+    }
+
+    // Example: send a reply using the MAILER binding
+    const { EmailMessage } = await import("cloudflare:email");
+    const replyRaw = `From: ${message.to}\r\nTo: ${message.from}\r\nSubject: Re: ${subject}\r\n\r\nThanks for your email!`;
+    const reply = new EmailMessage(message.to, message.from, replyRaw);
+    await env.MAILER.send(reply);
+    console.log("[email] Auto-reply sent");
   },
 
   async queue(batch: MessageBatch, env: Env): Promise<void> {

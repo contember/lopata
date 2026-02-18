@@ -12,6 +12,7 @@ const CARDS = [
   { key: "d1", label: "D1 Databases", path: "/d1", icon: "⊞" },
   { key: "cache", label: "Cache Names", path: "/cache", icon: "◎" },
   { key: "scheduled", label: "Scheduled", path: "/scheduled", icon: "⏱" },
+  { key: "email", label: "Email", path: "/email", icon: "✉" },
 ] as const;
 
 export function HomeView() {

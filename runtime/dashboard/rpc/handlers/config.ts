@@ -86,6 +86,18 @@ export const handlers = {
           }
           break;
         }
+
+        case "email": {
+          const items = (config.send_email ?? []).map(e => {
+            let value = e.destination_address ?? "any destination";
+            if (e.allowed_destination_addresses?.length) {
+              value = e.allowed_destination_addresses.join(", ");
+            }
+            return { name: e.name, value };
+          });
+          if (items.length) groups.push({ title: "Bindings", items });
+          break;
+        }
       }
     }
 

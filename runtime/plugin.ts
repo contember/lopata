@@ -2,6 +2,7 @@ import { plugin } from "bun";
 import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/durable-object";
 import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
 import { ContainerBase, getContainer, getRandom } from "./bindings/container";
+import { EmailMessage } from "./bindings/email";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { HTMLRewriter } from "./bindings/html-rewriter";
 import { WebSocketPair } from "./bindings/websocket-pair";
@@ -214,6 +215,15 @@ plugin({
           Container: ContainerBase,
           getContainer,
           getRandom,
+        },
+        loader: "object",
+      };
+    });
+
+    build.module("cloudflare:email", () => {
+      return {
+        exports: {
+          EmailMessage,
         },
         loader: "object",
       };
