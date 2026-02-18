@@ -194,10 +194,12 @@ export async function renderErrorPage(
   }
 
   const err = error instanceof Error ? error : new Error(String(error));
-  const frames = parseStackFrames(err.stack ?? "");
+  const frames = parseStackFrames(err.stack ?? "")
+    // Drop native/node internal frames — they have no readable source and waste enrichment slots
+    .filter(f => !f.file.startsWith("native:") && !f.file.startsWith("node:"));
 
-  // Enrich frames with source code (limit to 10 for performance)
-  const framesToEnrich = frames.slice(0, 10);
+  // Enrich frames with source code (limit to 20 for performance)
+  const framesToEnrich = frames.slice(0, 20);
   await Promise.all(framesToEnrich.map(enrichFrameWithSource));
 
   // Strip cwd prefix from paths for display
