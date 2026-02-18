@@ -807,6 +807,11 @@ export class DurableObjectNamespaceImpl {
     const id = doId ?? this._knownIds.get(idStr) ?? new DurableObjectIdImpl(idStr);
     if (doId) this._knownIds.set(idStr, doId);
 
+    // Register instance in do_instances table
+    this.db
+      .query("INSERT OR IGNORE INTO do_instances (namespace, id, name) VALUES (?, ?, ?)")
+      .run(this.namespaceName, idStr, id.name ?? null);
+
     const executor = this._getFactory().create({
       id,
       db: this.db,

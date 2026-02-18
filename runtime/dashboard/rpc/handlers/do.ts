@@ -9,7 +9,7 @@ export const handlers = {
   "do.listNamespaces"(_input: {}, ctx: HandlerContext): DoNamespace[] {
     const db = getDatabase();
     const rows = db.query<{ namespace: string; count: number }, []>(
-      "SELECT namespace, COUNT(DISTINCT id) as count FROM do_storage GROUP BY namespace ORDER BY namespace"
+      "SELECT namespace, COUNT(*) as count FROM do_instances GROUP BY namespace ORDER BY namespace"
     ).all();
     const rowMap = new Map(rows.map(r => [r.namespace, r]));
     for (const config of getAllConfigs(ctx)) {
@@ -25,18 +25,25 @@ export const handlers = {
 
   "do.listInstances"({ ns }: { ns: string }): DoInstance[] {
     const db = getDatabase();
-    const rows = db.query<{ id: string; key_count: number }, [string]>(
-      "SELECT id, COUNT(*) as key_count FROM do_storage WHERE namespace = ? GROUP BY id ORDER BY id"
+    const instances = db.query<{ id: string; name: string | null }, [string]>(
+      "SELECT id, name FROM do_instances WHERE namespace = ? ORDER BY id"
     ).all(ns);
+
+    const kvCounts = db.query<{ id: string; key_count: number }, [string]>(
+      "SELECT id, COUNT(*) as key_count FROM do_storage WHERE namespace = ? GROUP BY id"
+    ).all(ns);
+    const kvMap = new Map(kvCounts.map(r => [r.id, r.key_count]));
 
     const alarms = db.query<{ id: string; alarm_time: number }, [string]>(
       "SELECT id, alarm_time FROM do_alarms WHERE namespace = ?"
     ).all(ns);
     const alarmMap = new Map(alarms.map(a => [a.id, a.alarm_time]));
 
-    return rows.map(row => ({
-      ...row,
-      alarm: alarmMap.get(row.id) ?? null,
+    return instances.map(inst => ({
+      id: inst.id,
+      name: inst.name,
+      key_count: kvMap.get(inst.id) ?? 0,
+      alarm: alarmMap.get(inst.id) ?? null,
     }));
   },
 
