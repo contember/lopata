@@ -72,10 +72,10 @@ Commands:
   d1 list                     List D1 databases
   d1 execute <db> --command   Execute SQL on a D1 database
   d1 migrations apply [db]    Apply D1 migrations
-  r2 object list              List R2 objects
-  r2 object get <key>         Get an R2 object
-  r2 object put <key> --file  Upload a file to R2
-  r2 object delete <key>      Delete an R2 object
+  r2 object list [bucket]          List R2 objects (bucket/prefix)
+  r2 object get <bucket/key>      Get an R2 object
+  r2 object put <bucket/key> -f   Upload a file to R2
+  r2 object delete <bucket/key>   Delete an R2 object
   kv key list                 List KV keys
   kv key get <key>            Get a KV value
   kv key put <key> <value>    Put a KV value
