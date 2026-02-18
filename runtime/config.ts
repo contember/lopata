@@ -14,7 +14,7 @@ export interface WranglerConfig {
     bindings: { name: string; class_name: string }[];
   };
   workflows?: { name: string; binding: string; class_name: string; limits?: Partial<WorkflowLimits> }[];
-  d1_databases?: { binding: string; database_name: string; database_id: string }[];
+  d1_databases?: { binding: string; database_name: string; database_id: string; migrations_dir?: string }[];
   queues?: {
     producers?: { binding: string; queue: string; delivery_delay?: number }[];
     consumers?: { queue: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number; dead_letter_queue?: string }[];
@@ -39,6 +39,7 @@ export interface WranglerConfig {
     instance_type?: string;
     name?: string;
   }[];
+  version_metadata?: { binding: string };
   migrations?: { tag: string; new_classes?: string[]; new_sqlite_classes?: string[] }[];
   env?: Record<string, Partial<Omit<WranglerConfig, "env">>>;
 }
