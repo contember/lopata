@@ -54,13 +54,13 @@ export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspec
             if (e.key === "Enter") save();
             else if (e.key === "Escape") cancel();
           }}
-          class={`w-full bg-gray-50 border border-gray-300 rounded px-2 py-1 font-mono text-xs outline-none focus:border-ink focus:ring-1 focus:ring-gray-200 ${isNull ? "opacity-40" : ""}`}
+          class={`w-full bg-panel-secondary border border-border rounded px-2 py-1 font-mono text-xs outline-none focus:border-ink focus:ring-1 focus:ring-border ${isNull ? "opacity-40" : ""}`}
         />
         <button
           onClick={() => { setIsNull(!isNull); if (!isNull) setEditValue(""); }}
           title={isNull ? "Set to value" : "Set to NULL"}
           class={`flex-shrink-0 rounded px-1.5 py-1 text-xs font-bold transition-colors ${
-            isNull ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+            isNull ? "bg-amber-100 text-amber-700" : "bg-panel-hover text-text-muted hover:bg-panel-active"
           }`}
         >
           N
@@ -76,7 +76,7 @@ export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspec
         class="cursor-pointer flex-1 min-w-0 flex items-center"
       >
         {value === null ? (
-          <span class="text-gray-300 italic">NULL</span>
+          <span class="text-text-dim italic">NULL</span>
         ) : foreignKey ? (
           <span class="truncate max-w-xs text-blue-600" title={String(value)}>{String(value)}</span>
         ) : (
@@ -95,7 +95,7 @@ export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspec
       {isLong && onInspect && (
         <button
           onClick={e => { e.stopPropagation(); onInspect(); }}
-          class="flex-shrink-0 text-[10px] text-gray-400 hover:text-gray-600 px-1 py-0.5 rounded hover:bg-gray-100 transition-colors"
+          class="flex-shrink-0 text-[10px] text-text-muted hover:text-text-data px-1 py-0.5 rounded hover:bg-panel-hover transition-colors"
           title="Inspect value"
         >
           &#x2922;

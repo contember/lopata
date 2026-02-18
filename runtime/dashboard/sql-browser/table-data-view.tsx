@@ -266,7 +266,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-3">
           <h3 class="text-lg font-bold font-mono">{table.name}</h3>
-          <span class="text-xs text-gray-400 tabular-nums">{totalCount} row(s)</span>
+          <span class="text-xs text-text-muted tabular-nums">{totalCount} row(s)</span>
           {selectedRows.size > 0 && (
             <button
               onClick={handleBulkDelete}
@@ -282,14 +282,14 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showFilters || activeFilterCount > 0
                 ? "bg-ink text-white"
-                : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+                : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >
             Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
           </button>
           <button
             onClick={() => setShowFilterHelp(true)}
-            class="rounded-md w-7 h-7 text-sm font-bold bg-white border border-gray-200 text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-all"
+            class="rounded-md w-7 h-7 text-sm font-bold bg-panel border border-border text-text-muted hover:text-text-data hover:bg-panel-hover transition-all"
             title="Filter syntax help"
           >
             ?
@@ -299,7 +299,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showBrowserHistory
                 ? "bg-ink text-white"
-                : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+                : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >
             History{browserHistory.entries.length > 0 ? ` (${browserHistory.entries.length})` : ""}
@@ -310,22 +310,22 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
               class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
                 showExport
                   ? "bg-ink text-white"
-                  : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+                  : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
               }`}
             >
               Export
             </button>
             {showExport && (
-              <div class="absolute right-0 top-full mt-1 bg-white rounded-lg border border-gray-200 shadow-lg z-10 py-1 min-w-[120px]">
+              <div class="absolute right-0 top-full mt-1 bg-panel rounded-lg border border-border shadow-lg z-10 py-1 min-w-[120px]">
                 <button
                   onClick={() => { exportCSV(displayCols, rows, table.name); setShowExport(false); }}
-                  class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                  class="w-full text-left px-3 py-2 text-sm text-text-data hover:bg-panel-hover transition-colors"
                 >
                   CSV
                 </button>
                 <button
                   onClick={() => { exportJSON(rows, table.name); setShowExport(false); }}
-                  class="w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+                  class="w-full text-left px-3 py-2 text-sm text-text-data hover:bg-panel-hover transition-colors"
                 >
                   JSON
                 </button>
@@ -336,7 +336,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             onClick={() => setShowInsert(!showInsert)}
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showInsert
-                ? "bg-gray-200 text-gray-600"
+                ? "bg-panel-active text-text-data"
                 : "bg-ink text-white hover:bg-ink-muted"
             }`}
           >
@@ -345,7 +345,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
           <button
             onClick={() => loadData(offset)}
             disabled={loading}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 transition-all"
+            class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover disabled:opacity-40 transition-all"
           >
             Refresh
           </button>
@@ -355,11 +355,11 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
       {/* Current SQL */}
       <div
         onClick={() => onOpenInConsole(currentSql)}
-        class="mb-4 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg flex items-center gap-2 cursor-pointer hover:bg-gray-100 hover:border-gray-300 transition-colors group"
+        class="mb-4 px-3 py-2 bg-panel-secondary border border-border rounded-lg flex items-center gap-2 cursor-pointer hover:bg-panel-hover hover:border-border transition-colors group"
         title="Open in SQL Console"
       >
-        <code class="flex-1 text-xs font-mono text-gray-500 truncate">{currentSql}</code>
-        <span class="text-xs text-gray-300 group-hover:text-gray-500 transition-colors flex-shrink-0">&rarr; SQL Console</span>
+        <code class="flex-1 text-xs font-mono text-text-secondary truncate">{currentSql}</code>
+        <span class="text-xs text-text-dim group-hover:text-text-secondary transition-colors flex-shrink-0">&rarr; SQL Console</span>
       </div>
 
       {/* Browser history */}
@@ -381,23 +381,23 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
       )}
 
       {/* Data table */}
-      <div class="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+      <div class="bg-panel rounded-lg border border-border overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
-            <tr class="border-b border-gray-100">
+            <tr class="border-b border-border-subtle">
               <th class="w-10 px-3 py-2.5">
                 <input
                   type="checkbox"
                   checked={rows.length > 0 && selectedRows.size === rows.length}
                   onChange={toggleAll}
-                  class="rounded border-gray-300 accent-ink"
+                  class="rounded border-border accent-ink"
                 />
               </th>
               {displayCols.map(col => (
                 <th
                   key={col}
                   onClick={() => handleSort(col)}
-                  class="text-left px-4 py-2.5 font-medium text-xs text-gray-400 uppercase tracking-wider font-mono cursor-pointer hover:text-gray-600 select-none"
+                  class="text-left px-4 py-2.5 font-medium text-xs text-text-muted uppercase tracking-wider font-mono cursor-pointer hover:text-text-data select-none"
                 >
                   {col}
                   {fkMap.has(col) && <span class="ml-1 text-blue-400 text-[10px]" title={`FK → ${fkMap.get(col)!.targetTable}`}>FK</span>}
@@ -435,21 +435,21 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             )}
             {loading && rows.length === 0 ? (
               <tr>
-                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-gray-400 text-sm">Loading...</td>
+                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-text-muted text-sm">Loading...</td>
               </tr>
             ) : rows.length === 0 ? (
               <tr>
-                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-gray-400 text-sm">No rows</td>
+                <td colSpan={displayCols.length + 2} class="px-4 py-8 text-center text-text-muted text-sm">No rows</td>
               </tr>
             ) : (
               rows.map((row, i) => (
-                <tr key={i} class={`group border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors ${selectedRows.has(rowKey(row)) ? "bg-blue-50/50" : ""}`}>
+                <tr key={i} class={`group border-b border-border-row last:border-0 hover:bg-panel-hover/50 transition-colors ${selectedRows.has(rowKey(row)) ? "bg-blue-50/50" : ""}`}>
                   <td class="px-3 py-2">
                     <input
                       type="checkbox"
                       checked={selectedRows.has(rowKey(row))}
                       onChange={() => toggleRow(row)}
-                      class="rounded border-gray-300 accent-ink"
+                      class="rounded border-border accent-ink"
                     />
                   </td>
                   {displayCols.map(col => (
@@ -466,7 +466,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
                   <td class="px-4 py-2 text-right whitespace-nowrap">
                     <button
                       onClick={() => setDetailRow(row)}
-                      class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-gray-100 transition-all mr-1"
+                      class="opacity-0 group-hover:opacity-100 text-text-muted hover:text-text-data text-xs font-medium rounded-md px-2 py-1 hover:bg-panel-hover transition-all mr-1"
                     >
                       Detail
                     </button>
@@ -486,20 +486,20 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
 
       {/* Pagination */}
       <div class="flex items-center justify-between mt-4">
-        <span class="text-xs text-gray-400 tabular-nums">{rangeStart}–{rangeEnd} of {totalCount}</span>
+        <span class="text-xs text-text-muted tabular-nums">{rangeStart}–{rangeEnd} of {totalCount}</span>
         <div class="flex items-center gap-2">
           <button
             onClick={() => loadData(offset - PAGE_SIZE)}
             disabled={offset === 0 || loading}
-            class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            class="rounded-md px-3 py-1.5 text-xs font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             Prev
           </button>
-          <span class="text-xs text-gray-400 tabular-nums">{currentPage} / {totalPages}</span>
+          <span class="text-xs text-text-muted tabular-nums">{currentPage} / {totalPages}</span>
           <button
             onClick={() => loadData(offset + PAGE_SIZE)}
             disabled={offset + PAGE_SIZE >= totalCount || loading}
-            class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            class="rounded-md px-3 py-1.5 text-xs font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             Next
           </button>

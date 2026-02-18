@@ -93,57 +93,57 @@ function KvPutForm({ ns, initial, onSaved, onCancel }: KvPutFormProps) {
   };
 
   return (
-    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+    <div class="bg-panel border border-border rounded-lg p-4 mb-6">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-ink">{isEdit ? "Edit key" : "Add key"}</div>
-        <button onClick={onCancel} class="text-gray-400 hover:text-gray-600 text-xs font-medium">
+        <button onClick={onCancel} class="text-text-muted hover:text-text-data text-xs font-medium">
           Cancel
         </button>
       </div>
 
       <div class="space-y-3">
         <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Key</label>
+          <label class="block text-xs font-medium text-text-secondary mb-1">Key</label>
           <input
             type="text"
             value={key}
             onInput={e => setKey((e.target as HTMLInputElement).value)}
             placeholder="my-key"
             disabled={isEdit}
-            class="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all disabled:opacity-50"
+            class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all disabled:opacity-50"
           />
         </div>
 
         <div>
-          <label class="block text-xs font-medium text-gray-500 mb-1">Value</label>
+          <label class="block text-xs font-medium text-text-secondary mb-1">Value</label>
           <textarea
             value={value}
             onInput={e => setValue((e.target as HTMLTextAreaElement).value)}
             placeholder="Value..."
-            class="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all resize-y min-h-[80px]"
+            class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
             rows={4}
           />
         </div>
 
         <div class="flex gap-3">
           <div class="flex-1">
-            <label class="block text-xs font-medium text-gray-500 mb-1">Metadata (JSON, optional)</label>
+            <label class="block text-xs font-medium text-text-secondary mb-1">Metadata (JSON, optional)</label>
             <input
               type="text"
               value={metadata}
               onInput={e => setMetadata((e.target as HTMLInputElement).value)}
               placeholder='{"type": "config"}'
-              class="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all"
+              class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
             />
           </div>
           <div class="w-40">
-            <label class="block text-xs font-medium text-gray-500 mb-1">TTL (seconds)</label>
+            <label class="block text-xs font-medium text-text-secondary mb-1">TTL (seconds)</label>
             <input
               type="text"
               value={ttl}
               onInput={e => setTtl((e.target as HTMLInputElement).value)}
               placeholder="e.g. 3600"
-              class="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all"
+              class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
             />
           </div>
         </div>
@@ -224,7 +224,7 @@ function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
   const { data, refetch } = useQuery("kv.getKey", { ns, key: keyName });
   const [editing, setEditing] = useState(false);
 
-  if (!data) return <div class="p-8 text-gray-400">Loading...</div>;
+  if (!data) return <div class="p-8 text-text-muted">Loading...</div>;
 
   return (
     <div class="p-8">
@@ -246,7 +246,7 @@ function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
           <div class="flex justify-end">
             <button
               onClick={() => setEditing(true)}
-              class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-all"
+              class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-data hover:bg-panel-hover transition-all"
             >
               Edit
             </button>

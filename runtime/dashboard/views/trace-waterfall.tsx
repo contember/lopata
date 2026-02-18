@@ -96,8 +96,8 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
     <div>
       {/* Timeline header */}
       <div class="flex items-center justify-between mb-3">
-        <span class="text-xs text-gray-400 font-mono">0ms</span>
-        <span class="text-xs text-gray-400 font-mono">{formatDuration(traceDuration)}</span>
+        <span class="text-xs text-text-muted font-mono">0ms</span>
+        <span class="text-xs text-text-muted font-mono">{formatDuration(traceDuration)}</span>
       </div>
 
       {/* Waterfall */}
@@ -118,7 +118,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
           return (
             <div key={span.spanId}>
               <div
-                class={`flex items-center cursor-pointer hover:bg-gray-50 rounded-md py-1 px-1 transition-colors ${
+                class={`flex items-center cursor-pointer hover:bg-panel-hover rounded-md py-1 px-1 transition-colors ${
                   isHighlighted ? "ring-2 ring-red-400 ring-inset bg-red-50/50" : ""
                 }`}
                 onClick={() => setExpandedSpan(isExpanded ? null : span.spanId)}
@@ -127,7 +127,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                 <div class="w-[200px] flex-shrink-0 truncate text-xs text-ink flex items-center" style={{ paddingLeft: `${depth * 16}px` }}>
                   {hasChildren && (
                     <span
-                      class="inline-block w-4 text-gray-400 cursor-pointer select-none flex-shrink-0"
+                      class="inline-block w-4 text-text-muted cursor-pointer select-none flex-shrink-0"
                       onClick={(e) => { e.stopPropagation(); toggleCollapse(span.spanId); }}
                     >
                       {isCollapsed ? "\u25B6" : "\u25BC"}
@@ -137,7 +137,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                   <span class="truncate">{span.name}</span>
                 </div>
                 {/* Bar area */}
-                <div class="flex-1 h-6 relative bg-gray-50 rounded">
+                <div class="flex-1 h-6 relative bg-panel-secondary rounded">
                   <div
                     class={`absolute top-0.5 bottom-0.5 rounded flex items-center overflow-hidden ${
                       span.status === "error" ? "bg-red-400" :
@@ -158,7 +158,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                       return (
                         <div
                           key={ev.id}
-                          class={`absolute top-0 w-1.5 h-full rounded-full ${ev.name === "exception" ? "bg-red-600" : "bg-gray-500"}`}
+                          class={`absolute top-0 w-1.5 h-full rounded-full ${ev.name === "exception" ? "bg-red-600" : "bg-panel-secondary0"}`}
                           style={{ left: `${Math.min(evOffset, 100)}%` }}
                           title={ev.message ?? ev.name}
                         />
@@ -167,7 +167,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                   </div>
                   {/* Duration label */}
                   <span
-                    class="absolute top-0.5 text-[10px] text-gray-500 whitespace-nowrap"
+                    class="absolute top-0.5 text-[10px] text-text-secondary whitespace-nowrap"
                     style={{ left: `${offset + width + 1}%` }}
                   >
                     {span.durationMs !== null ? formatDuration(span.durationMs) : "..."}
@@ -177,25 +177,25 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 
               {/* Expanded detail */}
               {isExpanded && (
-                <div class="bg-gray-50 border border-gray-100 rounded-lg p-4 mt-1 mb-2 ml-4">
+                <div class="bg-panel-secondary border border-border-subtle rounded-lg p-4 mt-1 mb-2 ml-4">
                   <div class="text-xs space-y-3">
                     {/* Timing section */}
                     <div class="grid grid-cols-[auto_1fr_auto_1fr] gap-x-3 gap-y-1.5 items-baseline">
-                      <span class="text-gray-400">Kind:</span> <span class="text-ink">{span.kind}</span>
-                      <span class="text-gray-400">Status:</span> <TraceStatusBadge status={span.status} />
-                      <span class="text-gray-400">Start:</span> <span class="text-ink font-mono">{formatTimestamp(span.startTime)}</span>
-                      <span class="text-gray-400">End:</span> <span class="text-ink font-mono">{span.endTime ? formatTimestamp(span.endTime) : "..."}</span>
-                      <span class="text-gray-400">Duration:</span> <span class="text-ink font-mono">{span.durationMs !== null ? formatDuration(span.durationMs) : "..."}</span>
-                      <span class="text-gray-400">Trace ID:</span> <span class="text-ink font-mono">{span.traceId.slice(0, 16)}...</span>
+                      <span class="text-text-muted">Kind:</span> <span class="text-ink">{span.kind}</span>
+                      <span class="text-text-muted">Status:</span> <TraceStatusBadge status={span.status} />
+                      <span class="text-text-muted">Start:</span> <span class="text-ink font-mono">{formatTimestamp(span.startTime)}</span>
+                      <span class="text-text-muted">End:</span> <span class="text-ink font-mono">{span.endTime ? formatTimestamp(span.endTime) : "..."}</span>
+                      <span class="text-text-muted">Duration:</span> <span class="text-ink font-mono">{span.durationMs !== null ? formatDuration(span.durationMs) : "..."}</span>
+                      <span class="text-text-muted">Trace ID:</span> <span class="text-ink font-mono">{span.traceId.slice(0, 16)}...</span>
                       {span.parentSpanId && (
                         <>
-                          <span class="text-gray-400">Parent:</span> <span class="text-ink font-mono">{span.parentSpanId.slice(0, 16)}...</span>
+                          <span class="text-text-muted">Parent:</span> <span class="text-ink font-mono">{span.parentSpanId.slice(0, 16)}...</span>
                         </>
                       )}
                     </div>
                     {span.statusMessage && (
                       <div>
-                        <span class="text-gray-400">Error:</span>
+                        <span class="text-text-muted">Error:</span>
                         <span class="ml-2 text-red-500">{span.statusMessage}</span>
                       </div>
                     )}
@@ -208,14 +208,14 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                       if (filteredAttrs.length === 0) return null;
                       return (
                         <div>
-                          <div class="text-gray-400 mb-1.5 font-medium">Attributes:</div>
+                          <div class="text-text-muted mb-1.5 font-medium">Attributes:</div>
                           <div class="space-y-1.5">
                             {filteredAttrs.map(([k, v]) => {
                               const isComplex = typeof v === "object" || (typeof v === "string" && (v.includes("\n") || (v.startsWith("{") || v.startsWith("[")) && v.length > 2));
                               return (
                                 <div key={k} class="group">
                                   <div class="flex items-center gap-1.5">
-                                    <span class="text-gray-500 font-mono text-[11px]">{k}</span>
+                                    <span class="text-text-secondary font-mono text-[11px]">{k}</span>
                                     {onAddAttributeFilter && (
                                       <span class="invisible group-hover:visible flex gap-0.5">
                                         <button
@@ -247,17 +247,17 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                     {/* Events */}
                     {spanEvents.length > 0 && (
                       <div>
-                        <div class="text-gray-400 mb-1">Events:</div>
+                        <div class="text-text-muted mb-1">Events:</div>
                         {spanEvents.map(ev => (
-                          <div key={ev.id} class={`py-1 px-2 rounded-md mb-1 ${ev.name === "exception" ? "bg-red-50" : "bg-white border border-gray-100"}`}>
+                          <div key={ev.id} class={`py-1 px-2 rounded-md mb-1 ${ev.name === "exception" ? "bg-red-50" : "bg-panel border border-border-subtle"}`}>
                             <div class="flex items-center gap-2">
                               <span class="font-medium">{ev.name}</span>
                               {ev.level && <EventLevelBadge level={ev.level} />}
-                              <span class="text-gray-400 font-mono ml-auto">
+                              <span class="text-text-muted font-mono ml-auto">
                                 +{Math.round(ev.timestamp - span.startTime)}ms
                               </span>
                             </div>
-                            {ev.message && <div class="text-gray-600 mt-0.5 font-mono break-all">{ev.message}</div>}
+                            {ev.message && <div class="text-text-data mt-0.5 font-mono break-all">{ev.message}</div>}
                           </div>
                         ))}
                       </div>
@@ -284,7 +284,7 @@ function CollapsibleBlock({ content, lines }: { content: string; lines: number }
   return (
     <div class="relative">
       <pre
-        class={`text-gray-800 bg-white border border-gray-200 p-2 rounded-md overflow-x-auto text-[11px] whitespace-pre-wrap break-all ${
+        class={`text-ink bg-panel border border-border p-2 rounded-md overflow-x-auto text-[11px] whitespace-pre-wrap break-all ${
           isLong && !expanded ? "max-h-[160px] overflow-hidden" : ""
         }`}
       >{content}</pre>
@@ -292,7 +292,7 @@ function CollapsibleBlock({ content, lines }: { content: string; lines: number }
         <button
           onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
           class={`text-[10px] text-blue-500 hover:text-blue-700 font-medium mt-0.5 ${
-            !expanded ? "absolute bottom-0 left-0 right-0 pt-6 pb-1 text-center bg-gradient-to-t from-white via-white/90 to-transparent rounded-b-md" : ""
+            !expanded ? "absolute bottom-0 left-0 right-0 pt-6 pb-1 text-center bg-gradient-to-t from-panel via-panel/90 to-transparent rounded-b-md" : ""
           }`}
         >
           {expanded ? "Show less" : `Show all (${lines} lines)`}
@@ -304,7 +304,7 @@ function CollapsibleBlock({ content, lines }: { content: string; lines: number }
 
 export function AttributeValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <span class="text-gray-400 italic">null</span>;
+    return <span class="text-text-muted italic">null</span>;
   }
   if (typeof value === "boolean") {
     return <span class="text-orange-600">{String(value)}</span>;
@@ -347,10 +347,10 @@ export function EventLevelBadge({ level }: { level: string }) {
     WARN: "bg-orange-50 text-orange-700",
     WARNING: "bg-orange-50 text-orange-700",
     INFO: "bg-blue-50 text-blue-700",
-    DEBUG: "bg-gray-50 text-gray-500",
+    DEBUG: "bg-panel-secondary text-text-secondary",
   };
   return (
-    <span class={`inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium ${colors[upper] ?? "bg-gray-50 text-gray-500"}`}>
+    <span class={`inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium ${colors[upper] ?? "bg-panel-secondary text-text-secondary"}`}>
       {upper}
     </span>
   );
@@ -360,7 +360,7 @@ export function TraceStatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     ok: "bg-emerald-50 text-emerald-700",
     error: "bg-red-50 text-red-700",
-    unset: "bg-gray-100 text-gray-500",
+    unset: "bg-panel-hover text-text-secondary",
   };
   return (
     <span class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${colors[status] ?? colors.unset} ${status === "unset" ? "animate-pulse" : ""}`}>

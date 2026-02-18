@@ -110,7 +110,7 @@ export function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, br
             routeQuery={effectiveQuery}
           />
         ) : (
-          <div class="text-center py-16 text-gray-400 text-sm font-medium">
+          <div class="text-center py-16 text-text-muted text-sm font-medium">
             {tables?.length ? "Select a table" : "No tables found"}
           </div>
         )}

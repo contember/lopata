@@ -8,7 +8,7 @@ const TYPE_COLORS: Record<string, string> = {
   do: "bg-amber-100 text-amber-700",
   queue: "bg-rose-100 text-rose-700",
   workflow: "bg-cyan-100 text-cyan-700",
-  service: "bg-gray-200 text-gray-600",
+  service: "bg-panel-active text-text-data",
   images: "bg-pink-100 text-pink-700",
 };
 
@@ -25,12 +25,12 @@ export function WorkersView() {
           {workers.map(w => (
             <div key={w.name}>
               <div class="flex items-center gap-3 mb-4">
-                <span class="w-7 h-7 rounded-md bg-gray-100 flex items-center justify-center text-sm">⊡</span>
+                <span class="w-7 h-7 rounded-md bg-panel-hover flex items-center justify-center text-sm">⊡</span>
                 <h2 class="text-lg font-bold text-ink">{w.name}</h2>
                 {w.isMain && (
                   <span class="px-2 py-0.5 rounded-md text-xs font-medium bg-gray-900 text-white">main</span>
                 )}
-                <span class="text-xs text-gray-400">{w.bindings.length} binding(s)</span>
+                <span class="text-xs text-text-muted">{w.bindings.length} binding(s)</span>
               </div>
               {w.bindings.length === 0 ? (
                 <EmptyState message="No bindings configured" />
@@ -42,7 +42,7 @@ export function WorkersView() {
                     <span class="font-mono text-xs font-medium">{b.name}</span>,
                     b.href
                       ? <TableLink href={b.href}>{b.target}</TableLink>
-                      : <span class="text-gray-500">{b.target || "—"}</span>,
+                      : <span class="text-text-secondary">{b.target || "—"}</span>,
                   ])}
                 />
               )}

@@ -3,7 +3,7 @@ import { EmptyState, Breadcrumb, Table, PageHeader, TableLink, StatusBadge, Serv
 
 const CONTAINER_STATE_COLORS: Record<string, string> = {
   running: "bg-emerald-100 text-emerald-700",
-  exited: "bg-gray-200 text-gray-600",
+  exited: "bg-panel-active text-text-data",
   created: "bg-accent-blue text-ink",
   paused: "bg-yellow-100 text-yellow-700",
   dead: "bg-red-100 text-red-700",
@@ -73,7 +73,7 @@ function ContainerInstanceList({ className }: { className: string }) {
             <StatusBadge status={inst.state} colorMap={CONTAINER_STATE_COLORS} />,
             Object.keys(inst.ports).length > 0
               ? <span class="font-mono text-xs">{Object.entries(inst.ports).map(([k, v]) => `${v}->${k}`).join(", ")}</span>
-              : <span class="text-gray-400">—</span>,
+              : <span class="text-text-muted">—</span>,
           ])}
         />
       )}

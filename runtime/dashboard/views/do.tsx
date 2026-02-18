@@ -61,9 +61,10 @@ function DoInstanceList({ ns }: { ns: string }) {
         <EmptyState message="No instances found" />
       ) : (
         <Table
-          headers={["Instance ID", "Storage Keys", "Alarm"]}
+          headers={["Instance ID", "Name", "Storage Keys", "Alarm"]}
           rows={instances.map(inst => [
             <TableLink href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} mono>{inst.id}</TableLink>,
+            inst.name ? <span class="text-sm">{inst.name}</span> : <span class="text-text-muted">—</span>,
             <span class="tabular-nums">{inst.key_count}</span>,
             inst.alarm ? formatTime(inst.alarm) : "—",
           ])}
@@ -84,7 +85,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
     refetch();
   };
 
-  if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
+  if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>;
 
   return (
     <div class="p-8">
@@ -94,7 +95,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
         { label: id.slice(0, 16) + "..." },
       ]} />
       {data.alarm && (
-        <div class="mb-6 px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium text-ink">
+        <div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink">
           Alarm set for: {formatTime(data.alarm)}
         </div>
       )}

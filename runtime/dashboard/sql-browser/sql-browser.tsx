@@ -28,7 +28,7 @@ export function SqlBrowser({ tables, execQuery, basePath, routeTab, routeTable, 
   return (
     <div>
       {/* Tab bar */}
-      <div class="flex gap-1 mb-5 border-b border-gray-200">
+      <div class="flex gap-1 mb-5 border-b border-border">
         {TABS.map(t => (
           <button
             key={t.key}
@@ -36,7 +36,7 @@ export function SqlBrowser({ tables, execQuery, basePath, routeTab, routeTable, 
             class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
               tab === t.key
                 ? "border-ink text-ink"
-                : "border-transparent text-gray-400 hover:text-gray-600"
+                : "border-transparent text-text-muted hover:text-text-data"
             }`}
           >
             {t.label}

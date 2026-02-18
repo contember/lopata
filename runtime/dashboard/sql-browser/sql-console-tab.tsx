@@ -38,13 +38,13 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
 
   return (
     <>
-      <div class="bg-white rounded-lg border border-gray-200 p-5 mb-6">
+      <div class="bg-panel rounded-lg border border-border p-5 mb-6">
         <textarea
           value={sql}
           onInput={e => setSql((e.target as HTMLTextAreaElement).value)}
           onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) run(); }}
           placeholder="SELECT * FROM ..."
-          class="w-full bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 font-mono text-sm outline-none min-h-[100px] resize-y focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all mb-4"
+          class="w-full bg-panel-secondary border border-border rounded-lg px-4 py-3 font-mono text-sm outline-none min-h-[100px] resize-y focus:border-border focus:ring-1 focus:ring-border transition-all mb-4"
         />
         <div class="flex items-center gap-3">
           <button
@@ -59,12 +59,12 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
             class={`rounded-md px-3 py-2 text-sm font-medium transition-all ${
               showHistory
                 ? "bg-ink text-white"
-                : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"
+                : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >
             History{history.entries.length > 0 ? ` (${history.entries.length})` : ""}
           </button>
-          <span class="text-xs text-gray-400">Ctrl+Enter to run</span>
+          <span class="text-xs text-text-muted">Ctrl+Enter to run</span>
         </div>
       </div>
 
@@ -84,7 +84,7 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
             <div class="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm font-medium">{result.message}</div>
           ) : result.columns.length > 0 ? (
             <div>
-              <div class="text-sm text-gray-400 mb-3 font-medium">{result.count} row(s)</div>
+              <div class="text-sm text-text-muted mb-3 font-medium">{result.count} row(s)</div>
               <ResultTable columns={result.columns} rows={result.rows} />
             </div>
           ) : null}
@@ -98,21 +98,21 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
 
 function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string, unknown>[] }) {
   return (
-    <div class="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+    <div class="bg-panel rounded-lg border border-border overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="border-b border-gray-100">
+          <tr class="border-b border-border-subtle">
             {columns.map(col => (
-              <th key={col} class="text-left px-4 py-2.5 font-medium text-xs text-gray-400 uppercase tracking-wider font-mono">{col}</th>
+              <th key={col} class="text-left px-4 py-2.5 font-medium text-xs text-text-muted uppercase tracking-wider font-mono">{col}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} class="group border-b border-gray-50 last:border-0 hover:bg-gray-50/50 transition-colors">
+            <tr key={i} class="group border-b border-border-row last:border-0 hover:bg-panel-hover/50 transition-colors">
               {columns.map(col => (
                 <td key={col} class="px-4 py-2.5 font-mono text-xs">
-                  {row[col] === null ? <span class="text-gray-300 italic">NULL</span> : String(row[col])}
+                  {row[col] === null ? <span class="text-text-dim italic">NULL</span> : String(row[col])}
                 </td>
               ))}
             </tr>

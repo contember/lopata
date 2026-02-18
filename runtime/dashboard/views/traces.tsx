@@ -243,20 +243,20 @@ export function TracesView() {
         <div class="flex items-center gap-3">
           <div>
             <h1 class="text-2xl font-bold text-ink">Traces</h1>
-            <p class="text-sm text-gray-400 mt-1">{traces.size} trace(s)</p>
+            <p class="text-sm text-text-muted mt-1">{traces.size} trace(s)</p>
           </div>
           <ConnectionStatus status={wsStatus} />
         </div>
         <button
           onClick={() => { clearTraces.mutate(); setSelectedTraceId(null); }}
-          class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
         >
           Clear all
         </button>
       </div>
 
       {/* Tabs */}
-      <div class="flex border-b border-gray-200 mb-5">
+      <div class="flex border-b border-border mb-5">
         {(["traces", "spans", "logs"] as ViewTab[]).map(tab => (
           <button
             key={tab}
@@ -264,7 +264,7 @@ export function TracesView() {
             class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
               activeTab === tab
                 ? "border-ink text-ink"
-                : "border-transparent text-gray-400 hover:text-gray-600"
+                : "border-transparent text-text-muted hover:text-text-data"
             }`}
           >
             {tab.charAt(0).toUpperCase() + tab.slice(1)}
@@ -281,25 +281,25 @@ export function TracesView() {
               placeholder="Search traces..."
               value={searchQuery}
               onInput={e => handleSearchChange((e.target as HTMLInputElement).value)}
-              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all w-72"
+              class="bg-panel border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all w-72"
             />
             <input
               type="text"
               placeholder="Filter by path (e.g. /api/*)"
               value={pathFilter}
               onInput={e => handleFilterChange((e.target as HTMLInputElement).value, statusFilter)}
-              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all w-72"
+              class="bg-panel border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all w-72"
             />
             <select
               value={statusFilter}
               onChange={e => handleFilterChange(pathFilter, (e.target as HTMLSelectElement).value)}
-              class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all"
+              class="bg-panel border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
             >
               <option value="all">All statuses</option>
               <option value="ok">OK</option>
               <option value="error">Error</option>
             </select>
-            <div class="flex items-center bg-white border border-gray-200 rounded-lg overflow-hidden">
+            <div class="flex items-center bg-panel border border-border rounded-lg overflow-hidden">
               {TIME_RANGE_OPTIONS.map(opt => (
                 <button
                   key={opt.label}
@@ -307,7 +307,7 @@ export function TracesView() {
                   class={`px-2.5 py-2 text-xs font-medium transition-colors ${
                     timeRangeMs === opt.ms
                       ? "bg-gray-900 text-white"
-                      : "text-gray-500 hover:bg-gray-50 hover:text-gray-700"
+                      : "text-text-secondary hover:bg-panel-hover hover:text-ink"
                   }`}
                 >
                   {opt.label}
@@ -341,22 +341,22 @@ export function TracesView() {
           {/* Trace list */}
           <div class="flex-1 overflow-y-auto scrollbar-thin">
             {isSearching ? (
-              <div class="text-gray-400 font-medium text-center py-12">Searching...</div>
+              <div class="text-text-muted font-medium text-center py-12">Searching...</div>
             ) : displayTraces.length === 0 ? (
-              <div class="text-gray-400 font-medium text-center py-12">
+              <div class="text-text-muted font-medium text-center py-12">
                 {searchQuery ? "No matching traces found." : "No traces yet. Make some requests to see them here."}
               </div>
             ) : (
-              <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <div class="bg-panel rounded-lg border border-border overflow-hidden">
                 <table class="w-full text-sm">
                   <thead>
-                    <tr class="border-b border-gray-100">
-                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Status</th>
-                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
-                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Worker</th>
-                      <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium" style={{ minWidth: "140px" }}>Duration</th>
-                      <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Spans</th>
-                      <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
+                    <tr class="border-b border-border-subtle">
+                      <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Status</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Name</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Worker</th>
+                      <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium" style={{ minWidth: "140px" }}>Duration</th>
+                      <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Spans</th>
+                      <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -364,8 +364,8 @@ export function TracesView() {
                       <tr
                         key={trace.traceId}
                         onClick={() => setSelectedTraceId(trace.traceId)}
-                        class={`border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50 ${
-                          selectedTraceId === trace.traceId ? "bg-gray-50" : ""
+                        class={`border-b border-border-row cursor-pointer transition-colors hover:bg-panel-hover/50 ${
+                          selectedTraceId === trace.traceId ? "bg-panel-secondary" : ""
                         }`}
                       >
                         <td class="px-4 py-2.5">
@@ -379,7 +379,7 @@ export function TracesView() {
                         </td>
                         <td class="px-4 py-2.5">
                           {trace.workerName && (
-                            <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500">
+                            <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
                               {trace.workerName}
                             </span>
                           )}
@@ -387,13 +387,13 @@ export function TracesView() {
                         <td class="px-4 py-2.5">
                           <DurationBar durationMs={trace.durationMs} maxDuration={maxDuration} />
                         </td>
-                        <td class="px-4 py-2.5 text-right text-gray-500">
+                        <td class="px-4 py-2.5 text-right text-text-secondary">
                           {trace.spanCount}
                           {trace.errorCount > 0 && (
                             <span class="ml-1 text-red-400">({trace.errorCount} err)</span>
                           )}
                         </td>
-                        <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">
+                        <td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">
                           {formatTimestamp(trace.startTime)}
                         </td>
                       </tr>
@@ -457,36 +457,36 @@ function SpansListTab() {
   return (
     <div class="flex-1 overflow-y-auto scrollbar-thin">
       {spans.length === 0 && !isLoading ? (
-        <div class="text-gray-400 font-medium text-center py-12">No spans recorded yet.</div>
+        <div class="text-text-muted font-medium text-center py-12">No spans recorded yet.</div>
       ) : (
-        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div class="bg-panel rounded-lg border border-border overflow-hidden">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b border-gray-100">
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Status</th>
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
-                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Duration</th>
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Worker</th>
-                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
-                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Trace</th>
+              <tr class="border-b border-border-subtle">
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Status</th>
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Name</th>
+                <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Duration</th>
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Worker</th>
+                <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
+                <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Trace</th>
               </tr>
             </thead>
             <tbody>
               {spans.map(span => (
-                <tr key={span.spanId} class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                <tr key={span.spanId} class="border-b border-border-row hover:bg-panel-hover/50 transition-colors">
                   <td class="px-4 py-2.5"><TraceStatusBadge status={span.status} /></td>
                   <td class="px-4 py-2.5 font-medium text-ink">{span.name}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-500">
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-text-secondary">
                     {span.durationMs !== null ? formatDuration(span.durationMs) : "..."}
                   </td>
                   <td class="px-4 py-2.5">
                     {span.workerName && (
-                      <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500">
+                      <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
                         {span.workerName}
                       </span>
                     )}
                   </td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">{formatTimestamp(span.startTime)}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">{formatTimestamp(span.startTime)}</td>
                   <td class="px-4 py-2.5 text-right">
                     <button
                       onClick={() => setSelectedTraceId(span.traceId)}
@@ -500,11 +500,11 @@ function SpansListTab() {
             </tbody>
           </table>
           {cursor && (
-            <div class="p-4 text-center border-t border-gray-100">
+            <div class="p-4 text-center border-t border-border-subtle">
               <button
                 onClick={() => loadSpans(cursor)}
                 disabled={isLoading}
-                class="text-sm text-gray-500 hover:text-ink disabled:text-gray-300"
+                class="text-sm text-text-secondary hover:text-ink disabled:text-text-dim"
               >
                 {isLoading ? "Loading..." : "Load more"}
               </button>
@@ -512,7 +512,7 @@ function SpansListTab() {
           )}
         </div>
       )}
-      {isLoading && spans.length === 0 && <div class="text-gray-400 text-sm text-center py-12">Loading spans...</div>}
+      {isLoading && spans.length === 0 && <div class="text-text-muted text-sm text-center py-12">Loading spans...</div>}
       {selectedTraceId && (
         <TraceDrawer traceId={selectedTraceId} onClose={() => setSelectedTraceId(null)} onAddAttributeFilter={() => {}} />
       )}
@@ -555,29 +555,29 @@ function LogsListTab() {
   return (
     <div class="flex-1 overflow-y-auto scrollbar-thin">
       {logs.length === 0 && !isLoading ? (
-        <div class="text-gray-400 font-medium text-center py-12">No log events recorded yet.</div>
+        <div class="text-text-muted font-medium text-center py-12">No log events recorded yet.</div>
       ) : (
-        <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <div class="bg-panel rounded-lg border border-border overflow-hidden">
           <table class="w-full text-sm">
             <thead>
-              <tr class="border-b border-gray-100">
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Level</th>
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Name</th>
-                <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Message</th>
-                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
-                <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Span / Trace</th>
+              <tr class="border-b border-border-subtle">
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Level</th>
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Name</th>
+                <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Message</th>
+                <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
+                <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Span / Trace</th>
               </tr>
             </thead>
             <tbody>
               {logs.map(log => (
-                <tr key={log.id} class="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                <tr key={log.id} class="border-b border-border-row hover:bg-panel-hover/50 transition-colors">
                   <td class="px-4 py-2.5">
-                    {log.level ? <EventLevelBadge level={log.level} /> : <span class="text-gray-300">-</span>}
+                    {log.level ? <EventLevelBadge level={log.level} /> : <span class="text-text-dim">-</span>}
                   </td>
                   <td class="px-4 py-2.5 font-medium text-ink">{log.name}</td>
-                  <td class="px-4 py-2.5 text-gray-600 font-mono text-xs truncate max-w-[300px]">{log.message ?? ""}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">{formatTimestamp(log.timestamp)}</td>
-                  <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">
+                  <td class="px-4 py-2.5 text-text-data font-mono text-xs truncate max-w-[300px]">{log.message ?? ""}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">{formatTimestamp(log.timestamp)}</td>
+                  <td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">
                     {log.traceId.slice(0, 8)}...
                   </td>
                 </tr>
@@ -585,11 +585,11 @@ function LogsListTab() {
             </tbody>
           </table>
           {cursor && (
-            <div class="p-4 text-center border-t border-gray-100">
+            <div class="p-4 text-center border-t border-border-subtle">
               <button
                 onClick={() => loadLogs(cursor)}
                 disabled={isLoading}
-                class="text-sm text-gray-500 hover:text-ink disabled:text-gray-300"
+                class="text-sm text-text-secondary hover:text-ink disabled:text-text-dim"
               >
                 {isLoading ? "Loading..." : "Load more"}
               </button>
@@ -597,7 +597,7 @@ function LogsListTab() {
           )}
         </div>
       )}
-      {isLoading && logs.length === 0 && <div class="text-gray-400 text-sm text-center py-12">Loading logs...</div>}
+      {isLoading && logs.length === 0 && <div class="text-text-muted text-sm text-center py-12">Loading logs...</div>}
     </div>
   );
 }
@@ -659,16 +659,16 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
         onClick={onClose}
       />
       {/* Drawer */}
-      <div class="fixed right-0 top-0 bottom-0 w-[960px] max-w-[90vw] bg-white border-l border-gray-200 z-50 flex flex-col overflow-hidden animate-slide-in">
+      <div class="fixed right-0 top-0 bottom-0 w-[960px] max-w-[90vw] bg-panel border-l border-border z-50 flex flex-col overflow-hidden animate-slide-in">
         {/* Header */}
-        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-border">
           <div>
-            <div class="text-xs text-gray-400 font-mono">Trace {traceId.slice(0, 12)}...</div>
+            <div class="text-xs text-text-muted font-mono">Trace {traceId.slice(0, 12)}...</div>
             <div class="text-sm font-medium text-ink mt-0.5">
               {spans.find(s => !s.parentSpanId)?.name ?? "Loading..."}
             </div>
           </div>
-          <button onClick={onClose} class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-gray-100 transition-colors text-gray-400 hover:text-ink">
+          <button onClick={onClose} class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-panel-hover transition-colors text-text-muted hover:text-ink">
             &times;
           </button>
         </div>
@@ -676,13 +676,13 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
         {/* Content */}
         <div class="flex-1 overflow-y-auto scrollbar-thin p-5">
           {isLoading ? (
-            <div class="text-gray-400 text-sm">Loading trace...</div>
+            <div class="text-text-muted text-sm">Loading trace...</div>
           ) : (
             <div>
               {/* Linked errors */}
               {traceErrors.length > 0 && (
                 <div class="mb-4">
-                  <div class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Errors ({traceErrors.length})</div>
+                  <div class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Errors ({traceErrors.length})</div>
                   <div class="space-y-1">
                     {traceErrors.map(err => (
                       <a
@@ -741,22 +741,22 @@ function ConnectionStatus({ status }: { status: WsStatus }) {
   return (
     <div class="flex items-center gap-1.5 ml-3">
       <span class={`w-2 h-2 rounded-full ${color}`} />
-      <span class="text-xs text-gray-500">{label}</span>
+      <span class="text-xs text-text-secondary">{label}</span>
     </div>
   );
 }
 
 function DurationBar({ durationMs, maxDuration }: { durationMs: number | null; maxDuration: number }) {
   if (durationMs === null) {
-    return <span class="text-xs text-gray-400 font-mono">...</span>;
+    return <span class="text-xs text-text-muted font-mono">...</span>;
   }
   const pct = Math.max((durationMs / maxDuration) * 100, 1);
   return (
     <div class="flex items-center gap-2">
-      <div class="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+      <div class="flex-1 h-1.5 bg-panel-hover rounded-full overflow-hidden">
         <div class="h-full bg-gray-400 rounded-full" style={{ width: `${pct}%` }} />
       </div>
-      <span class="text-xs text-gray-500 font-mono whitespace-nowrap w-14 text-right">{formatDuration(durationMs)}</span>
+      <span class="text-xs text-text-secondary font-mono whitespace-nowrap w-14 text-right">{formatDuration(durationMs)}</span>
     </div>
   );
 }

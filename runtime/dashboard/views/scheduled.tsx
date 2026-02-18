@@ -51,11 +51,11 @@ function ScheduledList() {
               rows={triggers.map(t => {
                 const row = [
                   <span class="font-mono text-xs font-medium">{t.expression}</span>,
-                  <span class="text-sm text-gray-500">{t.description}</span>,
+                  <span class="text-sm text-text-secondary">{t.description}</span>,
                 ];
                 if (triggers.some(t => t.workerName)) {
                   row.push(
-                    <span class="text-xs text-gray-400 font-mono">{t.workerName ?? "main"}</span>,
+                    <span class="text-xs text-text-muted font-mono">{t.workerName ?? "main"}</span>,
                   );
                 }
                 row.push(

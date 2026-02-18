@@ -7,7 +7,7 @@ const WORKFLOW_STATUS_COLORS: Record<string, string> = {
   running: "bg-accent-blue text-ink",
   complete: "bg-emerald-100 text-emerald-700",
   errored: "bg-red-100 text-red-700",
-  terminated: "bg-gray-200 text-gray-600",
+  terminated: "bg-panel-active text-text-data",
 };
 
 export function WorkflowsView({ route }: { route: string }) {
@@ -82,7 +82,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
         <select
           value={statusFilter}
           onChange={e => setStatusFilter((e.target as HTMLSelectElement).value)}
-          class="bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all appearance-none pr-10"
+          class="bg-panel border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all appearance-none pr-10"
         >
           <option value="">All statuses</option>
           <option value="running">Running</option>
@@ -119,7 +119,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
 function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
   const { data } = useQuery("workflows.getInstance", { name, id });
 
-  if (!data) return <div class="p-8 text-gray-400 font-medium">Loading...</div>;
+  if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>;
 
   return (
     <div class="p-8">
@@ -131,26 +131,26 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 
       <div class="flex items-center gap-4 mb-8">
         <StatusBadge status={data.status} colorMap={WORKFLOW_STATUS_COLORS} />
-        <span class="text-sm text-gray-400 font-medium">Created: {formatTime(data.created_at)}</span>
+        <span class="text-sm text-text-muted font-medium">Created: {formatTime(data.created_at)}</span>
       </div>
 
       {data.params && (
-        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Parameters</h3>
+        <div class="mb-6 bg-panel rounded-lg border border-border p-5">
+          <h3 class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Parameters</h3>
           <CodeBlock>{data.params}</CodeBlock>
         </div>
       )}
 
       {data.output && (
-        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Output</h3>
+        <div class="mb-6 bg-panel rounded-lg border border-border p-5">
+          <h3 class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Output</h3>
           <CodeBlock>{data.output}</CodeBlock>
         </div>
       )}
 
       {data.error && (
-        <div class="mb-6 bg-white rounded-lg border border-gray-200 p-5">
-          <h3 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Error</h3>
+        <div class="mb-6 bg-panel rounded-lg border border-border p-5">
+          <h3 class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Error</h3>
           <pre class="bg-red-50 rounded-lg p-4 text-xs text-red-600 overflow-x-auto font-mono">{data.error}</pre>
         </div>
       )}
@@ -158,7 +158,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
       <div class="mb-6">
         <h3 class="text-sm font-semibold text-ink mb-4">Steps ({data.steps.length})</h3>
         {data.steps.length === 0 ? (
-          <div class="text-gray-400 text-sm font-medium">No steps completed yet</div>
+          <div class="text-text-muted text-sm font-medium">No steps completed yet</div>
         ) : (
           <Table
             headers={["Step", "Output", "Completed"]}

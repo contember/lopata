@@ -48,18 +48,18 @@ function App() {
     if (route.startsWith("/d1")) return <D1View route={route} />;
     if (route.startsWith("/cache")) return <CacheView route={route} />;
     if (route.startsWith("/scheduled")) return <ScheduledView route={route} />;
-    return <div class="p-8 text-gray-400">Page not found</div>;
+    return <div class="p-8 text-text-muted">Page not found</div>;
   }
 
   return (
     <div class="flex h-full">
-      <nav class="w-56 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col">
+      <nav class="w-56 flex-shrink-0 border-r border-border bg-panel flex flex-col">
         <div class="p-5 pb-4">
           <a href="#/" class="flex items-center gap-2.5 no-underline">
             <span class="w-8 h-8 rounded-lg bg-ink flex items-center justify-center text-sm text-white">B</span>
             <div>
               <div class="text-sm font-semibold text-ink">Bunflare</div>
-              <div class="text-[11px] text-gray-400">Dev Dashboard</div>
+              <div class="text-[11px] text-text-muted">Dev Dashboard</div>
             </div>
           </a>
         </div>
@@ -70,8 +70,8 @@ function App() {
               href={`#${item.path}`}
               class={`flex items-center gap-2.5 px-3 py-2 mb-0.5 text-sm no-underline rounded-md transition-colors ${
                 activeSection === item.path
-                  ? "bg-gray-100 text-ink font-medium"
-                  : "text-gray-500 hover:bg-gray-50 hover:text-ink"
+                  ? "bg-panel-hover text-ink font-medium"
+                  : "text-text-secondary hover:bg-panel-hover hover:text-ink"
               }`}
             >
               <span class="w-4 text-center text-sm opacity-60">{item.icon}</span>

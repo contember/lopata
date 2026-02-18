@@ -17,27 +17,27 @@ export function HistoryPanel({ entries, onSelect, onClear }: {
 }) {
   if (entries.length === 0) {
     return (
-      <div class="bg-white rounded-lg border border-gray-200 p-5 mb-6 text-center text-sm text-gray-400">
+      <div class="bg-panel rounded-lg border border-border p-5 mb-6 text-center text-sm text-text-muted">
         No history yet
       </div>
     );
   }
 
   return (
-    <div class="bg-white rounded-lg border border-gray-200 mb-6 overflow-hidden">
-      <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50/50">
-        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Query History</span>
-        <button onClick={onClear} class="text-xs text-gray-400 hover:text-red-500 transition-colors">Clear all</button>
+    <div class="bg-panel rounded-lg border border-border mb-6 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-panel-hover/50">
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Query History</span>
+        <button onClick={onClear} class="text-xs text-text-muted hover:text-red-500 transition-colors">Clear all</button>
       </div>
-      <div class="max-h-64 overflow-y-auto divide-y divide-gray-50">
+      <div class="max-h-64 overflow-y-auto divide-y divide-border-row">
         {entries.map((entry, i) => (
           <button
             key={i}
             onClick={() => onSelect(entry)}
-            class="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors flex items-center gap-3 group"
+            class="w-full text-left px-4 py-2.5 hover:bg-panel-hover transition-colors flex items-center gap-3 group"
           >
-            <code class="flex-1 text-xs font-mono text-gray-600 truncate group-hover:text-ink transition-colors">{entry.sql}</code>
-            <span class="text-[10px] text-gray-300 tabular-nums flex-shrink-0">{formatTime(entry.ts)}</span>
+            <code class="flex-1 text-xs font-mono text-text-data truncate group-hover:text-ink transition-colors">{entry.sql}</code>
+            <span class="text-[10px] text-text-dim tabular-nums flex-shrink-0">{formatTime(entry.ts)}</span>
           </button>
         ))}
       </div>
@@ -55,7 +55,7 @@ export function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }
 }) {
   if (entries.length === 0) {
     return (
-      <div class="bg-white rounded-lg border border-gray-200 p-5 mb-4 text-center text-sm text-gray-400">
+      <div class="bg-panel rounded-lg border border-border p-5 mb-4 text-center text-sm text-text-muted">
         No history yet — filter or sort a table to save an entry
       </div>
     );
@@ -68,12 +68,12 @@ export function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }
   };
 
   return (
-    <div class="bg-white rounded-lg border border-gray-200 mb-4 overflow-hidden">
-      <div class="flex items-center justify-between px-4 py-2.5 border-b border-gray-100 bg-gray-50/50">
-        <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Browser History</span>
-        <button onClick={onClear} class="text-xs text-gray-400 hover:text-red-500 transition-colors">Clear all</button>
+    <div class="bg-panel rounded-lg border border-border mb-4 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-border-subtle bg-panel-hover/50">
+        <span class="text-xs font-semibold text-text-muted uppercase tracking-wider">Browser History</span>
+        <button onClick={onClear} class="text-xs text-text-muted hover:text-red-500 transition-colors">Clear all</button>
       </div>
-      <div class="max-h-64 overflow-y-auto divide-y divide-gray-50">
+      <div class="max-h-64 overflow-y-auto divide-y divide-border-row">
         {entries.map((entry, i) => {
           const filterStr = formatFilters(entry.filters);
           const isSameTable = entry.table === currentTable;
@@ -81,22 +81,22 @@ export function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }
             <button
               key={i}
               onClick={() => onSelect(entry)}
-              class="w-full text-left px-4 py-2.5 hover:bg-gray-50 transition-colors group"
+              class="w-full text-left px-4 py-2.5 hover:bg-panel-hover transition-colors group"
             >
               <div class="flex items-center gap-2 mb-1">
                 <span class={`font-mono text-xs font-semibold ${isSameTable ? "text-ink" : "text-accent-olive"}`}>{entry.table}</span>
-                <span class="text-[10px] text-gray-300 tabular-nums">{formatTime(entry.ts)}</span>
+                <span class="text-[10px] text-text-dim tabular-nums">{formatTime(entry.ts)}</span>
               </div>
               <div class="flex flex-wrap gap-x-3 gap-y-0.5">
                 {filterStr && (
-                  <span class="text-xs text-gray-500">
-                    <span class="text-gray-400">filter:</span>{" "}
+                  <span class="text-xs text-text-secondary">
+                    <span class="text-text-muted">filter:</span>{" "}
                     <span class="font-mono">{filterStr}</span>
                   </span>
                 )}
                 {entry.sortCol && (
-                  <span class="text-xs text-gray-500">
-                    <span class="text-gray-400">order:</span>{" "}
+                  <span class="text-xs text-text-secondary">
+                    <span class="text-text-muted">order:</span>{" "}
                     <span class="font-mono">{entry.sortCol} {entry.sortDir}</span>
                   </span>
                 )}

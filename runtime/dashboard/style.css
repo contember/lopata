@@ -10,12 +10,53 @@
   --color-accent-lime: #DFFF40;
   --color-accent-blue: #9BB5FC;
   --color-accent-olive: #7C8B00;
+  --color-panel: #ffffff;
+  --color-panel-secondary: #f9fafb;
+  --color-panel-hover: #f3f4f6;
+  --color-panel-active: #e5e7eb;
+  --color-border: #e5e7eb;
+  --color-border-subtle: #f3f4f6;
+  --color-border-row: #f9fafb;
+  --color-text-secondary: #6b7280;
+  --color-text-muted: #9ca3af;
+  --color-text-dim: #d1d5db;
+  --color-text-data: #4b5563;
+  --color-bar: #f3f4f6;
+  --color-code-bg: #f9fafb;
   --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   --shadow-lime-glow: none;
   --shadow-focus: 0 0 0 2px rgba(0, 0, 0, 0.06);
   --shadow-focus-soft: 0 0 0 1px rgba(0, 0, 0, 0.04);
   --radius-card: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #0b1120;
+    --color-surface-raised: #1f2937;
+    --color-surface-hover: #1f2937;
+    --color-surface-dim: #374151;
+    --color-ink: #f3f4f6;
+    --color-ink-muted: #d1d5db;
+    --color-panel: #111827;
+    --color-panel-secondary: #1f2937;
+    --color-panel-hover: #1f2937;
+    --color-panel-active: #374151;
+    --color-border: #374151;
+    --color-border-subtle: #1f2937;
+    --color-border-row: #111827;
+    --color-text-secondary: #9ca3af;
+    --color-text-muted: #6b7280;
+    --color-text-dim: #4b5563;
+    --color-text-data: #d1d5db;
+    --color-bar: #1f2937;
+    --color-code-bg: #1f2937;
+    --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+    --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+    --shadow-focus: 0 0 0 2px rgba(255, 255, 255, 0.1);
+    --shadow-focus-soft: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
 }
 
 /* Scrollbar — not possible via Tailwind */
@@ -26,6 +67,6 @@
   background: transparent;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--color-text-dim);
   border-radius: 3px;
 }

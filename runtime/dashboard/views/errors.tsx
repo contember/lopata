@@ -54,12 +54,12 @@ function ErrorList() {
       <div class="flex items-center justify-between mb-6">
         <div>
           <h1 class="text-2xl font-bold text-ink">Errors</h1>
-          <p class="text-sm text-gray-400 mt-1">{errors.length} error(s)</p>
+          <p class="text-sm text-text-muted mt-1">{errors.length} error(s)</p>
         </div>
         {errors.length > 0 && (
           <button
             onClick={handleClear}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+            class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
           >
             Clear all
           </button>
@@ -68,20 +68,20 @@ function ErrorList() {
 
       <div class="flex-1 overflow-y-auto scrollbar-thin">
         {errors.length === 0 && !isLoading ? (
-          <div class="text-gray-400 font-medium text-center py-12">No errors recorded yet.</div>
+          <div class="text-text-muted font-medium text-center py-12">No errors recorded yet.</div>
         ) : (
-          <div class="bg-white rounded-lg border border-gray-200 overflow-hidden">
+          <div class="bg-panel rounded-lg border border-border overflow-hidden">
             <table class="w-full text-sm">
               <thead>
-                <tr class="border-b border-gray-100">
-                  <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Source</th>
-                  <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Error</th>
-                  <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Message</th>
-                  <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Context</th>
-                  <th class="text-left px-4 py-2.5 text-xs text-gray-400 font-medium">Worker</th>
-                  <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Trace</th>
-                  <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium">Time</th>
-                  <th class="text-right px-4 py-2.5 text-xs text-gray-400 font-medium w-10"></th>
+                <tr class="border-b border-border-subtle">
+                  <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Source</th>
+                  <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Error</th>
+                  <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Message</th>
+                  <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Context</th>
+                  <th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Worker</th>
+                  <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Trace</th>
+                  <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
+                  <th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium w-10"></th>
                 </tr>
               </thead>
               <tbody>
@@ -89,26 +89,26 @@ function ErrorList() {
                   <tr
                     key={err.id}
                     onClick={() => navigate(`/errors/${err.id}`)}
-                    class="border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50"
+                    class="border-b border-border-row cursor-pointer transition-colors hover:bg-panel-hover/50"
                   >
                     <td class="px-4 py-2.5">
                       <SourceBadge source={err.source} />
                     </td>
                     <td class="px-4 py-2.5 font-medium text-ink">{err.errorName}</td>
-                    <td class="px-4 py-2.5 text-gray-600 truncate max-w-[250px]">{err.errorMessage}</td>
-                    <td class="px-4 py-2.5 text-gray-500 font-mono text-xs">
+                    <td class="px-4 py-2.5 text-text-data truncate max-w-[250px]">{err.errorMessage}</td>
+                    <td class="px-4 py-2.5 text-text-secondary font-mono text-xs">
                       {err.requestMethod && err.requestUrl ? (
                         <span>
                           <span class="font-medium">{err.requestMethod}</span>{" "}
                           {truncateUrl(err.requestUrl)}
                         </span>
                       ) : (
-                        <span class="text-gray-300">-</span>
+                        <span class="text-text-dim">-</span>
                       )}
                     </td>
                     <td class="px-4 py-2.5">
                       {err.workerName && (
-                        <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-500">
+                        <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
                           {err.workerName}
                         </span>
                       )}
@@ -123,16 +123,16 @@ function ErrorList() {
                           {err.traceId.slice(0, 8)}...
                         </a>
                       ) : (
-                        <span class="text-gray-300 text-xs">-</span>
+                        <span class="text-text-dim text-xs">-</span>
                       )}
                     </td>
-                    <td class="px-4 py-2.5 text-right font-mono text-xs text-gray-400">
+                    <td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">
                       {formatTimestamp(err.timestamp)}
                     </td>
                     <td class="px-4 py-2.5 text-right">
                       <button
                         onClick={(e) => handleDelete(err.id, e)}
-                        class="text-gray-300 hover:text-red-500 transition-colors"
+                        class="text-text-dim hover:text-red-500 transition-colors"
                         title="Delete error"
                       >
                         &times;
@@ -143,11 +143,11 @@ function ErrorList() {
               </tbody>
             </table>
             {cursor && (
-              <div class="p-4 text-center border-t border-gray-100">
+              <div class="p-4 text-center border-t border-border-subtle">
                 <button
                   onClick={() => loadErrors(cursor)}
                   disabled={isLoading}
-                  class="text-sm text-gray-500 hover:text-ink disabled:text-gray-300"
+                  class="text-sm text-text-secondary hover:text-ink disabled:text-text-dim"
                 >
                   {isLoading ? "Loading..." : "Load more"}
                 </button>
@@ -156,7 +156,7 @@ function ErrorList() {
           </div>
         )}
         {isLoading && errors.length === 0 && (
-          <div class="text-gray-400 text-sm text-center py-12">Loading errors...</div>
+          <div class="text-text-muted text-sm text-center py-12">Loading errors...</div>
         )}
       </div>
     </div>
@@ -192,11 +192,11 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
   };
 
   if (isLoading) {
-    return <div class="p-8 text-gray-400 text-sm">Loading error details...</div>;
+    return <div class="p-8 text-text-muted text-sm">Loading error details...</div>;
   }
 
   if (!detail) {
-    return <div class="p-8 text-gray-400 text-sm">Error not found.</div>;
+    return <div class="p-8 text-text-muted text-sm">Error not found.</div>;
   }
 
   const { data } = detail;
@@ -205,21 +205,21 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
     <div class="p-6 max-w-5xl mx-auto flex flex-col gap-4">
       {/* Breadcrumb + actions */}
       <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2 text-sm text-gray-400">
-          <a href="#/errors" class="text-gray-500 hover:text-ink no-underline font-medium transition-colors">Errors</a>
-          <span class="text-gray-300">/</span>
+        <div class="flex items-center gap-2 text-sm text-text-muted">
+          <a href="#/errors" class="text-text-secondary hover:text-ink no-underline font-medium transition-colors">Errors</a>
+          <span class="text-text-dim">/</span>
           <span class="text-ink font-semibold">{errorId.slice(0, 12)}...</span>
         </div>
         <button
           onClick={handleDelete}
-          class="rounded-md px-3 py-1.5 text-sm font-medium bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
         >
           Delete
         </button>
       </div>
 
       {/* Error header */}
-      <div class="bg-white rounded-lg border border-gray-200 overflow-hidden border-l-4 border-l-red-500">
+      <div class="bg-panel rounded-lg border border-border overflow-hidden border-l-4 border-l-red-500">
         <div class="px-5 py-4">
           <div class="flex items-center gap-2.5 mb-1.5">
             <span class="w-6 h-6 rounded-md bg-red-50 flex items-center justify-center text-red-500 text-xs font-bold">!</span>
@@ -240,7 +240,7 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
       {/* Stack Trace */}
       <Section title="Stack Trace">
         <div class="px-4 py-3 overflow-x-auto scrollbar-thin">
-          <pre class="text-xs text-gray-500 leading-5 m-0 whitespace-pre-wrap break-words font-mono">
+          <pre class="text-xs text-text-secondary leading-5 m-0 whitespace-pre-wrap break-words font-mono">
             {data.error.stack}
           </pre>
         </div>
@@ -256,8 +256,8 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
       {/* Request */}
       {data.request.method && data.request.url && (
         <Section title="Request" open>
-          <div class="px-4 py-2.5 border-b border-gray-100">
-            <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-bold mr-2">{data.request.method}</span>
+          <div class="px-4 py-2.5 border-b border-border-subtle">
+            <span class="inline-block px-2 py-0.5 rounded-md bg-panel-hover text-xs font-bold mr-2">{data.request.method}</span>
             <span class="text-sm break-all font-mono">{data.request.url}</span>
           </div>
           <KeyValueTable data={data.request.headers} />
@@ -275,17 +275,17 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
       {data.bindings.length > 0 && (
         <Section title="Bindings">
           {data.bindings.length === 0 ? (
-            <div class="px-4 py-3 text-sm text-gray-400">No bindings configured</div>
+            <div class="px-4 py-3 text-sm text-text-muted">No bindings configured</div>
           ) : (
             <table class="w-full text-sm">
               <tbody>
                 {data.bindings.map((b) => (
-                  <tr key={b.name} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
-                    <td class="px-4 py-2 font-medium text-gray-500 whitespace-nowrap font-mono">
+                  <tr key={b.name} class="border-b border-border-subtle last:border-0 hover:bg-panel-hover/50 transition-colors">
+                    <td class="px-4 py-2 font-medium text-text-secondary whitespace-nowrap font-mono">
                       {b.name}
                     </td>
                     <td class="px-4 py-2">
-                      <span class="inline-block px-2 py-0.5 rounded-md bg-gray-100 text-xs font-medium text-gray-600">{b.type}</span>
+                      <span class="inline-block px-2 py-0.5 rounded-md bg-panel-hover text-xs font-medium text-text-data">{b.type}</span>
                     </td>
                   </tr>
                 ))}
@@ -341,8 +341,8 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
   return (
     <div class="px-4 py-3">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs text-gray-400 font-mono">0ms</span>
-        <span class="text-xs text-gray-400 font-mono">{formatDuration(traceDuration)}</span>
+        <span class="text-xs text-text-muted font-mono">0ms</span>
+        <span class="text-xs text-text-muted font-mono">{formatDuration(traceDuration)}</span>
       </div>
       <div class="space-y-0.5">
         {flatSpans.map(({ span, depth }) => {
@@ -361,7 +361,7 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
               >
                 {span.name}
               </div>
-              <div class="flex-1 h-5 relative bg-gray-50 rounded">
+              <div class="flex-1 h-5 relative bg-panel-secondary rounded">
                 <div
                   class={`absolute top-0.5 bottom-0.5 rounded ${
                     span.status === "error" ? "bg-red-400" :
@@ -371,7 +371,7 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
                   style={{ left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
                 />
                 <span
-                  class="absolute top-0.5 text-[10px] text-gray-500 whitespace-nowrap font-mono"
+                  class="absolute top-0.5 text-[10px] text-text-secondary whitespace-nowrap font-mono"
                   style={{ left: `${offset + width + 1}%` }}
                 >
                   {span.durationMs != null ? formatDuration(span.durationMs) : "..."}
@@ -389,11 +389,11 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
 
 function Section({ title, open, children }: { title: string; open?: boolean; children: any }) {
   return (
-    <details open={open} class="bg-white rounded-lg border border-gray-200 overflow-hidden">
-      <summary class="px-5 py-3 cursor-pointer select-none text-sm font-semibold text-ink hover:bg-gray-50 transition-colors">
+    <details open={open} class="bg-panel rounded-lg border border-border overflow-hidden">
+      <summary class="px-5 py-3 cursor-pointer select-none text-sm font-semibold text-ink hover:bg-panel-hover transition-colors">
         {title}
       </summary>
-      <div class="border-t border-gray-100">
+      <div class="border-t border-border-subtle">
         {children}
       </div>
     </details>
@@ -426,7 +426,7 @@ function highlightLine(line: string) {
 
 function FrameList({ frames }: { frames: FrameData[] }) {
   return (
-    <div class="divide-y divide-gray-100">
+    <div class="divide-y divide-border-subtle">
       {frames.map((frame, i) => (
         <CodeBlock key={i} frame={frame} defaultOpen={!isLibraryFrame(frame)} />
       ))}
@@ -440,9 +440,9 @@ function CodeBlock({ frame, defaultOpen }: { frame: FrameData; defaultOpen: bool
 
   return (
     <details open={defaultOpen}>
-      <summary class="px-4 py-2 bg-gray-50 text-xs font-medium text-gray-500 font-mono cursor-pointer select-none hover:bg-gray-100 transition-colors">
+      <summary class="px-4 py-2 bg-panel-secondary text-xs font-medium text-text-secondary font-mono cursor-pointer select-none hover:bg-panel-hover transition-colors">
         {frame.file}:{frame.line}:{frame.column}
-        {frame.function && <span class="ml-2 text-gray-400">in {frame.function}</span>}
+        {frame.function && <span class="ml-2 text-text-muted">in {frame.function}</span>}
       </summary>
       <div class="overflow-x-auto scrollbar-thin">
         <pre class="text-xs leading-5 m-0 font-mono">
@@ -452,9 +452,9 @@ function CodeBlock({ frame, defaultOpen }: { frame: FrameData; defaultOpen: bool
             return (
               <div
                 key={i}
-                class={isError ? "bg-red-50 border-l-4 border-red-500" : "border-l-4 border-transparent hover:bg-gray-50"}
+                class={isError ? "bg-red-50 border-l-4 border-red-500" : "border-l-4 border-transparent hover:bg-panel-hover"}
               >
-                <span class={`inline-block w-12 text-right pr-3 select-none ${isError ? "text-red-500 font-bold" : "text-gray-400"}`}>
+                <span class={`inline-block w-12 text-right pr-3 select-none ${isError ? "text-red-500 font-bold" : "text-text-muted"}`}>
                   {lineNum}
                 </span>
                 <span class={`text-ink${isError ? " font-medium" : ""}`}>{highlightLine(line)}</span>
@@ -470,15 +470,15 @@ function CodeBlock({ frame, defaultOpen }: { frame: FrameData; defaultOpen: bool
 function KeyValueTable({ data }: { data: Record<string, string> }) {
   const entries = Object.entries(data);
   if (entries.length === 0) {
-    return <div class="px-4 py-3 text-sm text-gray-400">No entries</div>;
+    return <div class="px-4 py-3 text-sm text-text-muted">No entries</div>;
   }
 
   return (
     <table class="w-full text-sm">
       <tbody>
         {entries.map(([key, value]) => (
-          <tr key={key} class="border-b border-gray-100 last:border-0 hover:bg-gray-50/50 transition-colors">
-            <td class="px-4 py-2 font-medium text-gray-500 whitespace-nowrap align-top font-mono" style="width: 1%;">
+          <tr key={key} class="border-b border-border-subtle last:border-0 hover:bg-panel-hover/50 transition-colors">
+            <td class="px-4 py-2 font-medium text-text-secondary whitespace-nowrap align-top font-mono" style="width: 1%;">
               {key}
             </td>
             <td class="px-4 py-2 text-ink break-all font-mono">
@@ -511,7 +511,7 @@ function CollapsibleMessage({ message }: { message: string }) {
       <h1 class="text-lg font-bold text-ink m-0 leading-snug break-words">{firstLine}</h1>
       <div class="relative mt-2">
         <pre
-          class="text-xs text-gray-500 m-0 whitespace-pre-wrap break-words leading-5 overflow-hidden transition-all font-mono"
+          class="text-xs text-text-secondary m-0 whitespace-pre-wrap break-words leading-5 overflow-hidden transition-all font-mono"
           style={{
             maxHeight: !expanded && needsCollapse ? `${MAX_COLLAPSED_LINES * 1.25}rem` : "none",
           }}
@@ -521,17 +521,17 @@ function CollapsibleMessage({ message }: { message: string }) {
         {needsCollapse && !expanded && (
           <div
             class="absolute bottom-0 left-0 right-0 h-16 flex items-end justify-center pb-2 cursor-pointer"
-            style="background: linear-gradient(to bottom, transparent, white);"
+            style="background: linear-gradient(to bottom, transparent, var(--color-panel));"
             onClick={() => setExpanded(true)}
           >
-            <span class="text-xs font-medium text-gray-400 hover:text-ink transition-colors">
+            <span class="text-xs font-medium text-text-muted hover:text-ink transition-colors">
               Show all ({restLines.length} lines)
             </span>
           </div>
         )}
         {needsCollapse && expanded && (
           <button
-            class="mt-1 text-xs font-medium text-gray-400 hover:text-ink transition-colors"
+            class="mt-1 text-xs font-medium text-text-muted hover:text-ink transition-colors"
             onClick={() => setExpanded(false)}
           >
             Collapse

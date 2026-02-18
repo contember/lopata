@@ -93,10 +93,10 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
   }
 
   return (
-    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+    <div class="bg-panel border border-border rounded-lg p-4 mb-6">
       <div class="flex items-center justify-between mb-3">
         <div class="text-sm font-semibold text-ink">Publish message</div>
-        <button onClick={() => { setOpen(false); setError(""); }} class="text-gray-400 hover:text-gray-600 text-xs font-medium">
+        <button onClick={() => { setOpen(false); setError(""); }} class="text-text-muted hover:text-text-data text-xs font-medium">
           Cancel
         </button>
       </div>
@@ -111,7 +111,7 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
         value={body}
         onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
         placeholder={contentType === "json" ? '{"key": "value"}' : "Message body..."}
-        class="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all resize-y min-h-[80px]"
+        class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
         rows={3}
       />
       {error && <div class="text-red-500 text-xs mt-1">{error}</div>}

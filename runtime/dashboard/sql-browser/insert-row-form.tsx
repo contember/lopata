@@ -49,13 +49,13 @@ export function InsertRowForm({ schema, displayCols, onSave, onCancel, hasCheckb
                 placeholder={isAutoInc ? "auto" : colInfo?.type ?? ""}
                 onInput={e => setValues(v => ({ ...v, [col]: (e.target as HTMLInputElement).value }))}
                 onKeyDown={e => { if (e.key === "Enter") handleSave(); else if (e.key === "Escape") onCancel(); }}
-                class={`w-full bg-white border border-gray-200 rounded px-2 py-1 font-mono text-xs outline-none focus:border-ink focus:ring-1 focus:ring-gray-200 ${isNullVal ? "opacity-40" : ""}`}
+                class={`w-full bg-panel border border-border rounded px-2 py-1 font-mono text-xs outline-none focus:border-ink focus:ring-1 focus:ring-border ${isNullVal ? "opacity-40" : ""}`}
               />
               <button
                 onClick={() => setNulls(n => ({ ...n, [col]: !n[col] }))}
                 title={isNullVal ? "Set to value" : "Set to NULL"}
                 class={`flex-shrink-0 rounded px-1.5 py-1 text-xs font-bold transition-colors ${
-                  isNullVal ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-400 hover:bg-gray-200"
+                  isNullVal ? "bg-amber-100 text-amber-700" : "bg-panel-hover text-text-muted hover:bg-panel-active"
                 }`}
               >
                 N
@@ -74,7 +74,7 @@ export function InsertRowForm({ schema, displayCols, onSave, onCancel, hasCheckb
           </button>
           <button
             onClick={onCancel}
-            class="rounded px-2 py-1 text-xs font-medium text-gray-400 hover:text-gray-600 transition-colors"
+            class="rounded px-2 py-1 text-xs font-medium text-text-muted hover:text-text-data transition-colors"
           >
             Cancel
           </button>

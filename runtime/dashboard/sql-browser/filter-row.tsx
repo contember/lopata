@@ -18,7 +18,7 @@ export function FilterRow({ columns, filters, onFilterChange, onClearAll, hasChe
   };
 
   return (
-    <tr class="border-b border-gray-100 bg-gray-50/50">
+    <tr class="border-b border-border-subtle bg-panel-hover/50">
       {hasCheckboxCol && <th class="w-10 px-3 py-1.5"></th>}
       {columns.map(col => (
         <th key={col} class="px-4 py-1.5">
@@ -33,7 +33,7 @@ export function FilterRow({ columns, filters, onFilterChange, onClearAll, hasChe
                 onFilterChange(col, (e.target as HTMLInputElement).value);
               }
             }}
-            class="w-full bg-white border border-gray-200 rounded px-2 py-1 font-mono text-xs font-normal outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-all"
+            class="w-full bg-panel border border-border rounded px-2 py-1 font-mono text-xs font-normal outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
           />
         </th>
       ))}
@@ -41,7 +41,7 @@ export function FilterRow({ columns, filters, onFilterChange, onClearAll, hasChe
         {hasAny && (
           <button
             onClick={onClearAll}
-            class="text-xs text-gray-400 hover:text-gray-600 transition-colors whitespace-nowrap"
+            class="text-xs text-text-muted hover:text-text-data transition-colors whitespace-nowrap"
             title="Clear all filters"
           >
             clear
@@ -73,15 +73,15 @@ export function FilterHelpModal({ onClose }: { onClose: () => void }) {
       class="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div class="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-md mx-4">
-        <div class="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+      <div class="bg-panel rounded-xl shadow-xl border border-border w-full max-w-md mx-4">
+        <div class="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
           <h3 class="text-sm font-bold text-ink">Filter Syntax</h3>
-          <button onClick={onClose} class="text-gray-400 hover:text-gray-600 text-lg leading-none transition-colors">&times;</button>
+          <button onClick={onClose} class="text-text-muted hover:text-text-data text-lg leading-none transition-colors">&times;</button>
         </div>
         <div class="px-5 py-3">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-xs text-gray-400 uppercase tracking-wider">
+              <tr class="text-xs text-text-muted uppercase tracking-wider">
                 <th class="text-left py-1.5 font-medium">Expression</th>
                 <th class="text-left py-1.5 font-medium">Description</th>
                 <th class="text-left py-1.5 font-medium">Example</th>
@@ -89,16 +89,16 @@ export function FilterHelpModal({ onClose }: { onClose: () => void }) {
             </thead>
             <tbody>
               {FILTER_HELP.map(h => (
-                <tr key={h.expr} class="border-t border-gray-50">
-                  <td class="py-1.5 pr-3"><code class="text-xs font-mono bg-gray-50 px-1.5 py-0.5 rounded text-ink">{h.expr}</code></td>
-                  <td class="py-1.5 pr-3 text-xs text-gray-500">{h.desc}</td>
-                  <td class="py-1.5"><code class="text-xs font-mono text-gray-400">{h.example}</code></td>
+                <tr key={h.expr} class="border-t border-border-row">
+                  <td class="py-1.5 pr-3"><code class="text-xs font-mono bg-panel-secondary px-1.5 py-0.5 rounded text-ink">{h.expr}</code></td>
+                  <td class="py-1.5 pr-3 text-xs text-text-secondary">{h.desc}</td>
+                  <td class="py-1.5"><code class="text-xs font-mono text-text-muted">{h.example}</code></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <div class="px-5 py-3 border-t border-gray-100 text-xs text-gray-400">
+        <div class="px-5 py-3 border-t border-border-subtle text-xs text-text-muted">
           Filters apply per column. Multiple column filters combine with AND.
         </div>
       </div>
