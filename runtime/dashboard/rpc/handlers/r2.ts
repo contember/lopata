@@ -2,8 +2,8 @@ import type { HandlerContext, R2Bucket, R2Object, Paginated, OkResponse } from "
 import { getAllConfigs } from "../types";
 import { getDatabase, getDataDir } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
-import { join } from "node:path";
-import { existsSync, unlinkSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { existsSync, unlinkSync, mkdirSync } from "node:fs";
 
 export const handlers = {
   "r2.listBuckets"(_input: {}, ctx: HandlerContext): R2Bucket[] {
@@ -45,6 +45,28 @@ export const handlers = {
     db.prepare("DELETE FROM r2_objects WHERE bucket = ? AND key = ?").run(bucket, key);
     const filePath = join(getDataDir(), "r2", bucket, key);
     if (existsSync(filePath)) unlinkSync(filePath);
+    return { ok: true };
+  },
+
+  async "r2.renameObject"({ bucket, oldKey, newKey }: { bucket: string; oldKey: string; newKey: string }): Promise<OkResponse> {
+    const db = getDatabase();
+    const oldPath = join(getDataDir(), "r2", bucket, oldKey);
+    const newPath = join(getDataDir(), "r2", bucket, newKey);
+
+    if (!existsSync(oldPath)) {
+      throw new Error(`Object "${oldKey}" not found in bucket "${bucket}"`);
+    }
+
+    mkdirSync(dirname(newPath), { recursive: true });
+    const data = await Bun.file(oldPath).arrayBuffer();
+    await Bun.write(newPath, data);
+
+    db.run(
+      "UPDATE r2_objects SET key = ? WHERE bucket = ? AND key = ?",
+      [newKey, bucket, oldKey],
+    );
+
+    unlinkSync(oldPath);
     return { ok: true };
   },
 };

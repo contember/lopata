@@ -1,9 +1,11 @@
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { mkdirSync, existsSync } from "node:fs";
 import type { WranglerConfig } from "../config";
 import type { GenerationManager } from "../generation-manager";
 import type { WorkerRegistry } from "../worker-registry";
 import type { HandlerContext } from "./rpc/types";
 import { dispatch } from "./rpc/server";
+import { getDatabase, getDataDir } from "../db";
 
 const ctx: HandlerContext = { config: null, manager: null, registry: null };
 
@@ -100,5 +102,73 @@ export function handleDashboardRequest(request: Request): Response | Promise<Res
     return dispatch(request, ctx);
   }
 
+  // R2 upload (multipart/form-data)
+  if (url.pathname === "/__dashboard/api/r2/upload" && request.method === "POST") {
+    return handleR2Upload(request);
+  }
+
+  // R2 download
+  if (url.pathname === "/__dashboard/api/r2/download" && request.method === "GET") {
+    return handleR2Download(url);
+  }
+
   return new Response("Not found", { status: 404 });
+}
+
+async function handleR2Upload(request: Request): Promise<Response> {
+  try {
+    const formData = await request.formData();
+    const bucket = formData.get("bucket") as string;
+    const key = formData.get("key") as string;
+    const file = formData.get("file") as File;
+
+    if (!bucket || !key || !file) {
+      return Response.json({ error: "Missing bucket, key, or file" }, { status: 400 });
+    }
+
+    const data = await file.arrayBuffer();
+    const fp = join(getDataDir(), "r2", bucket, key);
+    mkdirSync(dirname(fp), { recursive: true });
+    await Bun.write(fp, data);
+
+    const hasher = new Bun.CryptoHasher("md5");
+    hasher.update(new Uint8Array(data));
+    const etag = hasher.digest("hex");
+
+    const db = getDatabase();
+    db.run(
+      `INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+      [bucket, key, data.byteLength, etag, crypto.randomUUID(), new Date().toISOString()],
+    );
+
+    return Response.json({ ok: true });
+  } catch (err) {
+    console.error("[bunflare dashboard] R2 upload error:", err);
+    return Response.json({ error: String(err) }, { status: 500 });
+  }
+}
+
+function handleR2Download(url: URL): Response {
+  const bucket = url.searchParams.get("bucket");
+  const key = url.searchParams.get("key");
+
+  if (!bucket || !key) {
+    return Response.json({ error: "Missing bucket or key" }, { status: 400 });
+  }
+
+  const fp = join(getDataDir(), "r2", bucket, key);
+  const file = Bun.file(fp);
+
+  if (!existsSync(fp)) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const filename = key.split("/").pop() ?? key;
+  return new Response(file as unknown as BodyInit, {
+    headers: {
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Type": file.type || "application/octet-stream",
+    },
+  });
 }
