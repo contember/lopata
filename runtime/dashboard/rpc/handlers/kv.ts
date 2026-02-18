@@ -57,6 +57,17 @@ export const handlers = {
     };
   },
 
+  "kv.putKey"({ ns, key, value, metadata, expirationTtl }: { ns: string; key: string; value: string; metadata?: string; expirationTtl?: number }): OkResponse {
+    const db = getDatabase();
+    const encoded = new TextEncoder().encode(value);
+    const exp = expirationTtl ? Math.floor(Date.now() / 1000) + expirationTtl : null;
+    const meta = metadata?.trim() || null;
+    db.prepare(
+      "INSERT OR REPLACE INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)"
+    ).run(ns, key, encoded, meta, exp);
+    return { ok: true };
+  },
+
   "kv.deleteKey"({ ns, key }: { ns: string; key: string }): OkResponse {
     const db = getDatabase();
     db.prepare("DELETE FROM kv WHERE namespace = ? AND key = ?").run(ns, key);

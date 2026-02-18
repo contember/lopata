@@ -57,6 +57,7 @@ interface PaginatedQueryResult<T> {
   isLoading: boolean;
   hasMore: boolean;
   loadMore: () => void;
+  refetch: () => void;
 }
 
 export function usePaginatedQuery<K extends PaginatedProcedures>(
@@ -86,7 +87,7 @@ export function usePaginatedQuery<K extends PaginatedProcedures>(
     load(true);
   }, [procedure, key]);
 
-  return { items, isLoading, hasMore, loadMore: () => load(false) };
+  return { items, isLoading, hasMore, loadMore: () => load(false), refetch: () => load(true) };
 }
 
 // ─── useMutation ─────────────────────────────────────────────────────
