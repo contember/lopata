@@ -141,40 +141,39 @@ const PAGE_SIZE = 50;
 
 // ─── SqlBrowser (main container) ─────────────────────────────────────
 
+type Tab = "data" | "schema" | "sql";
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: "data", label: "Data Browser" },
+  { key: "schema", label: "Schema" },
+  { key: "sql", label: "SQL Console" },
+];
+
 export function SqlBrowser({ tables, execQuery }: SqlBrowserProps) {
-  const [tab, setTab] = useState<"data" | "sql">("data");
+  const [tab, setTab] = useState<Tab>("data");
 
   return (
     <div>
       {/* Tab bar */}
       <div class="flex gap-1 mb-5 border-b border-gray-200">
-        <button
-          onClick={() => setTab("data")}
-          class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-            tab === "data"
-              ? "border-ink text-ink"
-              : "border-transparent text-gray-400 hover:text-gray-600"
-          }`}
-        >
-          Data Browser
-        </button>
-        <button
-          onClick={() => setTab("sql")}
-          class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
-            tab === "sql"
-              ? "border-ink text-ink"
-              : "border-transparent text-gray-400 hover:text-gray-600"
-          }`}
-        >
-          SQL Console
-        </button>
+        {TABS.map(t => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            class={`px-4 py-2 text-sm font-medium border-b-2 transition-colors -mb-px ${
+              tab === t.key
+                ? "border-ink text-ink"
+                : "border-transparent text-gray-400 hover:text-gray-600"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
 
-      {tab === "data" ? (
-        <DataBrowserTab tables={tables} execQuery={execQuery} />
-      ) : (
-        <SqlConsoleTab execQuery={execQuery} />
-      )}
+      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} />}
+      {tab === "schema" && <SchemaBrowserTab tables={tables} />}
+      {tab === "sql" && <SqlConsoleTab execQuery={execQuery} />}
     </div>
   );
 }
@@ -268,6 +267,68 @@ function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ─── SchemaBrowserTab ────────────────────────────────────────────────
+
+function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
+  if (!tables?.length) {
+    return <div class="text-center py-16 text-gray-400 text-sm font-medium">No tables found</div>;
+  }
+
+  return (
+    <div class="space-y-4">
+      {tables.map(t => {
+        const schema = parseCreateTable(t.sql);
+        return (
+          <div key={t.name} class="bg-white rounded-lg border border-gray-200">
+            <div class="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <div class="flex items-center gap-3">
+                <span class="font-mono text-sm font-bold text-ink">{t.name}</span>
+                <span class="text-xs text-gray-400 tabular-nums">{t.rows} row(s)</span>
+              </div>
+              {schema.primaryKeys.length > 0 && (
+                <span class="text-xs text-gray-400">
+                  PK: <span class="font-mono text-gray-500">{schema.primaryKeys.join(", ")}</span>
+                </span>
+              )}
+            </div>
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-gray-50 text-xs text-gray-400 uppercase tracking-wider">
+                  <th class="text-left px-4 py-2 font-medium">Column</th>
+                  <th class="text-left px-4 py-2 font-medium">Type</th>
+                  <th class="text-left px-4 py-2 font-medium">Nullable</th>
+                  <th class="text-left px-4 py-2 font-medium">Default</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schema.columns.map(col => (
+                  <tr key={col.name} class="border-b border-gray-50 last:border-0">
+                    <td class="px-4 py-2 font-mono text-xs font-medium text-ink">
+                      {col.name}
+                      {schema.primaryKeys.includes(col.name) && (
+                        <span class="ml-1.5 text-[10px] font-semibold bg-gray-100 text-gray-500 px-1 py-0.5 rounded">PK</span>
+                      )}
+                      {col.autoIncrement && (
+                        <span class="ml-1.5 text-[10px] font-semibold bg-amber-50 text-amber-600 px-1 py-0.5 rounded">AI</span>
+                      )}
+                    </td>
+                    <td class="px-4 py-2 font-mono text-xs text-gray-500">{col.type || "—"}</td>
+                    <td class="px-4 py-2 text-xs text-gray-400">{col.notNull ? "NOT NULL" : "NULL"}</td>
+                    <td class="px-4 py-2 font-mono text-xs text-gray-400">{col.defaultValue ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div class="px-4 py-2.5 border-t border-gray-100 bg-gray-50/50">
+              <pre class="text-xs text-gray-400 font-mono whitespace-pre-wrap">{t.sql}</pre>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -616,28 +677,26 @@ function TableDataView({ table, execQuery }: { table: D1Table; execQuery: (sql: 
       </div>
 
       {/* Pagination */}
-      {totalCount > PAGE_SIZE && (
-        <div class="flex items-center justify-between mt-4">
-          <span class="text-xs text-gray-400 tabular-nums">{rangeStart}–{rangeEnd} of {totalCount}</span>
-          <div class="flex items-center gap-2">
-            <button
-              onClick={() => loadData(offset - PAGE_SIZE)}
-              disabled={offset === 0 || loading}
-              class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              Prev
-            </button>
-            <span class="text-xs text-gray-400 tabular-nums">{currentPage} / {totalPages}</span>
-            <button
-              onClick={() => loadData(offset + PAGE_SIZE)}
-              disabled={offset + PAGE_SIZE >= totalCount || loading}
-              class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              Next
-            </button>
-          </div>
+      <div class="flex items-center justify-between mt-4">
+        <span class="text-xs text-gray-400 tabular-nums">{rangeStart}–{rangeEnd} of {totalCount}</span>
+        <div class="flex items-center gap-2">
+          <button
+            onClick={() => loadData(offset - PAGE_SIZE)}
+            disabled={offset === 0 || loading}
+            class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            Prev
+          </button>
+          <span class="text-xs text-gray-400 tabular-nums">{currentPage} / {totalPages}</span>
+          <button
+            onClick={() => loadData(offset + PAGE_SIZE)}
+            disabled={offset + PAGE_SIZE >= totalCount || loading}
+            class="rounded-md px-3 py-1.5 text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+          >
+            Next
+          </button>
         </div>
-      )}
+      </div>
 
       {showFilterHelp && <FilterHelpModal onClose={() => setShowFilterHelp(false)} />}
     </div>
