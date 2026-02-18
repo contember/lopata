@@ -281,7 +281,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             onClick={() => setShowFilters(v => !v)}
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showFilters || activeFilterCount > 0
-                ? "bg-ink text-white"
+                ? "bg-ink text-surface"
                 : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >
@@ -298,7 +298,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             onClick={() => setShowBrowserHistory(v => !v)}
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showBrowserHistory
-                ? "bg-ink text-white"
+                ? "bg-ink text-surface"
                 : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >
@@ -309,7 +309,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
               onClick={() => setShowExport(v => !v)}
               class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
                 showExport
-                  ? "bg-ink text-white"
+                  ? "bg-ink text-surface"
                   : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
               }`}
             >
@@ -337,7 +337,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
             class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
               showInsert
                 ? "bg-panel-active text-text-data"
-                : "bg-ink text-white hover:bg-ink-muted"
+                : "bg-ink text-surface hover:opacity-80"
             }`}
           >
             {showInsert ? "Cancel" : "+ Add Row"}

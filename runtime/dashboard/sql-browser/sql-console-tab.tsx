@@ -50,7 +50,7 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
           <button
             onClick={run}
             disabled={loading || !sql.trim()}
-            class="rounded-md px-4 py-2 text-sm font-medium bg-ink text-white hover:bg-ink-muted disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            class="rounded-md px-4 py-2 text-sm font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
           >
             {loading ? "Running..." : "Run Query"}
           </button>
@@ -58,7 +58,7 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
             onClick={() => setShowHistory(v => !v)}
             class={`rounded-md px-3 py-2 text-sm font-medium transition-all ${
               showHistory
-                ? "bg-ink text-white"
+                ? "bg-ink text-surface"
                 : "bg-panel border border-border text-text-secondary hover:bg-panel-hover"
             }`}
           >

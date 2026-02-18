@@ -8,6 +8,9 @@ const WORKFLOW_STATUS_COLORS: Record<string, string> = {
   complete: "bg-emerald-100 text-emerald-700",
   errored: "bg-red-100 text-red-700",
   terminated: "bg-panel-active text-text-data",
+  waiting: "bg-blue-100 text-blue-700",
+  paused: "bg-amber-100 text-amber-700",
+  queued: "bg-purple-100 text-purple-700",
 };
 
 export function WorkflowsView({ route }: { route: string }) {
@@ -27,7 +30,7 @@ function WorkflowList() {
   const totalErrored = workflows?.reduce((s, w) => s + (w.byStatus.errored ?? 0), 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
@@ -64,21 +67,145 @@ function WorkflowList() {
   );
 }
 
+function CreateWorkflowForm({ name, onCreated }: { name: string; onCreated: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [params, setParams] = useState("{}");
+  const [error, setError] = useState("");
+  const create = useMutation("workflows.create");
+
+  const handleSubmit = async () => {
+    setError("");
+    const result = await create.mutate({ name, params });
+    if (result) {
+      setParams("{}");
+      setOpen(false);
+      onCreated(result.id);
+    } else if (create.error) {
+      setError(create.error.message);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+      >
+        Create instance
+      </button>
+    );
+  }
+
+  return (
+    <div class="bg-panel border border-border rounded-lg p-4 mb-6">
+      <div class="flex items-center justify-between mb-3">
+        <div class="text-sm font-semibold text-ink">Create workflow instance</div>
+        <button onClick={() => { setOpen(false); setError(""); }} class="text-text-muted hover:text-text-data text-xs font-medium">
+          Cancel
+        </button>
+      </div>
+      <textarea
+        value={params}
+        onInput={e => setParams((e.target as HTMLTextAreaElement).value)}
+        placeholder='{"key": "value"}'
+        class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
+        rows={3}
+      />
+      {error && <div class="text-red-500 text-xs mt-1">{error}</div>}
+      <div class="flex justify-end mt-3">
+        <button
+          onClick={handleSubmit}
+          disabled={create.isLoading || !params.trim()}
+          class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {create.isLoading ? "Creating..." : "Create"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ActionButton({ onClick, label, color = "blue", disabled }: { onClick: () => void; label: string; color?: "blue" | "red" | "amber" | "emerald"; disabled?: boolean }) {
+  const colors = {
+    blue: "text-blue-500 hover:text-blue-700 hover:bg-blue-50",
+    red: "text-red-400 hover:text-red-600 hover:bg-red-50",
+    amber: "text-amber-500 hover:text-amber-700 hover:bg-amber-50",
+    emerald: "text-emerald-500 hover:text-emerald-700 hover:bg-emerald-50",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      class={`text-xs font-medium rounded-md px-2 py-1 transition-all disabled:opacity-50 disabled:cursor-not-allowed ${colors[color]}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function InstanceActions({ name, id, status, refetch, onDuplicated }: { name: string; id: string; status: string; refetch: () => void; onDuplicated?: (id: string) => void }) {
+  const pause = useMutation("workflows.pause");
+  const resume = useMutation("workflows.resume");
+  const terminate = useMutation("workflows.terminate");
+  const restart = useMutation("workflows.restart");
+  const duplicate = useMutation("workflows.duplicate");
+
+  const handlePause = async () => { await pause.mutate({ name, id }); refetch(); };
+  const handleResume = async () => { await resume.mutate({ name, id }); refetch(); };
+  const handleTerminate = async () => {
+    if (!confirm("Terminate this workflow instance?")) return;
+    await terminate.mutate({ name, id }); refetch();
+  };
+  const handleRestart = async () => {
+    if (!confirm("Restart this workflow instance? All steps will re-execute.")) return;
+    await restart.mutate({ name, id }); refetch();
+  };
+  const handleDuplicate = async () => {
+    const result = await duplicate.mutate({ name, id });
+    if (result && onDuplicated) onDuplicated(result.id);
+    else refetch();
+  };
+
+  const isTerminal = ["complete", "errored", "terminated"].includes(status);
+
+  return (
+    <div class="flex gap-1">
+      {(status === "running" || status === "waiting") && (
+        <>
+          <ActionButton onClick={handlePause} label="Pause" color="amber" />
+          <ActionButton onClick={handleTerminate} label="Terminate" color="red" />
+        </>
+      )}
+      {status === "paused" && (
+        <>
+          <ActionButton onClick={handleResume} label="Resume" color="emerald" />
+          <ActionButton onClick={handleTerminate} label="Terminate" color="red" />
+        </>
+      )}
+      {status === "queued" && (
+        <ActionButton onClick={handleTerminate} label="Terminate" color="red" />
+      )}
+      {isTerminal && (
+        <>
+          <ActionButton onClick={handleRestart} label="Restart" color="blue" />
+          <ActionButton onClick={handleDuplicate} label="Duplicate" color="blue" />
+        </>
+      )}
+    </div>
+  );
+}
+
 function WorkflowInstanceList({ name }: { name: string }) {
   const [statusFilter, setStatusFilter] = useState("");
   const { data: instances, refetch } = useQuery("workflows.listInstances", { name, status: statusFilter || undefined });
-  const terminate = useMutation("workflows.terminate");
 
-  const handleTerminate = async (id: string) => {
-    if (!confirm("Terminate this workflow?")) return;
-    await terminate.mutate({ name, id });
-    refetch();
-  };
+  const handleCreated = (_id: string) => { refetch(); };
+  const handleDuplicated = (id: string) => { location.hash = `#/workflows/${encodeURIComponent(name)}/${encodeURIComponent(id)}`; };
 
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Workflows", href: "#/workflows" }, { label: name }]} />
-      <div class="mb-6">
+      <div class="mb-6 flex gap-2 items-center justify-between">
         <select
           value={statusFilter}
           onChange={e => setStatusFilter((e.target as HTMLSelectElement).value)}
@@ -86,10 +213,14 @@ function WorkflowInstanceList({ name }: { name: string }) {
         >
           <option value="">All statuses</option>
           <option value="running">Running</option>
+          <option value="waiting">Waiting</option>
+          <option value="paused">Paused</option>
+          <option value="queued">Queued</option>
           <option value="complete">Complete</option>
           <option value="errored">Errored</option>
           <option value="terminated">Terminated</option>
         </select>
+        <CreateWorkflowForm name={name} onCreated={handleCreated} />
       </div>
       {!instances?.length ? (
         <EmptyState message="No instances found" />
@@ -101,14 +232,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
             <StatusBadge status={inst.status} colorMap={WORKFLOW_STATUS_COLORS} />,
             formatTime(inst.created_at),
             formatTime(inst.updated_at),
-            inst.status === "running" ? (
-              <button
-                onClick={() => handleTerminate(inst.id)}
-                class="text-red-400 hover:text-red-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-50 transition-all"
-              >
-                Terminate
-              </button>
-            ) : null,
+            <InstanceActions name={name} id={inst.id} status={inst.status} refetch={refetch} onDuplicated={handleDuplicated} />,
           ])}
         />
       )}
@@ -117,9 +241,20 @@ function WorkflowInstanceList({ name }: { name: string }) {
 }
 
 function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
-  const { data } = useQuery("workflows.getInstance", { name, id });
+  const { data, refetch } = useQuery("workflows.getInstance", { name, id });
+  const restartFromStep = useMutation("workflows.restart");
+
+  const handleDuplicated = (newId: string) => { location.hash = `#/workflows/${encodeURIComponent(name)}/${encodeURIComponent(newId)}`; };
+
+  const handleRestartFromStep = async (stepName: string) => {
+    if (!confirm(`Restart from step "${stepName}"? This step and all subsequent steps will re-execute.`)) return;
+    await restartFromStep.mutate({ name, id, fromStep: stepName });
+    refetch();
+  };
 
   if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>;
+
+  const isTerminal = ["complete", "errored", "terminated"].includes(data.status);
 
   return (
     <div class="p-8">
@@ -132,6 +267,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
       <div class="flex items-center gap-4 mb-8">
         <StatusBadge status={data.status} colorMap={WORKFLOW_STATUS_COLORS} />
         <span class="text-sm text-text-muted font-medium">Created: {formatTime(data.created_at)}</span>
+        <InstanceActions name={name} id={id} status={data.status} refetch={refetch} onDuplicated={handleDuplicated} />
       </div>
 
       {data.params && (
@@ -161,12 +297,20 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
           <div class="text-text-muted text-sm font-medium">No steps completed yet</div>
         ) : (
           <Table
-            headers={["Step", "Output", "Completed"]}
-            rows={data.steps.map(s => [
-              <span class="font-mono text-xs font-medium">{s.step_name}</span>,
-              s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : "—",
-              formatTime(s.completed_at),
-            ])}
+            headers={["Step", "Output", "Completed", ...(isTerminal ? [""] : [])]}
+            rows={data.steps.map(s => {
+              const row = [
+                <span class="font-mono text-xs font-medium">{s.step_name}</span>,
+                s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : "\u2014",
+                formatTime(s.completed_at),
+              ];
+              if (isTerminal) {
+                row.push(
+                  <ActionButton onClick={() => handleRestartFromStep(s.step_name)} label="Restart from here" color="blue" />
+                );
+              }
+              return row;
+            })}
           />
         )}
       </div>
@@ -178,7 +322,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
             headers={["Type", "Payload", "Time"]}
             rows={data.events.map(e => [
               <span class="font-mono text-xs font-medium">{e.event_type}</span>,
-              e.payload ? <pre class="text-xs max-w-md truncate font-mono">{e.payload}</pre> : "—",
+              e.payload ? <pre class="text-xs max-w-md truncate font-mono">{e.payload}</pre> : "\u2014",
               formatTime(e.created_at),
             ])}
           />

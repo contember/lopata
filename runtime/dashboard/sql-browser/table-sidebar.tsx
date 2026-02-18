@@ -24,7 +24,7 @@ export function TableSidebar({ tables, selected, onSelect }: {
             onClick={() => onSelect(t.name)}
             class={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors flex items-center justify-between ${
               selected === t.name
-                ? "bg-ink text-white"
+                ? "bg-ink text-surface"
                 : "text-text-data hover:bg-panel-hover"
             }`}
           >

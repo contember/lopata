@@ -20,7 +20,7 @@ function KvNamespaceList() {
   const totalKeys = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
@@ -154,7 +154,7 @@ function KvPutForm({ ns, initial, onSaved, onCancel }: KvPutFormProps) {
         <button
           onClick={handleSubmit}
           disabled={putKey.isLoading || !key.trim()}
-          class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-white hover:bg-gray-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {putKey.isLoading ? "Saving..." : isEdit ? "Save" : "Add key"}
         </button>
@@ -185,7 +185,7 @@ function KvKeyList({ ns }: { ns: string }) {
         {!showAdd && (
           <button
             onClick={() => setShowAdd(true)}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-white hover:bg-gray-800 transition-all"
+            class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
           >
             Add key
           </button>

@@ -13,6 +13,7 @@ import { WorkersView } from "./views/workers";
 import { TracesView } from "./views/traces";
 import { ErrorsView } from "./views/errors";
 import { ScheduledView } from "./views/scheduled";
+import { EmailView } from "./views/email";
 
 const NAV_ITEMS = [
   { path: "/", label: "Overview", icon: "◉" },
@@ -28,6 +29,7 @@ const NAV_ITEMS = [
   { path: "/d1", label: "D1", icon: "⊞" },
   { path: "/cache", label: "Cache", icon: "◎" },
   { path: "/scheduled", label: "Scheduled", icon: "⏱" },
+  { path: "/email", label: "Email", icon: "✉" },
 ];
 
 function App() {
@@ -48,6 +50,7 @@ function App() {
     if (route.startsWith("/d1")) return <D1View route={route} />;
     if (route.startsWith("/cache")) return <CacheView route={route} />;
     if (route.startsWith("/scheduled")) return <ScheduledView route={route} />;
+    if (route.startsWith("/email")) return <EmailView route={route} />;
     return <div class="p-8 text-text-muted">Page not found</div>;
   }
 
@@ -56,7 +59,7 @@ function App() {
       <nav class="w-56 flex-shrink-0 border-r border-border bg-panel flex flex-col">
         <div class="p-5 pb-4">
           <a href="#/" class="flex items-center gap-2.5 no-underline">
-            <span class="w-8 h-8 rounded-lg bg-ink flex items-center justify-center text-sm text-white">B</span>
+            <span class="w-8 h-8 rounded-lg bg-ink flex items-center justify-center text-sm text-surface">B</span>
             <div>
               <div class="text-sm font-semibold text-ink">Bunflare</div>
               <div class="text-[11px] text-text-muted">Dev Dashboard</div>

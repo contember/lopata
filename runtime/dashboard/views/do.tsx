@@ -18,7 +18,7 @@ function DoNamespaceList() {
   const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">

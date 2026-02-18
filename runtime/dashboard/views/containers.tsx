@@ -23,7 +23,7 @@ function ContainerList() {
   const totalRunning = containers?.reduce((s, c) => s + c.runningCount, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Containers" subtitle={`${containers?.length ?? 0} container class(es)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">

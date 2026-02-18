@@ -25,7 +25,7 @@ function QueueList() {
   const totalFailed = queues?.reduce((s, q) => s + q.failed, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Queues" subtitle={`${queues?.length ?? 0} queue(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
@@ -85,7 +85,7 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
     return (
       <button
         onClick={() => setOpen(true)}
-        class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-white hover:bg-gray-800 transition-all"
+        class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
       >
         Publish message
       </button>
@@ -119,7 +119,7 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
         <button
           onClick={handleSubmit}
           disabled={publish.isLoading || !body.trim()}
-          class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-white hover:bg-gray-800 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {publish.isLoading ? "Publishing..." : "Publish"}
         </button>

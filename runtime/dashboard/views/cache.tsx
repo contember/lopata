@@ -27,7 +27,7 @@ function CacheNameList() {
   const totalEntries = caches?.reduce((s, c) => s + c.count, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">

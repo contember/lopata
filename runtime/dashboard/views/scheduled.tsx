@@ -26,7 +26,7 @@ function ScheduledList() {
   };
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="Scheduled" subtitle={`${triggers?.length ?? 0} cron trigger(s)`} />
 
       {lastResult && (
@@ -62,7 +62,7 @@ function ScheduledList() {
                   <button
                     onClick={() => handleRun(t.expression, t.workerName)}
                     disabled={runningCron === t.expression}
-                    class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-white hover:bg-ink-muted disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                    class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                   >
                     {runningCron === t.expression ? "Running..." : "Trigger"}
                   </button>,

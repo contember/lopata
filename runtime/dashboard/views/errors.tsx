@@ -202,7 +202,7 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
   const { data } = detail;
 
   return (
-    <div class="p-6 max-w-5xl mx-auto flex flex-col gap-4">
+    <div class="p-6 max-w-6xl flex flex-col gap-4">
       {/* Breadcrumb + actions */}
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-2 text-sm text-text-muted">

@@ -27,7 +27,7 @@ function D1DatabaseList() {
   const totalTables = databases?.reduce((s, db) => s + db.tables, 0) ?? 0;
 
   return (
-    <div class="p-8 max-w-5xl mx-auto">
+    <div class="p-8 max-w-6xl">
       <PageHeader title="D1 Databases" subtitle={`${databases?.length ?? 0} database(s)`} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
