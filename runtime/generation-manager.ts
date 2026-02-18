@@ -78,14 +78,16 @@ export class GenerationManager {
   readonly workerName: string | undefined;
   readonly workerRegistry: WorkerRegistry | undefined;
   readonly isMain: boolean;
+  readonly cronEnabled: boolean;
 
-  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean }) {
+  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean; cron?: boolean }) {
     this.config = config;
     this.baseDir = baseDir;
     this.workerPath = path.resolve(baseDir, config.main);
     this.workerName = options?.workerName;
     this.workerRegistry = options?.workerRegistry;
     this.isMain = options?.isMain ?? true;
+    this.cronEnabled = options?.cron ?? false;
   }
 
   /** The currently active generation (receives new requests) */
@@ -155,7 +157,7 @@ export class GenerationManager {
 
     // 6. Create new generation
     const genId = this.nextGenId++;
-    const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config, this.workerName);
+    const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config, this.workerName, this.cronEnabled);
     this.generations.set(genId, gen);
 
     // 7. Drain old generation

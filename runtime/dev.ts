@@ -52,6 +52,7 @@ if (bunflareConfig) {
     workerName: mainConfig.name,
     workerRegistry: registry,
     isMain: true,
+    cron: bunflareConfig.cron,
   });
   registry.register(mainConfig.name, mainManager, true);
 
@@ -65,6 +66,7 @@ if (bunflareConfig) {
       workerName: workerDef.name,
       workerRegistry: registry,
       isMain: false,
+      cron: bunflareConfig.cron,
     });
     registry.register(workerDef.name, auxManager);
 

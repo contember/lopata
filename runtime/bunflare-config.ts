@@ -9,6 +9,8 @@ export interface BunflareConfig {
     name: string;
     config: string;
   }>;
+  /** Enable real cron scheduling based on wrangler triggers.crons (default: false) */
+  cron?: boolean;
 }
 
 export function defineConfig(config: BunflareConfig): BunflareConfig {

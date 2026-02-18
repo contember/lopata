@@ -39,6 +39,7 @@ export class Generation {
   readonly registry: ClassRegistry;
   readonly config: WranglerConfig;
   readonly workerName: string | undefined;
+  readonly cronEnabled: boolean;
   activeRequests = 0;
 
   private queueConsumers: QueueConsumer[] = [];
@@ -54,6 +55,7 @@ export class Generation {
     registry: ClassRegistry,
     config: WranglerConfig,
     workerName?: string,
+    cronEnabled?: boolean,
   ) {
     this.id = id;
     this.createdAt = Date.now();
@@ -64,6 +66,7 @@ export class Generation {
     this.registry = registry;
     this.config = config;
     this.workerName = workerName;
+    this.cronEnabled = cronEnabled ?? false;
   }
 
   /** Get a handler method from the worker module (class-based or object-based) */
@@ -236,10 +239,12 @@ export class Generation {
       }
     }
 
-    const crons = this.config.triggers?.crons ?? [];
-    const scheduledHandler = this.getHandler("scheduled");
-    if (crons.length > 0 && scheduledHandler) {
-      this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env);
+    if (this.cronEnabled) {
+      const crons = this.config.triggers?.crons ?? [];
+      const scheduledHandler = this.getHandler("scheduled");
+      if (crons.length > 0 && scheduledHandler) {
+        this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env);
+      }
     }
   }
 
