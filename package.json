@@ -3,6 +3,12 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "bin": {
+    "bunflare": "runtime/cli.ts"
+  },
+  "exports": {
+    "./vite-plugin": "./runtime/vite-plugin/index.ts"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -12,6 +18,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "bun-plugin-tailwind": "^0.1.2",
+    "vite": "^7.3.1",
     "wrangler": "^4.65.0"
   },
   "peerDependencies": {
