@@ -24,6 +24,10 @@
   "peerDependencies": {
     "typescript": "^5"
   },
+  "optionalDependencies": {
+    "puppeteer": "*",
+    "puppeteer-core": "*"
+  },
   "dependencies": {
     "html-rewriter-wasm": "^0.4.1",
     "preact": "^10.28.3",

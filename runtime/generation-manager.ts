@@ -81,10 +81,11 @@ export class GenerationManager {
   readonly isMain: boolean;
   readonly cronEnabled: boolean;
   readonly executorFactory: DOExecutorFactory | undefined;
+  readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined;
   /** @internal Path to the wrangler config file (for isolated mode worker threads) */
   _configPath: string = "";
 
-  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean; cron?: boolean; executorFactory?: DOExecutorFactory; configPath?: string }) {
+  constructor(config: WranglerConfig, baseDir: string, options?: { workerName?: string; workerRegistry?: WorkerRegistry; isMain?: boolean; cron?: boolean; executorFactory?: DOExecutorFactory; configPath?: string; browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean } }) {
     this.config = config;
     this.baseDir = baseDir;
     this.workerPath = path.resolve(baseDir, config.main);
@@ -93,6 +94,7 @@ export class GenerationManager {
     this.isMain = options?.isMain ?? true;
     this.cronEnabled = options?.cron ?? false;
     this.executorFactory = options?.executorFactory;
+    this.browserConfig = options?.browserConfig;
     this._configPath = options?.configPath ?? "";
   }
 
@@ -141,7 +143,7 @@ export class GenerationManager {
     }
 
     // 2. Build new env with fresh binding instances (same underlying DB)
-    const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory);
+    const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig);
 
     // 3. Wire DO and Workflow class references
     wireClassRefs(registry, workerModule, env, this.workerRegistry);

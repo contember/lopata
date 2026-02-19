@@ -50,6 +50,7 @@ export interface WranglerConfig {
     instance_type?: string;
     name?: string;
   }[];
+  browser?: { binding: string };
   version_metadata?: { binding: string };
   migrations?: { tag: string; new_classes?: string[]; new_sqlite_classes?: string[] }[];
   env?: Record<string, Partial<Omit<WranglerConfig, "env">>>;

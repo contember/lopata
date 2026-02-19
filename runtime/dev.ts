@@ -65,6 +65,7 @@ if (bunflareConfig) {
     cron: bunflareConfig.cron,
     executorFactory,
     configPath: bunflareConfig.main,
+    browserConfig: bunflareConfig.browser,
   });
   registry.register(mainConfig.name, mainManager, true);
 

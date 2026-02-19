@@ -3,6 +3,7 @@ import { DurableObjectBase, WebSocketRequestResponsePair } from "./bindings/dura
 import { WorkflowEntrypointBase, NonRetryableError } from "./bindings/workflow";
 import { ContainerBase, getContainer, getRandom } from "./bindings/container";
 import { EmailMessage } from "./bindings/email";
+import type { BrowserBinding } from "./bindings/browser";
 import { SqliteCacheStorage } from "./bindings/cache";
 import { HTMLRewriter } from "./bindings/html-rewriter";
 import { WebSocketPair } from "./bindings/websocket-pair";
@@ -258,6 +259,20 @@ plugin({
       return {
         exports: {
           NonRetryableError,
+        },
+        loader: "object",
+      };
+    });
+
+    build.module("@cloudflare/puppeteer", () => {
+      return {
+        exports: {
+          default: {
+            launch: (endpoint: BrowserBinding, opts?: { keep_alive?: number }) => endpoint.launch(opts),
+            connect: (endpoint: BrowserBinding, sessionId: string) => endpoint.connect(sessionId),
+            sessions: (endpoint: BrowserBinding) => endpoint.sessions(),
+          },
+          ActiveSession: {} as any, // type-only re-export placeholder
         },
         loader: "object",
       };

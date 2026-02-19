@@ -17,6 +17,15 @@ export interface BunflareConfig {
    * - "isolated" — each DO instance runs in a separate Bun Worker thread (faithful to CF production)
    */
   isolation?: "dev" | "isolated";
+  /** Browser Rendering binding config for local dev */
+  browser?: {
+    /** WS endpoint of an existing Chrome instance. If set, uses puppeteer-core connect(). */
+    wsEndpoint?: string;
+    /** Path to Chrome executable (only used when spawning without wsEndpoint). */
+    executablePath?: string;
+    /** Headless mode (default: true, only used when spawning). */
+    headless?: boolean;
+  };
 }
 
 export function defineConfig(config: BunflareConfig): BunflareConfig {

@@ -13,6 +13,7 @@ import { AiBinding } from "./bindings/ai";
 import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
+import { BrowserBinding } from "./bindings/browser";
 import { DockerManager } from "./bindings/container-docker";
 import { ContainerBase } from "./bindings/container";
 import type { DOExecutorFactory } from "./bindings/do-executor";
@@ -76,7 +77,7 @@ interface ClassRegistry {
   staticAssets: StaticAssets | null;
 }
 
-export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFactory?: DOExecutorFactory): { env: Record<string, unknown>; registry: ClassRegistry } {
+export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFactory?: DOExecutorFactory, browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }): { env: Record<string, unknown>; registry: ClassRegistry } {
   const env: Record<string, unknown> = {};
   const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null };
 
@@ -274,6 +275,15 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFa
     } else {
       console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`);
     }
+  }
+
+  // Browser Rendering binding
+  if (config.browser) {
+    console.log(`[bunflare] Browser binding: ${config.browser.binding}`);
+    env[config.browser.binding] = instrumentBinding(
+      new BrowserBinding(browserConfig ?? {}),
+      { type: "browser", name: config.browser.binding, methods: ["launch", "connect", "sessions"] },
+    );
   }
 
   // Version metadata binding
