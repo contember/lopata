@@ -118,9 +118,8 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
           return (
             <div key={span.spanId}>
               <div
-                class={`flex items-center cursor-pointer hover:bg-panel-hover rounded-md py-1 px-1 transition-colors ${
-                  isHighlighted ? "ring-2 ring-red-400 ring-inset bg-red-50/50" : ""
-                }`}
+                class={`flex items-center cursor-pointer hover:bg-panel-hover rounded-md py-1 px-1 transition-colors`}
+                style={isHighlighted ? { background: "var(--color-error-highlight)", boxShadow: `inset 0 0 0 2px var(--color-span-error)` } : undefined}
                 onClick={() => setExpandedSpan(isExpanded ? null : span.spanId)}
               >
                 {/* Span name with collapse toggle */}
@@ -140,11 +139,12 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                 <div class="flex-1 h-6 relative bg-panel-secondary rounded">
                   <div
                     class={`absolute top-0.5 bottom-0.5 rounded flex items-center overflow-hidden ${
-                      span.status === "error" ? "bg-red-500" :
-                      span.status === "ok" ? "bg-emerald-700" :
-                      "bg-gray-300 animate-pulse"
+                      span.status !== "error" && span.status !== "ok" ? "animate-pulse" : ""
                     }`}
-                    style={{ left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
+                    style={{
+                      left: `${offset}%`, width: `${Math.max(width, 0.5)}%`,
+                      background: span.status === "error" ? "var(--color-span-error)" : span.status === "ok" ? "var(--color-span-ok)" : "#d1d5db",
+                    }}
                   >
                     {/* Key attributes inside bar */}
                     {keyAttrs.length > 0 && (
@@ -249,7 +249,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                       <div>
                         <div class="text-text-muted mb-1">Events:</div>
                         {spanEvents.map(ev => (
-                          <div key={ev.id} class={`py-1 px-2 rounded-md mb-1 ${ev.name === "exception" ? "bg-red-50" : "bg-panel border border-border-subtle"}`}>
+                          <div key={ev.id} class={`py-1 px-2 rounded-md mb-1 ${ev.name !== "exception" ? "bg-panel border border-border-subtle" : ""}`} style={ev.name === "exception" ? { background: "var(--color-error-highlight)" } : undefined}>
                             <div class="flex items-center gap-2">
                               <span class="font-medium">{ev.name}</span>
                               {ev.level && <EventLevelBadge level={ev.level} />}
@@ -342,28 +342,37 @@ export function AttributeValue({ value }: { value: unknown }) {
 
 export function EventLevelBadge({ level }: { level: string }) {
   const upper = level.toUpperCase();
-  const colors: Record<string, string> = {
-    ERROR: "bg-red-50 text-red-700",
-    WARN: "bg-orange-50 text-orange-700",
-    WARNING: "bg-orange-50 text-orange-700",
-    INFO: "bg-blue-50 text-blue-700",
-    DEBUG: "bg-panel-secondary text-text-secondary",
+  const styles: Record<string, { bg: string; color: string } | null> = {
+    ERROR: { bg: "var(--color-badge-red-bg)", color: "var(--color-badge-red-text)" },
+    WARN: { bg: "var(--color-badge-orange-bg)", color: "var(--color-badge-orange-text)" },
+    WARNING: { bg: "var(--color-badge-orange-bg)", color: "var(--color-badge-orange-text)" },
+    INFO: { bg: "var(--color-badge-blue-bg)", color: "var(--color-badge-blue-text)" },
+    LOG: null,
+    DEBUG: null,
   };
+  const s = styles[upper];
   return (
-    <span class={`inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium ${colors[upper] ?? "bg-panel-secondary text-text-secondary"}`}>
+    <span
+      class={`inline-flex px-1.5 py-0.5 rounded-md text-[10px] font-medium ${!s ? "bg-panel-secondary text-text-secondary" : ""}`}
+      style={s ? { background: s.bg, color: s.color } : undefined}
+    >
       {upper}
     </span>
   );
 }
 
 export function TraceStatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    ok: "bg-emerald-50 text-emerald-700",
-    error: "bg-red-50 text-red-700",
-    unset: "bg-panel-hover text-text-secondary",
+  const styles: Record<string, { bg: string; color: string } | null> = {
+    ok: { bg: "var(--color-badge-emerald-bg)", color: "var(--color-badge-emerald-text)" },
+    error: { bg: "var(--color-badge-red-bg)", color: "var(--color-badge-red-text)" },
+    unset: null,
   };
+  const s = styles[status];
   return (
-    <span class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${colors[status] ?? colors.unset} ${status === "unset" ? "animate-pulse" : ""}`}>
+    <span
+      class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${!s ? "bg-panel-hover text-text-secondary" : ""} ${status === "unset" ? "animate-pulse" : ""}`}
+      style={s ? { background: s.bg, color: s.color } : undefined}
+    >
       {status === "unset" ? "running" : status}
     </span>
   );

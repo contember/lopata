@@ -12,7 +12,7 @@ import { getDatabase } from "./db";
 import { globalEnv } from "./env";
 import { instrumentBinding } from "./tracing/instrument";
 import { getActiveContext } from "./tracing/context";
-import { startSpan, setSpanAttribute } from "./tracing/span";
+import { startSpan, setSpanAttribute, addSpanEvent } from "./tracing/span";
 
 // Register global `caches` object (CacheStorage) with tracing
 const rawCacheStorage = new SqliteCacheStorage(getDatabase());
@@ -101,6 +101,31 @@ Object.defineProperty(globalThis, "scheduler", {
   writable: false,
   configurable: true,
 });
+
+// ─── Console instrumentation ─────────────────────────────────────────
+// Captures console.log/info/warn/error/debug as span events when inside a trace context.
+
+function formatConsoleArg(arg: unknown): string {
+  if (typeof arg === "string") return arg;
+  if (arg instanceof Error) return arg.stack ?? arg.message;
+  try { return JSON.stringify(arg); } catch { return String(arg); }
+}
+
+const consoleMethods = ["log", "info", "warn", "error", "debug"] as const;
+type ConsoleMethod = (typeof consoleMethods)[number];
+
+const _originalConsole: Record<ConsoleMethod, (...args: unknown[]) => void> = {} as any;
+
+for (const method of consoleMethods) {
+  _originalConsole[method] = console[method].bind(console);
+  (console as any)[method] = (...args: unknown[]) => {
+    _originalConsole[method](...args);
+    const ctx = getActiveContext();
+    if (!ctx) return;
+    const message = args.map(formatConsoleArg).join(" ");
+    addSpanEvent(`console.${method}`, method, message);
+  };
+}
 
 // ─── Fetch instrumentation ───────────────────────────────────────────
 // Creates a tracing span for every outgoing fetch and captures request/response bodies.
