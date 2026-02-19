@@ -60,7 +60,7 @@ function ErrorList() {
         {errors.length > 0 && (
           <button
             onClick={handleClear}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-950/30 hover:text-red-400 hover:border-red-800 transition-all"
+            class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
           >
             Clear all
           </button>
@@ -213,7 +213,7 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
         </div>
         <button
           onClick={handleDelete}
-          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-950/30 hover:text-red-400 hover:border-red-800 transition-all"
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
         >
           Delete
         </button>
@@ -223,7 +223,7 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
       <div class="bg-panel rounded-lg border border-border overflow-hidden border-l-4 border-l-red-500">
         <div class="px-5 py-4">
           <div class="flex items-center gap-2.5 mb-1.5">
-            <span class="w-6 h-6 rounded-md bg-red-950/40 flex items-center justify-center text-red-400 text-xs font-bold">!</span>
+            <span class="w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold" style={{ background: "var(--color-error-icon-bg)", color: "var(--color-error-icon-text)" }}>!</span>
             <span class="text-xs font-semibold uppercase tracking-wider text-red-500">{data.error.name}</span>
             {detail.source && <SourceBadge source={detail.source} />}
           </div>
@@ -354,7 +354,8 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
           return (
             <div
               key={span.spanId}
-              class={`flex items-center py-1 px-1 rounded-md ${isHighlighted ? "bg-red-950/40 ring-1 ring-red-700" : ""}`}
+              class="flex items-center py-1 px-1 rounded-md"
+              style={isHighlighted ? { background: "var(--color-error-highlight)", boxShadow: `inset 0 0 0 1px var(--color-error-ring)` } : undefined}
             >
               <div
                 class="w-[180px] flex-shrink-0 truncate text-xs text-ink font-mono"
@@ -364,12 +365,8 @@ function SimpleTraceWaterfall({ spans, highlightSpanId }: { spans: SpanData[]; h
               </div>
               <div class="flex-1 h-5 relative bg-panel-secondary rounded">
                 <div
-                  class={`absolute top-0.5 bottom-0.5 rounded ${
-                    span.status === "error" ? "bg-red-500" :
-                    span.status === "ok" ? "bg-emerald-700" :
-                    "bg-gray-300"
-                  }`}
-                  style={{ left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
+                  class="absolute top-0.5 bottom-0.5 rounded"
+                  style={{ background: span.status === "error" ? "var(--color-span-error)" : span.status === "ok" ? "var(--color-span-ok)" : "#d1d5db", left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
                 />
                 <span
                   class="absolute top-0.5 text-[10px] text-text-secondary whitespace-nowrap font-mono"
@@ -453,7 +450,8 @@ function CodeBlock({ frame, defaultOpen }: { frame: FrameData; defaultOpen: bool
             return (
               <div
                 key={i}
-                class={isError ? "bg-red-950/40 border-l-4 border-red-500" : "border-l-4 border-transparent hover:bg-panel-hover"}
+                class={isError ? "border-l-4 border-red-500" : "border-l-4 border-transparent hover:bg-panel-hover"}
+                style={isError ? { background: "var(--color-error-highlight)" } : undefined}
               >
                 <span class={`inline-block w-12 text-right pr-3 select-none ${isError ? "text-red-500 font-bold" : "text-text-muted"}`}>
                   {lineNum}
@@ -522,19 +520,19 @@ function CollapsibleMessage({ message }: { message: string }) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
-const SOURCE_COLORS: Record<string, string> = {
-  fetch: "bg-blue-950/40 text-blue-400",
-  scheduled: "bg-purple-950/40 text-purple-400",
-  queue: "bg-orange-950/40 text-orange-400",
-  alarm: "bg-yellow-950/40 text-yellow-400",
-  workflow: "bg-emerald-950/40 text-emerald-400",
+const SOURCE_COLORS: Record<string, { bg: string; text: string }> = {
+  fetch: { bg: "var(--color-badge-blue-bg)", text: "var(--color-badge-blue-text)" },
+  scheduled: { bg: "var(--color-badge-purple-bg)", text: "var(--color-badge-purple-text)" },
+  queue: { bg: "var(--color-badge-orange-bg)", text: "var(--color-badge-orange-text)" },
+  alarm: { bg: "var(--color-badge-yellow-bg)", text: "var(--color-badge-yellow-text)" },
+  workflow: { bg: "var(--color-badge-emerald-bg)", text: "var(--color-badge-emerald-text)" },
 };
 
 function SourceBadge({ source }: { source: string | null }) {
   const label = source ?? "unknown";
-  const color = SOURCE_COLORS[label] ?? "bg-red-950/40 text-red-400";
+  const color = SOURCE_COLORS[label] ?? { bg: "var(--color-badge-red-bg)", text: "var(--color-badge-red-text)" };
   return (
-    <span class={`inline-flex px-2 py-0.5 rounded-md text-xs font-medium ${color}`}>
+    <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium" style={{ background: color.bg, color: color.text }}>
       {label}
     </span>
   );

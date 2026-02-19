@@ -34,6 +34,27 @@ html {
   --shadow-focus: 0 0 0 2px rgba(0, 0, 0, 0.06);
   --shadow-focus-soft: 0 0 0 1px rgba(0, 0, 0, 0.04);
   --radius-card: 10px;
+  --color-error-highlight: #fef2f2;
+  --color-error-ring: #fca5a5;
+  --color-error-icon-bg: #fef2f2;
+  --color-error-icon-text: #ef4444;
+  --color-btn-danger-hover-bg: #fef2f2;
+  --color-btn-danger-hover-text: #dc2626;
+  --color-btn-danger-hover-border: #fecaca;
+  --color-badge-red-bg: #fef2f2;
+  --color-badge-red-text: #b91c1c;
+  --color-badge-blue-bg: #eff6ff;
+  --color-badge-blue-text: #1d4ed8;
+  --color-badge-purple-bg: #faf5ff;
+  --color-badge-purple-text: #7e22ce;
+  --color-badge-orange-bg: #fff7ed;
+  --color-badge-orange-text: #c2410c;
+  --color-badge-yellow-bg: #fefce8;
+  --color-badge-yellow-text: #a16207;
+  --color-badge-emerald-bg: #ecfdf5;
+  --color-badge-emerald-text: #047857;
+  --color-span-ok: #059669;
+  --color-span-error: #ef4444;
 }
 
 /* Explicit dark mode */
@@ -62,6 +83,27 @@ html[data-theme="dark"] {
   --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
   --shadow-focus: 0 0 0 2px rgba(255, 255, 255, 0.1);
   --shadow-focus-soft: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --color-error-highlight: rgba(127, 29, 29, 0.4);
+  --color-error-ring: #7f1d1d;
+  --color-error-icon-bg: rgba(127, 29, 29, 0.4);
+  --color-error-icon-text: #f87171;
+  --color-btn-danger-hover-bg: rgba(127, 29, 29, 0.3);
+  --color-btn-danger-hover-text: #f87171;
+  --color-btn-danger-hover-border: #991b1b;
+  --color-badge-red-bg: rgba(127, 29, 29, 0.4);
+  --color-badge-red-text: #f87171;
+  --color-badge-blue-bg: rgba(23, 37, 84, 0.4);
+  --color-badge-blue-text: #60a5fa;
+  --color-badge-purple-bg: rgba(59, 7, 100, 0.4);
+  --color-badge-purple-text: #c084fc;
+  --color-badge-orange-bg: rgba(124, 45, 18, 0.4);
+  --color-badge-orange-text: #fb923c;
+  --color-badge-yellow-bg: rgba(113, 63, 18, 0.4);
+  --color-badge-yellow-text: #facc15;
+  --color-badge-emerald-bg: rgba(6, 78, 59, 0.4);
+  --color-badge-emerald-text: #34d399;
+  --color-span-ok: #047857;
+  --color-span-error: #ef4444;
 }
 
 /* Auto dark mode (follows system when no explicit theme) */
@@ -91,6 +133,27 @@ html[data-theme="dark"] {
     --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
     --shadow-focus: 0 0 0 2px rgba(255, 255, 255, 0.1);
     --shadow-focus-soft: 0 0 0 1px rgba(255, 255, 255, 0.06);
+    --color-error-highlight: rgba(127, 29, 29, 0.4);
+    --color-error-ring: #7f1d1d;
+    --color-error-icon-bg: rgba(127, 29, 29, 0.4);
+    --color-error-icon-text: #f87171;
+    --color-btn-danger-hover-bg: rgba(127, 29, 29, 0.3);
+    --color-btn-danger-hover-text: #f87171;
+    --color-btn-danger-hover-border: #991b1b;
+    --color-badge-red-bg: rgba(127, 29, 29, 0.4);
+    --color-badge-red-text: #f87171;
+    --color-badge-blue-bg: rgba(23, 37, 84, 0.4);
+    --color-badge-blue-text: #60a5fa;
+    --color-badge-purple-bg: rgba(59, 7, 100, 0.4);
+    --color-badge-purple-text: #c084fc;
+    --color-badge-orange-bg: rgba(124, 45, 18, 0.4);
+    --color-badge-orange-text: #fb923c;
+    --color-badge-yellow-bg: rgba(113, 63, 18, 0.4);
+    --color-badge-yellow-text: #facc15;
+    --color-badge-emerald-bg: rgba(6, 78, 59, 0.4);
+    --color-badge-emerald-text: #34d399;
+    --color-span-ok: #047857;
+    --color-span-error: #ef4444;
   }
 }
 
@@ -104,4 +167,11 @@ html[data-theme="dark"] {
 .scrollbar-thin::-webkit-scrollbar-thumb {
   background: var(--color-text-dim);
   border-radius: 3px;
+}
+
+/* Danger button hover */
+.btn-danger:hover {
+  background: var(--color-btn-danger-hover-bg);
+  color: var(--color-btn-danger-hover-text);
+  border-color: var(--color-btn-danger-hover-border);
 }

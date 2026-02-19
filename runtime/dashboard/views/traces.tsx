@@ -249,7 +249,7 @@ export function TracesView() {
         </div>
         <button
           onClick={() => { clearTraces.mutate(); setSelectedTraceId(null); }}
-          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all"
+          class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
         >
           Clear all
         </button>
@@ -322,9 +322,11 @@ export function TracesView() {
               {attributeFilters.map((f, i) => (
                 <span
                   key={i}
-                  class={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium ${
-                    f.type === "include" ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
-                  }`}
+                  class="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium"
+                  style={{
+                    background: f.type === "include" ? "var(--color-badge-emerald-bg)" : "var(--color-badge-red-bg)",
+                    color: f.type === "include" ? "var(--color-badge-emerald-text)" : "var(--color-badge-red-text)",
+                  }}
                 >
                   {f.type === "include" ? "+" : "\u2212"} {f.key}={f.value}
                   <button
@@ -604,13 +606,14 @@ function LogsListTab() {
 
 // ─── Trace Detail Drawer ─────────────────────────────────────────────
 
-const SOURCE_BADGE_COLORS: Record<string, string> = {
-  fetch: "bg-blue-100 text-blue-700",
-  scheduled: "bg-purple-100 text-purple-700",
-  queue: "bg-orange-100 text-orange-700",
-  alarm: "bg-yellow-100 text-yellow-700",
-  workflow: "bg-emerald-100 text-emerald-700",
+const SOURCE_BADGE_STYLES: Record<string, { bg: string; color: string }> = {
+  fetch: { bg: "var(--color-badge-blue-bg)", color: "var(--color-badge-blue-text)" },
+  scheduled: { bg: "var(--color-badge-purple-bg)", color: "var(--color-badge-purple-text)" },
+  queue: { bg: "var(--color-badge-orange-bg)", color: "var(--color-badge-orange-text)" },
+  alarm: { bg: "var(--color-badge-yellow-bg)", color: "var(--color-badge-yellow-text)" },
+  workflow: { bg: "var(--color-badge-emerald-bg)", color: "var(--color-badge-emerald-text)" },
 };
+const DEFAULT_BADGE_STYLE = { bg: "var(--color-badge-red-bg)", color: "var(--color-badge-red-text)" };
 
 function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
   traceId: string;
@@ -688,18 +691,20 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
                       <a
                         key={err.id}
                         href={`#/errors/${err.id}`}
-                        class="flex items-center gap-2 px-3 py-2 rounded-md bg-red-50 border border-red-100 text-xs no-underline hover:bg-red-100 transition-colors"
+                        class="flex items-center gap-2 px-3 py-2 rounded-md text-xs no-underline transition-colors"
+                        style={{ background: "var(--color-error-highlight)", borderColor: "var(--color-error-ring)" }}
                       >
-                        {err.source && (
-                          <span class={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                            SOURCE_BADGE_COLORS[err.source] ?? "bg-red-100 text-red-700"
-                          }`}>
-                            {err.source}
-                          </span>
-                        )}
-                        <span class="font-medium text-red-700">{err.errorName}</span>
-                        <span class="text-red-500 truncate">{err.errorMessage}</span>
-                        <span class="text-red-400 font-mono ml-auto flex-shrink-0">{formatTimestamp(err.timestamp)}</span>
+                        {err.source && (() => {
+                          const s = SOURCE_BADGE_STYLES[err.source] ?? DEFAULT_BADGE_STYLE;
+                          return (
+                            <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ background: s.bg, color: s.color }}>
+                              {err.source}
+                            </span>
+                          );
+                        })()}
+                        <span class="font-medium" style={{ color: "var(--color-badge-red-text)" }}>{err.errorName}</span>
+                        <span style={{ color: "var(--color-badge-red-text)" }} class="truncate">{err.errorMessage}</span>
+                        <span style={{ color: "var(--color-badge-red-text)", opacity: 0.7 }} class="font-mono ml-auto flex-shrink-0">{formatTimestamp(err.timestamp)}</span>
                       </a>
                     ))}
                   </div>
