@@ -7,11 +7,13 @@ export interface SpanOptions {
   kind?: SpanData["kind"];
   attributes?: Record<string, unknown>;
   workerName?: string;
+  /** Force a new root trace, ignoring any active parent context. */
+  newTrace?: boolean;
 }
 
 export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>): Promise<T> {
   const store = getTraceStore();
-  const parent = getActiveContext();
+  const parent = opts.newTrace ? undefined : getActiveContext();
 
   const spanId = generateId();
   const traceId = parent?.traceId ?? generateTraceId();

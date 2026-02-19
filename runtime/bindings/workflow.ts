@@ -216,32 +216,33 @@ class WorkflowStepImpl {
     if (this.abortSignal.aborted) throw new Error("workflow terminated");
     this.checkDuplicateStepName(`sleep:${name}`);
 
-    const cached = this.getCachedStep(`sleep:${name}`);
-    if (cached) {
-      // Resume: compute remaining time from the stored target timestamp
-      const { until } = JSON.parse(cached.output!) as { until: number };
-      const remaining = Math.max(0, until - Date.now());
-      if (remaining > 0) {
-        console.log(`  [workflow] sleep: ${name} (resuming, ${remaining}ms remaining)`);
-        await interruptibleDelay(remaining, this.abortSignal);
-      } else {
-        console.log(`  [workflow] sleep: ${name} (cached, already elapsed)`);
+    console.log(`  [workflow] sleep: ${name}`);
+    return startSpan({
+      name: `sleep ${name}`,
+      kind: "internal",
+      attributes: { "workflow.step.name": name, "workflow.step.type": "sleep", "workflow.instance_id": this.instanceId },
+    }, async () => {
+      const cached = this.getCachedStep(`sleep:${name}`);
+      if (cached) {
+        const { until } = JSON.parse(cached.output!) as { until: number };
+        const remaining = Math.max(0, until - Date.now());
+        if (remaining > 0) {
+          await interruptibleDelay(remaining, this.abortSignal);
+        }
+        return;
       }
-      return;
-    }
 
-    const ms = typeof duration === "number" ? duration : parseDuration(duration);
-    if (ms > this.limits.maxSleepMs) {
-      throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
-    }
-    const until = Date.now() + ms;
-    // Checkpoint before sleeping so resume knows the target time
-    this.cacheStep(`sleep:${name}`, { until });
+      const ms = typeof duration === "number" ? duration : parseDuration(duration);
+      if (ms > this.limits.maxSleepMs) {
+        throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
+      }
+      const until = Date.now() + ms;
+      this.cacheStep(`sleep:${name}`, { until });
 
-    console.log(`  [workflow] sleep: ${name} (${duration}, ${ms}ms)`);
-    if (ms > 0) {
-      await interruptibleDelay(ms, this.abortSignal);
-    }
+      if (ms > 0) {
+        await interruptibleDelay(ms, this.abortSignal);
+      }
+    });
   }
 
   async sleepUntil(name: string, timestamp: Date | number) {
@@ -251,31 +252,32 @@ class WorkflowStepImpl {
 
     const ts = typeof timestamp === "number" ? new Date(timestamp) : timestamp;
 
-    const cached = this.getCachedStep(`sleepUntil:${name}`);
-    if (cached) {
-      // Resume: compute remaining time
-      const remaining = Math.max(0, ts.getTime() - Date.now());
-      if (remaining > 0) {
-        console.log(`  [workflow] sleepUntil: ${name} (resuming, ${remaining}ms remaining)`);
-        await interruptibleDelay(remaining, this.abortSignal);
-      } else {
-        console.log(`  [workflow] sleepUntil: ${name} (cached, already elapsed)`);
+    console.log(`  [workflow] sleepUntil: ${name}`);
+    return startSpan({
+      name: `sleepUntil ${name}`,
+      kind: "internal",
+      attributes: { "workflow.step.name": name, "workflow.step.type": "sleepUntil", "workflow.instance_id": this.instanceId },
+    }, async () => {
+      const cached = this.getCachedStep(`sleepUntil:${name}`);
+      if (cached) {
+        const remaining = Math.max(0, ts.getTime() - Date.now());
+        if (remaining > 0) {
+          await interruptibleDelay(remaining, this.abortSignal);
+        }
+        return;
       }
-      return;
-    }
 
-    const delay = Math.max(0, ts.getTime() - Date.now());
-    if (delay > this.limits.maxSleepMs) {
-      throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
-    }
+      const delay = Math.max(0, ts.getTime() - Date.now());
+      if (delay > this.limits.maxSleepMs) {
+        throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`);
+      }
 
-    // Checkpoint before sleeping
-    this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
+      this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
 
-    console.log(`  [workflow] sleepUntil: ${name} (${ts.toISOString()}, ${delay}ms remaining)`);
-    if (delay > 0) {
-      await interruptibleDelay(delay, this.abortSignal);
-    }
+      if (delay > 0) {
+        await interruptibleDelay(delay, this.abortSignal);
+      }
+    });
   }
 
   async waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: string }): Promise<{ payload: T; timestamp: Date; type: string }> {
@@ -289,85 +291,87 @@ class WorkflowStepImpl {
       throw new Error(`Invalid event type "${options.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`);
     }
 
-    // Check checkpoint
-    const cached = this.getCachedStep(`waitForEvent:${name}`);
-    if (cached) {
-      console.log(`  [workflow] waitForEvent: ${name} (cached)`);
-      const parsed = JSON.parse(cached.output!) as { payload: T; timestamp: string; type: string };
-      return { payload: parsed.payload, timestamp: new Date(parsed.timestamp), type: parsed.type };
-    }
-
-    // Update status to waiting
-    this.db
-      .query("UPDATE workflow_instances SET status = 'waiting', updated_at = ? WHERE id = ?")
-      .run(Date.now(), this.instanceId);
-
     console.log(`  [workflow] waitForEvent: ${name} (type: ${options.type})`);
+    return startSpan({
+      name: `waitForEvent ${name}`,
+      kind: "internal",
+      attributes: { "workflow.step.name": name, "workflow.step.type": "waitForEvent", "workflow.event.type": options.type, "workflow.instance_id": this.instanceId },
+    }, async () => {
+      // Check checkpoint
+      const cached = this.getCachedStep(`waitForEvent:${name}`);
+      if (cached) {
+        const parsed = JSON.parse(cached.output!) as { payload: T; timestamp: string; type: string };
+        return { payload: parsed.payload, timestamp: new Date(parsed.timestamp), type: parsed.type };
+      }
 
-    // Check if event already exists in DB
-    const existing = this.db
-      .query("SELECT payload, created_at FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1")
-      .get(this.instanceId, options.type) as { payload: string | null; created_at: number } | null;
-
-    if (existing) {
-      // Consume the event
+      // Update status to waiting
       this.db
-        .query("DELETE FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1")
-        .run(this.instanceId, options.type);
+        .query("UPDATE workflow_instances SET status = 'waiting', updated_at = ? WHERE id = ?")
+        .run(Date.now(), this.instanceId);
+
+      // Check if event already exists in DB
+      const existing = this.db
+        .query("SELECT payload, created_at FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1")
+        .get(this.instanceId, options.type) as { payload: string | null; created_at: number } | null;
+
+      if (existing) {
+        this.db
+          .query("DELETE FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1")
+          .run(this.instanceId, options.type);
+        this.db
+          .query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+          .run(Date.now(), this.instanceId);
+        const payload = (existing.payload !== null ? JSON.parse(existing.payload) : undefined) as T;
+        const event = { payload, timestamp: new Date(existing.created_at), type: options.type };
+        this.cacheStep(`waitForEvent:${name}`, event);
+        return event;
+      }
+
+      // Wait for event to arrive via sendEvent()
+      const timeoutMs = options.timeout ? parseDuration(options.timeout) : this.limits.defaultWaitForEventTimeoutMs;
+      if (timeoutMs < this.limits.minWaitForEventTimeoutMs) {
+        throw new Error(`waitForEvent timeout ${timeoutMs}ms is below minimum of ${this.limits.minWaitForEventTimeoutMs}ms`);
+      }
+      if (timeoutMs > this.limits.maxWaitForEventTimeoutMs) {
+        throw new Error(`waitForEvent timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxWaitForEventTimeoutMs}ms`);
+      }
+
+      const result = await new Promise<{ payload: T; timestamp: Date; type: string }>((resolve, reject) => {
+        const waiters = getWaitersForInstance(this.instanceId);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let abortHandler: (() => void) | undefined;
+
+        const cleanup = () => {
+          waiters.delete(options.type);
+          if (timer) clearTimeout(timer);
+          if (abortHandler) this.abortSignal.removeEventListener("abort", abortHandler);
+        };
+
+        waiters.set(options.type, (payload: unknown) => {
+          cleanup();
+          resolve({ payload: payload as T, timestamp: new Date(), type: options.type });
+        });
+
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`waitForEvent timed out after ${options.timeout ?? "24 hours"}`));
+        }, timeoutMs);
+
+        abortHandler = () => {
+          cleanup();
+          reject(new Error("workflow terminated"));
+        };
+        this.abortSignal.addEventListener("abort", abortHandler);
+      });
+
       // Restore running status
       this.db
         .query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
         .run(Date.now(), this.instanceId);
-      const payload = (existing.payload !== null ? JSON.parse(existing.payload) : undefined) as T;
-      const event = { payload, timestamp: new Date(existing.created_at), type: options.type };
-      this.cacheStep(`waitForEvent:${name}`, event);
-      return event;
-    }
 
-    // Wait for event to arrive via sendEvent()
-    const timeoutMs = options.timeout ? parseDuration(options.timeout) : this.limits.defaultWaitForEventTimeoutMs;
-    if (timeoutMs < this.limits.minWaitForEventTimeoutMs) {
-      throw new Error(`waitForEvent timeout ${timeoutMs}ms is below minimum of ${this.limits.minWaitForEventTimeoutMs}ms`);
-    }
-    if (timeoutMs > this.limits.maxWaitForEventTimeoutMs) {
-      throw new Error(`waitForEvent timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxWaitForEventTimeoutMs}ms`);
-    }
-
-    const result = await new Promise<{ payload: T; timestamp: Date; type: string }>((resolve, reject) => {
-      const waiters = getWaitersForInstance(this.instanceId);
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abortHandler: (() => void) | undefined;
-
-      const cleanup = () => {
-        waiters.delete(options.type);
-        if (timer) clearTimeout(timer);
-        if (abortHandler) this.abortSignal.removeEventListener("abort", abortHandler);
-      };
-
-      waiters.set(options.type, (payload: unknown) => {
-        cleanup();
-        resolve({ payload: payload as T, timestamp: new Date(), type: options.type });
-      });
-
-      timer = setTimeout(() => {
-        cleanup();
-        reject(new Error(`waitForEvent timed out after ${options.timeout ?? "24 hours"}`));
-      }, timeoutMs);
-
-      abortHandler = () => {
-        cleanup();
-        reject(new Error("workflow terminated"));
-      };
-      this.abortSignal.addEventListener("abort", abortHandler);
+      this.cacheStep(`waitForEvent:${name}`, result);
+      return result;
     });
-
-    // Restore running status
-    this.db
-      .query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-      .run(Date.now(), this.instanceId);
-
-    this.cacheStep(`waitForEvent:${name}`, result);
-    return result;
   }
 }
 
@@ -727,6 +731,7 @@ export class SqliteWorkflowBinding {
           kind: "server",
           attributes: { "workflow.name": workflowName ?? "unknown", "workflow.instance_id": id },
           workerName: workflowName,
+          newTrace: true,
         }, () => instance.run(event, step));
         if (abortController.signal.aborted) return;
         db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
