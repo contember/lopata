@@ -70,6 +70,7 @@ function D1DatabaseDetail({ dbName, basePath, routeTab, routeTable, routeQuery }
       <SqlBrowser
         tables={tables}
         execQuery={(sql) => rpc("d1.query", { dbName, sql })}
+        historyScope={`d1:${dbName}`}
         basePath={basePath}
         routeTab={routeTab}
         routeTable={routeTable}

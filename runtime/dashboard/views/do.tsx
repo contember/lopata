@@ -118,6 +118,7 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
           <SqlBrowser
             tables={sqlTables}
             execQuery={(sql) => rpc("do.sqlQuery", { ns, id, sql })}
+            historyScope={`do:${ns}:${id}`}
           />
         </div>
       )}

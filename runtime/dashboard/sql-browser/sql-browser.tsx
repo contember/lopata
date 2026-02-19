@@ -7,12 +7,12 @@ import { DataBrowserTab } from "./data-browser-tab";
 import { SchemaBrowserTab } from "./schema-browser-tab";
 import { SqlConsoleTab } from "./sql-console-tab";
 
-export function SqlBrowser({ tables, execQuery, basePath, routeTab, routeTable, routeQuery }: SqlBrowserProps) {
+export function SqlBrowser({ tables, execQuery, historyScope, basePath, routeTab, routeTable, routeQuery }: SqlBrowserProps) {
   const [localTab, setLocalTab] = useState<Tab>("data");
   const tab = basePath ? (routeTab ?? "data") : localTab;
   const [consoleSql, setConsoleSql] = useState("");
-  const history = useHistory();
-  const browserHistory = useBrowserHistory();
+  const history = useHistory(historyScope);
+  const browserHistory = useBrowserHistory(historyScope);
 
   const switchTab = (t: Tab) => {
     if (basePath) navigate(basePath + "/" + t);
