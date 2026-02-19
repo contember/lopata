@@ -140,15 +140,15 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
                 <div class="flex-1 h-6 relative bg-panel-secondary rounded">
                   <div
                     class={`absolute top-0.5 bottom-0.5 rounded flex items-center overflow-hidden ${
-                      span.status === "error" ? "bg-red-400" :
-                      span.status === "ok" ? "bg-emerald-400" :
+                      span.status === "error" ? "bg-red-500" :
+                      span.status === "ok" ? "bg-emerald-700" :
                       "bg-gray-300 animate-pulse"
                     }`}
                     style={{ left: `${offset}%`, width: `${Math.max(width, 0.5)}%` }}
                   >
                     {/* Key attributes inside bar */}
                     {keyAttrs.length > 0 && (
-                      <span class="text-[9px] text-white/80 px-1 truncate whitespace-nowrap">
+                      <span class="text-[9px] text-white px-1 truncate whitespace-nowrap">
                         {keyAttrs.map(([k, v]) => `${k}=${String(v)}`).join(" ")}
                       </span>
                     )}
