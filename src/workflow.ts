@@ -10,7 +10,7 @@ export class MyWorkflow extends WorkflowEntrypoint<Env, Params> {
       return { processed: event.payload.input.toUpperCase() };
     });
 
-    await step.sleep("wait a bit", "10 seconds");
+    await step.sleep("wait a bit", "10 minutes");
 
     await step.do("step 2: finalize", async () => {
       return { final: result.processed, done: true };

@@ -5,6 +5,10 @@ export class Counter extends DurableObject<Env> {
     return (await this.ctx.storage.get<number>("count")) ?? 0;
   }
 
+  override async alarm(): Promise<void> {
+	console.log("Alarm triggered! Current count:", await this.getCount());
+  }
+
   async increment(): Promise<number> {
     const count = (await this.getCount()) + 1;
     await this.ctx.storage.put("count", count);
