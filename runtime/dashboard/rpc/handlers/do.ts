@@ -1,5 +1,5 @@
 import type { HandlerContext, DoNamespace, DoInstance, DoDetail, OkResponse, D1Table, QueryResult } from "../types";
-import { getAllConfigs } from "../types";
+import { getAllConfigs, getDoNamespace } from "../types";
 import { getDatabase, getDataDir } from "../../../db";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
@@ -47,7 +47,7 @@ export const handlers = {
     }));
   },
 
-  "do.getInstance"({ ns, id }: { ns: string; id: string }): DoDetail {
+  "do.getInstance"({ ns, id }: { ns: string; id: string }, ctx: HandlerContext): DoDetail {
     const db = getDatabase();
     const entries = db.query<{ key: string; value: string }, [string, string]>(
       "SELECT key, value FROM do_storage WHERE namespace = ? AND id = ? ORDER BY key"
@@ -57,7 +57,8 @@ export const handlers = {
       "SELECT alarm_time FROM do_alarms WHERE namespace = ? AND id = ?"
     ).get(ns, id);
 
-    return { entries, alarm: alarm?.alarm_time ?? null };
+    const namespace = getDoNamespace(ctx, ns);
+    return { entries, alarm: alarm?.alarm_time ?? null, hasAlarmHandler: namespace?.hasAlarmHandler() ?? false };
   },
 
   "do.deleteEntry"({ ns, id, key }: { ns: string; id: string; key: string }): OkResponse {
@@ -83,6 +84,13 @@ export const handlers = {
     } finally {
       dodb.close();
     }
+  },
+
+  async "do.triggerAlarm"({ ns, id }: { ns: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
+    const namespace = getDoNamespace(ctx, ns);
+    if (!namespace) throw new Error(`Durable Object namespace "${ns}" not found (worker not loaded?)`);
+    await namespace.triggerAlarm(id);
+    return { ok: true };
   },
 
   "do.sqlQuery"({ ns, id, sql }: { ns: string; id: string; sql: string }): QueryResult {

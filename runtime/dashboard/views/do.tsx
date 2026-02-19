@@ -93,11 +93,17 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 }) {
   const { data, refetch } = useQuery("do.getInstance", { ns, id });
   const deleteEntry = useMutation("do.deleteEntry");
+  const triggerAlarm = useMutation("do.triggerAlarm");
   const { data: sqlTables } = useQuery("do.listSqlTables", { ns, id });
 
   const handleDelete = async (key: string) => {
     if (!confirm(`Delete storage key "${key}"?`)) return;
     await deleteEntry.mutate({ ns, id, key });
+    refetch();
+  };
+
+  const handleTriggerAlarm = async () => {
+    await triggerAlarm.mutate({ ns, id });
     refetch();
   };
 
@@ -110,9 +116,18 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
         { label: ns, href: `#/do/${encodeURIComponent(ns)}` },
         { label: id.slice(0, 16) + "..." },
       ]} />
-      {data.alarm && (
-        <div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink">
-          Alarm set for: {formatTime(data.alarm)}
+      {(data.alarm || data.hasAlarmHandler) && (
+        <div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink flex items-center justify-between">
+          <span>{data.alarm ? `Alarm set for: ${formatTime(data.alarm)}` : "No alarm scheduled"}</span>
+          {data.hasAlarmHandler && (
+            <button
+              onClick={handleTriggerAlarm}
+              disabled={triggerAlarm.isLoading}
+              class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              {triggerAlarm.isLoading ? "Triggering..." : "Trigger now"}
+            </button>
+          )}
         </div>
       )}
       {data.entries.length === 0 ? (

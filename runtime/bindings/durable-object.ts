@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
 import type { DOExecutor, DOExecutorFactory } from "./do-executor";
-import { persistError } from "../tracing/span";
+import { persistError, startSpan } from "../tracing/span";
 
 // --- SQL Storage Cursor ---
 
@@ -777,7 +777,15 @@ export class DurableObjectNamespaceImpl {
       .run(this.namespaceName, idStr);
 
     try {
-      await executor.executeAlarm(retryCount);
+      await startSpan({
+        name: `do.alarm ${this.namespaceName}`,
+        kind: "server",
+        attributes: {
+          "do.namespace": this.namespaceName,
+          "do.id": idStr,
+          "do.alarm.retryCount": retryCount,
+        },
+      }, () => executor.executeAlarm(retryCount));
     } catch (e) {
       persistError(e, "alarm");
       if (retryCount < MAX_ALARM_RETRIES) {
@@ -887,6 +895,20 @@ export class DurableObjectNamespaceImpl {
   /** @internal Get the executor for a given id */
   _getExecutor(idStr: string): DOExecutor | null {
     return this._executors.get(idStr) ?? null;
+  }
+
+  /** Whether the DO class defines an alarm() handler */
+  hasAlarmHandler(): boolean {
+    return typeof this._class?.prototype?.alarm === "function";
+  }
+
+  /** @internal Trigger the alarm handler immediately (used by dashboard) */
+  triggerAlarm(idStr: string): Promise<void> {
+    // Cancel any existing scheduled timer
+    const existing = this.alarmTimers.get(idStr);
+    if (existing) clearTimeout(existing);
+    this.alarmTimers.delete(idStr);
+    return this._fireAlarm(idStr, 0);
   }
 
   newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
