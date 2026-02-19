@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { persistError } from "../tracing/span";
+import { startSpan, persistError } from "../tracing/span";
 
 // --- Limits ---
 
@@ -170,39 +170,45 @@ class WorkflowStepImpl {
 
     console.log(`  [workflow] step: ${name}`);
 
-    const maxRetries = config?.retries?.limit ?? this.limits.defaultRetryLimit;
-    const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : this.limits.defaultRetryDelayMs;
-    const backoff = config?.retries?.backoff ?? this.limits.defaultRetryBackoff;
-    const timeoutMs = config?.timeout ? parseDuration(config.timeout) : this.limits.defaultStepTimeoutMs;
+    return startSpan({
+      name: `step ${name}`,
+      kind: "internal",
+      attributes: { "workflow.step.name": name, "workflow.instance_id": this.instanceId },
+    }, async () => {
+      const maxRetries = config?.retries?.limit ?? this.limits.defaultRetryLimit;
+      const delayMs = config?.retries?.delay ? parseDuration(config.retries.delay) : this.limits.defaultRetryDelayMs;
+      const backoff = config?.retries?.backoff ?? this.limits.defaultRetryBackoff;
+      const timeoutMs = config?.timeout ? parseDuration(config.timeout) : this.limits.defaultStepTimeoutMs;
 
-    if (timeoutMs > this.limits.maxStepDoTimeoutMs) {
-      throw new Error(`Step timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxStepDoTimeoutMs}ms`);
-    }
+      if (timeoutMs > this.limits.maxStepDoTimeoutMs) {
+        throw new Error(`Step timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxStepDoTimeoutMs}ms`);
+      }
 
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (this.abortSignal.aborted) throw new Error("workflow terminated");
-      try {
-        let result: T;
-        result = await Promise.race([
-          callback(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Step "${name}" timed out after ${config?.timeout ?? "10 minutes"}`)), timeoutMs)),
-        ]);
-        this.cacheStep(name, result);
-        return result;
-      } catch (err) {
-        if (err instanceof NonRetryableError) {
-          throw err;
-        }
-        lastError = err;
-        if (attempt < maxRetries) {
-          const d = computeDelay(delayMs, attempt, backoff);
-          console.log(`  [workflow] step "${name}" attempt ${attempt + 1} failed, retrying in ${d}ms`);
-          await interruptibleDelay(d, this.abortSignal);
+      let lastError: unknown;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (this.abortSignal.aborted) throw new Error("workflow terminated");
+        try {
+          let result: T;
+          result = await Promise.race([
+            callback(),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Step "${name}" timed out after ${config?.timeout ?? "10 minutes"}`)), timeoutMs)),
+          ]);
+          this.cacheStep(name, result);
+          return result;
+        } catch (err) {
+          if (err instanceof NonRetryableError) {
+            throw err;
+          }
+          lastError = err;
+          if (attempt < maxRetries) {
+            const d = computeDelay(delayMs, attempt, backoff);
+            console.log(`  [workflow] step "${name}" attempt ${attempt + 1} failed, retrying in ${d}ms`);
+            await interruptibleDelay(d, this.abortSignal);
+          }
         }
       }
-    }
-    throw lastError;
+      throw lastError;
+    });
   }
 
   async sleep(name: string, duration: string | number) {
@@ -716,7 +722,12 @@ export class SqliteWorkflowBinding {
 
     (async () => {
       try {
-        const result = await instance.run(event, step);
+        const result = await startSpan({
+          name: `workflow ${workflowName ?? "run"}`,
+          kind: "server",
+          attributes: { "workflow.name": workflowName ?? "unknown", "workflow.instance_id": id },
+          workerName: workflowName,
+        }, () => instance.run(event, step));
         if (abortController.signal.aborted) return;
         db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
           .run(JSON.stringify(result), Date.now(), id);
