@@ -245,12 +245,12 @@ export function HomeView() {
         <div class="flex flex-col gap-5">
           <div class="bg-panel rounded-xl border border-border p-5">
             <div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Resources</div>
-            <div class="flex flex-col gap-4">
-              <MiniGauge label="RSS" value={rt.memory.rss} max={512 * 1048576} />
-              <MiniGauge label="Heap" value={rt.memory.heapUsed} max={rt.memory.heapTotal} />
-              <MiniGauge label="External" value={rt.memory.external} max={rt.memory.heapTotal} />
+            <div class="flex flex-col gap-2">
+              <Kv k="RSS" v={fmtBytes(rt.memory.rss)} />
+              <Kv k="Heap" v={fmtBytes(rt.memory.heapUsed)} />
+              <Kv k="External" v={fmtBytes(rt.memory.external)} />
             </div>
-            <div class="mt-4 pt-4 border-t border-border-subtle flex flex-col gap-2">
+            <div class="mt-3 pt-3 border-t border-border-subtle flex flex-col gap-2">
               <Kv k="CPU user" v={fmtMicros(rt.cpuUsage.user)} />
               <Kv k="CPU system" v={fmtMicros(rt.cpuUsage.system)} />
             </div>
