@@ -14,10 +14,12 @@ declare namespace Cloudflare {
 		SQL_NOTES: DurableObjectNamespace<import("./src/index").SqlNotes>;
 		FAILING: Service;
 		MY_CONTAINER: DurableObjectNamespace<import("./src/index").MyContainer>;
+		SANDBOX: DurableObjectNamespace<import("./src/index").Sandbox>;
 		MY_WORKFLOW: Workflow<Parameters<import("./src/index").MyWorkflow['run']>[0]['payload']>;
 		MY_QUEUE: Queue;
 		DB: D1Database;
 		MAILER: SendEmail;
+		ANALYTICS: AnalyticsEngineDataset;
 	}
 }
 interface Env extends Cloudflare.Env {}

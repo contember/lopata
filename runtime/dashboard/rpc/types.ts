@@ -26,6 +26,7 @@ export interface OverviewData {
   scheduled: number;
   email: number;
   ai: number;
+  analyticsEngine: number;
   generations: GenerationInfo[];
   runtime: {
     bunVersion: string;
@@ -323,6 +324,25 @@ export interface AiRequest {
   error: string | null;
   is_streaming: number;
   created_at: number;
+}
+
+// Analytics Engine
+export interface AnalyticsEngineDataPoint {
+	id: string;
+	dataset: string;
+	timestamp: number;
+	_sample_interval: number;
+	index1: string | null;
+	blob1: string | null;
+	blob2: string | null;
+	blob3: string | null;
+	blob4: string | null;
+	blob5: string | null;
+	double1: number | null;
+	double2: number | null;
+	double3: number | null;
+	double4: number | null;
+	double5: number | null;
 }
 
 // Email

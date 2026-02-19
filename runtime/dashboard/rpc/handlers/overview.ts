@@ -34,6 +34,7 @@ export const handlers = {
 
     const emailCount = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM email_messages").get()?.count ?? 0;
     const aiCount = db.query<{ count: number }, []>("SELECT COUNT(*) as count FROM ai_requests").get()?.count ?? 0;
+    const analyticsEngineCount = db.query<{ count: number }, []>("SELECT COUNT(DISTINCT dataset) as count FROM analytics_engine").get()?.count ?? 0;
 
     return {
       kv: dbKv.size,
@@ -49,6 +50,7 @@ export const handlers = {
       scheduled: getAllConfigs(ctx).reduce((sum, cfg) => sum + (cfg.triggers?.crons?.length ?? 0), 0),
       email: emailCount,
       ai: aiCount,
+      analyticsEngine: analyticsEngineCount,
       generations: ctx.manager ? ctx.manager.list() : [],
       runtime: (() => {
         const mem = process.memoryUsage();

@@ -18,6 +18,7 @@ import { ErrorsView } from "./views/errors";
 import { ScheduledView } from "./views/scheduled";
 import { EmailView } from "./views/email";
 import { AiView } from "./views/ai";
+import { AnalyticsEngineView } from "./views/analytics-engine";
 
 interface NavItem {
   path: string;
@@ -45,6 +46,7 @@ const NAV_GROUPS: NavGroup[] = [
         badge: c => c.errors || null, badgeColor: "bg-red-500",
       },
       { path: "/traces", label: "Traces", icon: "⟡" },
+      { path: "/analytics", label: "Analytics Engine", icon: "⊘" },
     ],
   },
   {
@@ -177,6 +179,7 @@ function App() {
     if (route.startsWith("/scheduled")) return <ScheduledView route={route} />;
     if (route.startsWith("/email")) return <EmailView route={route} />;
     if (route.startsWith("/ai")) return <AiView route={route} />;
+    if (route.startsWith("/analytics")) return <AnalyticsEngineView route={route} />;
     return <div class="p-8 text-text-muted">Page not found</div>;
   }
 

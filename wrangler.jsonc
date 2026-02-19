@@ -15,7 +15,8 @@
     "bindings": [
       { "name": "COUNTER", "class_name": "Counter" },
       { "name": "ERROR_BRIDGE", "class_name": "ErrorBridge" },
-      { "name": "SQL_NOTES", "class_name": "SqlNotes" }
+      { "name": "SQL_NOTES", "class_name": "SqlNotes" },
+      { "name": "SANDBOX", "class_name": "Sandbox" }
     ]
   },
   "workflows": [
@@ -37,7 +38,11 @@
     { "binding": "FAILING", "service": "failing-worker" }
   ],
   "containers": [
-    { "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 }
+    { "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 },
+    { "class_name": "Sandbox", "image": "./Dockerfile.sandbox", "max_instances": 1 }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "ANALYTICS", "dataset": "playground" }
   ],
   "send_email": [
     { "name": "MAILER" }
@@ -49,6 +54,7 @@
     { "tag": "v1", "new_classes": ["Counter"] },
     { "tag": "v2", "new_classes": ["MyContainer"] },
     { "tag": "v3", "new_classes": ["ErrorBridge"] },
-    { "tag": "v4", "new_sqlite_classes": ["SqlNotes"] }
+    { "tag": "v4", "new_sqlite_classes": ["SqlNotes"] },
+    { "tag": "v5", "new_sqlite_classes": ["Sandbox"] }
   ]
 }

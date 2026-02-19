@@ -231,6 +231,25 @@ export function runMigrations(db: Database): void {
 			created_at INTEGER NOT NULL
 		)
 	`);
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS analytics_engine (
+			id TEXT PRIMARY KEY,
+			dataset TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			_sample_interval INTEGER NOT NULL DEFAULT 1,
+			index1 TEXT,
+			blob1 TEXT, blob2 TEXT, blob3 TEXT, blob4 TEXT, blob5 TEXT,
+			blob6 TEXT, blob7 TEXT, blob8 TEXT, blob9 TEXT, blob10 TEXT,
+			blob11 TEXT, blob12 TEXT, blob13 TEXT, blob14 TEXT, blob15 TEXT,
+			blob16 TEXT, blob17 TEXT, blob18 TEXT, blob19 TEXT, blob20 TEXT,
+			double1 REAL, double2 REAL, double3 REAL, double4 REAL, double5 REAL,
+			double6 REAL, double7 REAL, double8 REAL, double9 REAL, double10 REAL,
+			double11 REAL, double12 REAL, double13 REAL, double14 REAL, double15 REAL,
+			double16 REAL, double17 REAL, double18 REAL, double19 REAL, double20 REAL
+		)
+	`);
+	db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_engine_dataset_ts ON analytics_engine(dataset, timestamp)`);
 }
 
 /** Returns the path to the .bunflare data directory. */

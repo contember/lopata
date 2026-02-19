@@ -109,6 +109,15 @@ export const handlers = {
           break;
         }
 
+        case "analytics_engine": {
+          const items = (config.analytics_engine_datasets ?? []).map(ae => ({
+            name: ae.binding,
+            value: ae.dataset ?? ae.binding,
+          }));
+          if (items.length) groups.push({ title: "Bindings", items });
+          break;
+        }
+
         case "email": {
           const items = (config.send_email ?? []).map(e => {
             let value = e.destination_address ?? "any destination";

@@ -14,6 +14,7 @@ import { createServiceBinding } from "./bindings/service-binding";
 import { StaticAssets } from "./bindings/static-assets";
 import { ImagesBinding } from "./bindings/images";
 import { BrowserBinding } from "./bindings/browser";
+import { SqliteAnalyticsEngine } from "./bindings/analytics-engine";
 import { DockerManager } from "./bindings/container-docker";
 import { ContainerBase } from "./bindings/container";
 import type { DOExecutorFactory } from "./bindings/do-executor";
@@ -222,6 +223,15 @@ export function buildEnv(config: WranglerConfig, devVarsDir?: string, executorFa
     env[config.ai.binding] = instrumentBinding(
       new AiBinding(db, accountId, apiToken),
       { type: "ai", name: config.ai.binding, methods: ["run", "models"] },
+    );
+  }
+
+  // Analytics Engine datasets
+  for (const ae of config.analytics_engine_datasets ?? []) {
+    console.log(`[bunflare] Analytics Engine: ${ae.binding} (dataset: ${ae.dataset ?? ae.binding})`);
+    env[ae.binding] = instrumentBinding(
+      new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding),
+      { type: "analytics_engine", name: ae.binding, methods: ["writeDataPoint"] },
     );
   }
 
