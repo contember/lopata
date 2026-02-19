@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { startSpan, persistError } from "../tracing/span";
+import { startSpan, persistError, addSpanEvent } from "../tracing/span";
+import { getActiveContext } from "../tracing/context";
 
 // --- Limits ---
 
@@ -189,8 +190,14 @@ class WorkflowStepImpl {
         throw new Error(`Step timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxStepDoTimeoutMs}ms`);
       }
 
+      // Load persisted failed attempts so retries survive server restarts
+      const attemptRow = this.db
+        .query("SELECT failed_attempts FROM workflow_step_attempts WHERE instance_id = ? AND step_name = ?")
+        .get(this.instanceId, name) as { failed_attempts: number } | null;
+      const startAttempt = attemptRow?.failed_attempts ?? 0;
+
       let lastError: unknown;
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      for (let attempt = startAttempt; attempt <= maxRetries; attempt++) {
         if (this.abortSignal.aborted) throw new Error("workflow terminated");
         try {
           let result: T;
@@ -199,12 +206,30 @@ class WorkflowStepImpl {
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`Step "${name}" timed out after ${config?.timeout ?? "10 minutes"}`)), timeoutMs)),
           ]);
           this.cacheStep(name, result);
+          // Clean up attempt counter on success
+          this.db.query("DELETE FROM workflow_step_attempts WHERE instance_id = ? AND step_name = ?")
+            .run(this.instanceId, name);
           return result;
         } catch (err) {
           if (err instanceof NonRetryableError) {
             throw err;
           }
           lastError = err;
+          const errName = err instanceof Error ? (err.name || "Error") : "Error";
+          const errMsg = err instanceof Error ? err.message : String(err);
+          // Record error as span event so it appears in trace detail
+          addSpanEvent("step.retry_error", "error", `Attempt ${attempt + 1}/${maxRetries + 1} failed: ${errMsg}`, {
+            "error.name": errName,
+            "error.message": errMsg,
+            "error.stack": err instanceof Error ? err.stack : undefined,
+            "step.attempt": attempt + 1,
+            "step.max_retries": maxRetries,
+          });
+          // Persist to errors view (ALS context is active inside startSpan)
+          const errorId = persistError(err, "workflow.step");
+          // Persist failed attempt count, error, and link to error detail
+          this.db.query("INSERT OR REPLACE INTO workflow_step_attempts (instance_id, step_name, failed_attempts, last_error, last_error_name, last_error_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            .run(this.instanceId, name, attempt + 1, errMsg, errName, errorId, Date.now());
           if (attempt < maxRetries) {
             const d = computeDelay(delayMs, attempt, backoff);
             console.log(`  [workflow] step "${name}" attempt ${attempt + 1} failed, retrying in ${d}ms`);
@@ -546,6 +571,8 @@ export class SqliteWorkflowInstance {
       // Full restart: clear all cached steps
       this.db.query("DELETE FROM workflow_steps WHERE instance_id = ?").run(this.instanceId);
     }
+    // Clear step attempt counters
+    this.db.query("DELETE FROM workflow_step_attempts WHERE instance_id = ?").run(this.instanceId);
 
     this.db
       .query("UPDATE workflow_instances SET status = 'running', output = NULL, error = NULL, error_name = NULL, updated_at = ? WHERE id = ?")
@@ -632,6 +659,13 @@ export class SqliteWorkflowBinding {
   private cleanupRetentionExpired(): void {
     if (this.limits.maxRetentionMs <= 0) return;
     const cutoff = Date.now() - this.limits.maxRetentionMs;
+    // Clean up step attempts for instances being deleted
+    const expiredIds = this.db
+      .query("SELECT id FROM workflow_instances WHERE workflow_name = ? AND status IN ('complete', 'errored') AND updated_at < ?")
+      .all(this.workflowName, cutoff) as { id: string }[];
+    for (const { id } of expiredIds) {
+      this.db.query("DELETE FROM workflow_step_attempts WHERE instance_id = ?").run(id);
+    }
     this.db
       .query("DELETE FROM workflow_instances WHERE workflow_name = ? AND status IN ('complete', 'errored') AND updated_at < ?")
       .run(this.workflowName, cutoff);
@@ -766,6 +800,7 @@ export class SqliteWorkflowBinding {
     const event = { payload: params, timestamp: new Date(createdAt ?? Date.now()), instanceId: id };
 
     (async () => {
+      let workflowTraceId: string | undefined;
       try {
         const result = await startSpan({
           name: `workflow ${workflowName ?? "run"}`,
@@ -773,19 +808,31 @@ export class SqliteWorkflowBinding {
           attributes: { "workflow.name": workflowName ?? "unknown", "workflow.instance_id": id },
           workerName: workflowName,
           newTrace: true,
-        }, () => instance.run(event, step));
+        }, () => {
+          workflowTraceId = getActiveContext()?.traceId;
+          return instance.run(event, step);
+        });
         if (abortController.signal.aborted) return;
         db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
           .run(JSON.stringify(result), Date.now(), id);
+        // Clean up step attempts on successful completion
+        db.query("DELETE FROM workflow_step_attempts WHERE instance_id = ?").run(id);
         console.log(`[workflow] completed ${id}:`, result);
       } catch (err) {
-        if (abortController.signal.aborted) return;
         const errorName = err instanceof Error ? (err.name || err.constructor.name || "Error") : "Error";
         const message = err instanceof Error ? err.message : String(err);
+
+        if (abortController.signal.aborted) {
+          // Terminated — store error info but keep "terminated" status
+          db.query("UPDATE workflow_instances SET error = ?, error_name = ?, updated_at = ? WHERE id = ?")
+            .run(message, errorName, Date.now(), id);
+          persistError(err, "workflow", workflowName, workflowTraceId);
+          return;
+        }
         db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
           .run(message, errorName, Date.now(), id);
         console.error(`[workflow] failed ${id}:`, err);
-        persistError(err, "workflow");
+        persistError(err, "workflow", workflowName, workflowTraceId);
       } finally {
         eventWaiters.delete(id);
         abortControllers.delete(id);

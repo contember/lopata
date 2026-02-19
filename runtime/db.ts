@@ -180,6 +180,19 @@ export function runMigrations(db: Database): void {
 	`);
 
 	db.run(`
+		CREATE TABLE IF NOT EXISTS workflow_step_attempts (
+			instance_id TEXT NOT NULL,
+			step_name TEXT NOT NULL,
+			failed_attempts INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			last_error_name TEXT,
+			last_error_id TEXT,
+			updated_at INTEGER,
+			PRIMARY KEY (instance_id, step_name)
+		)
+	`);
+
+	db.run(`
 		CREATE TABLE IF NOT EXISTS cache_entries (
 			cache_name TEXT NOT NULL,
 			url TEXT NOT NULL,

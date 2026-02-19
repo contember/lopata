@@ -1,6 +1,7 @@
 import { getActiveContext, runWithContext, generateId, generateTraceId } from "./context";
 import { getTraceStore } from "./store";
 import type { SpanData } from "./types";
+import { buildErrorFrames } from "./frames";
 
 export interface SpanOptions {
   name: string;
@@ -94,27 +95,29 @@ export function addSpanEvent(name: string, level: string, message: string, attrs
   });
 }
 
-/** Persist an error to the errors table, linking it to the current trace/span context. */
-export function persistError(error: unknown, source: string, workerName?: string): void {
+/** Persist an error to the errors table, linking it to the current trace/span context.
+ *  Optional traceId/spanId override ALS context (needed when ALS scope is lost, e.g. after startSpan returns in Bun). */
+export function persistError(error: unknown, source: string, workerName?: string, traceId?: string, spanId?: string): string | null {
   try {
     const err = error instanceof Error ? error : new Error(String(error));
     const ctx = getActiveContext();
     const store = getTraceStore();
+    const id = crypto.randomUUID();
     store.insertError({
-      id: crypto.randomUUID(),
+      id,
       timestamp: Date.now(),
       errorName: err.name,
       errorMessage: err.message,
       workerName: workerName ?? null,
-      traceId: ctx?.traceId ?? null,
-      spanId: ctx?.spanId ?? null,
+      traceId: traceId ?? ctx?.traceId ?? null,
+      spanId: spanId ?? ctx?.spanId ?? null,
       source,
       data: JSON.stringify({
         error: {
           name: err.name,
           message: err.message,
           stack: err.stack ?? String(error),
-          frames: [],
+          frames: buildErrorFrames(err.stack ?? ""),
         },
         request: { method: "", url: "", headers: {} },
         env: {},
@@ -127,7 +130,9 @@ export function persistError(error: unknown, source: string, workerName?: string
         },
       }),
     });
+    return id;
   } catch {
     // Never let error persistence break the caller
+    return null;
   }
 }

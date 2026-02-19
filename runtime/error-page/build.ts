@@ -2,15 +2,7 @@ import { join } from "node:path";
 import type { WranglerConfig } from "../config";
 import { getTraceStore } from "../tracing/store";
 import { getActiveContext } from "../tracing/context";
-
-interface StackFrame {
-  file: string;
-  line: number;
-  column: number;
-  function: string;
-  source?: string[];
-  sourceLine?: number;
-}
+import { type StackFrame, parseStackFrames, enrichFrameWithSourceAsync } from "../tracing/frames";
 
 interface ErrorPageData {
   error: {
@@ -109,41 +101,6 @@ async function buildErrorPage(): Promise<void> {
 
 await buildErrorPage();
 
-// ─── Stack trace parsing ──────────────────────────────────────────────────
-
-const STACK_LINE_RE = /at\s+(?:(.+?)\s+\()?(.+):(\d+):(\d+)\)?/;
-
-function parseStackFrames(stack: string): StackFrame[] {
-  const frames: StackFrame[] = [];
-  for (const line of stack.split("\n")) {
-    const match = line.match(STACK_LINE_RE);
-    if (!match) continue;
-    frames.push({
-      file: match[2]!,
-      line: parseInt(match[3]!, 10),
-      column: parseInt(match[4]!, 10),
-      function: match[1] ?? "(anonymous)",
-    });
-  }
-  return frames;
-}
-
-async function enrichFrameWithSource(frame: StackFrame): Promise<void> {
-  try {
-    const file = Bun.file(frame.file);
-    if (!await file.exists()) return;
-    const text = await file.text();
-    const lines = text.split("\n");
-    const contextRadius = 7;
-    const start = Math.max(0, frame.line - 1 - contextRadius);
-    const end = Math.min(lines.length, frame.line + contextRadius);
-    frame.source = lines.slice(start, end);
-    frame.sourceLine = frame.line - 1 - start;
-  } catch {
-    // File unreadable — skip source preview
-  }
-}
-
 // ─── Env masking ──────────────────────────────────────────────────────────
 
 const SENSITIVE_KEYS = /SECRET|KEY|TOKEN|PASSWORD|API|PRIVATE/i;
@@ -200,7 +157,7 @@ export async function renderErrorPage(
 
   // Enrich frames with source code (limit to 20 for performance)
   const framesToEnrich = frames.slice(0, 20);
-  await Promise.all(framesToEnrich.map(enrichFrameWithSource));
+  await Promise.all(framesToEnrich.map(enrichFrameWithSourceAsync));
 
   // Strip cwd prefix from paths for display
   const cwdPrefix = process.cwd() + "/";

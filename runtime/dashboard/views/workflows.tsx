@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge, ServiceInfo } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, CodeBlock, TableLink, StatusBadge, ServiceInfo, RefreshButton } from "../components";
 
 const WORKFLOW_STATUS_COLORS: Record<string, string> = {
   running: "bg-accent-blue text-ink",
@@ -22,7 +22,7 @@ export function WorkflowsView({ route }: { route: string }) {
 }
 
 function WorkflowList() {
-  const { data: workflows } = useQuery("workflows.list");
+  const { data: workflows, refetch } = useQuery("workflows.list");
   const { data: configGroups } = useQuery("config.forService", { type: "workflows" });
 
   const totalInstances = workflows?.reduce((s, w) => s + w.total, 0) ?? 0;
@@ -31,7 +31,7 @@ function WorkflowList() {
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} />
+      <PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!workflows?.length ? (
@@ -220,7 +220,10 @@ function WorkflowInstanceList({ name }: { name: string }) {
           <option value="errored">Errored</option>
           <option value="terminated">Terminated</option>
         </select>
-        <CreateWorkflowForm name={name} onCreated={handleCreated} />
+        <div class="flex gap-2 items-center">
+          <RefreshButton onClick={refetch} />
+          <CreateWorkflowForm name={name} onCreated={handleCreated} />
+        </div>
       </div>
       {!instances?.length ? (
         <EmptyState message="No instances found" />
@@ -369,6 +372,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
         <StatusBadge status={data.status} colorMap={WORKFLOW_STATUS_COLORS} />
         <span class="text-sm text-text-muted font-medium">Created: {formatTime(data.created_at)}</span>
         <InstanceActions name={name} id={id} status={data.status} refetch={refetch} onDuplicated={handleDuplicated} />
+        <RefreshButton onClick={refetch} />
       </div>
 
       {data.activeSleep && (
@@ -402,24 +406,51 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 
       <div class="mb-6">
         <h3 class="text-sm font-semibold text-ink mb-4">Steps ({data.steps.length})</h3>
-        {data.steps.length === 0 ? (
+        {data.steps.length === 0 && data.stepAttempts.length === 0 ? (
           <div class="text-text-muted text-sm font-medium">No steps completed yet</div>
         ) : (
           <Table
             headers={["Step", "Output", "Completed", ...(isTerminal ? [""] : [])]}
-            rows={data.steps.map(s => {
-              const row = [
-                <span class="font-mono text-xs font-medium">{s.step_name}</span>,
-                s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : "\u2014",
-                formatTime(s.completed_at),
-              ];
-              if (isTerminal) {
-                row.push(
-                  <ActionButton onClick={() => handleRestartFromStep(s.step_name)} label="Restart from here" color="blue" />
-                );
-              }
-              return row;
-            })}
+            rows={[
+              ...data.steps.map(s => {
+                const row = [
+                  <span class="font-mono text-xs font-medium">{s.step_name}</span>,
+                  s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : "\u2014",
+                  formatTime(s.completed_at),
+                ];
+                if (isTerminal) {
+                  row.push(
+                    <ActionButton onClick={() => handleRestartFromStep(s.step_name)} label="Restart from here" color="blue" />
+                  );
+                }
+                return row;
+              }),
+              ...data.stepAttempts.map(a => {
+                const errorContent = a.last_error ? (
+                  a.last_error_id ? (
+                    <a href={`#/errors/${encodeURIComponent(a.last_error_id)}`} class="text-xs max-w-md truncate font-mono text-red-600 dark:text-red-400 hover:underline block" title={a.last_error}>
+                      {a.last_error_name ? `${a.last_error_name}: ` : ""}{a.last_error}
+                    </a>
+                  ) : (
+                    <pre class="text-xs max-w-md truncate font-mono text-red-600 dark:text-red-400" title={a.last_error}>
+                      {a.last_error_name ? `${a.last_error_name}: ` : ""}{a.last_error}
+                    </pre>
+                  )
+                ) : "\u2014";
+                const row = [
+                  <span class="font-mono text-xs font-medium">
+                    {a.step_name}
+                    <span class="ml-2 text-amber-600 dark:text-amber-400 text-[10px] font-semibold uppercase">retrying ({a.failed_attempts}x failed)</span>
+                  </span>,
+                  errorContent,
+                  a.updated_at ? formatTime(a.updated_at) : "\u2014",
+                ];
+                if (isTerminal) {
+                  row.push("");
+                }
+                return row;
+              }),
+            ]}
           />
         )}
       </div>

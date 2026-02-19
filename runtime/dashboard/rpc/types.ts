@@ -157,8 +157,18 @@ export interface WorkflowInstance {
   updated_at: number;
 }
 
+export interface WorkflowStepAttempt {
+  step_name: string;
+  failed_attempts: number;
+  last_error: string | null;
+  last_error_name: string | null;
+  last_error_id: string | null;
+  updated_at: number | null;
+}
+
 export interface WorkflowDetail extends WorkflowInstance {
   steps: { step_name: string; output: string | null; completed_at: number }[];
+  stepAttempts: WorkflowStepAttempt[];
   events: { id: number; event_type: string; payload: string | null; created_at: number }[];
   activeSleep: { stepName: string; until: number } | null;
   waitingForEvents: string[];

@@ -74,6 +74,10 @@ export const handlers = {
       "SELECT step_name, output, completed_at FROM workflow_steps WHERE instance_id = ? ORDER BY completed_at"
     ).all(id);
 
+    const stepAttempts = db.query<{ step_name: string; failed_attempts: number; last_error: string | null; last_error_name: string | null; last_error_id: string | null; updated_at: number | null }, [string]>(
+      "SELECT step_name, failed_attempts, last_error, last_error_name, last_error_id, updated_at FROM workflow_step_attempts WHERE instance_id = ? ORDER BY updated_at DESC"
+    ).all(id);
+
     const events = db.query<{ id: number; event_type: string; payload: string | null; created_at: number }, [string]>(
       "SELECT id, event_type, payload, created_at FROM workflow_events WHERE instance_id = ? ORDER BY created_at"
     ).all(id);
@@ -100,7 +104,7 @@ export const handlers = {
     // Compute waiting event types from in-memory registry
     const waitingForEvents = instance.status === "waiting" ? getWaitingEventTypes(id) : [];
 
-    return { ...instance, steps, events, activeSleep, waitingForEvents } as WorkflowDetail;
+    return { ...instance, steps, stepAttempts, events, activeSleep, waitingForEvents } as WorkflowDetail;
   },
 
   async "workflows.terminate"({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
