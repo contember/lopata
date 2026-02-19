@@ -1,13 +1,22 @@
-import { formatTime } from "../lib";
+import { formatTime, parseHashRoute } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
 import { rpc } from "../rpc/client";
 import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, SqlBrowser } from "../components";
+import type { Tab } from "../sql-browser/index";
 
 export function DoView({ route }: { route: string }) {
-  const parts = route.split("/").filter(Boolean);
-  if (parts.length === 1) return <DoNamespaceList />;
-  if (parts.length === 2) return <DoInstanceList ns={decodeURIComponent(parts[1]!)} />;
-  if (parts.length >= 3) return <DoInstanceDetail ns={decodeURIComponent(parts[1]!)} id={decodeURIComponent(parts[2]!)} />;
+  const { segments, query } = parseHashRoute(route);
+  if (segments.length <= 1) return <DoNamespaceList />;
+  if (segments.length === 2) return <DoInstanceList ns={decodeURIComponent(segments[1]!)} />;
+  if (segments.length >= 3) {
+    const ns = decodeURIComponent(segments[1]!);
+    const id = decodeURIComponent(segments[2]!);
+    const rawTab = segments[3] as Tab | undefined;
+    const tab: Tab = rawTab === "schema" || rawTab === "sql" ? rawTab : "data";
+    const tableName = segments[4] ? decodeURIComponent(segments[4]) : null;
+    const basePath = `/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}`;
+    return <DoInstanceDetail ns={ns} id={id} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />;
+  }
   return null;
 }
 
@@ -74,7 +83,14 @@ function DoInstanceList({ ns }: { ns: string }) {
   );
 }
 
-function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
+function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }: {
+  ns: string;
+  id: string;
+  basePath: string;
+  routeTab: Tab;
+  routeTable: string | null;
+  routeQuery: URLSearchParams;
+}) {
   const { data, refetch } = useQuery("do.getInstance", { ns, id });
   const deleteEntry = useMutation("do.deleteEntry");
   const { data: sqlTables } = useQuery("do.listSqlTables", { ns, id });
@@ -119,6 +135,10 @@ function DoInstanceDetail({ ns, id }: { ns: string; id: string }) {
             tables={sqlTables}
             execQuery={(sql) => rpc("do.sqlQuery", { ns, id, sql })}
             historyScope={`do:${ns}:${id}`}
+            basePath={basePath}
+            routeTab={routeTab}
+            routeTable={routeTable}
+            routeQuery={routeQuery}
           />
         </div>
       )}
