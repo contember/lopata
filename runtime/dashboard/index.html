@@ -9,7 +9,14 @@
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./style.css" />
 </head>
-<body class="h-full bg-white text-ink" style="font-family: 'Poppins', sans-serif;">
+<body class="h-full bg-surface text-ink" style="font-family: 'Poppins', sans-serif;">
+  <script>
+    // Apply saved theme before first paint to prevent flash
+    (function() {
+      var t = localStorage.getItem("bunflare-theme");
+      if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
   <div id="app" class="h-full"></div>
   <script type="module" src="./app.tsx"></script>
 </body>

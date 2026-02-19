@@ -1,4 +1,5 @@
 import { render } from "preact";
+import { useState, useEffect } from "preact/hooks";
 
 import { useRoute } from "./lib";
 import { useQuery } from "./rpc/hooks";
@@ -117,6 +118,40 @@ function SidebarGroup({ group, activeSection, counts }: { group: NavGroup; activ
   );
 }
 
+type Theme = "auto" | "light" | "dark";
+
+const THEME_ICONS: Record<Theme, string> = { light: "☀︎", dark: "☾", auto: "◐" };
+const THEME_LABELS: Record<Theme, string> = { light: "Light", dark: "Dark", auto: "Auto" };
+const THEME_CYCLE: Record<Theme, Theme> = { auto: "light", light: "dark", dark: "auto" };
+
+function ThemeSwitcher() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    const saved = localStorage.getItem("bunflare-theme");
+    return saved === "light" || saved === "dark" ? saved : "auto";
+  });
+
+  useEffect(() => {
+    if (theme === "auto") {
+      document.documentElement.removeAttribute("data-theme");
+      localStorage.removeItem("bunflare-theme");
+    } else {
+      document.documentElement.setAttribute("data-theme", theme);
+      localStorage.setItem("bunflare-theme", theme);
+    }
+  }, [theme]);
+
+  return (
+    <button
+      onClick={() => setTheme(THEME_CYCLE[theme])}
+      class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-text-muted hover:text-ink hover:bg-panel-hover rounded-md transition-colors"
+      title={`Theme: ${THEME_LABELS[theme]}`}
+    >
+      <span class="w-4 text-center text-sm">{THEME_ICONS[theme]}</span>
+      <span>{THEME_LABELS[theme]}</span>
+    </button>
+  );
+}
+
 function App() {
   const route = useRoute();
   const activeSection = "/" + (route.split("/")[1] || "");
@@ -166,6 +201,9 @@ function App() {
           {NAV_GROUPS.map(group => (
             <SidebarGroup key={group.label} group={group} activeSection={activeSection} counts={counts} />
           ))}
+        </div>
+        <div class="border-t border-border px-2 py-2">
+          <ThemeSwitcher />
         </div>
       </nav>
 
