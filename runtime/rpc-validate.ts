@@ -122,6 +122,10 @@ function _validate(value: unknown, path: string, seen: WeakSet<object>): string[
     return errors;
   }
 
+  // --- RpcTarget instance: valid (becomes a stub on CF) ---
+  const brand = Symbol.for("bunflare.RpcTarget");
+  if ((obj as Record<symbol, unknown>)[brand] === true) return [];
+
   // --- anything else: custom class instance ---
   return [
     `${path}: Custom class instance (${typeName(value)}) cannot be sent over RPC. ` +

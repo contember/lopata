@@ -5,6 +5,7 @@ import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
 import type { DOExecutor, DOExecutorFactory } from "./do-executor";
 import { persistError, startSpan } from "../tracing/span";
+import { NON_RPC_PROPS, createRpcPromise } from "./rpc-stub";
 
 // --- SQL Storage Cursor ---
 
@@ -676,13 +677,6 @@ export class DurableObjectBase {
 
 const MAX_ALARM_RETRIES = 6;
 
-// Properties that should NOT be proxied as RPC (JS internals, Promise protocol, etc.)
-const NON_RPC_PROPS = new Set<string | symbol>([
-  "then", "catch", "finally",  // Promise/thenable protocol
-  "toJSON", "valueOf", "toString",  // conversion
-  Symbol.toPrimitive, Symbol.toStringTag, Symbol.iterator, Symbol.asyncIterator,
-]);
-
 // Properties handled specially on the stub (not forwarded as RPC)
 const STUB_PROPS = new Set(["id", "name", "fetch"]);
 
@@ -970,10 +964,11 @@ export class DurableObjectNamespaceImpl {
         }
 
         // RPC: return a callable that also acts as a thenable for property access
-        const rpcCallable = async (...args: unknown[]) => {
+        const rpcCallable = (...args: unknown[]) => {
           const executor = self._getOrCreateExecutor(idStr, id)!;
           self._lastActivity.set(idStr, Date.now());
-          return await executor.executeRpc(String(prop), args);
+          const promise = executor.executeRpc(String(prop), args);
+          return createRpcPromise(promise);
         };
 
         // Make it thenable for property access: `await stub.myProp`

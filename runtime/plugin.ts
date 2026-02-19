@@ -224,11 +224,16 @@ plugin({
             constructor(ctx: unknown, env: unknown) {
               this.ctx = ctx;
               this.env = env;
+              (this as any)[Symbol.for("bunflare.RpcTarget")] = true;
             }
           },
           WebSocketRequestResponsePair,
           WebSocketPair,
-          RpcTarget: class {},
+          RpcTarget: class RpcTarget {
+            constructor() {
+              (this as any)[Symbol.for("bunflare.RpcTarget")] = true;
+            }
+          },
           env: globalEnv,
         },
         loader: "object",

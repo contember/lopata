@@ -1,6 +1,7 @@
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from "./do-executor";
 import { DurableObjectStateImpl, type DurableObjectBase } from "./durable-object";
-import { warnInvalidRpcArgs, warnInvalidRpcReturn } from "../rpc-validate";
+import { warnInvalidRpcArgs } from "../rpc-validate";
+import { wrapRpcReturnValue, createRpcFunctionStub } from "./rpc-stub";
 
 export class InProcessExecutor implements DOExecutor {
   private _state: DurableObjectStateImpl;
@@ -65,8 +66,7 @@ export class InProcessExecutor implements DOExecutor {
       const val = (this._instance as unknown as Record<string, unknown>)[method];
       if (typeof val === "function") {
         const result = await (val as (...a: unknown[]) => unknown).call(this._instance, ...args);
-        warnInvalidRpcReturn(result, method);
-        return result;
+        return wrapRpcReturnValue(result, method);
       }
       throw new Error(`"${method}" is not a method on the Durable Object`);
     } finally {
@@ -80,10 +80,9 @@ export class InProcessExecutor implements DOExecutor {
       await this._state._waitForReady();
       const val = (this._instance as unknown as Record<string, unknown>)[prop];
       if (typeof val === "function") {
-        return val.bind(this._instance);
+        return createRpcFunctionStub(val as Function, this._instance);
       }
-      warnInvalidRpcReturn(val, prop);
-      return val;
+      return wrapRpcReturnValue(val, prop);
     } finally {
       unlock();
     }

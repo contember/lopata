@@ -10,7 +10,8 @@
 
 import { ExecutionContext } from "../execution-context";
 import { getActiveContext, runWithContext } from "../tracing/context";
-import { warnInvalidRpcArgs, warnInvalidRpcReturn } from "../rpc-validate";
+import { warnInvalidRpcArgs } from "../rpc-validate";
+import { NON_RPC_PROPS, wrapRpcReturnValue, createRpcFunctionStub } from "./rpc-stub";
 
 type WorkerModule = Record<string, unknown>;
 
@@ -28,13 +29,6 @@ const SERVICE_BINDING_DEFAULTS: Required<ServiceBindingLimits> = {
 
 // Internal properties that should be forwarded to the ServiceBinding instance
 const INTERNAL_PROPS = new Set(["_wire", "isWired", "_subrequestCount"]);
-
-// Properties that should NOT be proxied as RPC (JS internals, Promise protocol, etc.)
-const NON_RPC_PROPS = new Set([
-  "then", "catch", "finally",  // Promise/thenable protocol
-  "toJSON", "valueOf", "toString",  // conversion
-  Symbol.toPrimitive, Symbol.toStringTag, Symbol.iterator, Symbol.asyncIterator,
-]);
 
 export class ServiceBinding {
   private _resolver: (() => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) | null = null;
@@ -179,10 +173,7 @@ export class ServiceBinding {
             ? runWithContext(parentCtx, doCall)
             : doCall();
           // CF always wraps in Promise for async consistency
-          return Promise.resolve(result).then((r) => {
-            warnInvalidRpcReturn(r, prop);
-            return r;
-          });
+          return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop));
         };
 
         // Make it thenable for property access: `await binding.prop`
@@ -196,11 +187,9 @@ export class ServiceBinding {
               const target = self._getTarget();
               const member = target[prop];
               if (typeof member === "function") {
-                // If it's a function, resolve with a stub that can be called
-                resolve(member.bind(target));
+                resolve(createRpcFunctionStub(member as Function, target));
               } else {
-                warnInvalidRpcReturn(member, prop);
-                resolve(member);
+                resolve(wrapRpcReturnValue(member, prop));
               }
             } catch (e) {
               reject(e);

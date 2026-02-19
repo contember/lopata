@@ -60,9 +60,14 @@ export class WorkerEntrypoint {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
+    this[Symbol.for("bunflare.RpcTarget")] = true;
   }
 }
-export class RpcTarget {}
+export class RpcTarget {
+  constructor() {
+    this[Symbol.for("bunflare.RpcTarget")] = true;
+  }
+}
 `;
       }
 
