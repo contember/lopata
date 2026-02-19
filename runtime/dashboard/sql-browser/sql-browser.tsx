@@ -44,7 +44,7 @@ export function SqlBrowser({ tables, execQuery, historyScope, basePath, routeTab
         ))}
       </div>
 
-      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} history={history} browserHistory={browserHistory} basePath={basePath} routeTable={routeTable} routeQuery={routeQuery} />}
+      {tab === "data" && <DataBrowserTab tables={tables} execQuery={execQuery} onOpenInConsole={openInConsole} history={history} browserHistory={browserHistory} historyScope={historyScope} basePath={basePath} routeTable={routeTable} routeQuery={routeQuery} />}
       {tab === "schema" && <SchemaBrowserTab tables={tables} />}
       {tab === "sql" && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} history={history} />}
     </div>

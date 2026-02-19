@@ -91,3 +91,47 @@ export function useBrowserHistory(scope?: string) {
   }, [scope]);
   return { entries, add, clear };
 }
+
+// ─── Per-table view state (filters + sort, localStorage) ────────────
+
+const TABLE_STATE_PREFIX = "bunflare-table-state";
+
+interface TableViewState {
+  filters: Record<string, string>;
+  sortCol: string | null;
+  sortDir: SortDir;
+}
+
+function tableStateKey(scope?: string): string {
+  return scope ? `${TABLE_STATE_PREFIX}:${scope}` : TABLE_STATE_PREFIX;
+}
+
+export function loadTableState(table: string, scope?: string): TableViewState | null {
+  try {
+    const raw = localStorage.getItem(tableStateKey(scope));
+    if (!raw) return null;
+    const all = JSON.parse(raw);
+    return all[table] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveTableState(table: string, state: TableViewState, scope?: string): void {
+  try {
+    const raw = localStorage.getItem(tableStateKey(scope));
+    const all = raw ? JSON.parse(raw) : {};
+    all[table] = state;
+    localStorage.setItem(tableStateKey(scope), JSON.stringify(all));
+  } catch {}
+}
+
+export function clearTableState(table: string, scope?: string): void {
+  try {
+    const raw = localStorage.getItem(tableStateKey(scope));
+    if (!raw) return;
+    const all = JSON.parse(raw);
+    delete all[table];
+    localStorage.setItem(tableStateKey(scope), JSON.stringify(all));
+  } catch {}
+}

@@ -4,6 +4,7 @@ import { replaceRoute } from "../lib";
 import type { SortDir, ForeignKeyInfo, BrowserHistoryEntry } from "./types";
 import { PAGE_SIZE } from "./types";
 import type { useHistory, useBrowserHistory } from "./hooks";
+import { loadTableState, saveTableState, clearTableState } from "./hooks";
 import { parseCreateTable, sqlLiteral, quoteId, buildWhereClause, exportCSV, exportJSON } from "./utils";
 import { EditableCell } from "./editable-cell";
 import { InsertRowForm } from "./insert-row-form";
@@ -12,7 +13,7 @@ import { FilterHelpModal } from "./filter-row";
 import { BrowserHistoryPanel } from "./history-panels";
 import { RowDetailModal, CellInspectorModal } from "./modals";
 
-export function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, onNavigateFK, basePath, routeQuery }: {
+export function TableDataView({ table, execQuery, onOpenInConsole, history, browserHistory, onRestoreHistory, onNavigateFK, historyScope, basePath, routeQuery }: {
   table: D1Table;
   execQuery: (sql: string) => Promise<QueryResult>;
   onOpenInConsole: (sql: string) => void;
@@ -20,6 +21,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
   browserHistory: ReturnType<typeof useBrowserHistory>;
   onRestoreHistory: (entry: BrowserHistoryEntry) => void;
   onNavigateFK: (targetTable: string, targetColumn: string, value: unknown) => void;
+  historyScope?: string;
   basePath?: string;
   routeQuery?: URLSearchParams;
 }) {
@@ -37,17 +39,33 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
   const numericTypes = /\b(INT|INTEGER|REAL|FLOAT|DOUBLE|DECIMAL|NUMERIC|BIGINT|SMALLINT|TINYINT|MEDIUMINT)\b/i;
   const numericCols = new Set(schema.columns.filter(c => numericTypes.test(c.type)).map(c => c.name));
 
-  // Initialize state from URL query params
-  const initFilters = (): Record<string, string> => {
+  // Initialize state from URL query params, falling back to saved table state
+  const initState = () => {
     const f: Record<string, string> = {};
+    let s: string | null = null;
+    let d: SortDir = "ASC";
+    let hasUrlParams = false;
+
     if (routeQuery) {
       for (const [key, val] of routeQuery.entries()) {
-        if (key.startsWith("f.")) f[key.slice(2)] = val;
+        if (key.startsWith("f.")) { f[key.slice(2)] = val; hasUrlParams = true; }
+      }
+      const urlSort = routeQuery.get("s");
+      if (urlSort) { s = urlSort; hasUrlParams = true; }
+      const urlDir = routeQuery.get("d");
+      if (urlDir === "DESC") d = "DESC";
+    }
+
+    if (!hasUrlParams) {
+      const saved = loadTableState(table.name, historyScope);
+      if (saved) {
+        return { filters: saved.filters, sortCol: saved.sortCol, sortDir: saved.sortDir };
       }
     }
-    return f;
+    return { filters: f, sortCol: s, sortDir: d };
   };
 
+  const initial = initState();
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [totalCount, setTotalCount] = useState<number>(table.rows);
@@ -55,16 +73,13 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
     const o = routeQuery?.get("o");
     return o ? parseInt(o, 10) || 0 : 0;
   });
-  const [sortCol, setSortCol] = useState<string | null>(() => routeQuery?.get("s") ?? null);
-  const [sortDir, setSortDir] = useState<SortDir>(() => {
-    const d = routeQuery?.get("d");
-    return d === "DESC" ? "DESC" : "ASC";
-  });
+  const [sortCol, setSortCol] = useState<string | null>(initial.sortCol);
+  const [sortDir, setSortDir] = useState<SortDir>(initial.sortDir);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showInsert, setShowInsert] = useState(false);
-  const [filters, setFilters] = useState<Record<string, string>>(initFilters);
-  const [showFilters, setShowFilters] = useState(() => Object.keys(initFilters()).length > 0);
+  const [filters, setFilters] = useState<Record<string, string>>(initial.filters);
+  const [showFilters, setShowFilters] = useState(() => Object.keys(initial.filters).length > 0);
   const [showFilterHelp, setShowFilterHelp] = useState(false);
   const [showBrowserHistory, setShowBrowserHistory] = useState(false);
 
@@ -79,14 +94,14 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
   // Export dropdown
   const [showExport, setShowExport] = useState(false);
 
-  // Sync state → URL via replaceState (no history entry)
-  const syncUrlRef = useRef(false);
+  // Sync state → URL + persist table view state
   useEffect(() => {
-    // Skip the first render (initial mount uses URL → state)
-    if (!syncUrlRef.current) {
-      syncUrlRef.current = true;
-      return;
+    // Save to localStorage
+    const hasState = Object.values(filters).some(v => v.trim()) || sortCol !== null;
+    if (hasState) {
+      saveTableState(table.name, { filters, sortCol, sortDir }, historyScope);
     }
+
     if (!basePath) return;
     const params = new URLSearchParams();
     for (const [col, val] of Object.entries(filters)) {
@@ -99,7 +114,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
     if (offset > 0) params.set("o", String(offset));
     const qs = params.toString();
     replaceRoute(basePath + "/data/" + encodeURIComponent(table.name) + (qs ? "?" + qs : ""));
-  }, [filters, sortCol, sortDir, offset, basePath, table.name]);
+  }, [filters, sortCol, sortDir, offset, basePath, table.name, historyScope]);
 
   const filtersKey = JSON.stringify(filters);
   const loadGenRef = useRef(0);
@@ -253,6 +268,15 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
   // Columns to display (hide rowid if it was added just for PK tracking)
   const displayCols = columns.filter(c => !(needsRowid && c === "rowid"));
   const activeFilterCount = Object.values(filters).filter(v => v.trim()).length;
+  const hasActiveState = activeFilterCount > 0 || sortCol !== null;
+
+  const handleReset = () => {
+    setFilters({});
+    setSortCol(null);
+    setSortDir("ASC");
+    setShowFilters(false);
+    clearTableState(table.name, historyScope);
+  };
 
   // Current query SQL (for display / open-in-console)
   const where = buildWhereClause(filters);
@@ -291,6 +315,15 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
           >
             Filter{activeFilterCount > 0 ? ` (${activeFilterCount})` : ""}
           </button>
+          {hasActiveState && (
+            <button
+              onClick={handleReset}
+              class="rounded-md px-3 py-1.5 text-sm font-medium text-red-400 bg-panel border border-border hover:text-red-600 hover:bg-red-50 transition-all"
+              title="Clear all filters and sorting"
+            >
+              Reset
+            </button>
+          )}
           <button
             onClick={() => setShowFilterHelp(true)}
             class="rounded-md w-7 h-7 text-sm font-bold bg-panel border border-border text-text-muted hover:text-text-data hover:bg-panel-hover transition-all"

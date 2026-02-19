@@ -6,12 +6,13 @@ import type { useHistory, useBrowserHistory } from "./hooks";
 import { TableDataView } from "./table-data-view";
 import { TableSidebar } from "./table-sidebar";
 
-export function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHistory, basePath, routeTable, routeQuery }: {
+export function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, browserHistory, historyScope, basePath, routeTable, routeQuery }: {
   tables?: D1Table[] | null;
   execQuery: (sql: string) => Promise<QueryResult>;
   onOpenInConsole: (sql: string) => void;
   history: ReturnType<typeof useHistory>;
   browserHistory: ReturnType<typeof useBrowserHistory>;
+  historyScope?: string;
   basePath?: string;
   routeTable?: string | null;
   routeQuery?: URLSearchParams;
@@ -106,6 +107,7 @@ export function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, br
             browserHistory={browserHistory}
             onRestoreHistory={handleRestoreHistory}
             onNavigateFK={handleNavigateFK}
+            historyScope={historyScope}
             basePath={basePath}
             routeQuery={effectiveQuery}
           />
