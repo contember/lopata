@@ -1,7 +1,9 @@
 import { $ } from "bun";
-import type { HandlerContext, ContainerSummary, ContainerInstance } from "../types";
-import { getAllConfigs } from "../types";
+import type { HandlerContext, ContainerSummary, ContainerInstance, ContainerDetail, OkResponse } from "../types";
+import { getAllConfigs, getDoNamespace } from "../types";
 import { getDatabase } from "../../../db";
+import { DockerManager } from "../../../bindings/container-docker";
+import type { ContainerBase } from "../../../bindings/container";
 
 interface DockerPsEntry {
   Names: string;
@@ -10,8 +12,10 @@ interface DockerPsEntry {
   Ports: string;
 }
 
+const DOCKER_JSON_FORMAT = "{{json .}}";
+
 async function listDockerContainers(filterPrefix: string): Promise<DockerPsEntry[]> {
-  const result = await $`docker ps -a --filter name=${filterPrefix} --format={{json .}}`.quiet().nothrow();
+  const result = await $`docker ps -a --filter name=${filterPrefix} --format=${DOCKER_JSON_FORMAT}`.quiet().nothrow();
   if (result.exitCode !== 0) return [];
   const lines = result.stdout.toString().trim().split("\n").filter(Boolean);
   return lines.map(line => JSON.parse(line) as DockerPsEntry);
@@ -108,5 +112,83 @@ export const handlers = {
     }
 
     return results;
+  },
+
+  async "containers.getDetail"({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<ContainerDetail> {
+    const db = getDatabase();
+    const docker = new DockerManager();
+
+    // Get DO instance info
+    const inst = db.query<{ id: string; name: string | null }, [string, string]>(
+      "SELECT id, name FROM do_instances WHERE namespace = ? AND id = ?"
+    ).get(className, id);
+
+    const containerName = `bunflare-${className}-${id.slice(0, 12)}`;
+
+    // Get Docker state
+    const dockerInfo = await docker.inspect(containerName);
+
+    // Get container config from live instance if available
+    let config = {
+      defaultPort: 8080,
+      sleepAfter: null as string | number | null,
+      enableInternet: true,
+      pingEndpoint: "/",
+    };
+
+    // Try to find config from wrangler config
+    let image = "";
+    for (const cfg of getAllConfigs(ctx)) {
+      const containerCfg = cfg.containers?.find(c => c.class_name === className);
+      if (containerCfg) {
+        image = containerCfg.image;
+        break;
+      }
+    }
+
+    // Try to get config from live DO instance
+    const namespace = getDoNamespace(ctx, className);
+    if (namespace) {
+      const instance = (namespace as any)._getInstance(id) as ContainerBase | null;
+      if (instance) {
+        config.defaultPort = instance.defaultPort;
+        config.sleepAfter = instance.sleepAfter ?? null;
+        config.enableInternet = instance.enableInternet;
+        config.pingEndpoint = instance.pingEndpoint;
+      }
+    }
+
+    return {
+      id,
+      doName: inst?.name ?? null,
+      containerName,
+      image,
+      state: dockerInfo?.state ?? "stopped",
+      exitCode: dockerInfo?.exitCode ?? null,
+      ports: dockerInfo?.ports ?? {},
+      created: null, // docker inspect State.StartedAt could be used but not in DockerContainerInfo
+      config,
+    };
+  },
+
+  async "containers.getLogs"({ className, id, tail }: { className: string; id: string; tail?: number }): Promise<{ logs: string }> {
+    const docker = new DockerManager();
+    const containerName = `bunflare-${className}-${id.slice(0, 12)}`;
+    const logs = await docker.logs(containerName, tail);
+    return { logs };
+  },
+
+  async "containers.stop"({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
+    const docker = new DockerManager();
+    const containerName = `bunflare-${className}-${id.slice(0, 12)}`;
+    await docker.stop(containerName, 10);
+    return { ok: true };
+  },
+
+  async "containers.destroy"({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
+    const docker = new DockerManager();
+    const containerName = `bunflare-${className}-${id.slice(0, 12)}`;
+    await docker.remove(containerName);
+    return { ok: true };
   },
 };

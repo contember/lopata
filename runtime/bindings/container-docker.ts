@@ -50,6 +50,8 @@ function registerCleanup() {
 // Image build cache: tag -> { mtime }
 const imageCache = new Map<string, { mtime: number }>();
 
+const DOCKER_JSON_FORMAT = "{{json .}}";
+
 export class DockerManager {
   /**
    * Build an image from a Dockerfile, with lazy mtime-based caching.
@@ -152,21 +154,47 @@ export class DockerManager {
    * Inspect a container and return its info, or null if not found.
    */
   async inspect(name: string): Promise<DockerContainerInfo | null> {
-    const result = await $`docker inspect ${name} --format={{json .}}`.quiet().nothrow();
+    const result = await $`docker inspect ${name} --format=${DOCKER_JSON_FORMAT}`.quiet().nothrow();
     if (result.exitCode !== 0) return null;
 
     try {
       const data = JSON.parse(result.stdout.toString());
+
+      // Flatten NetworkSettings.Ports from { "80/tcp": [{"HostIp":"0.0.0.0","HostPort":"32768"}] }
+      // into { "80/tcp": "0.0.0.0:32768" }
+      const rawPorts = data.NetworkSettings?.Ports ?? {};
+      const ports: Record<string, string> = {};
+      for (const [containerPort, bindings] of Object.entries(rawPorts)) {
+        if (Array.isArray(bindings) && bindings.length > 0) {
+          const b = bindings[0] as { HostIp?: string; HostPort?: string };
+          ports[containerPort] = `${b.HostIp || "0.0.0.0"}:${b.HostPort || "?"}`;
+        }
+      }
+
+      const state = data.State?.Status ?? "unknown";
       return {
         id: data.Id ?? "",
         name: (data.Name ?? "").replace(/^\//, ""),
-        state: data.State?.Status ?? "unknown",
-        exitCode: data.State?.ExitCode ?? null,
-        ports: data.NetworkSettings?.Ports ?? {},
+        state,
+        exitCode: state === "running" ? null : (data.State?.ExitCode ?? null),
+        ports,
       };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Get logs from a container.
+   */
+  async logs(name: string, tail?: number): Promise<string> {
+    const args = ["docker", "logs"];
+    if (tail) args.push("--tail", String(tail));
+    args.push(name);
+    const result = await $`${args}`.quiet().nothrow();
+    if (result.exitCode !== 0) return "";
+    // docker logs outputs to both stdout and stderr
+    return result.stdout.toString() + result.stderr.toString();
   }
 
   /**

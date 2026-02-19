@@ -68,6 +68,23 @@ export interface ContainerInstance {
   ports: Record<string, string>;
 }
 
+export interface ContainerDetail {
+  id: string;
+  doName: string | null;
+  containerName: string;
+  image: string;
+  state: string;
+  exitCode: number | null;
+  ports: Record<string, string>;
+  created: string | null;
+  config: {
+    defaultPort: number;
+    sleepAfter: string | number | null;
+    enableInternet: boolean;
+    pingEndpoint: string;
+  };
+}
+
 // KV
 export interface KvNamespace {
   namespace: string;
