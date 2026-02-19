@@ -240,6 +240,107 @@ function WorkflowInstanceList({ name }: { name: string }) {
   );
 }
 
+function SkipSleepBanner({ name, id, activeSleep, refetch }: { name: string; id: string; activeSleep: { stepName: string; until: number }; refetch: () => void }) {
+  const skipSleep = useMutation("workflows.skipSleep");
+  const remaining = Math.max(0, activeSleep.until - Date.now());
+  const label = activeSleep.stepName.replace(/^(sleep|sleepUntil):/, "");
+
+  const formatRemaining = (ms: number) => {
+    if (ms < 1000) return "< 1s";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ${s % 60}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  };
+
+  const handleSkip = async () => {
+    await skipSleep.mutate({ name, id });
+    refetch();
+  };
+
+  return (
+    <div class="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center justify-between">
+      <div>
+        <span class="text-sm font-semibold text-amber-800">Sleeping</span>
+        <span class="text-sm text-amber-700 ml-2">
+          step "{label}" — {formatRemaining(remaining)} remaining
+        </span>
+      </div>
+      <button
+        onClick={handleSkip}
+        disabled={skipSleep.isLoading}
+        class="rounded-md px-3 py-1.5 text-sm font-medium bg-amber-600 text-white hover:bg-amber-700 transition-all disabled:opacity-50"
+      >
+        {skipSleep.isLoading ? "Skipping..." : "Skip sleep"}
+      </button>
+    </div>
+  );
+}
+
+function SendEventForm({ name, id, waitingForEvents, refetch }: { name: string; id: string; waitingForEvents: string[]; refetch: () => void }) {
+  const [eventType, setEventType] = useState(waitingForEvents[0] ?? "");
+  const [payload, setPayload] = useState("{}");
+  const [error, setError] = useState("");
+  const sendEvent = useMutation("workflows.sendEvent");
+
+  const handleSend = async () => {
+    setError("");
+    try {
+      JSON.parse(payload); // validate JSON
+    } catch {
+      setError("Invalid JSON payload");
+      return;
+    }
+    const result = await sendEvent.mutate({ name, id, type: eventType, payload });
+    if (result) {
+      setPayload("{}");
+      refetch();
+    } else if (sendEvent.error) {
+      setError(sendEvent.error.message);
+    }
+  };
+
+  return (
+    <div class="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
+      <div class="text-sm font-semibold text-blue-800 mb-3">
+        Waiting for event{waitingForEvents.length > 0 && (
+          <span class="font-normal text-blue-600">
+            {" "}— type: {waitingForEvents.map(t => `"${t}"`).join(", ")}
+          </span>
+        )}
+      </div>
+      <div class="flex gap-3 items-start">
+        <div class="flex-1">
+          <input
+            type="text"
+            value={eventType}
+            onInput={e => setEventType((e.target as HTMLInputElement).value)}
+            placeholder="Event type"
+            class="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-300 transition-all mb-2"
+          />
+          <textarea
+            value={payload}
+            onInput={e => setPayload((e.target as HTMLTextAreaElement).value)}
+            placeholder='{"key": "value"}'
+            class="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-300 transition-all resize-y min-h-[60px]"
+            rows={2}
+          />
+          {error && <div class="text-red-500 text-xs mt-1">{error}</div>}
+        </div>
+        <button
+          onClick={handleSend}
+          disabled={sendEvent.isLoading || !eventType.trim()}
+          class="rounded-md px-4 py-2 text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+        >
+          {sendEvent.isLoading ? "Sending..." : "Send event"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
   const { data, refetch } = useQuery("workflows.getInstance", { name, id });
   const restartFromStep = useMutation("workflows.restart");
@@ -269,6 +370,14 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
         <span class="text-sm text-text-muted font-medium">Created: {formatTime(data.created_at)}</span>
         <InstanceActions name={name} id={id} status={data.status} refetch={refetch} onDuplicated={handleDuplicated} />
       </div>
+
+      {data.activeSleep && (
+        <SkipSleepBanner name={name} id={id} activeSleep={data.activeSleep} refetch={refetch} />
+      )}
+
+      {data.status === "waiting" && (
+        <SendEventForm name={name} id={id} waitingForEvents={data.waitingForEvents} refetch={refetch} />
+      )}
 
       {data.params && (
         <div class="mb-6 bg-panel rounded-lg border border-border p-5">

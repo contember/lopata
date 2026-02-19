@@ -137,6 +137,7 @@ export interface DoInstance {
 export interface DoDetail {
   entries: { key: string; value: string }[];
   alarm: number | null;
+  hasAlarmHandler: boolean;
 }
 
 // Workflows
@@ -159,6 +160,8 @@ export interface WorkflowInstance {
 export interface WorkflowDetail extends WorkflowInstance {
   steps: { step_name: string; output: string | null; completed_at: number }[];
   events: { id: number; event_type: string; payload: string | null; created_at: number }[];
+  activeSleep: { stepName: string; until: number } | null;
+  waitingForEvents: string[];
 }
 
 // D1
@@ -326,4 +329,19 @@ export function getAllConfigs(ctx: HandlerContext): WranglerConfig[] {
     return Array.from(ctx.registry.listManagers().values()).map(m => m.config);
   }
   return ctx.config ? [ctx.config] : [];
+}
+
+/** Find a DO namespace by class name across all active generations. */
+export function getDoNamespace(ctx: HandlerContext, ns: string) {
+  if (ctx.registry) {
+    for (const manager of ctx.registry.listManagers().values()) {
+      const entry = manager.active?.registry.durableObjects.find(d => d.className === ns);
+      if (entry) return entry.namespace;
+    }
+  }
+  if (ctx.manager) {
+    const entry = ctx.manager.active?.registry.durableObjects.find(d => d.className === ns);
+    if (entry) return entry.namespace;
+  }
+  return null;
 }

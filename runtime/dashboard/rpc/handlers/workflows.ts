@@ -3,6 +3,7 @@ import { getAllConfigs } from "../types";
 import { getDatabase } from "../../../db";
 import type { SQLQueryBindings } from "bun:sqlite";
 import type { SqliteWorkflowBinding } from "../../../bindings/workflow";
+import { getWaitingEventTypes, isInstanceSleeping } from "../../../bindings/workflow";
 
 function getWorkflowBinding(ctx: HandlerContext, name: string): SqliteWorkflowBinding {
   if (ctx.registry) {
@@ -77,7 +78,29 @@ export const handlers = {
       "SELECT id, event_type, payload, created_at FROM workflow_events WHERE instance_id = ? ORDER BY created_at"
     ).all(id);
 
-    return { ...instance, steps, events } as WorkflowDetail;
+    // Compute active sleep: check if the instance is currently sleeping (in-memory)
+    let activeSleep: WorkflowDetail["activeSleep"] = null;
+    if (instance.status === "running" && isInstanceSleeping(id)) {
+      // Find the latest sleep/sleepUntil step to get the "until" time
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const s = steps[i]!;
+        if ((s.step_name.startsWith("sleep:") || s.step_name.startsWith("sleepUntil:")) && s.output) {
+          try {
+            const parsed = JSON.parse(s.output) as { until: number | string };
+            const until = typeof parsed.until === "string" ? new Date(parsed.until).getTime() : parsed.until;
+            if (until > Date.now()) {
+              activeSleep = { stepName: s.step_name, until };
+              break;
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Compute waiting event types from in-memory registry
+    const waitingForEvents = instance.status === "waiting" ? getWaitingEventTypes(id) : [];
+
+    return { ...instance, steps, events, activeSleep, waitingForEvents } as WorkflowDetail;
   },
 
   async "workflows.terminate"({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
@@ -112,6 +135,21 @@ export const handlers = {
     const binding = getWorkflowBinding(ctx, name);
     const instance = await binding.get(id);
     await instance.restart(fromStep ? { fromStep } : undefined);
+    return { ok: true };
+  },
+
+  async "workflows.skipSleep"({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
+    const binding = getWorkflowBinding(ctx, name);
+    const instance = await binding.get(id);
+    await instance.skipSleep();
+    return { ok: true };
+  },
+
+  async "workflows.sendEvent"({ name, id, type, payload }: { name: string; id: string; type: string; payload?: string }, ctx: HandlerContext): Promise<OkResponse> {
+    const binding = getWorkflowBinding(ctx, name);
+    const instance = await binding.get(id);
+    const parsed = payload ? JSON.parse(payload) : undefined;
+    await instance.sendEvent({ type, payload: parsed });
     return { ok: true };
   },
 

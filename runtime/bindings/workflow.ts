@@ -84,6 +84,11 @@ function getWaitersForInstance(instanceId: string): Map<string, EventResolver> {
 
 const abortControllers = new Map<string, AbortController>();
 
+// --- Sleep skip registry (per-process) ---
+// Allows skipSleep() to resolve the active sleep/sleepUntil delay immediately
+
+const sleepResolvers = new Map<string, () => void>();
+
 // --- Step ---
 
 class WorkflowStepImpl {
@@ -227,7 +232,7 @@ class WorkflowStepImpl {
         const { until } = JSON.parse(cached.output!) as { until: number };
         const remaining = Math.max(0, until - Date.now());
         if (remaining > 0) {
-          await interruptibleDelay(remaining, this.abortSignal);
+          await skippableDelay(remaining, this.abortSignal, this.instanceId);
         }
         return;
       }
@@ -240,7 +245,7 @@ class WorkflowStepImpl {
       this.cacheStep(`sleep:${name}`, { until });
 
       if (ms > 0) {
-        await interruptibleDelay(ms, this.abortSignal);
+        await skippableDelay(ms, this.abortSignal, this.instanceId);
       }
     });
   }
@@ -262,7 +267,7 @@ class WorkflowStepImpl {
       if (cached) {
         const remaining = Math.max(0, ts.getTime() - Date.now());
         if (remaining > 0) {
-          await interruptibleDelay(remaining, this.abortSignal);
+          await skippableDelay(remaining, this.abortSignal, this.instanceId);
         }
         return;
       }
@@ -275,7 +280,7 @@ class WorkflowStepImpl {
       this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() });
 
       if (delay > 0) {
-        await interruptibleDelay(delay, this.abortSignal);
+        await skippableDelay(delay, this.abortSignal, this.instanceId);
       }
     });
   }
@@ -392,6 +397,35 @@ function interruptibleDelay(ms: number, abortSignal: AbortSignal): Promise<void>
     const cleanup = () => { clearTimeout(timer); abortSignal.removeEventListener("abort", abortHandler); };
     abortSignal.addEventListener("abort", abortHandler);
   });
+}
+
+/** Like interruptibleDelay, but also resolves when skipSleep() is called for the instance. */
+function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  if (abortSignal.aborted) return Promise.reject(new Error("workflow terminated"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const abortHandler = () => { cleanup(); reject(new Error("workflow terminated")); };
+    const cleanup = () => {
+      clearTimeout(timer);
+      abortSignal.removeEventListener("abort", abortHandler);
+      sleepResolvers.delete(instanceId);
+    };
+    sleepResolvers.set(instanceId, () => { cleanup(); resolve(); });
+    abortSignal.addEventListener("abort", abortHandler);
+  });
+}
+
+/** Get the event types an instance is currently waiting for (in-memory). */
+export function getWaitingEventTypes(instanceId: string): string[] {
+  const waiters = eventWaiters.get(instanceId);
+  if (!waiters) return [];
+  return Array.from(waiters.keys());
+}
+
+/** Check if an instance is currently sleeping (has a registered sleep resolver). */
+export function isInstanceSleeping(instanceId: string): boolean {
+  return sleepResolvers.has(instanceId);
 }
 
 export function parseDuration(duration: string | number): number {
@@ -519,6 +553,13 @@ export class SqliteWorkflowInstance {
 
     const params = row.params !== null ? JSON.parse(row.params) : {};
     SqliteWorkflowBinding.executeWorkflow(db, this.instanceId, cls, env, params, abortController, workflowName, limits, row.created_at);
+  }
+
+  async skipSleep(): Promise<void> {
+    const resolver = sleepResolvers.get(this.instanceId);
+    if (resolver) {
+      resolver();
+    }
   }
 
   async sendEvent(event: { type: string; payload?: unknown }): Promise<void> {
