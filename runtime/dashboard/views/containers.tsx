@@ -3,7 +3,9 @@ import { EmptyState, Breadcrumb, Table, PageHeader, TableLink, StatusBadge, Serv
 
 const CONTAINER_STATE_COLORS: Record<string, string> = {
   running: "bg-emerald-100 text-emerald-700",
+  healthy: "bg-emerald-100 text-emerald-700",
   exited: "bg-panel-active text-text-data",
+  stopped: "bg-panel-active text-text-data",
   created: "bg-accent-blue text-ink",
   paused: "bg-yellow-100 text-yellow-700",
   dead: "bg-red-100 text-red-700",
@@ -20,6 +22,7 @@ function ContainerList() {
   const { data: containers, refetch } = useQuery("containers.list");
   const { data: configGroups } = useQuery("config.forService", { type: "containers" });
 
+  const totalInstances = containers?.reduce((s, c) => s + c.instanceCount, 0) ?? 0;
   const totalRunning = containers?.reduce((s, c) => s + c.runningCount, 0) ?? 0;
 
   return (
@@ -31,11 +34,12 @@ function ContainerList() {
             <EmptyState message="No containers configured" />
           ) : (
             <Table
-              headers={["Class Name", "Image", "Max Instances", "Running"]}
+              headers={["Class Name", "Image", "Max Instances", "Instances", "Running"]}
               rows={containers.map(c => [
                 <TableLink href={`#/containers/${encodeURIComponent(c.className)}`}>{c.className}</TableLink>,
                 <span class="font-mono text-xs">{c.image}</span>,
                 c.maxInstances ?? "unlimited",
+                <span class="tabular-nums">{c.instanceCount}</span>,
                 <span class={`tabular-nums font-medium ${c.runningCount > 0 ? "text-emerald-600" : ""}`}>{c.runningCount}</span>,
               ])}
             />
@@ -45,6 +49,7 @@ function ContainerList() {
           description="Docker-backed container instances managed as Durable Objects."
           stats={[
             { label: "Classes", value: String(containers?.length ?? 0) },
+            { label: "Instances", value: String(totalInstances) },
             { label: "Running", value: String(totalRunning) },
           ]}
           configGroups={configGroups}
@@ -70,9 +75,12 @@ function ContainerInstanceList({ className }: { className: string }) {
         <EmptyState message="No container instances found" />
       ) : (
         <Table
-          headers={["Container Name", "State", "Ports"]}
+          headers={["Instance", "Docker State", "Ports"]}
           rows={instances.map(inst => [
-            <span class="font-mono text-xs font-medium">{inst.name}</span>,
+            <div>
+              <span class="font-mono text-xs font-medium">{inst.containerName}</span>
+              {inst.doName && <span class="text-text-muted text-xs ml-2">({inst.doName})</span>}
+            </div>,
             <StatusBadge status={inst.state} colorMap={CONTAINER_STATE_COLORS} />,
             Object.keys(inst.ports).length > 0
               ? <span class="font-mono text-xs">{Object.entries(inst.ports).map(([k, v]) => `${v}->${k}`).join(", ")}</span>

@@ -56,13 +56,15 @@ export interface ContainerSummary {
   image: string;
   maxInstances: number | null;
   bindingName: string;
+  instanceCount: number;
   runningCount: number;
 }
 
 export interface ContainerInstance {
-  name: string;
+  id: string;
+  doName: string | null;
+  containerName: string;
   state: string;
-  exitCode: number | null;
   ports: Record<string, string>;
 }
 
