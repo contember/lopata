@@ -35,8 +35,8 @@ export function RowDetailModal({ columns, row, fkMap, onClose, onNavigateFK }: {
             <div key={col} class="px-5 py-3 flex gap-4 group">
               <div class="w-1/3 flex-shrink-0 flex items-start gap-1.5 pt-0.5">
                 <span class="font-mono text-xs font-medium text-text-secondary">{col}</span>
-                {fk && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">FK</span>}
-                {isJson && <span class="text-[10px] font-semibold bg-blue-50 text-blue-600 px-1 py-0.5 rounded">JSON</span>}
+                {fk && <span class="text-[10px] font-semibold bg-link/10 text-link px-1 py-0.5 rounded">FK</span>}
+                {isJson && <span class="text-[10px] font-semibold bg-link/10 text-link px-1 py-0.5 rounded">JSON</span>}
               </div>
               <div class="flex-1 min-w-0 flex items-start gap-2">
                 {value === null ? (
@@ -44,7 +44,7 @@ export function RowDetailModal({ columns, row, fkMap, onClose, onNavigateFK }: {
                 ) : fk && onNavigateFK ? (
                   <button
                     onClick={() => { onNavigateFK(fk.targetTable, fk.targetColumn, value); onClose(); }}
-                    class="font-mono text-xs text-blue-600 hover:text-blue-800 hover:underline text-left"
+                    class="font-mono text-xs text-link hover:opacity-80 hover:underline text-left"
                   >
                     {strVal} &rarr; {fk.targetTable}
                   </button>
@@ -94,7 +94,7 @@ export function CellInspectorModal({ column, value, onClose }: {
   const titleContent = (
     <span>
       <span class="font-mono">{column}</span>
-      {isJson && <span class="ml-2 text-[10px] font-semibold bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">JSON</span>}
+      {isJson && <span class="ml-2 text-[10px] font-semibold bg-link/10 text-link px-1.5 py-0.5 rounded">JSON</span>}
     </span>
   );
 

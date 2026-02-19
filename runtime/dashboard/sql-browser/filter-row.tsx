@@ -34,7 +34,7 @@ export function FilterRow({ columns, filters, onFilterChange, onClearAll, hasChe
                 onFilterChange(col, (e.target as HTMLInputElement).value);
               }
             }}
-            class="w-full bg-panel border border-border rounded px-2 py-1 font-mono text-xs font-normal outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
+            class="w-full bg-panel-secondary border border-border rounded px-2 py-1 font-mono text-xs font-normal outline-none focus:border-text-dim focus:ring-1 focus:ring-text-dim/30 placeholder:text-text-dim transition-all"
           />
         </th>
       ))}

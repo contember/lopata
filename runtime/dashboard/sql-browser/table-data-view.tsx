@@ -33,6 +33,10 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
     if (col.foreignKey) fkMap.set(col.name, col.foreignKey);
   }
 
+  // Numeric columns for right-alignment
+  const numericTypes = /\b(INT|INTEGER|REAL|FLOAT|DOUBLE|DECIMAL|NUMERIC|BIGINT|SMALLINT|TINYINT|MEDIUMINT)\b/i;
+  const numericCols = new Set(schema.columns.filter(c => numericTypes.test(c.type)).map(c => c.name));
+
   // Initialize state from URL query params
   const initFilters = (): Record<string, string> => {
     const f: Record<string, string> = {};
@@ -397,10 +401,10 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
                 <th
                   key={col}
                   onClick={() => handleSort(col)}
-                  class="text-left px-4 py-2.5 font-medium text-xs text-text-muted uppercase tracking-wider font-mono cursor-pointer hover:text-text-data select-none"
+                  class={`${numericCols.has(col) ? "text-right" : "text-left"} px-4 py-2.5 font-medium text-xs text-text-muted uppercase tracking-wider font-mono cursor-pointer hover:text-text-data select-none`}
                 >
                   {col}
-                  {fkMap.has(col) && <span class="ml-1 text-blue-400 text-[10px]" title={`FK → ${fkMap.get(col)!.targetTable}`}>FK</span>}
+                  {fkMap.has(col) && <span class="ml-1 text-link text-[10px]" title={`FK → ${fkMap.get(col)!.targetTable}`}>FK</span>}
                   {sortCol === col && (
                     <span class="ml-1">{sortDir === "ASC" ? "\u2191" : "\u2193"}</span>
                   )}
@@ -443,7 +447,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
               </tr>
             ) : (
               rows.map((row, i) => (
-                <tr key={i} class={`group border-b border-border-row last:border-0 hover:bg-panel-hover/50 transition-colors ${selectedRows.has(rowKey(row)) ? "bg-blue-50/50" : ""}`}>
+                <tr key={i} class={`group border-b border-border-subtle last:border-0 hover:bg-panel-hover/50 transition-colors ${selectedRows.has(rowKey(row)) ? "bg-blue-500/10" : i % 2 === 1 ? "bg-panel-hover/20" : ""}`}>
                   <td class="px-3 py-2">
                     <input
                       type="checkbox"
@@ -460,6 +464,7 @@ export function TableDataView({ table, execQuery, onOpenInConsole, history, brow
                         foreignKey={fkMap.get(col) ?? null}
                         onNavigateFK={(fk) => onNavigateFK(fk.targetTable, fk.targetColumn, row[col])}
                         onInspect={() => setInspectCell({ column: col, value: row[col] })}
+                        alignRight={numericCols.has(col)}
                       />
                     </td>
                   ))}

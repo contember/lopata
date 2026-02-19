@@ -119,7 +119,7 @@ function EmailList() {
 	};
 
 	return (
-		<div class="p-8 max-w-5xl mx-auto">
+		<div class="p-8 max-w-6xl">
 			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
@@ -190,7 +190,7 @@ function EmailDetail({ id }: { id: string }) {
 	const { record, raw } = data;
 
 	return (
-		<div class="p-8 max-w-4xl mx-auto">
+		<div class="p-8 max-w-4xl">
 			<a href="#/email" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to emails</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">

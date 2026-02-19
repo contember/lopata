@@ -33,7 +33,7 @@ function AiList() {
 	};
 
 	return (
-		<div class="p-8 max-w-5xl mx-auto">
+		<div class="p-8 max-w-6xl">
 			<PageHeader title="Workers AI" subtitle={`${stats?.total ?? 0} request(s)`} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
@@ -107,7 +107,7 @@ function AiDetail({ id }: { id: string }) {
 	}
 
 	return (
-		<div class="p-8 max-w-4xl mx-auto">
+		<div class="p-8 max-w-4xl">
 			<a href="#/ai" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to AI requests</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">

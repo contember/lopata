@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from "preact/hooks";
 import type { ForeignKeyInfo } from "./types";
 
-export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspect }: {
+export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspect, alignRight }: {
   value: unknown;
   onSave: (v: unknown) => void;
   foreignKey?: ForeignKeyInfo | null;
   onNavigateFK?: (fk: ForeignKeyInfo) => void;
   onInspect?: () => void;
+  alignRight?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -69,28 +70,38 @@ export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspec
     );
   }
 
+  const isFkNav = foreignKey && value != null && onNavigateFK;
+
   return (
-    <div class="flex items-center gap-1 font-mono text-xs py-2 min-h-[2rem]">
-      <div
-        onClick={startEdit}
-        class="cursor-pointer flex-1 min-w-0 flex items-center"
-      >
-        {value === null ? (
-          <span class="text-text-dim italic">NULL</span>
-        ) : foreignKey ? (
-          <span class="truncate max-w-xs text-blue-600" title={String(value)}>{String(value)}</span>
-        ) : (
-          <span class="truncate max-w-xs" title={String(value)}>{String(value)}</span>
-        )}
-      </div>
-      {foreignKey && value != null && onNavigateFK && (
-        <button
-          onClick={e => { e.stopPropagation(); onNavigateFK(foreignKey); }}
-          class="flex-shrink-0 text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 hover:text-blue-800 px-1.5 py-0.5 rounded transition-colors"
-          title={`Go to ${foreignKey.targetTable}.${foreignKey.targetColumn}`}
+    <div class={`group/cell flex items-center gap-1 font-mono text-xs py-2 min-h-[2rem] ${alignRight ? "justify-end" : ""}`}>
+      {isFkNav ? (
+        <>
+          <span
+            onClick={() => onNavigateFK!(foreignKey!)}
+            class="truncate max-w-xs text-link hover:underline cursor-pointer"
+            title={`${String(value)} \u2192 ${foreignKey!.targetTable}.${foreignKey!.targetColumn}`}
+          >
+            {String(value)}
+          </span>
+          <button
+            onClick={(e) => { e.stopPropagation(); startEdit(); }}
+            class="flex-shrink-0 opacity-0 group-hover/cell:opacity-100 text-xs text-text-muted hover:text-text-data px-1.5 py-0.5 rounded hover:bg-panel-hover transition-all"
+            title="Edit value"
+          >
+            edit
+          </button>
+        </>
+      ) : (
+        <div
+          onClick={startEdit}
+          class={`cursor-pointer flex-1 min-w-0 flex items-center ${alignRight ? "justify-end" : ""}`}
         >
-          &rarr; {foreignKey.targetTable}
-        </button>
+          {value === null ? (
+            <span class="text-text-dim italic">NULL</span>
+          ) : (
+            <span class="truncate max-w-xs" title={String(value)}>{String(value)}</span>
+          )}
+        </div>
       )}
       {isLong && onInspect && (
         <button

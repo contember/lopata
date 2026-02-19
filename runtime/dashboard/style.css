@@ -1,5 +1,9 @@
 @import "tailwindcss" source(".");
 
+html {
+  font-size: 110%;
+}
+
 @theme {
   --color-surface: #f9fafb;
   --color-surface-raised: #f3f4f6;
@@ -23,6 +27,7 @@
   --color-text-data: #4b5563;
   --color-bar: #f3f4f6;
   --color-code-bg: #f9fafb;
+  --color-link: #2563eb;
   --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   --shadow-lime-glow: none;
@@ -52,6 +57,7 @@
     --color-text-data: #d4d4d4;
     --color-bar: #1c1c1c;
     --color-code-bg: #1c1c1c;
+    --color-link: #60a5fa;
     --shadow-card: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
     --shadow-card-hover: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
     --shadow-focus: 0 0 0 2px rgba(255, 255, 255, 0.1);
