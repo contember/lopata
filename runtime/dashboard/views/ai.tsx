@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Table, PageHeader, PillButton, DeleteButton, StatusBadge, ServiceInfo } from "../components";
+import { EmptyState, Table, PageHeader, PillButton, DeleteButton, StatusBadge, ServiceInfo, RefreshButton } from "../components";
 
 const AI_STATUS_COLORS: Record<string, string> = {
 	ok: "bg-emerald-100 text-emerald-700",
@@ -34,7 +34,7 @@ function AiList() {
 
 	return (
 		<div class="p-8 max-w-6xl">
-			<PageHeader title="Workers AI" subtitle={`${stats?.total ?? 0} request(s)`} />
+			<PageHeader title="Workers AI" subtitle={`${stats?.total ?? 0} request(s)`} actions={<RefreshButton onClick={refetch} />} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					<div class="mb-6 flex gap-2 items-center flex-wrap">

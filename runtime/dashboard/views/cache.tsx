@@ -1,5 +1,5 @@
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, RefreshButton } from "../components";
 
 const HTTP_STATUS_COLORS: Record<string, string> = {
   "2xx": "bg-emerald-100 text-emerald-700",
@@ -22,13 +22,13 @@ export function CacheView({ route }: { route: string }) {
 }
 
 function CacheNameList() {
-  const { data: caches } = useQuery("cache.listCaches");
+  const { data: caches, refetch } = useQuery("cache.listCaches");
 
   const totalEntries = caches?.reduce((s, c) => s + c.count, 0) ?? 0;
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} />
+      <PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!caches?.length ? (
@@ -72,6 +72,9 @@ function CacheEntryList({ name }: { name: string }) {
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Cache", href: "#/cache" }, { label: name }]} />
+      <div class="mb-6 flex justify-end">
+        <RefreshButton onClick={refetch} />
+      </div>
       {!entries?.length ? (
         <EmptyState message="No cache entries" />
       ) : (

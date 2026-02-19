@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { formatBytes } from "../lib";
 import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
 import type { KvValue } from "../rpc/types";
-import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo, PillButton } from "../components";
+import { EmptyState, PageHeader, Breadcrumb, Table, DetailField, CodeBlock, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo, PillButton, RefreshButton } from "../components";
 
 export function KvView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -14,14 +14,14 @@ export function KvView({ route }: { route: string }) {
 }
 
 function KvNamespaceList() {
-  const { data: namespaces } = useQuery("kv.listNamespaces");
+  const { data: namespaces, refetch } = useQuery("kv.listNamespaces");
   const { data: configGroups } = useQuery("config.forService", { type: "kv" });
 
   const totalKeys = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
+      <PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!namespaces?.length ? (
@@ -182,14 +182,17 @@ function KvKeyList({ ns }: { ns: string }) {
       <Breadcrumb items={[{ label: "KV", href: "#/kv" }, { label: ns }]} />
       <div class="mb-6 flex gap-3 items-center justify-between">
         <FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
-        {!showAdd && (
-          <button
-            onClick={() => setShowAdd(true)}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-          >
-            Add key
-          </button>
-        )}
+        <div class="flex gap-2 items-center">
+          <RefreshButton onClick={refetch} />
+          {!showAdd && (
+            <button
+              onClick={() => setShowAdd(true)}
+              class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+            >
+              Add key
+            </button>
+          )}
+        </div>
       </div>
       {showAdd && (
         <KvPutForm

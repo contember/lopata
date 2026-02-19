@@ -1,6 +1,6 @@
 import { useQuery } from "../rpc/hooks";
 import { rpc } from "../rpc/client";
-import { Breadcrumb, PageHeader, Table, TableLink, ServiceInfo, EmptyState, SqlBrowser } from "../components";
+import { Breadcrumb, PageHeader, Table, TableLink, ServiceInfo, EmptyState, SqlBrowser, RefreshButton } from "../components";
 import { parseHashRoute } from "../lib";
 import type { Tab } from "../sql-browser/index";
 
@@ -16,14 +16,14 @@ export function D1View({ route }: { route: string }) {
 }
 
 function D1DatabaseList() {
-  const { data: databases } = useQuery("d1.listDatabases");
+  const { data: databases, refetch } = useQuery("d1.listDatabases");
   const { data: configGroups } = useQuery("config.forService", { type: "d1" });
 
   const totalTables = databases?.reduce((s, db) => s + db.tables, 0) ?? 0;
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="D1 Databases" subtitle={`${databases?.length ?? 0} database(s)`} />
+      <PageHeader title="D1 Databases" subtitle={`${databases?.length ?? 0} database(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!databases?.length ? (

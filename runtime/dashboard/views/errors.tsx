@@ -5,6 +5,7 @@ import { rpc } from "../rpc/client";
 import { navigate } from "../lib";
 import { formatDuration } from "./trace-waterfall";
 import { KeyValueTable } from "../components/key-value-table";
+import { RefreshButton } from "../components";
 
 export function ErrorsView({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -57,14 +58,17 @@ function ErrorList() {
           <h1 class="text-2xl font-bold text-ink">Errors</h1>
           <p class="text-sm text-text-muted mt-1">{errors.length} error(s)</p>
         </div>
-        {errors.length > 0 && (
-          <button
-            onClick={handleClear}
-            class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
-          >
-            Clear all
-          </button>
-        )}
+        <div class="flex gap-2 items-center">
+          <RefreshButton onClick={() => loadErrors()} />
+          {errors.length > 0 && (
+            <button
+              onClick={handleClear}
+              class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
       </div>
 
       <div class="flex-1 overflow-y-auto scrollbar-thin">

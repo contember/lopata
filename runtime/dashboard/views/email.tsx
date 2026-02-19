@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Table, PageHeader, PillButton, DeleteButton, StatusBadge, ServiceInfo } from "../components";
+import { EmptyState, Table, PageHeader, PillButton, DeleteButton, StatusBadge, ServiceInfo, RefreshButton } from "../components";
 
 const EMAIL_STATUS_COLORS: Record<string, string> = {
 	sent: "bg-blue-100 text-blue-700",
@@ -120,7 +120,7 @@ function EmailList() {
 
 	return (
 		<div class="p-8 max-w-6xl">
-			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} />
+			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} actions={<RefreshButton onClick={refetch} />} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					<SendEmailForm open={formOpen} onToggle={() => setFormOpen(!formOpen)} onSent={refetch} />

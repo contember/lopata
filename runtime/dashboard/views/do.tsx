@@ -1,7 +1,7 @@
 import { formatTime, parseHashRoute } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
 import { rpc } from "../rpc/client";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, SqlBrowser } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, SqlBrowser, RefreshButton } from "../components";
 import type { Tab } from "../sql-browser/index";
 
 export function DoView({ route }: { route: string }) {
@@ -21,14 +21,14 @@ export function DoView({ route }: { route: string }) {
 }
 
 function DoNamespaceList() {
-  const { data: namespaces } = useQuery("do.listNamespaces");
+  const { data: namespaces, refetch } = useQuery("do.listNamespaces");
   const { data: configGroups } = useQuery("config.forService", { type: "do" });
 
   const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} />
+      <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!namespaces?.length ? (
@@ -61,11 +61,14 @@ function DoNamespaceList() {
 }
 
 function DoInstanceList({ ns }: { ns: string }) {
-  const { data: instances } = useQuery("do.listInstances", { ns });
+  const { data: instances, refetch } = useQuery("do.listInstances", { ns });
 
   return (
     <div class="p-8">
       <Breadcrumb items={[{ label: "Durable Objects", href: "#/do" }, { label: ns }]} />
+      <div class="mb-6 flex justify-end">
+        <RefreshButton onClick={refetch} />
+      </div>
       {!instances?.length ? (
         <EmptyState message="No instances found" />
       ) : (
@@ -116,6 +119,9 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
         { label: ns, href: `#/do/${encodeURIComponent(ns)}` },
         { label: id.slice(0, 16) + "..." },
       ]} />
+      <div class="mb-6 flex justify-end">
+        <RefreshButton onClick={refetch} />
+      </div>
       {(data.alarm || data.hasAlarmHandler) && (
         <div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink flex items-center justify-between">
           <span>{data.alarm ? `Alarm set for: ${formatTime(data.alarm)}` : "No alarm scheduled"}</span>

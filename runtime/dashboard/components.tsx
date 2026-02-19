@@ -9,6 +9,7 @@ export {
   CodeBlock,
   FilterInput,
   PillButton,
+  RefreshButton,
   LoadMoreButton,
   DeleteButton,
   TableLink,

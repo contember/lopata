@@ -1,7 +1,7 @@
 import { useState } from "preact/hooks";
 import { formatTime } from "../lib";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge, ServiceInfo } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, PillButton, DeleteButton, TableLink, StatusBadge, ServiceInfo, RefreshButton } from "../components";
 
 const QUEUE_STATUS_COLORS: Record<string, string> = {
   pending: "bg-amber-100 text-amber-700",
@@ -17,7 +17,7 @@ export function QueueView({ route }: { route: string }) {
 }
 
 function QueueList() {
-  const { data: queues } = useQuery("queue.listQueues");
+  const { data: queues, refetch } = useQuery("queue.listQueues");
   const { data: configGroups } = useQuery("config.forService", { type: "queue" });
 
   const totalPending = queues?.reduce((s, q) => s + q.pending, 0) ?? 0;
@@ -26,7 +26,7 @@ function QueueList() {
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="Queues" subtitle={`${queues?.length ?? 0} queue(s)`} />
+      <PageHeader title="Queues" subtitle={`${queues?.length ?? 0} queue(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!queues?.length ? (
@@ -164,7 +164,10 @@ function QueueMessages({ name }: { name: string }) {
             </PillButton>
           ))}
         </div>
-        <PublishForm queue={name} onPublished={refetch} />
+        <div class="flex gap-2 items-center">
+          <RefreshButton onClick={refetch} />
+          <PublishForm queue={name} onPublished={refetch} />
+        </div>
       </div>
       {!messages?.length ? (
         <EmptyState message="No messages found" />

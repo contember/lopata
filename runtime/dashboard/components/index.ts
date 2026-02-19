@@ -7,6 +7,7 @@ export { DetailField } from "./detail-field";
 export { CodeBlock } from "./code-block";
 export { FilterInput } from "./filter-input";
 export { PillButton } from "./pill-button";
+export { RefreshButton } from "./refresh-button";
 export { LoadMoreButton, DeleteButton } from "./buttons";
 export { TableLink } from "./table-link";
 export { StatusBadge } from "./status-badge";

@@ -1,7 +1,7 @@
 import { useState, useRef } from "preact/hooks";
 import { formatBytes } from "../lib";
 import { useQuery, usePaginatedQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo } from "../components";
+import { EmptyState, Breadcrumb, Table, PageHeader, FilterInput, LoadMoreButton, DeleteButton, TableLink, ServiceInfo, RefreshButton } from "../components";
 
 export function R2View({ route }: { route: string }) {
   const parts = route.split("/").filter(Boolean);
@@ -11,7 +11,7 @@ export function R2View({ route }: { route: string }) {
 }
 
 function R2BucketList() {
-  const { data: buckets } = useQuery("r2.listBuckets");
+  const { data: buckets, refetch } = useQuery("r2.listBuckets");
   const { data: configGroups } = useQuery("config.forService", { type: "r2" });
 
   const totalObjects = buckets?.reduce((s, b) => s + b.count, 0) ?? 0;
@@ -19,7 +19,7 @@ function R2BucketList() {
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="R2 Buckets" subtitle={`${buckets?.length ?? 0} bucket(s)`} />
+      <PageHeader title="R2 Buckets" subtitle={`${buckets?.length ?? 0} bucket(s)`} actions={<RefreshButton onClick={refetch} />} />
       <div class="flex gap-6 items-start">
         <div class="flex-1 min-w-0">
           {!buckets?.length ? (
@@ -164,7 +164,10 @@ function R2ObjectList({ bucket }: { bucket: string }) {
       <Breadcrumb items={[{ label: "R2", href: "#/r2" }, { label: bucket }]} />
       <div class="mb-6 flex gap-2 items-center justify-between">
         <FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
-        <UploadForm bucket={bucket} onUploaded={refetch} />
+        <div class="flex gap-2 items-center">
+          <RefreshButton onClick={refetch} />
+          <UploadForm bucket={bucket} onUploaded={refetch} />
+        </div>
       </div>
       {objects.length === 0 ? (
         <EmptyState message="No objects found" />

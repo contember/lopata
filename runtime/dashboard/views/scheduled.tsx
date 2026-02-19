@@ -1,13 +1,13 @@
 import { useState } from "preact/hooks";
 import { useQuery, useMutation } from "../rpc/hooks";
-import { PageHeader, Table, EmptyState, ServiceInfo } from "../components";
+import { PageHeader, Table, EmptyState, ServiceInfo, RefreshButton } from "../components";
 
 export function ScheduledView({ route }: { route: string }) {
   return <ScheduledList />;
 }
 
 function ScheduledList() {
-  const { data: triggers } = useQuery("scheduled.listTriggers");
+  const { data: triggers, refetch } = useQuery("scheduled.listTriggers");
   const { data: configGroups } = useQuery("config.forService", { type: "scheduled" });
   const runNow = useMutation("scheduled.trigger");
   const [runningCron, setRunningCron] = useState<string | null>(null);
@@ -27,7 +27,7 @@ function ScheduledList() {
 
   return (
     <div class="p-8 max-w-6xl">
-      <PageHeader title="Scheduled" subtitle={`${triggers?.length ?? 0} cron trigger(s)`} />
+      <PageHeader title="Scheduled" subtitle={`${triggers?.length ?? 0} cron trigger(s)`} actions={<RefreshButton onClick={refetch} />} />
 
       {lastResult && (
         <div class={`mb-6 px-4 py-3 rounded-lg text-sm font-medium ${
