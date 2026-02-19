@@ -127,14 +127,16 @@ export class ContainerRuntime {
     const mergedEnv = { ...this.envVars, ...options?.envVars };
 
     // Build image if needed (lazy, mtime-cached)
-    const tag = `bunflare-${this._image.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
+    const sanitized = this._image.toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/^[^a-z0-9]+/, "");
+    const tag = `bunflare-${sanitized || "image"}`;
     // If image looks like a Dockerfile path, build it
-    if (this._image.endsWith("Dockerfile") || this._image.includes("/")) {
+    const isDockerfile = /Dockerfile/i.test(this._image) || this._image.startsWith("./") || this._image.startsWith("/");
+    if (isDockerfile) {
       await this._docker.buildImage(this._image, tag);
     }
 
     const runOpts: DockerRunOptions = {
-      image: this._image.endsWith("Dockerfile") || this._image.includes("/") ? tag : this._image,
+      image: isDockerfile ? tag : this._image,
       name: this._containerName,
       ports: this._hostPorts,
       envVars: mergedEnv,
@@ -442,9 +444,9 @@ export class ContainerContext {
 
 export class ContainerBase extends DurableObjectBase {
   // Configuration properties (override in subclass)
-  defaultPort = 8080;
+  defaultPort: number | undefined = 8080;
   requiredPorts: number[] = [];
-  sleepAfter?: string | number;
+  sleepAfter: string | number = "10m";
   envVars: Record<string, string> = {};
   entrypoint?: string[];
   enableInternet = true;
@@ -456,8 +458,8 @@ export class ContainerBase extends DurableObjectBase {
   // ─── Lifecycle hooks (override in subclass) ─────────────────────────
 
   onStart(): void | Promise<void> {}
-  onStop(): void | Promise<void> {}
-  onError(_error: Error): void | Promise<void> {}
+  onStop(_params?: unknown): void | Promise<void> {}
+  onError(_error: unknown): void | Promise<void> {}
 
   onActivityExpired(): void | Promise<void> {
     // Default: send SIGTERM to stop container
@@ -468,6 +470,7 @@ export class ContainerBase extends DurableObjectBase {
 
   /**
    * Fetch handler: auto-start if stopped, renew timeout, forward to container.
+   * Reads `cf-container-target-port` header (set by switchPort()) to determine port.
    */
   async fetch(request: Request): Promise<Response> {
     if (!this._containerRuntime) {
@@ -479,37 +482,87 @@ export class ContainerBase extends DurableObjectBase {
       await this.startAndWaitForPorts();
     }
 
-    return this._containerRuntime.fetch(request);
+    // Check for port override via switchPort() header
+    let port: number | undefined;
+    const portHeader = request.headers.get("cf-container-target-port");
+    if (portHeader) {
+      const parsed = parseInt(portHeader, 10);
+      if (!isNaN(parsed)) port = parsed;
+    }
+
+    return this._containerRuntime.fetch(request, undefined, port);
   }
 
   /**
-   * Forward an HTTP request to the container on a specific port.
+   * Forward an HTTP request to the container.
+   * Supports multiple call signatures matching the real Container API:
+   * - containerFetch(request: Request, port?: number)
+   * - containerFetch(url: string | URL, init?: RequestInit, port?: number)
    */
-  async containerFetch(input: RequestInfo | URL, init?: RequestInit, port?: number): Promise<Response> {
+  async containerFetch(
+    requestOrUrl: Request | string | URL,
+    portOrInit?: number | RequestInit,
+    portParam?: number,
+  ): Promise<Response> {
     if (!this._containerRuntime) {
       return new Response("Container runtime not initialized", { status: 500 });
     }
+
+    const { input, init, port } = this._parseContainerFetchArgs(requestOrUrl, portOrInit, portParam);
     return this._containerRuntime.fetch(input, init, port);
   }
 
-  /**
-   * Retarget a request to a different container port.
-   */
-  async switchPort(request: Request, port: number): Promise<Response> {
-    return this.containerFetch(request, undefined, port);
+  /** Parse flexible containerFetch arguments */
+  private _parseContainerFetchArgs(
+    requestOrUrl: Request | string | URL,
+    portOrInit?: number | RequestInit,
+    portParam?: number,
+  ): { input: RequestInfo | URL; init?: RequestInit; port?: number } {
+    if (requestOrUrl instanceof Request) {
+      // containerFetch(request, port?)
+      const port = typeof portOrInit === "number" ? portOrInit : portParam;
+      return { input: requestOrUrl, port };
+    }
+    // containerFetch(url, init?, port?)
+    const init = typeof portOrInit === "object" ? portOrInit : undefined;
+    const port = typeof portOrInit === "number" ? portOrInit : portParam;
+    return { input: requestOrUrl, init, port };
   }
 
   /**
    * Start the container and wait until it's healthy or running.
+   * Supports flexible call signatures matching the real Container API:
+   * - startAndWaitForPorts()
+   * - startAndWaitForPorts(ports?, cancellationOptions?, startOptions?)
+   * - startAndWaitForPorts({ports?, abort?, ...})
    */
-  async startAndWaitForPorts(options?: { envVars?: Record<string, string> }): Promise<void> {
+  async startAndWaitForPorts(
+    portsOrArgs?: number | number[] | { ports?: number | number[]; abort?: AbortSignal; envVars?: Record<string, string> },
+    cancellationOptions?: { abort?: AbortSignal },
+    startOptions?: { envVars?: Record<string, string> },
+  ): Promise<void> {
     if (!this._containerRuntime) throw new Error("Container runtime not initialized");
-    await this._containerRuntime.start(options);
+
+    // Parse args — extract abort signal and start options
+    let abort: AbortSignal | undefined;
+    let envVars: Record<string, string> | undefined;
+
+    if (typeof portsOrArgs === "object" && portsOrArgs !== null && !Array.isArray(portsOrArgs) && !(typeof portsOrArgs === "number")) {
+      // Object form: startAndWaitForPorts({ports, abort, envVars})
+      abort = portsOrArgs.abort;
+      envVars = portsOrArgs.envVars;
+    } else {
+      abort = cancellationOptions?.abort;
+      envVars = startOptions?.envVars;
+    }
+
+    await this._containerRuntime.start(envVars ? { envVars } : undefined);
 
     // Wait for healthy (with timeout)
     const timeout = 60_000;
-    const start = Date.now();
-    while (this._containerRuntime.status === "running" && Date.now() - start < timeout) {
+    const started = Date.now();
+    while (this._containerRuntime.status === "running" && Date.now() - started < timeout) {
+      if (abort?.aborted) throw new Error("Container startup aborted");
       await new Promise(r => setTimeout(r, 200));
     }
 
@@ -519,10 +572,10 @@ export class ContainerBase extends DurableObjectBase {
   }
 
   /**
-   * Start the container (non-blocking).
+   * Start the container.
    */
-  start(options?: { envVars?: Record<string, string> }): void {
-    this._containerRuntime?.start(options).catch(err => {
+  async start(_startOptions?: unknown, _waitOptions?: unknown): Promise<void> {
+    await this._containerRuntime?.start().catch(err => {
       console.error("[bunflare] Container start error:", err);
     });
   }
@@ -530,8 +583,9 @@ export class ContainerBase extends DurableObjectBase {
   /**
    * Stop the container.
    */
-  async stop(signal?: number): Promise<void> {
-    await this._containerRuntime?.stop(signal);
+  async stop(signal?: number | string): Promise<void> {
+    const sig = typeof signal === "string" ? undefined : signal;
+    await this._containerRuntime?.stop(sig);
   }
 
   /**
@@ -544,7 +598,7 @@ export class ContainerBase extends DurableObjectBase {
   /**
    * Get current container state.
    */
-  getState(): ContainerState {
+  async getState(): Promise<ContainerState> {
     if (!this._containerRuntime) {
       return { status: "stopped", lastChange: Date.now() };
     }
@@ -571,7 +625,7 @@ export class ContainerBase extends DurableObjectBase {
     this._containerRuntime = runtime;
 
     // Copy config from instance to runtime
-    runtime.defaultPort = this.defaultPort;
+    runtime.defaultPort = this.defaultPort ?? 8080;
     runtime.requiredPorts = this.requiredPorts;
     runtime.sleepAfter = this.sleepAfter;
     runtime.envVars = this.envVars;

@@ -151,7 +151,7 @@ export const handlers = {
     if (namespace) {
       const instance = (namespace as any)._getInstance(id) as ContainerBase | null;
       if (instance) {
-        config.defaultPort = instance.defaultPort;
+        config.defaultPort = instance.defaultPort ?? 8080;
         config.sleepAfter = instance.sleepAfter ?? null;
         config.enableInternet = instance.enableInternet;
         config.pingEndpoint = instance.pingEndpoint;

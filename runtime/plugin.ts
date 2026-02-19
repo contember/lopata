@@ -241,6 +241,12 @@ plugin({
           Container: ContainerBase,
           getContainer,
           getRandom,
+          switchPort(request: Request, port: number): Request {
+            const headers = new Headers(request.headers);
+            headers.set("cf-container-target-port", port.toString());
+            return new Request(request, { headers });
+          },
+          loadBalance: getRandom,
         },
         loader: "object",
       };

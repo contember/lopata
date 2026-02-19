@@ -3,6 +3,7 @@ export { ErrorBridge } from "./error-bridge";
 export { SqlNotes } from "./notes";
 export { MyWorkflow } from "./workflow";
 export { MyContainer } from "./container";
+export { Sandbox } from "./sandbox";
 
 function html(body: string): Response {
   return new Response(
@@ -212,6 +213,44 @@ function indexPage(): Response {
   <form onsubmit="api('POST','/container/fetch',formVal('ctr-path'));return false">
     <label>Path <input id="ctr-path" value="/"></label>
     <button type="submit" class="secondary">Fetch container</button>
+  </form>
+</div>
+
+<h2>Sandbox (Code Execution)</h2>
+<div class="section">
+  <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem">Runs commands in an isolated Docker container via @cloudflare/sandbox SDK.</p>
+  <form onsubmit="api('POST','/sandbox/exec',{command:formVal('sb-cmd')});return false">
+    <label>Command <input id="sb-cmd" value="node -e &quot;console.log('Hello from Sandbox!')&quot;" style="min-width:350px"></label>
+    <button type="submit">Exec</button>
+  </form>
+  <form onsubmit="api('POST','/sandbox/write-and-run',{filename:formVal('sb-file'),code:formVal('sb-code')});return false" style="margin-top:0.5rem">
+    <label>Filename <input id="sb-file" value="script.js"></label>
+    <label>Code <textarea id="sb-code">const os = require('os');
+console.log(\`Node \${process.version} on \${os.platform()} \${os.arch()}\`);
+console.log(\`2 + 2 = \${2 + 2}\`);
+const fib = n => n <= 1 ? n : fib(n-1) + fib(n-2);
+for (let i = 0; i < 8; i++) console.log(\`  fib(\${i}) = \${fib(i)}\`);</textarea></label>
+    <button type="submit">Write &amp; Run</button>
+  </form>
+  <div class="links" style="margin-top:0.5rem">
+    <a href="#" onclick="api('POST','/sandbox/exec',{command:'uname -a'});return false">uname -a</a>
+    <a href="#" onclick="api('POST','/sandbox/exec',{command:'ls -la /workspace'});return false">ls /workspace</a>
+    <a href="#" onclick="api('POST','/sandbox/exec',{command:'node -e \"console.log(JSON.stringify({node: process.version, arch: process.arch}))\"'});return false">Node version</a>
+  </div>
+</div>
+
+<h2>Analytics Engine</h2>
+<div class="section">
+  <div class="links">
+    <a href="#" onclick="api('POST','/analytics/track',{index:'page-view',doubles:[1],blobs:['/home']});return false">Track page view</a>
+    <a href="#" onclick="api('POST','/analytics/track',{index:'click',doubles:[Date.now()],blobs:['buy-button']});return false">Track click</a>
+    <a href="#" onclick="api('POST','/analytics/track',{});return false">Track empty event</a>
+  </div>
+  <form onsubmit="api('POST','/analytics/track',{index:formVal('ae-idx'),doubles:formVal('ae-doubles')?JSON.parse('['+formVal('ae-doubles')+']'):[],blobs:formVal('ae-blobs')?formVal('ae-blobs').split(','):[]});return false">
+    <label>Index <input id="ae-idx" value="custom-event"></label>
+    <label>Doubles (comma-sep) <input id="ae-doubles" value="42,3.14"></label>
+    <label>Blobs (comma-sep) <input id="ae-blobs" value="click,homepage"></label>
+    <button type="submit">Write data point</button>
   </form>
 </div>
 
@@ -574,6 +613,17 @@ export default {
       }
     }
 
+    // ── Analytics Engine ──
+    if (path === "/analytics/track" && method === "POST") {
+      const body = (await request.json()) as { index?: string; doubles?: number[]; blobs?: string[] };
+      env.ANALYTICS.writeDataPoint({
+        indexes: body.index ? [body.index] : undefined,
+        doubles: body.doubles,
+        blobs: body.blobs,
+      });
+      return Response.json({ success: true }, { status: 201 });
+    }
+
     // ── Queue ──
     if (path === "/queue/send" && method === "POST") {
       const body = await request.json();
@@ -602,6 +652,39 @@ export default {
       const instance = await env.MY_WORKFLOW.get(wfMatch[1]!);
       const status = await instance.status();
       return Response.json({ id: instance.id, status });
+    }
+
+    // ── Sandbox ──
+    if (path === "/sandbox/exec" && method === "POST") {
+      const { getSandbox } = await import("@cloudflare/sandbox");
+      const sandbox = getSandbox(env.SANDBOX, "dev");
+      const body = (await request.json()) as { command: string };
+      const result = await sandbox.exec(body.command);
+      return Response.json({
+        success: result.success,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command,
+        duration: result.duration,
+      });
+    }
+    if (path === "/sandbox/write-and-run" && method === "POST") {
+      const { getSandbox } = await import("@cloudflare/sandbox");
+      const sandbox = getSandbox(env.SANDBOX, "dev");
+      const body = (await request.json()) as { filename: string; code: string };
+      await sandbox.writeFile(`/workspace/${body.filename}`, body.code);
+      const ext = body.filename.split(".").pop();
+      const runner = ext === "py" ? "python3" : ext === "js" ? "node" : ext === "ts" ? "npx tsx" : "bash";
+      const result = await sandbox.exec(`${runner} /workspace/${body.filename}`);
+      return Response.json({
+        success: result.success,
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: result.command,
+        duration: result.duration,
+      });
     }
 
     // ── Error Bridge DO → service binding → failing-worker ──

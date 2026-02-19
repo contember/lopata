@@ -334,11 +334,11 @@ describe("ContainerBase", () => {
     expect(instance.pingEndpoint).toBe("/");
   });
 
-  test("getState returns stopped when no runtime", () => {
+  test("getState returns stopped when no runtime", async () => {
     const id = new DurableObjectIdImpl("test-id");
     const state = new DurableObjectStateImpl(id, db, "TestContainer", dataDir);
     const instance = new ContainerBase(state, {});
-    const containerState = instance.getState();
+    const containerState = await instance.getState();
     expect(containerState.status).toBe("stopped");
   });
 
