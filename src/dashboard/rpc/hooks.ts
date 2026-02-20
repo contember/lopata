@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { rpc } from './client'
 import type { Procedures } from '../../api/dispatch'
 import type { Paginated } from './types'
@@ -28,7 +28,7 @@ export function useQuery<K extends keyof Procedures>(
 	const key = JSON.stringify(input ?? {})
 	const genRef = useRef(0)
 
-	const doFetch = () => {
+	const doFetch = useCallback(() => {
 		const gen = ++genRef.current
 		setState(s => ({ ...s, isLoading: true, error: null }))
 		;(rpc as Function)(procedure, input)
@@ -38,7 +38,7 @@ export function useQuery<K extends keyof Procedures>(
 			.catch((err: unknown) => {
 				if (genRef.current === gen) setState({ data: null, isLoading: false, error: toError(err) })
 			})
-	}
+	}, [procedure, key])
 
 	useEffect(() => {
 		doFetch()
@@ -74,7 +74,7 @@ export function usePaginatedQuery<K extends PaginatedProcedures>(
 	const [hasMore, setHasMore] = useState(false)
 	const key = JSON.stringify(input)
 
-	const load = (reset: boolean) => {
+	const load = useCallback((reset: boolean) => {
 		setIsLoading(true)
 		const fullInput = { ...input, cursor: reset ? '' : (cursorRef.current ?? '') }
 		;(rpc as Function)(procedure, fullInput).then((data: Paginated<Item>) => {
@@ -83,7 +83,7 @@ export function usePaginatedQuery<K extends PaginatedProcedures>(
 			setHasMore(data.cursor !== null)
 			setIsLoading(false)
 		})
-	}
+	}, [procedure, key])
 
 	useEffect(() => {
 		cursorRef.current = null

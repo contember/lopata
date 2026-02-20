@@ -1,13 +1,27 @@
 import { join } from 'node:path'
-
-// ─── Pre-built dashboard assets ──────────────────────────────────────────
-// We use Bun.build() with bun-plugin-tailwind to pre-build the dashboard
-// so Tailwind CSS works regardless of the CWD where bunflare is launched.
+import { existsSync, readdirSync } from 'node:fs'
 
 let dashboardAssets: Map<string, { content: Uint8Array; contentType: string }> | null = null
 let dashboardHtmlContent: string | null = null
 
-async function buildDashboard(): Promise<void> {
+const distDir = join(import.meta.dir, '../../dist/dashboard')
+
+if (existsSync(join(distDir, 'index.html'))) {
+	// Production: load pre-built assets from dist/
+	dashboardHtmlContent = await Bun.file(join(distDir, 'index.html')).text()
+	dashboardAssets = new Map()
+	for (const entry of readdirSync(distDir)) {
+		if (entry === 'index.html') continue
+		const content = new Uint8Array(await Bun.file(join(distDir, entry)).arrayBuffer())
+		const contentType = entry.endsWith('.css')
+			? 'text/css'
+			: entry.endsWith('.js')
+				? 'application/javascript'
+				: 'application/octet-stream'
+		dashboardAssets.set(entry, { content, contentType })
+	}
+} else {
+	// Dev: build on-the-fly (requires source files + bun-plugin-tailwind)
 	const tailwindPlugin = (await import('bun-plugin-tailwind')).default
 	const htmlEntry = join(import.meta.dir, 'index.html')
 
@@ -34,13 +48,12 @@ async function buildDashboard(): Promise<void> {
 			const contentType = name.endsWith('.css')
 				? 'text/css'
 				: name.endsWith('.js')
-				? 'application/javascript'
-				: 'application/octet-stream'
+					? 'application/javascript'
+					: 'application/octet-stream'
 			assets.set(name, { content, contentType })
 		}
 	}
 
-	// Rewrite asset paths in HTML from "./chunk-xxx" to "/__dashboard/assets/chunk-xxx"
 	for (const name of assets.keys()) {
 		html = html.replaceAll(`./${name}`, `/__dashboard/assets/${name}`)
 	}
@@ -48,9 +61,6 @@ async function buildDashboard(): Promise<void> {
 	dashboardHtmlContent = html
 	dashboardAssets = assets
 }
-
-// Build on import
-await buildDashboard()
 
 export function handleDashboardRequest(request: Request): Response {
 	const url = new URL(request.url)

@@ -11,7 +11,8 @@
 	"files": [
 		"src/",
 		"!src/dashboard/",
-		"!src/error-page/"
+		"!src/error-page/",
+		"dist/"
 	],
 	"scripts": {
 		"dev": "cd examples/playground && bun ../../src/cli.ts dev",
@@ -20,7 +21,9 @@
 		"lint": "biome lint .",
 		"lint:fix": "biome lint . --write",
 		"format": "dprint fmt",
-		"format:check": "dprint check"
+		"format:check": "dprint check",
+		"build:assets": "bun scripts/build-assets.ts",
+		"prepublishOnly": "bun scripts/build-assets.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.13",

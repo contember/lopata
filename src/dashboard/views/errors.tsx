@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useState } from 'preact/hooks'
 import { RefreshButton } from '../components'
 import { KeyValueTable } from '../components/key-value-table'
 import { navigate } from '../lib'
@@ -22,7 +22,7 @@ function ErrorList() {
 	const [isLoading, setIsLoading] = useState(true)
 	const clearErrors = useMutation('errors.clear')
 
-	const loadErrors = (cur?: string) => {
+	const loadErrors = useCallback((cur?: string) => {
 		setIsLoading(true)
 		rpc('errors.list', { limit: 50, cursor: cur }).then(data => {
 			if (cur) {
@@ -33,7 +33,7 @@ function ErrorList() {
 			setCursor(data.cursor)
 			setIsLoading(false)
 		})
-	}
+	}, [])
 
 	useEffect(() => {
 		loadErrors()

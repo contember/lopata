@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { enrichFrameWithSourceAsync, parseStackFrames, type StackFrame } from '../tracing/frames'
@@ -44,9 +45,14 @@ interface ErrorPageData {
 // ─── Pre-built error page HTML ────────────────────────────────────────────
 
 let errorPageHtml: string | null = null
-let errorPageAssets: Map<string, { content: Uint8Array; contentType: string }> | null = null
 
-async function buildErrorPage(): Promise<void> {
+const distFile = join(import.meta.dir, '../../dist/error-page.html')
+
+if (existsSync(distFile)) {
+	// Production: load pre-built self-contained HTML
+	errorPageHtml = await Bun.file(distFile).text()
+} else {
+	// Dev: build on-the-fly (requires source files + bun-plugin-tailwind)
 	const tailwindPlugin = (await import('bun-plugin-tailwind')).default
 	const htmlEntry = join(import.meta.dir, 'index.html')
 
@@ -73,8 +79,8 @@ async function buildErrorPage(): Promise<void> {
 			const contentType = name.endsWith('.css')
 				? 'text/css'
 				: name.endsWith('.js')
-				? 'application/javascript'
-				: 'application/octet-stream'
+					? 'application/javascript'
+					: 'application/octet-stream'
 			assets.set(name, { content, contentType })
 		}
 	}
@@ -96,10 +102,7 @@ async function buildErrorPage(): Promise<void> {
 	}
 
 	errorPageHtml = html
-	errorPageAssets = assets
 }
-
-await buildErrorPage()
 
 // ─── Env masking ──────────────────────────────────────────────────────────
 

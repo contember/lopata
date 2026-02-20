@@ -446,7 +446,7 @@ function SpansListTab() {
 	const [isLoading, setIsLoading] = useState(true)
 	const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
-	const loadSpans = (cur?: string) => {
+	const loadSpans = useCallback((cur?: string) => {
 		setIsLoading(true)
 		rpc('traces.listSpans', { limit: 50, cursor: cur }).then(data => {
 			if (cur) {
@@ -457,7 +457,7 @@ function SpansListTab() {
 			setCursor(data.cursor)
 			setIsLoading(false)
 		})
-	}
+	}, [])
 
 	useEffect(() => {
 		loadSpans()
@@ -546,7 +546,7 @@ function LogsListTab() {
 	const [cursor, setCursor] = useState<string | null>(null)
 	const [isLoading, setIsLoading] = useState(true)
 
-	const loadLogs = (cur?: string) => {
+	const loadLogs = useCallback((cur?: string) => {
 		setIsLoading(true)
 		rpc('traces.listLogs', { limit: 50, cursor: cur }).then(data => {
 			if (cur) {
@@ -557,7 +557,7 @@ function LogsListTab() {
 			setCursor(data.cursor)
 			setIsLoading(false)
 		})
-	}
+	}, [])
 
 	useEffect(() => {
 		loadLogs()
