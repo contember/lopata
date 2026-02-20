@@ -22,7 +22,7 @@ export function DataBrowserTab({ tables, execQuery, onOpenInConsole, history, br
 	const [localRestoredState, setLocalRestoredState] = useState<{ filters: Record<string, string>; sortCol: string | null; sortDir: SortDir } | null>(
 		null,
 	)
-	const selectedTable = basePath ? (routeTable ?? null) : localTable
+	const selectedTable = basePath ? (routeTable ?? tables?.[0]?.name ?? null) : localTable
 
 	// Auto-select first table
 	useEffect(() => {
