@@ -17,6 +17,13 @@ export interface LopataConfig {
 	 * - "isolated" — each DO instance runs in a separate Bun Worker thread (faithful to CF production)
 	 */
 	isolation?: 'dev' | 'isolated'
+	/** AI SQL generation config for the D1 console */
+	ai?: {
+		/** OpenRouter API key (fallback: OPENROUTER_API_KEY env var) */
+		apiKey?: string
+		/** Model to use (default: "anthropic/claude-haiku-4.5") */
+		model?: string
+	}
 	/** Browser Rendering binding config for local dev */
 	browser?: {
 		/** WS endpoint of an existing Chrome instance. If set, uses puppeteer-core connect(). */

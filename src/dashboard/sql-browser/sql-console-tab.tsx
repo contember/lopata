@@ -3,8 +3,9 @@ import type { QueryResult } from '../rpc/types'
 import { HistoryPanel } from './history-panels'
 import type { useHistory } from './hooks'
 
-export function SqlConsoleTab({ execQuery, initialSql, history }: {
+export function SqlConsoleTab({ execQuery, generateSql, initialSql, history }: {
 	execQuery: (sql: string) => Promise<QueryResult>
+	generateSql?: (prompt: string) => Promise<string>
 	initialSql?: string
 	history: ReturnType<typeof useHistory>
 }) {
@@ -13,6 +14,9 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
 	const [error, setError] = useState<string | null>(null)
 	const [loading, setLoading] = useState(false)
 	const [showHistory, setShowHistory] = useState(false)
+	const [aiPrompt, setAiPrompt] = useState('')
+	const [aiLoading, setAiLoading] = useState(false)
+	const [aiError, setAiError] = useState<string | null>(null)
 
 	// Update SQL when initialSql changes (e.g. from "open in console")
 	useEffect(() => {
@@ -36,9 +40,47 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
 		}
 	}
 
+	const generate = async () => {
+		if (!generateSql || !aiPrompt.trim() || aiLoading) return
+		setAiLoading(true)
+		setAiError(null)
+		try {
+			const result = await generateSql(aiPrompt)
+			setSql(result)
+		} catch (e: any) {
+			setAiError(e.message ?? String(e))
+		} finally {
+			setAiLoading(false)
+		}
+	}
+
 	return (
 		<>
 			<div class="bg-panel rounded-lg border border-border p-5 mb-6">
+				{generateSql && (
+					<div class="mb-4">
+						<div class="flex gap-2">
+							<input
+								type="text"
+								value={aiPrompt}
+								onInput={e => setAiPrompt((e.target as HTMLInputElement).value)}
+								onKeyDown={e => {
+									if (e.key === 'Enter') generate()
+								}}
+								placeholder="Describe query in natural language..."
+								class="flex-1 bg-panel-secondary border border-border rounded-lg px-4 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
+							/>
+							<button
+								onClick={generate}
+								disabled={aiLoading || !aiPrompt.trim()}
+								class="rounded-md px-4 py-2 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+							>
+								{aiLoading ? 'Generating...' : 'Generate SQL'}
+							</button>
+						</div>
+						{aiError && <div class="text-red-500 text-xs mt-1">{aiError}</div>}
+					</div>
+				)}
 				<textarea
 					value={sql}
 					onInput={e => setSql((e.target as HTMLTextAreaElement).value)}

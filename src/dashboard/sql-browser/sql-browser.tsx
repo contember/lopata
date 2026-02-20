@@ -7,7 +7,7 @@ import { SqlConsoleTab } from './sql-console-tab'
 import type { SqlBrowserProps, Tab } from './types'
 import { TABS } from './types'
 
-export function SqlBrowser({ tables, execQuery, historyScope, basePath, routeTab, routeTable, routeQuery }: SqlBrowserProps) {
+export function SqlBrowser({ tables, execQuery, generateSql, historyScope, basePath, routeTab, routeTable, routeQuery }: SqlBrowserProps) {
 	const [localTab, setLocalTab] = useState<Tab>('data')
 	const tab = basePath ? (routeTab ?? 'data') : localTab
 	const [consoleSql, setConsoleSql] = useState('')
@@ -58,7 +58,7 @@ export function SqlBrowser({ tables, execQuery, historyScope, basePath, routeTab
 				/>
 			)}
 			{tab === 'schema' && <SchemaBrowserTab tables={tables} />}
-			{tab === 'sql' && <SqlConsoleTab execQuery={execQuery} initialSql={consoleSql} history={history} />}
+			{tab === 'sql' && <SqlConsoleTab execQuery={execQuery} generateSql={generateSql} initialSql={consoleSql} history={history} />}
 		</div>
 	)
 }

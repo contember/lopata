@@ -26,6 +26,7 @@ export interface TableSchema {
 export interface SqlBrowserProps {
 	tables?: D1Table[] | null
 	execQuery: (sql: string) => Promise<QueryResult>
+	generateSql?: (prompt: string) => Promise<string>
 	historyScope?: string
 	basePath?: string
 	routeTab?: Tab

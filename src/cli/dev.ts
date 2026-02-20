@@ -3,7 +3,7 @@ Error.stackTraceLimit = 50
 
 import '../plugin'
 import path from 'node:path'
-import { handleApiRequest, setDashboardConfig, setGenerationManager, setWorkerRegistry } from '../api'
+import { handleApiRequest, setDashboardConfig, setGenerationManager, setLopataConfig, setWorkerRegistry } from '../api'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
@@ -36,6 +36,7 @@ export async function run(ctx: CliContext) {
 	if (lopataConfig) {
 		// ─── Multi-worker mode ─────────────────────────────────────────
 		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
+		setLopataConfig(lopataConfig)
 
 		// Create executor factory based on isolation mode
 		let executorFactory: import('../bindings/do-executor').DOExecutorFactory | undefined

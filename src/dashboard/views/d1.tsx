@@ -68,6 +68,10 @@ function D1DatabaseDetail({ dbName, basePath, routeTab, routeTable, routeQuery }
 			<SqlBrowser
 				tables={tables}
 				execQuery={(sql) => rpc('d1.query', { dbName, sql })}
+				generateSql={async (prompt) => {
+					const res = await rpc('d1.generateSql', { dbName, prompt })
+					return res.sql
+				}}
 				historyScope={`d1:${dbName}`}
 				basePath={basePath}
 				routeTab={routeTab}

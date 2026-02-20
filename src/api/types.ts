@@ -364,12 +364,14 @@ export type { SpanData, SpanEventData, TraceDetail, TraceEvent, TraceSummary } f
 
 import type { WranglerConfig } from '../config'
 import type { GenerationManager } from '../generation-manager'
+import type { LopataConfig } from '../lopata-config'
 import type { WorkerRegistry } from '../worker-registry'
 
 export interface HandlerContext {
 	config: WranglerConfig | null
 	manager: GenerationManager | null
 	registry: WorkerRegistry | null
+	lopataConfig: LopataConfig | null
 }
 
 /** Collect configs from all workers (registry) or fall back to single config. */
