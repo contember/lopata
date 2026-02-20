@@ -35,9 +35,9 @@ function KvNamespaceList() {
 	const totalKeys = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="KV Namespaces" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!namespaces?.length ? <EmptyState message="No KV namespaces found" /> : (
 						<Table
@@ -196,7 +196,7 @@ function KvKeyList({ ns }: { ns: string }) {
 	}
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'KV', href: '#/kv' }, { label: ns }]} />
 			<div class="mb-6 flex gap-3 items-center justify-between">
 				<FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
@@ -244,10 +244,10 @@ function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
 	const { data, refetch } = useQuery('kv.getKey', { ns, key: keyName })
 	const [editing, setEditing] = useState(false)
 
-	if (!data) return <div class="p-8 text-text-muted">Loading...</div>
+	if (!data) return <div class="p-4 sm:p-8 text-text-muted">Loading...</div>
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'KV', href: '#/kv' }, { label: ns, href: `#/kv/${encodeURIComponent(ns)}` }, { label: keyName }]} />
 			{editing && (
 				<KvPutForm

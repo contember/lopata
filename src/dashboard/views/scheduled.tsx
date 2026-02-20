@@ -26,7 +26,7 @@ function ScheduledList() {
 	}
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Scheduled" subtitle={`${triggers?.length ?? 0} cron trigger(s)`} actions={<RefreshButton onClick={refetch} />} />
 
 			{lastResult && (
@@ -43,7 +43,7 @@ function ScheduledList() {
 				</div>
 			)}
 
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!triggers?.length ? <EmptyState message="No scheduled triggers configured" /> : (
 						<Table

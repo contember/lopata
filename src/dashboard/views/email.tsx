@@ -117,9 +117,9 @@ function EmailList() {
 	}
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					<div class="mb-6 flex gap-2 items-center justify-between">
 						<div class="flex gap-2">
@@ -176,7 +176,7 @@ function EmailDetail({ id }: { id: string }) {
 
 	if (!data) {
 		return (
-			<div class="p-8">
+			<div class="p-4 sm:p-8">
 				<a href="#/email" class="text-sm text-link hover:underline mb-4 inline-block">Back to emails</a>
 				<EmptyState message="Email not found" />
 			</div>
@@ -186,7 +186,7 @@ function EmailDetail({ id }: { id: string }) {
 	const { record, raw } = data
 
 	return (
-		<div class="p-8 max-w-4xl">
+		<div class="p-4 sm:p-8 max-w-4xl">
 			<a href="#/email" class="text-sm text-link hover:underline mb-4 inline-block">Back to emails</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">

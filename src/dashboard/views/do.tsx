@@ -27,9 +27,9 @@ function DoNamespaceList() {
 	const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!namespaces?.length ? <EmptyState message="No Durable Object namespaces found" /> : (
 						<Table
@@ -62,7 +62,7 @@ function DoInstanceList({ ns }: { ns: string }) {
 	const { data: instances, refetch } = useQuery('do.listInstances', { ns })
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'Durable Objects', href: '#/do' }, { label: ns }]} />
 			<div class="mb-6 flex justify-end">
 				<RefreshButton onClick={refetch} />
@@ -106,10 +106,10 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 		refetch()
 	}
 
-	if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>
+	if (!data) return <div class="p-4 sm:p-8 text-text-muted font-medium">Loading...</div>
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb
 				items={[
 					{ label: 'Durable Objects', href: '#/do' },

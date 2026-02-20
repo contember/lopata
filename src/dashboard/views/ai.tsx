@@ -33,9 +33,9 @@ function AiList() {
 	}
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Workers AI" subtitle={`${stats?.total ?? 0} request(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					<div class="mb-6 flex gap-2 items-center flex-wrap">
 						<PillButton onClick={() => setStatusFilter('')} active={statusFilter === ''}>
@@ -95,7 +95,7 @@ function AiDetail({ id }: { id: string }) {
 
 	if (!data) {
 		return (
-			<div class="p-8">
+			<div class="p-4 sm:p-8">
 				<a href="#/ai" class="text-sm text-link hover:underline mb-4 inline-block">Back to AI requests</a>
 				<EmptyState message="Request not found" />
 			</div>
@@ -103,7 +103,7 @@ function AiDetail({ id }: { id: string }) {
 	}
 
 	return (
-		<div class="p-8 max-w-4xl">
+		<div class="p-4 sm:p-8 max-w-4xl">
 			<a href="#/ai" class="text-sm text-link hover:underline mb-4 inline-block">Back to AI requests</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">

@@ -5,7 +5,7 @@ export function ServiceInfo({ description, links, stats, configGroups }: {
 	configGroups?: { title: string; items: { name: string; value: string }[] }[] | null
 }) {
 	return (
-		<div class="w-80 flex-shrink-0 space-y-5">
+		<div class="w-full lg:w-80 flex-shrink-0 space-y-5">
 			{stats && stats.length > 0 && (
 				<div class="grid grid-cols-2 gap-2">
 					{stats.map(stat => (

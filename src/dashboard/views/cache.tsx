@@ -27,9 +27,9 @@ function CacheNameList() {
 	const totalEntries = caches?.reduce((s, c) => s + c.count, 0) ?? 0
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Cache" subtitle={`${caches?.length ?? 0} cache(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!caches?.length ? <EmptyState message="No cache entries found" /> : (
 						<Table
@@ -68,7 +68,7 @@ function CacheEntryList({ name }: { name: string }) {
 	}
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'Cache', href: '#/cache' }, { label: name }]} />
 			<div class="mb-6 flex justify-end">
 				<RefreshButton onClick={refetch} />

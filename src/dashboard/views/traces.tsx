@@ -242,7 +242,7 @@ export function TracesView() {
 	)
 
 	return (
-		<div class="p-8 h-full flex flex-col">
+		<div class="p-4 sm:p-8 h-full flex flex-col">
 			<div class="flex items-center justify-between mb-6">
 				<div class="flex items-center gap-3">
 					<div>

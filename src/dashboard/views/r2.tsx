@@ -30,9 +30,9 @@ function R2BucketList() {
 	const totalSize = buckets?.reduce((s, b) => s + b.total_size, 0) ?? 0
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="R2 Buckets" subtitle={`${buckets?.length ?? 0} bucket(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!buckets?.length ? <EmptyState message="No R2 buckets found" /> : (
 						<Table
@@ -156,7 +156,7 @@ function R2ObjectList({ bucket }: { bucket: string }) {
 	}
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'R2', href: '#/r2' }, { label: bucket }]} />
 			<div class="mb-6 flex gap-2 items-center justify-between">
 				<FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />

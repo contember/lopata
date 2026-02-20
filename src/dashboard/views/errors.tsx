@@ -54,7 +54,7 @@ function ErrorList() {
 	}
 
 	return (
-		<div class="p-8 h-full flex flex-col">
+		<div class="p-4 sm:p-8 h-full flex flex-col">
 			<div class="flex items-center justify-between mb-6">
 				<div>
 					<h1 class="text-2xl font-bold text-ink">Errors</h1>
@@ -196,11 +196,11 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
 	}
 
 	if (isLoading) {
-		return <div class="p-8 text-text-muted text-sm">Loading error details...</div>
+		return <div class="p-4 sm:p-8 text-text-muted text-sm">Loading error details...</div>
 	}
 
 	if (!detail) {
-		return <div class="p-8 text-text-muted text-sm">Error not found.</div>
+		return <div class="p-4 sm:p-8 text-text-muted text-sm">Error not found.</div>
 	}
 
 	const { data } = detail

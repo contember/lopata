@@ -30,9 +30,9 @@ function WorkflowList() {
 	const totalErrored = workflows?.reduce((s, w) => s + (w.byStatus.errored ?? 0), 0) ?? 0
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Workflows" subtitle={`${workflows?.length ?? 0} workflow(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					{!workflows?.length ? <EmptyState message="No workflow instances found" /> : (
 						<Table
@@ -226,7 +226,7 @@ function WorkflowInstanceList({ name }: { name: string }) {
 	}
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb items={[{ label: 'Workflows', href: '#/workflows' }, { label: name }]} />
 			<div class="mb-6 flex gap-2 items-center justify-between">
 				<select
@@ -381,12 +381,12 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 		refetch()
 	}
 
-	if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>
+	if (!data) return <div class="p-4 sm:p-8 text-text-muted font-medium">Loading...</div>
 
 	const isTerminal = ['complete', 'errored', 'terminated'].includes(data.status)
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<Breadcrumb
 				items={[
 					{ label: 'Workflows', href: '#/workflows' },

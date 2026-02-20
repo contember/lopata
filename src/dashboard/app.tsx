@@ -165,6 +165,12 @@ function App() {
 	const route = useRoute()
 	const activeSection = '/' + (route.split('/')[1] || '')
 	const { data: overview } = useQuery('overview.get')
+	const [sidebarOpen, setSidebarOpen] = useState(false)
+
+	// Close sidebar on route change (mobile)
+	useEffect(() => {
+		setSidebarOpen(false)
+	}, [route])
 
 	const counts: Record<string, number> = overview
 		? {
@@ -200,37 +206,79 @@ function App() {
 		if (route.startsWith('/email')) return <EmailView route={route} />
 		if (route.startsWith('/ai')) return <AiView route={route} />
 		if (route.startsWith('/analytics')) return <AnalyticsEngineView route={route} />
-		return <div class="p-8 text-text-muted">Page not found</div>
+		return <div class="p-4 sm:p-8 text-text-muted">Page not found</div>
 	}
+
+	const sidebar = (
+		<>
+			<div class="p-4 pb-3 flex items-center justify-between">
+				<a href="#/" class="flex items-center gap-2.5 no-underline">
+					<span class="w-7 h-7 rounded-lg bg-accent-lime flex items-center justify-center text-xs font-bold text-surface">B</span>
+					<div>
+						<div class="text-sm font-mono font-semibold text-ink leading-tight">Lopata</div>
+						<div class="text-[10px] text-text-muted font-mono">Dev Console</div>
+					</div>
+				</a>
+				<button
+					onClick={() => setSidebarOpen(false)}
+					class="md:hidden p-1 text-text-muted hover:text-ink transition-colors"
+				>
+					<svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+				</button>
+			</div>
+			<div class="flex-1 overflow-y-auto scrollbar-thin px-2 py-1">
+				{NAV_TOP.map(item => (
+					<div key={item.path} class="mb-2">
+						<NavLink item={item} active={activeSection === item.path} counts={counts} />
+					</div>
+				))}
+				{NAV_GROUPS.map(group => <SidebarGroup key={group.label} group={group} activeSection={activeSection} counts={counts} />)}
+			</div>
+			<div class="border-t border-border px-2 py-2">
+				<ThemeSwitcher />
+			</div>
+		</>
+	)
 
 	return (
 		<div class="flex h-full">
-			<nav class="w-56 flex-shrink-0 border-r border-border bg-panel flex flex-col">
-				<div class="p-4 pb-3">
-					<a href="#/" class="flex items-center gap-2.5 no-underline">
-						<span class="w-7 h-7 rounded-lg bg-accent-lime flex items-center justify-center text-xs font-bold text-surface">B</span>
-						<div>
-							<div class="text-sm font-mono font-semibold text-ink leading-tight">Lopata</div>
-							<div class="text-[10px] text-text-muted font-mono">Dev Console</div>
-						</div>
-					</a>
+			{/* Mobile sidebar overlay */}
+			{sidebarOpen && (
+				<div class="fixed inset-0 z-40 md:hidden" onClick={() => setSidebarOpen(false)}>
+					<div class="absolute inset-0 bg-black/40" />
+					<nav
+						class="relative w-56 h-full bg-panel border-r border-border flex flex-col z-50"
+						onClick={e => e.stopPropagation()}
+					>
+						{sidebar}
+					</nav>
 				</div>
-				<div class="flex-1 overflow-y-auto scrollbar-thin px-2 py-1">
-					{NAV_TOP.map(item => (
-						<div key={item.path} class="mb-2">
-							<NavLink item={item} active={activeSection === item.path} counts={counts} />
-						</div>
-					))}
-					{NAV_GROUPS.map(group => <SidebarGroup key={group.label} group={group} activeSection={activeSection} counts={counts} />)}
-				</div>
-				<div class="border-t border-border px-2 py-2">
-					<ThemeSwitcher />
-				</div>
+			)}
+
+			{/* Desktop sidebar */}
+			<nav class="hidden md:flex w-56 flex-shrink-0 border-r border-border bg-panel flex-col">
+				{sidebar}
 			</nav>
 
-			<main class="flex-1 overflow-y-auto scrollbar-thin bg-surface">
-				{renderView()}
-			</main>
+			<div class="flex-1 flex flex-col min-w-0">
+				{/* Mobile top bar */}
+				<div class="md:hidden flex items-center gap-3 px-4 py-3 border-b border-border bg-panel">
+					<button
+						onClick={() => setSidebarOpen(true)}
+						class="p-1 text-text-muted hover:text-ink transition-colors"
+					>
+						<svg class="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clip-rule="evenodd" /></svg>
+					</button>
+					<a href="#/" class="flex items-center gap-2 no-underline">
+						<span class="w-6 h-6 rounded-md bg-accent-lime flex items-center justify-center text-[10px] font-bold text-surface">B</span>
+						<span class="text-sm font-mono font-semibold text-ink">Lopata</span>
+					</a>
+				</div>
+
+				<main class="flex-1 overflow-y-auto scrollbar-thin bg-surface">
+					{renderView()}
+				</main>
+			</div>
 		</div>
 	)
 }

@@ -106,7 +106,7 @@ export function HomeView() {
 
 	if (!data) {
 		return (
-			<div class="p-8 lg:p-10">
+			<div class="p-4 sm:p-8 lg:p-10">
 				<h1 class="text-2xl font-bold text-ink mb-1">Overview</h1>
 				<p class="text-sm text-text-muted">Loading...</p>
 			</div>
@@ -118,9 +118,9 @@ export function HomeView() {
 	const envEntries = Object.entries(rt.env).filter(([k]) => k !== 'PATH')
 
 	return (
-		<div class="p-8 lg:p-10 max-w-[1600px]">
+		<div class="p-4 sm:p-8 lg:p-10 max-w-[1600px]">
 			{/* ── Header ── */}
-			<div class="flex items-start gap-4 mb-8">
+			<div class="flex flex-col sm:flex-row sm:items-start gap-3 sm:gap-4 mb-8">
 				<div class="flex-1">
 					<h1 class="text-2xl font-bold text-ink">Overview</h1>
 					<p class="text-sm text-text-muted mt-1">

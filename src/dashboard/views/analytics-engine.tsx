@@ -27,9 +27,9 @@ function DataPointList() {
 	}
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-4 sm:p-8 max-w-6xl">
 			<PageHeader title="Analytics Engine" subtitle={`${stats?.total ?? 0} data point(s)`} actions={<RefreshButton onClick={refetch} />} />
-			<div class="flex gap-6 items-start">
+			<div class="flex flex-col lg:flex-row gap-6 items-start">
 				<div class="flex-1 min-w-0">
 					<div class="mb-6 flex gap-2 items-center flex-wrap">
 						{(datasets?.length ?? 0) > 0 && (
@@ -79,7 +79,7 @@ function DataPointDetail({ id }: { id: string }) {
 
 	if (!data) {
 		return (
-			<div class="p-8">
+			<div class="p-4 sm:p-8">
 				<a href="#/analytics" class="text-sm text-link hover:underline mb-4 inline-block">Back to data points</a>
 				<EmptyState message="Data point not found" />
 			</div>
@@ -97,7 +97,7 @@ function DataPointDetail({ id }: { id: string }) {
 	}
 
 	return (
-		<div class="p-8 max-w-4xl">
+		<div class="p-4 sm:p-8 max-w-4xl">
 			<a href="#/analytics" class="text-sm text-link hover:underline mb-4 inline-block">Back to data points</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<h2 class="text-lg font-semibold text-ink mb-4">Data Point Detail</h2>

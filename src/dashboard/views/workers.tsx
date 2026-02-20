@@ -16,7 +16,7 @@ export function WorkersView() {
 	const { data: workers } = useQuery('workers.list')
 
 	return (
-		<div class="p-8">
+		<div class="p-4 sm:p-8">
 			<PageHeader title="Workers" subtitle={`${workers?.length ?? 0} worker(s)`} />
 			{!workers?.length ? <EmptyState message="No workers configured" /> : (
 				<div class="space-y-8">
