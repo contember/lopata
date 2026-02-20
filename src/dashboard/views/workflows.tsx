@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks'
-import { Breadcrumb, CodeBlock, EmptyState, PageHeader, RefreshButton, ServiceInfo, StatusBadge, Table, TableLink } from '../components'
+import { Breadcrumb, CodeBlock, EmptyState, Modal, PageHeader, RefreshButton, ServiceInfo, StatusBadge, Table, TableLink } from '../components'
 import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
@@ -83,49 +83,43 @@ function CreateWorkflowForm({ name, onCreated }: { name: string; onCreated: (id:
 		}
 	}
 
-	if (!open) {
-		return (
+	const handleClose = () => {
+		setOpen(false)
+		setError('')
+	}
+
+	return (
+		<>
 			<button
 				onClick={() => setOpen(true)}
 				class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
 			>
 				Create instance
 			</button>
-		)
-	}
-
-	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-6">
-			<div class="flex items-center justify-between mb-3">
-				<div class="text-sm font-semibold text-ink">Create workflow instance</div>
-				<button
-					onClick={() => {
-						setOpen(false)
-						setError('')
-					}}
-					class="text-text-muted hover:text-text-data text-xs font-medium"
-				>
-					Cancel
-				</button>
-			</div>
-			<textarea
-				value={params}
-				onInput={e => setParams((e.target as HTMLTextAreaElement).value)}
-				placeholder='{"key": "value"}'
-				class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
-				rows={3}
-			/>
-			{error && <div class="text-red-500 text-xs mt-1">{error}</div>}
-			<div class="flex justify-end mt-3">
-				<button
-					onClick={handleSubmit}
-					disabled={create.isLoading || !params.trim()}
-					class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-				>
-					{create.isLoading ? 'Creating...' : 'Create'}
-				</button>
-			</div>
-		</div>
+			{open && (
+				<Modal title="Create workflow instance" onClose={handleClose}>
+					<div class="p-5">
+						<textarea
+							value={params}
+							onInput={e => setParams((e.target as HTMLTextAreaElement).value)}
+							placeholder='{"key": "value"}'
+							class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
+							rows={3}
+						/>
+						{error && <div class="text-red-500 text-xs mt-1">{error}</div>}
+						<div class="flex justify-end mt-3">
+							<button
+								onClick={handleSubmit}
+								disabled={create.isLoading || !params.trim()}
+								class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+							>
+								{create.isLoading ? 'Creating...' : 'Create'}
+							</button>
+						</div>
+					</div>
+				</Modal>
+			)}
+		</>
 	)
 }
 
