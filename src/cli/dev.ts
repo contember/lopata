@@ -382,7 +382,19 @@ export async function run(ctx: CliContext) {
 	console.log(`[lopata] Server running at http://${hostname}:${port}`)
 	console.log(`[lopata] Dashboard: http://${hostname}:${port}/__dashboard`)
 
-	// Keep the process alive until terminated
+	// Graceful shutdown
+	const shutdown = () => {
+		console.log('\n[lopata] Shutting down…')
+		for (const w of watchers) w.stop()
+		server.stop()
+		getTraceStore().close()
+		process.exit(0)
+	}
+
+	process.on('SIGINT', shutdown)
+	process.on('SIGTERM', shutdown)
+
+	// Keep the process alive until signal
 	await new Promise(() => {})
 }
 

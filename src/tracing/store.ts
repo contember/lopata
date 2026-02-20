@@ -58,6 +58,13 @@ export class TraceStore {
 		// Periodically evict stale entries from startTimeCache (spans that never ended)
 		this.staleCleanupTimer = setInterval(() => this.evictStaleSpans(), STALE_CLEANUP_INTERVAL_MS)
 		this.staleCleanupTimer.unref()
+
+		// Startup cleanup: end any spans left dangling from a previous crashed/killed session
+		this.db.run(`
+			UPDATE spans
+			SET end_time = start_time, duration_ms = 0, status = 'error', status_message = 'Server shutdown (unfinished span)'
+			WHERE end_time IS NULL
+		`)
 	}
 
 	insertSpan(span: SpanData): void {
@@ -323,6 +330,17 @@ export class TraceStore {
 
 		const cursor = hasMore && items.length > 0 ? String(items[items.length - 1]!.id) : null
 		return { items, cursor }
+	}
+
+	close(): void {
+		clearInterval(this.staleCleanupTimer)
+		const now = Date.now()
+		for (const spanId of this.startTimeCache.keys()) {
+			this.endSpan(spanId, now, 'error', 'Server shutdown')
+		}
+		this.startTimeCache.clear()
+		this.db.close()
+		defaultStore = null
 	}
 
 	clearTraces(): void {
