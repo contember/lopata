@@ -116,6 +116,8 @@ export class HyperdriveBinding {
 				},
 			},
 		})
+		// Errors are propagated via opened/closed promises; suppress socketPromise rejection
+		socketPromise.catch(() => {})
 
 		return {
 			readable,
@@ -123,7 +125,7 @@ export class HyperdriveBinding {
 			opened,
 			closed,
 			close() {
-				socketPromise.then(s => s.end())
+				socketPromise.then(s => s.end(), () => {})
 			},
 		}
 	}

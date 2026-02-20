@@ -48,7 +48,7 @@ describe('HyperdriveBinding', () => {
 	})
 
 	describe('connect()', () => {
-		test('returns object with correct shape', async () => {
+		test('returns object with correct shape', () => {
 			const hd = new HyperdriveBinding('postgresql://user:pass@localhost:5432/db')
 			const socket = hd.connect()
 			expect(socket.readable).toBeInstanceOf(ReadableStream)
@@ -56,9 +56,6 @@ describe('HyperdriveBinding', () => {
 			expect(socket.closed).toBeInstanceOf(Promise)
 			expect(socket.opened).toBeInstanceOf(Promise)
 			expect(typeof socket.close).toBe('function')
-			// Clean up — suppress ECONNREFUSED since no PG is running
-			socket.opened.catch(() => {})
-			socket.closed.catch(() => {})
 			socket.close()
 		})
 
