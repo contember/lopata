@@ -58,10 +58,10 @@ import { lopata } from 'lopata/vite-plugin'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [
-    lopata(),
-    // ... your framework plugin (e.g. reactRouter())
-  ],
+	plugins: [
+		lopata(),
+		// ... your framework plugin (e.g. reactRouter())
+	],
 })
 ```
 
@@ -139,30 +139,30 @@ Lopata reads your standard Cloudflare config file, auto-detected in order: `wran
 ```jsonc
 // wrangler.jsonc
 {
-  "name": "my-worker",
-  "main": "src/index.ts",
-  "compatibility_date": "2025-01-01",
-  "kv_namespaces": [
-    { "binding": "KV", "id": "..." }
-  ],
-  "r2_buckets": [
-    { "binding": "R2", "bucket_name": "my-bucket" }
-  ],
-  "d1_databases": [
-    { "binding": "DB", "database_name": "my-db", "database_id": "..." }
-  ],
-  "durable_objects": {
-    "bindings": [
-      { "name": "COUNTER", "class_name": "Counter" }
-    ]
-  },
-  "queues": {
-    "producers": [{ "binding": "MY_QUEUE", "queue": "my-queue" }],
-    "consumers": [{ "queue": "my-queue", "max_batch_size": 10 }]
-  },
-  "workflows": [
-    { "name": "my-workflow", "binding": "WORKFLOW", "class_name": "MyWorkflow" }
-  ]
+	"name": "my-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-01-01",
+	"kv_namespaces": [
+		{ "binding": "KV", "id": "..." }
+	],
+	"r2_buckets": [
+		{ "binding": "R2", "bucket_name": "my-bucket" }
+	],
+	"d1_databases": [
+		{ "binding": "DB", "database_name": "my-db", "database_id": "..." }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "COUNTER", "class_name": "Counter" }
+		]
+	},
+	"queues": {
+		"producers": [{ "binding": "MY_QUEUE", "queue": "my-queue" }],
+		"consumers": [{ "queue": "my-queue", "max_batch_size": 10 }]
+	},
+	"workflows": [
+		{ "name": "my-workflow", "binding": "WORKFLOW", "class_name": "MyWorkflow" }
+	]
 }
 ```
 
@@ -182,17 +182,17 @@ For projects with multiple workers and service bindings, create a `lopata.config
 ```ts
 // lopata.config.ts
 export default {
-  main: './wrangler.jsonc',
-  workers: [
-    { name: 'auth-worker', config: './workers/auth/wrangler.jsonc' },
-    { name: 'email-worker', config: './workers/email/wrangler.jsonc' },
-  ],
-  // Optional settings:
-  cron: true,               // Enable real cron scheduling
-  isolation: 'dev',         // 'dev' (in-process) or 'isolated' (worker threads)
-  browser: {                // Browser Rendering config
-    headless: true,
-  },
+	main: './wrangler.jsonc',
+	workers: [
+		{ name: 'auth-worker', config: './workers/auth/wrangler.jsonc' },
+		{ name: 'email-worker', config: './workers/email/wrangler.jsonc' },
+	],
+	// Optional settings:
+	cron: true, // Enable real cron scheduling
+	isolation: 'dev', // 'dev' (in-process) or 'isolated' (worker threads)
+	browser: { // Browser Rendering config
+		headless: true,
+	},
 }
 ```
 
@@ -215,16 +215,16 @@ import { lopata } from 'lopata/vite-plugin'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-  plugins: [
-    lopata({
-      configPath: './wrangler.jsonc',          // Optional, auto-detected
-      viteEnvironment: { name: 'ssr' },        // Optional, default 'ssr'
-      auxiliaryWorkers: [                       // Optional, for multi-worker
-        { configPath: './workers/auth/wrangler.jsonc' },
-      ],
-    }),
-    reactRouter(),
-  ],
+	plugins: [
+		lopata({
+			configPath: './wrangler.jsonc', // Optional, auto-detected
+			viteEnvironment: { name: 'ssr' }, // Optional, default 'ssr'
+			auxiliaryWorkers: [ // Optional, for multi-worker
+				{ configPath: './workers/auth/wrangler.jsonc' },
+			],
+		}),
+		reactRouter(),
+	],
 })
 ```
 
@@ -248,25 +248,25 @@ The built-in dashboard is available at `/__dashboard` and provides:
 
 ## Supported bindings
 
-| Binding | Storage | Coverage |
-|---------|---------|----------|
-| **KV** | SQLite | 100% |
-| **R2** | Filesystem (`.lopata/r2/`) | ~95% |
-| **D1** | SQLite files (`.lopata/d1/`) | ~90% |
-| **Durable Objects** | SQLite (KV + SQL API) | ~90% |
-| **Workflows** | SQLite | 100% |
-| **Queues** | SQLite | ~90% |
-| **Cache API** | SQLite | 100% |
-| **Static Assets** | Filesystem | ~90% |
-| **Service Bindings** | In-process | ~85% |
-| **Scheduled (Cron)** | In-memory timer | 100% |
-| **Images** | Sharp | ~80% |
-| **Hyperdrive** | TCP via `Bun.connect()` | Passthrough |
-| **Workers AI** | Proxies to Cloudflare API | Passthrough |
-| **Analytics Engine** | SQLite | Full |
-| **Browser Rendering** | Local Puppeteer | Full |
-| **Containers** | Docker | Full |
-| **Send Email** | SQLite (captured) | Full |
+| Binding               | Storage                      | Coverage    |
+| --------------------- | ---------------------------- | ----------- |
+| **KV**                | SQLite                       | 100%        |
+| **R2**                | Filesystem (`.lopata/r2/`)   | ~95%        |
+| **D1**                | SQLite files (`.lopata/d1/`) | ~90%        |
+| **Durable Objects**   | SQLite (KV + SQL API)        | ~90%        |
+| **Workflows**         | SQLite                       | 100%        |
+| **Queues**            | SQLite                       | ~90%        |
+| **Cache API**         | SQLite                       | 100%        |
+| **Static Assets**     | Filesystem                   | ~90%        |
+| **Service Bindings**  | In-process                   | ~85%        |
+| **Scheduled (Cron)**  | In-memory timer              | 100%        |
+| **Images**            | Sharp                        | ~80%        |
+| **Hyperdrive**        | TCP via `Bun.connect()`      | Passthrough |
+| **Workers AI**        | Proxies to Cloudflare API    | Passthrough |
+| **Analytics Engine**  | SQLite                       | Full        |
+| **Browser Rendering** | Local Puppeteer              | Full        |
+| **Containers**        | Docker                       | Full        |
+| **Send Email**        | SQLite (captured)            | Full        |
 
 Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
 
@@ -285,15 +285,15 @@ Add `.lopata/` to your `.gitignore`.
 
 ## How it differs from Wrangler
 
-| | Lopata | Wrangler (`wrangler dev`) |
-|---|---|---|
-| **Runtime** | Bun | workerd (via miniflare) |
-| **Bindings** | Native TypeScript implementations | workerd built-in |
-| **Durable Objects** | In-process (shared memory, easy debugging) | Isolated (faithful to production) |
-| **Module shims** | `Bun.plugin()` virtual modules | workerd native modules |
-| **Dashboard** | Built-in with real-time tracing | Separate (Cloudflare dashboard) |
-| **Vite integration** | Drop-in plugin | `@cloudflare/vite-plugin` |
-| **Config** | Reads `wrangler.toml`/`.jsonc`/`.json` | Same |
+|                      | Lopata                                     | Wrangler (`wrangler dev`)         |
+| -------------------- | ------------------------------------------ | --------------------------------- |
+| **Runtime**          | Bun                                        | workerd (via miniflare)           |
+| **Bindings**         | Native TypeScript implementations          | workerd built-in                  |
+| **Durable Objects**  | In-process (shared memory, easy debugging) | Isolated (faithful to production) |
+| **Module shims**     | `Bun.plugin()` virtual modules             | workerd native modules            |
+| **Dashboard**        | Built-in with real-time tracing            | Separate (Cloudflare dashboard)   |
+| **Vite integration** | Drop-in plugin                             | `@cloudflare/vite-plugin`         |
+| **Config**           | Reads `wrangler.toml`/`.jsonc`/`.json`     | Same                              |
 
 ## License
 

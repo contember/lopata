@@ -43,16 +43,16 @@ CLI (src/cli.ts) → dev command (src/cli/dev.ts)
 
 Each binding is a class implementing the CF API. All state persists to SQLite (`.lopata/data.sqlite`) or filesystem (`.lopata/r2/`, `.lopata/d1/`), never in-memory. Schema migrations live in `src/db.ts`.
 
-| Binding | Class | Storage |
-|---------|-------|---------|
-| KV | `SqliteKVNamespace` | SQLite `kv` table |
-| R2 | `FileR2Bucket` | Filesystem `.lopata/r2/` |
-| D1 | `openD1Database()` | Filesystem `.lopata/d1/*.db` |
-| Durable Objects | `DurableObjectNamespaceImpl` + `SqlStorage` | SQLite `do_*` tables |
-| Workflows | `SqliteWorkflowBinding` | SQLite `workflow_*` tables |
-| Queues | `SqliteQueueProducer` + `QueueConsumer` | SQLite `queue_*` tables |
-| Cache | `SqliteCacheStorage` | SQLite `cache_entries` |
-| Service Binding | Proxy-based (resolves target worker lazily) | In-memory |
+| Binding         | Class                                       | Storage                      |
+| --------------- | ------------------------------------------- | ---------------------------- |
+| KV              | `SqliteKVNamespace`                         | SQLite `kv` table            |
+| R2              | `FileR2Bucket`                              | Filesystem `.lopata/r2/`     |
+| D1              | `openD1Database()`                          | Filesystem `.lopata/d1/*.db` |
+| Durable Objects | `DurableObjectNamespaceImpl` + `SqlStorage` | SQLite `do_*` tables         |
+| Workflows       | `SqliteWorkflowBinding`                     | SQLite `workflow_*` tables   |
+| Queues          | `SqliteQueueProducer` + `QueueConsumer`     | SQLite `queue_*` tables      |
+| Cache           | `SqliteCacheStorage`                        | SQLite `cache_entries`       |
+| Service Binding | Proxy-based (resolves target worker lazily) | In-memory                    |
 
 ### Environment building (`src/env.ts`)
 
@@ -90,9 +90,9 @@ Tests use in-memory SQLite databases. Standard setup:
 ```ts
 let db: Database
 beforeEach(() => {
-  db = new Database(':memory:')
-  runMigrations(db)
-  binding = new SomeBinding(db, 'NAMESPACE')
+	db = new Database(':memory:')
+	runMigrations(db)
+	binding = new SomeBinding(db, 'NAMESPACE')
 })
 ```
 
