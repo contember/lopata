@@ -6,6 +6,7 @@ import { ContainerBase, getContainer, getRandom } from './bindings/container'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
 import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/durable-object'
 import { EmailMessage } from './bindings/email'
+import { getActiveExecutionContext } from './execution-context'
 import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
@@ -257,6 +258,12 @@ plugin({
 						}
 					},
 					env: globalEnv,
+					waitUntil(promise: Promise<unknown>): void {
+						const ctx = getActiveExecutionContext()
+						if (ctx) {
+							ctx.waitUntil(promise)
+						}
+					},
 				},
 				loader: 'object',
 			}

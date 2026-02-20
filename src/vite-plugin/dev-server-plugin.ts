@@ -37,6 +37,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let wireClassRefs: Function
 	let setGlobalEnv: Function
 	let ExecutionContext: new() => any
+	let runWithExecutionContext: <T>(ctx: any, fn: () => T) => T
 
 	// Tracing functions (lazy-loaded)
 	let startSpan: Function
@@ -74,6 +75,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
 			ExecutionContext = ecMod.ExecutionContext
+			runWithExecutionContext = ecMod.runWithExecutionContext
 			startSpan = spanMod.startSpan
 			setSpanAttribute = spanMod.setSpanAttribute
 			getActiveContext = ctxMod.getActiveContext
@@ -246,13 +248,13 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						// Capture caller stack before entering the worker (for async stack stitching)
 						const callerStack = new Error()
 
+						const ctx = new ExecutionContext()
 						const response = await (startSpan as Function)({
 							name: `${request.method} ${parsedUrl.pathname}`,
 							kind: 'server',
 							attributes: { 'http.method': request.method, 'http.url': request.url },
-						}, async () => {
+						}, () => runWithExecutionContext(ctx, async () => {
 							try {
-								const ctx = new ExecutionContext()
 								const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
 								;(setSpanAttribute as Function)('http.status_code', resp.status)
 								ctx._awaitAll().catch(() => {})
@@ -264,7 +266,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 								console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
 								return (renderErrorPage as Function)(err, request, env, config)
 							}
-						}) as Response
+						})) as Response
 
 						writeResponse(response, res)
 					} catch (err) {

@@ -8,7 +8,7 @@ import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase } from './db'
 import { renderErrorPage } from './error-page-render'
-import { ExecutionContext } from './execution-context'
+import { ExecutionContext, runWithExecutionContext } from './execution-context'
 import { getActiveContext } from './tracing/context'
 import { persistError, setSpanAttribute, startSpan } from './tracing/span'
 
@@ -181,8 +181,10 @@ export class Generation {
 				}
 			}
 
+			const wrappedHandler = () => runWithExecutionContext(ctx, handler)
+
 			if (skipTracing) {
-				return await handler()
+				return await wrappedHandler()
 			}
 
 			return await startSpan({
@@ -190,7 +192,7 @@ export class Generation {
 				kind: 'server',
 				attributes: { 'http.method': request.method, 'http.url': request.url },
 				workerName: this.workerName,
-			}, handler)
+			}, wrappedHandler)
 		} finally {
 			this.activeRequests--
 		}
@@ -198,13 +200,13 @@ export class Generation {
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */
 	async callScheduled(cronExpr: string): Promise<Response> {
+		const ctx = new ExecutionContext()
 		return startSpan({
 			name: 'scheduled',
 			kind: 'server',
 			attributes: { cron: cronExpr },
 			workerName: this.workerName,
-		}, async () => {
-			const ctx = new ExecutionContext()
+		}, () => runWithExecutionContext(ctx, async () => {
 			let handler: Function | undefined
 			if (this.classBasedExport) {
 				const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
@@ -232,18 +234,18 @@ export class Generation {
 				persistError(err, 'scheduled', this.workerName)
 				throw err
 			}
-		})
+		}))
 	}
 
 	/** Handle incoming email — dispatches to the worker's email() handler */
 	async callEmail(rawBytes: Uint8Array, from: string, to: string): Promise<Response> {
+		const ctx = new ExecutionContext()
 		return startSpan({
 			name: 'email',
 			kind: 'server',
 			attributes: { 'email.from': from, 'email.to': to },
 			workerName: this.workerName,
-		}, async () => {
-			const ctx = new ExecutionContext()
+		}, () => runWithExecutionContext(ctx, async () => {
 			let handler: Function | undefined
 			if (this.classBasedExport) {
 				const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
@@ -281,7 +283,7 @@ export class Generation {
 				persistError(err, 'email', this.workerName)
 				throw err
 			}
-		})
+		}))
 	}
 
 	/** Start queue consumers and cron scheduler */
