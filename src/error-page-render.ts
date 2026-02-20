@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { WranglerConfig } from '../config'
-import { getActiveContext } from '../tracing/context'
-import { enrichFrameWithSourceAsync, parseStackFrames, type StackFrame } from '../tracing/frames'
-import { getTraceStore } from '../tracing/store'
+import type { WranglerConfig } from './config'
+import { getActiveContext } from './tracing/context'
+import { enrichFrameWithSourceAsync, parseStackFrames, type StackFrame } from './tracing/frames'
+import { getTraceStore } from './tracing/store'
 
 interface ErrorPageData {
 	error: {
@@ -46,7 +46,7 @@ interface ErrorPageData {
 
 let errorPageHtml: string | null = null
 
-const distFile = join(import.meta.dir, '../../dist/error-page.html')
+const distFile = join(import.meta.dir, '../dist/error-page.html')
 
 if (existsSync(distFile)) {
 	// Production: load pre-built self-contained HTML
@@ -54,7 +54,7 @@ if (existsSync(distFile)) {
 } else {
 	// Dev: build on-the-fly (requires source files + bun-plugin-tailwind)
 	const tailwindPlugin = (await import('bun-plugin-tailwind')).default
-	const htmlEntry = join(import.meta.dir, 'index.html')
+	const htmlEntry = join(import.meta.dir, 'error-page/index.html')
 
 	const result = await Bun.build({
 		entrypoints: [htmlEntry],

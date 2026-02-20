@@ -66,8 +66,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const ecMod = await import('../execution-context.ts')
 			const spanMod = await import('../tracing/span.ts')
 			const ctxMod = await import('../tracing/context.ts')
-			const errorPageMod = await import('../error-page/build.ts')
-			const dashboardMod = await import('../dashboard/api.ts')
+			const errorPageMod = await import('../error-page-render.ts')
+			const dashboardMod = await import('../dashboard-serve.ts')
 			const apiMod = await import('../api/index.ts')
 			const traceMod = await import('../tracing/store.ts')
 

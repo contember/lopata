@@ -4,7 +4,7 @@ import { join } from 'node:path'
 let dashboardAssets: Map<string, { content: Uint8Array; contentType: string }> | null = null
 let dashboardHtmlContent: string | null = null
 
-const distDir = join(import.meta.dir, '../../dist/dashboard')
+const distDir = join(import.meta.dir, '../dist/dashboard')
 
 if (existsSync(join(distDir, 'index.html'))) {
 	// Production: load pre-built assets from dist/
@@ -23,7 +23,7 @@ if (existsSync(join(distDir, 'index.html'))) {
 } else {
 	// Dev: build on-the-fly (requires source files + bun-plugin-tailwind)
 	const tailwindPlugin = (await import('bun-plugin-tailwind')).default
-	const htmlEntry = join(import.meta.dir, 'index.html')
+	const htmlEntry = join(import.meta.dir, 'dashboard/index.html')
 
 	const result = await Bun.build({
 		entrypoints: [htmlEntry],
