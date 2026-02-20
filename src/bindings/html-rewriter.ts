@@ -1,6 +1,6 @@
 import type { DocumentHandlers, ElementHandlers } from 'html-rewriter-wasm'
 
-type RawHTMLRewriterType = new (sink: (chunk: Uint8Array) => void) => {
+type RawHTMLRewriterType = new(sink: (chunk: Uint8Array) => void) => {
 	on(selector: string, handler: ElementHandlers): void
 	onDocument(handler: DocumentHandlers): void
 	write(chunk: Uint8Array): Promise<void>
