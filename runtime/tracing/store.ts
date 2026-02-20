@@ -374,15 +374,16 @@ export class TraceStore {
     };
   }
 
-  getErrorsForTrace(traceId: string): Array<{ id: string; timestamp: number; errorName: string; errorMessage: string; source: string | null }> {
+  getErrorsForTrace(traceId: string): Array<{ id: string; timestamp: number; errorName: string; errorMessage: string; source: string | null; data: unknown }> {
     return this.db.prepare<Record<string, unknown>, [string]>(
-      "SELECT id, timestamp, error_name, error_message, source FROM errors WHERE trace_id = ? ORDER BY timestamp ASC"
+      "SELECT id, timestamp, error_name, error_message, source, data FROM errors WHERE trace_id = ? ORDER BY timestamp ASC"
     ).all(traceId).map(r => ({
       id: r.id as string,
       timestamp: r.timestamp as number,
       errorName: r.error_name as string,
       errorMessage: r.error_message as string,
       source: r.source as string | null,
+      data: r.data ? JSON.parse(r.data as string) : null,
     }));
   }
 

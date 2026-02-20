@@ -122,6 +122,12 @@ export class Generation {
             }
             return undefined;
           }
+          const ctx = getActiveContext();
+          if (ctx) {
+            const res = new Response(response.body, response);
+            res.headers.set("X-Trace-Id", ctx.traceId);
+            return res;
+          }
           return response;
         };
 

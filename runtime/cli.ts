@@ -55,6 +55,11 @@ switch (command) {
 		await mod.run(ctx, commandArgs.slice(1));
 		break;
 	}
+	case "trace": {
+		const mod = await import("./cli/traces");
+		await mod.run(ctx, commandArgs.slice(1));
+		break;
+	}
 	default:
 		console.error(`Unknown command: ${command}`);
 		printHelp();
@@ -86,6 +91,8 @@ Commands:
   queues message purge <queue> Purge queue messages
   cache list                  List cache names
   cache purge [--name CACHE]  Purge cache entries
+  trace list [options]        List traces (--limit, --since, --search, --cursor)
+  trace get <traceId>         Get trace detail as JSON
 
 Global flags:
   --config, -c <path>   Path to wrangler config file
