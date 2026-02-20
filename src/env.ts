@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { AiBinding } from './bindings/ai'
 import { SqliteAnalyticsEngine } from './bindings/analytics-engine'
@@ -60,6 +60,8 @@ interface ConsumerConfig {
 	maxBatchTimeout: number
 	maxRetries: number
 	deadLetterQueue: string | null
+	maxConcurrency: number | null
+	retryDelay: number | null
 }
 
 interface ServiceBindingEntry {
@@ -111,6 +113,40 @@ export function buildEnv(
 
 	// KV namespaces
 	const db = getDatabase()
+
+	// DO migrations (renamed_classes, deleted_classes)
+	if (config.migrations) {
+		for (const migration of config.migrations) {
+			const applied = db.query('SELECT 1 FROM do_migrations WHERE tag = ?').get(migration.tag)
+			if (applied) continue
+
+			for (const { from, to } of migration.renamed_classes ?? []) {
+				db.run('UPDATE do_storage SET namespace = ? WHERE namespace = ?', [to, from])
+				db.run('UPDATE do_alarms SET namespace = ? WHERE namespace = ?', [to, from])
+				db.run('UPDATE do_instances SET namespace = ? WHERE namespace = ?', [to, from])
+				const fromDir = path.join(getDataDir(), 'do-sql', from)
+				const toDir = path.join(getDataDir(), 'do-sql', to)
+				if (existsSync(fromDir)) {
+					renameSync(fromDir, toDir)
+				}
+				console.log(`[lopata] Migration ${migration.tag}: renamed DO class ${from} → ${to}`)
+			}
+
+			for (const className of migration.deleted_classes ?? []) {
+				db.run('DELETE FROM do_storage WHERE namespace = ?', [className])
+				db.run('DELETE FROM do_alarms WHERE namespace = ?', [className])
+				db.run('DELETE FROM do_instances WHERE namespace = ?', [className])
+				const classDir = path.join(getDataDir(), 'do-sql', className)
+				if (existsSync(classDir)) {
+					rmSync(classDir, { recursive: true })
+				}
+				console.log(`[lopata] Migration ${migration.tag}: deleted DO class ${className}`)
+			}
+
+			db.run('INSERT INTO do_migrations (tag) VALUES (?)', [migration.tag])
+		}
+	}
+
 	for (const kv of config.kv_namespaces ?? []) {
 		console.log(`[lopata] KV namespace: ${kv.binding}`)
 		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
@@ -183,13 +219,15 @@ export function buildEnv(
 			maxBatchTimeout: consumer.max_batch_timeout ?? 5,
 			maxRetries: consumer.max_retries ?? 3,
 			deadLetterQueue: consumer.dead_letter_queue ?? null,
+			maxConcurrency: consumer.max_concurrency ?? null,
+			retryDelay: consumer.retry_delay ?? null,
 		})
 	}
 
 	// Service bindings
 	for (const svc of config.services ?? []) {
 		console.log(`[lopata] Service binding: ${svc.binding} -> ${svc.service}${svc.entrypoint ? ` (${svc.entrypoint})` : ''}`)
-		const proxy = createServiceBinding(svc.service, svc.entrypoint)
+		const proxy = createServiceBinding(svc.service, svc.entrypoint, undefined, svc.props)
 		env[svc.binding] = instrumentServiceBinding(proxy as object, svc.service) as Record<string, unknown>
 		registry.serviceBindings.push({
 			bindingName: svc.binding,

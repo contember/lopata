@@ -12,6 +12,11 @@ export function runWithExecutionContext<T>(ctx: ExecutionContext, fn: () => T): 
 
 export class ExecutionContext {
 	private _promises: Promise<unknown>[] = []
+	readonly props: Record<string, unknown>
+
+	constructor(props?: Record<string, unknown>) {
+		this.props = props ?? {}
+	}
 
 	waitUntil(promise: Promise<unknown>): void {
 		this._promises.push(promise.catch(err => {

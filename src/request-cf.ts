@@ -15,6 +15,8 @@ const DEFAULT_CF: Record<string, unknown> = {
 	httpProtocol: 'HTTP/2',
 	tlsVersion: 'TLSv1.3',
 	tlsCipher: 'AEAD-AES128-GCM-SHA256',
+	isEUCountry: '0',
+	clientAcceptEncoding: 'gzip, deflate, br',
 }
 
 export function addCfProperty(request: Request): Request {

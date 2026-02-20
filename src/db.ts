@@ -250,6 +250,12 @@ export function runMigrations(db: Database): void {
 		)
 	`)
 	db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_engine_dataset_ts ON analytics_engine(dataset, timestamp)`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS do_migrations (
+			tag TEXT PRIMARY KEY
+		)
+	`)
 }
 
 /** Returns the path to the .lopata data directory. */

@@ -17,7 +17,15 @@ export interface WranglerConfig {
 	d1_databases?: { binding: string; database_name: string; database_id: string; migrations_dir?: string }[]
 	queues?: {
 		producers?: { binding: string; queue: string; delivery_delay?: number }[]
-		consumers?: { queue: string; max_batch_size?: number; max_batch_timeout?: number; max_retries?: number; dead_letter_queue?: string }[]
+		consumers?: {
+			queue: string
+			max_batch_size?: number
+			max_batch_timeout?: number
+			max_retries?: number
+			dead_letter_queue?: string
+			max_concurrency?: number
+			retry_delay?: number
+		}[]
 	}
 	send_email?: {
 		name: string
@@ -30,7 +38,7 @@ export interface WranglerConfig {
 		id: string
 		localConnectionString?: string
 	}[]
-	services?: { binding: string; service: string; entrypoint?: string }[]
+	services?: { binding: string; service: string; entrypoint?: string; props?: Record<string, unknown> }[]
 	triggers?: { crons?: string[] }
 	vars?: Record<string, string>
 	assets?: {
@@ -53,7 +61,13 @@ export interface WranglerConfig {
 	analytics_engine_datasets?: { binding: string; dataset?: string }[]
 	browser?: { binding: string }
 	version_metadata?: { binding: string }
-	migrations?: { tag: string; new_classes?: string[]; new_sqlite_classes?: string[] }[]
+	migrations?: {
+		tag: string
+		new_classes?: string[]
+		new_sqlite_classes?: string[]
+		renamed_classes?: { from: string; to: string }[]
+		deleted_classes?: string[]
+	}[]
 	env?: Record<string, Partial<Omit<WranglerConfig, 'env'>>>
 }
 

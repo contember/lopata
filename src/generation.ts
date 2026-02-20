@@ -16,7 +16,15 @@ interface ClassRegistry {
 	durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[]
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 	containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[]
-	queueConsumers: { queue: string; maxBatchSize: number; maxBatchTimeout: number; maxRetries: number; deadLetterQueue: string | null }[]
+	queueConsumers: {
+		queue: string
+		maxBatchSize: number
+		maxBatchTimeout: number
+		maxRetries: number
+		deadLetterQueue: string | null
+		maxConcurrency: number | null
+		retryDelay: number | null
+	}[]
 	serviceBindings: { bindingName: string; serviceName: string; entrypoint?: string; proxy: Record<string, unknown> }[]
 	staticAssets: { fetch(req: Request): Promise<Response> } | null
 }
@@ -109,7 +117,28 @@ export class Generation {
 						const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, this.env)
 						return await (instance.fetch as (r: Request) => Promise<Response>)(req)
 					}
-					return await (this.defaultExport as { fetch: Function }).fetch(req, this.env, ctx) as Response
+					if ((this.defaultExport as Record<string, unknown>)?.fetch) {
+						return await (this.defaultExport as { fetch: Function }).fetch(req, this.env, ctx) as Response
+					}
+					// Service worker syntax: addEventListener("fetch", handler)
+					const swHandlers = (globalThis as any).__lopata_sw_handlers as { fetch?: (event: any) => void } | undefined
+					if (swHandlers?.fetch) {
+						return await new Promise<Response>((resolve, reject) => {
+							const event = {
+								type: 'fetch',
+								request: req,
+								respondWith(response: Response | Promise<Response>) {
+									Promise.resolve(response).then(resolve, reject)
+								},
+								waitUntil(promise: Promise<unknown>) {
+									ctx.waitUntil(promise)
+								},
+								passThroughOnException() {},
+							}
+							swHandlers.fetch!(event)
+						})
+					}
+					throw new Error('No fetch handler found')
 				}
 
 				const handleResponse = (response: Response): Response | undefined => {

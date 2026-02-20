@@ -165,12 +165,16 @@ export class GenerationManager {
 			setGlobalEnv(env)
 		}
 
-		// 5. Validate default export
+		// 5. Validate default export (or service worker fetch handler)
 		const defaultExport = workerModule.default
 		const classBasedExport = isEntrypointClass(defaultExport)
+		const swHandlers = (globalThis as any).__lopata_sw_handlers as { fetch?: (event: any) => void } | undefined
+		const hasServiceWorkerFetch = !!swHandlers?.fetch
 
-		if (!classBasedExport && !defaultExport?.fetch) {
-			throw new Error('Worker module must export a default object with a fetch() method, or a class with a fetch() method on its prototype')
+		if (!classBasedExport && !defaultExport?.fetch && !hasServiceWorkerFetch) {
+			throw new Error(
+				'Worker module must export a default object with a fetch() method, a class with a fetch() method on its prototype, or use addEventListener("fetch", handler)',
+			)
 		}
 
 		// 5b. Patch frameworks that use .then()/.catch() for dispatch (e.g. Hono)

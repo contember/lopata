@@ -499,6 +499,8 @@ export class DurableObjectStateImpl {
 	private _instanceResolver: (() => DurableObjectBase | null) | null = null
 	private _lockTail: Promise<void> = Promise.resolve()
 	private _activeRequests = 0
+	private _aborted = false
+	private _abortReason: string | undefined
 
 	constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
 		this.id = id
@@ -536,6 +538,9 @@ export class DurableObjectStateImpl {
 
 	/** @internal Acquire the serial-execution lock. Caller awaits this, then runs work in its own async stack. */
 	async _lock(): Promise<() => void> {
+		if (this._aborted) {
+			throw new Error(this._abortReason ?? 'Durable Object has been aborted')
+		}
 		let unlockNext: () => void
 		const nextTail = new Promise<void>(r => {
 			unlockNext = r
@@ -543,11 +548,29 @@ export class DurableObjectStateImpl {
 		const ready = this._lockTail
 		this._lockTail = nextTail
 		await ready
+		if (this._aborted) {
+			unlockNext!()
+			throw new Error(this._abortReason ?? 'Durable Object has been aborted')
+		}
 		this._activeRequests++
 		return () => {
 			this._activeRequests--
 			unlockNext!()
 		}
+	}
+
+	/**
+	 * Abort the Durable Object instance. Rejects all queued requests and
+	 * marks the instance for eviction so it will be re-created fresh on next access.
+	 */
+	abort(reason?: string): void {
+		this._aborted = true
+		this._abortReason = reason ?? 'Durable Object reset by abort()'
+	}
+
+	/** @internal Check if this state has been aborted */
+	_isAborted(): boolean {
+		return this._aborted
 	}
 
 	/** @internal Set the instance resolver for WebSocket handler delegation */
@@ -855,9 +878,16 @@ export class DurableObjectNamespaceImpl {
 	private _evictIdle() {
 		const now = Date.now()
 		for (const [idStr, lastActivity] of this._lastActivity) {
-			if (now - lastActivity < this._evictionTimeoutMs) continue
 			const executor = this._executors.get(idStr)
 			if (!executor) continue
+			// Evict aborted instances immediately (once they have no active requests)
+			if (executor.isAborted() && !executor.isActive()) {
+				executor.dispose().catch(() => {})
+				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
+				continue
+			}
+			if (now - lastActivity < this._evictionTimeoutMs) continue
 			if (executor.isBlocked()) continue
 			if (executor.isActive()) continue
 			if (executor.activeWebSocketCount() > 0) continue

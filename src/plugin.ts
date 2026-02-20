@@ -97,6 +97,21 @@ Object.defineProperty(globalThis.performance, 'timeOrigin', {
 	configurable: true,
 })
 
+// Register addEventListener shim for legacy service worker syntax
+// Workers that use addEventListener("fetch", handler) instead of export default { fetch }
+const _serviceWorkerHandlers: { fetch?: (event: any) => void } = {}
+
+Object.defineProperty(globalThis, 'addEventListener', {
+	value: (type: string, handler: (event: any) => void) => {
+		if (type === 'fetch') {
+			_serviceWorkerHandlers.fetch = handler
+		}
+	},
+	writable: false,
+	configurable: true,
+}) /** @internal Get the registered service worker fetch handler */
+;(globalThis as any).__lopata_sw_handlers = _serviceWorkerHandlers
+
 // Register scheduler.wait(ms) — await-able setTimeout alternative
 Object.defineProperty(globalThis, 'scheduler', {
 	value: {

@@ -333,6 +333,10 @@ export class WorkerExecutor implements DOExecutor {
 		return this._wsCount
 	}
 
+	isAborted(): boolean {
+		return false // Worker-thread DOs don't support abort
+	}
+
 	async dispose(): Promise<void> {
 		this._disposed = true
 		if (this._worker) {

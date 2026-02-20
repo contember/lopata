@@ -26,6 +26,7 @@ const STATIC_ASSETS_LIMITS_DEFAULTS: Required<StaticAssetsLimits> = {
 interface HeaderRule {
 	pattern: string
 	headers: Record<string, string>
+	removals: string[]
 }
 
 interface RedirectRule {
@@ -277,6 +278,9 @@ export class StaticAssets {
 				for (const [key, value] of Object.entries(rule.headers)) {
 					headers.set(key, value)
 				}
+				for (const name of rule.removals) {
+					headers.delete(name)
+				}
 			}
 		}
 	}
@@ -339,6 +343,14 @@ export function parseHeadersFile(content: string, limits: Required<StaticAssetsL
 		if (line.startsWith(' ') || line.startsWith('\t')) {
 			if (!currentRule) continue
 			const trimmed = line.trim()
+			// Header removal: ! Header-Name
+			if (trimmed.startsWith('!')) {
+				const headerName = trimmed.slice(1).trim()
+				if (headerName) {
+					currentRule.removals.push(headerName)
+				}
+				continue
+			}
 			const colonIdx = trimmed.indexOf(':')
 			if (colonIdx === -1) continue
 			const key = trimmed.slice(0, colonIdx).trim()
@@ -351,7 +363,7 @@ export function parseHeadersFile(content: string, limits: Required<StaticAssetsL
 			if (rules.length >= limits.maxHeaderRules) {
 				break // reached rule limit
 			}
-			currentRule = { pattern: line.trim(), headers: {} }
+			currentRule = { pattern: line.trim(), headers: {}, removals: [] }
 			rules.push(currentRule)
 		}
 	}

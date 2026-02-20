@@ -37,10 +37,13 @@ export class ServiceBinding {
 	private _limits: Required<ServiceBindingLimits>
 	_subrequestCount: number = 0
 
-	constructor(serviceName: string, entrypoint?: string, limits?: ServiceBindingLimits) {
+	private _props: Record<string, unknown>
+
+	constructor(serviceName: string, entrypoint?: string, limits?: ServiceBindingLimits, props?: Record<string, unknown>) {
 		this._serviceName = serviceName
 		this._entrypoint = entrypoint
 		this._limits = { ...SERVICE_BINDING_DEFAULTS, ...limits }
+		this._props = props ?? {}
 	}
 
 	_wire(
@@ -80,24 +83,25 @@ export class ServiceBinding {
 
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
 		const { workerModule, env } = this._resolve()
+		const execCtx = ctx ?? new ExecutionContext(this._props)
 		if (this._entrypoint) {
 			const cls = workerModule[this._entrypoint] as (new(...args: unknown[]) => Record<string, unknown>) | undefined
 			if (!cls) {
 				throw new Error(`Entrypoint "${this._entrypoint}" not exported from worker module`)
 			}
-			return new cls(ctx ?? new ExecutionContext(), env)
+			return new cls(execCtx, env)
 		}
 		// Default export: could be class-based or object-based
 		const def = workerModule.default
 		if (typeof def === 'function' && def.prototype && typeof def.prototype.fetch === 'function') {
-			return new (def as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx ?? new ExecutionContext(), env)
+			return new (def as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(execCtx, env)
 		}
 		return def as Record<string, unknown>
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
 		this._checkSubrequestLimit()
-		const execCtx = new ExecutionContext()
+		const execCtx = new ExecutionContext(this._props)
 		const target = this._getTarget(execCtx)
 		if (!target?.fetch || typeof target.fetch !== 'function') {
 			throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
@@ -214,7 +218,8 @@ export function createServiceBinding(
 	serviceName: string,
 	entrypoint?: string,
 	limits?: ServiceBindingLimits,
+	props?: Record<string, unknown>,
 ): Record<string, unknown> {
-	const binding = new ServiceBinding(serviceName, entrypoint, limits)
+	const binding = new ServiceBinding(serviceName, entrypoint, limits, props)
 	return binding.toProxy()
 }

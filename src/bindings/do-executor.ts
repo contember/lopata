@@ -36,6 +36,9 @@ export interface DOExecutor {
 	/** Count of accepted WebSockets */
 	activeWebSocketCount(): number
 
+	/** Whether the instance has been aborted */
+	isAborted(): boolean
+
 	/** Kill the instance */
 	dispose(): Promise<void>
 }

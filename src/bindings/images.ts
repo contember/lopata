@@ -16,15 +16,20 @@ export interface ImageTransformOptions {
 	width?: number
 	height?: number
 	fit?: 'contain' | 'cover' | 'crop' | 'scale-down' | 'pad'
+	gravity?: 'auto' | 'left' | 'right' | 'top' | 'bottom' | 'center' | { x: number; y: number }
 	rotate?: 0 | 90 | 180 | 270
 	blur?: number
 	brightness?: number
 	contrast?: number
+	gamma?: number
+	saturation?: number
 	sharpen?: number
-	trim?: { top?: number; right?: number; bottom?: number; left?: number }
+	trim?: number | boolean
 	flip?: boolean
 	flop?: boolean
 	background?: string
+	dpr?: number
+	border?: { color?: string; width?: number; top?: number; right?: number; bottom?: number; left?: number }
 }
 
 export interface DrawOptions {
@@ -37,8 +42,10 @@ export interface DrawOptions {
 }
 
 export interface OutputOptions {
-	format: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/avif'
+	format: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/avif' | 'image/gif'
 	quality?: number
+	compression?: 'fast'
+	metadata?: 'keep' | 'copyright' | 'none'
 }
 
 export interface ImageOutputResult {
@@ -229,11 +236,12 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<Uint8Arra
 
 // --- Sharp format mapping ---
 
-const MIME_TO_SHARP: Record<string, 'png' | 'jpeg' | 'webp' | 'avif'> = {
+const MIME_TO_SHARP: Record<string, 'png' | 'jpeg' | 'webp' | 'avif' | 'gif'> = {
 	'image/png': 'png',
 	'image/jpeg': 'jpeg',
 	'image/webp': 'webp',
 	'image/avif': 'avif',
+	'image/gif': 'gif',
 }
 
 const CF_FIT_TO_SHARP: Record<string, 'contain' | 'cover' | 'fill' | 'inside' | 'outside'> = {
@@ -242,6 +250,15 @@ const CF_FIT_TO_SHARP: Record<string, 'contain' | 'cover' | 'fill' | 'inside' | 
 	crop: 'cover',
 	'scale-down': 'inside',
 	pad: 'contain',
+}
+
+const CF_GRAVITY_TO_SHARP: Record<string, string> = {
+	auto: 'attention',
+	center: 'centre',
+	left: 'west',
+	right: 'east',
+	top: 'north',
+	bottom: 'south',
 }
 
 // --- LazyImageTransformer: Sharp-based ---
@@ -273,6 +290,14 @@ class LazyImageTransformer {
 		for (const t of this.transforms) {
 			let pipeline = sharp(currentBuf)
 
+			// DPR: multiply dimensions before resize
+			let effectiveWidth = t.width
+			let effectiveHeight = t.height
+			if (t.dpr && t.dpr !== 1) {
+				if (effectiveWidth) effectiveWidth = Math.round(effectiveWidth * t.dpr)
+				if (effectiveHeight) effectiveHeight = Math.round(effectiveHeight * t.dpr)
+			}
+
 			if (t.rotate !== undefined && t.rotate !== 0) {
 				pipeline = pipeline.rotate(t.rotate)
 			}
@@ -282,11 +307,21 @@ class LazyImageTransformer {
 			if (t.flop) {
 				pipeline = pipeline.flop()
 			}
-			if (t.width !== undefined || t.height !== undefined) {
+			if (effectiveWidth !== undefined || effectiveHeight !== undefined) {
 				const fitVal = t.fit ? CF_FIT_TO_SHARP[t.fit] ?? 'cover' : 'cover'
 				const resizeOpts: sharp.ResizeOptions = { fit: fitVal }
 				if (t.background) resizeOpts.background = t.background
-				pipeline = pipeline.resize(t.width ?? null, t.height ?? null, resizeOpts)
+				// Map gravity for resize positioning
+				if (t.gravity) {
+					if (typeof t.gravity === 'string') {
+						const mapped = CF_GRAVITY_TO_SHARP[t.gravity]
+						if (mapped) resizeOpts.position = mapped as any
+					} else {
+						// { x, y } — Sharp doesn't directly support arbitrary x,y so use percentage-based
+						resizeOpts.position = `${Math.round(t.gravity.x * 100)}% ${Math.round(t.gravity.y * 100)}%` as any
+					}
+				}
+				pipeline = pipeline.resize(effectiveWidth ?? null, effectiveHeight ?? null, resizeOpts)
 			}
 			if (t.blur !== undefined && t.blur > 0) {
 				pipeline = pipeline.blur(Math.max(t.blur, 0.3))
@@ -294,8 +329,36 @@ class LazyImageTransformer {
 			if (t.sharpen !== undefined && t.sharpen > 0) {
 				pipeline = pipeline.sharpen(t.sharpen)
 			}
-			if (t.brightness !== undefined && t.brightness !== 1) {
-				pipeline = pipeline.modulate({ brightness: t.brightness })
+			// Brightness and saturation via modulate
+			if ((t.brightness !== undefined && t.brightness !== 1) || (t.saturation !== undefined && t.saturation !== 1)) {
+				const modulateOpts: { brightness?: number; saturation?: number } = {}
+				if (t.brightness !== undefined) modulateOpts.brightness = t.brightness
+				if (t.saturation !== undefined) modulateOpts.saturation = t.saturation
+				pipeline = pipeline.modulate(modulateOpts)
+			}
+			// Contrast via linear transform: output = contrast * input + (128 * (1 - contrast))
+			if (t.contrast !== undefined && t.contrast !== 1) {
+				pipeline = pipeline.linear(t.contrast, 128 * (1 - t.contrast))
+			}
+			// Gamma
+			if (t.gamma !== undefined && t.gamma !== 1) {
+				pipeline = pipeline.gamma(t.gamma)
+			}
+			// Trim — CF's trim is a threshold value
+			if (t.trim !== undefined && t.trim !== false) {
+				const threshold = typeof t.trim === 'number' ? t.trim : 10
+				pipeline = pipeline.trim({ threshold })
+			}
+			// Border — extend image edges
+			if (t.border) {
+				const borderWidth = t.border.width ?? 0
+				pipeline = pipeline.extend({
+					top: t.border.top ?? borderWidth,
+					right: t.border.right ?? borderWidth,
+					bottom: t.border.bottom ?? borderWidth,
+					left: t.border.left ?? borderWidth,
+					background: t.border.color ?? '#000000',
+				})
 			}
 
 			currentBuf = Buffer.from(await pipeline.toBuffer())
@@ -303,18 +366,58 @@ class LazyImageTransformer {
 
 		// Apply draw overlays
 		if (this.overlays.length > 0) {
+			const baseMeta = await sharp(currentBuf).metadata()
 			const composites: sharp.OverlayOptions[] = []
 			for (const overlay of this.overlays) {
-				const overlayData = await overlay.streamPromise
-				const opts: sharp.OverlayOptions = { input: Buffer.from(overlayData) }
-				if (overlay.options?.top !== undefined) opts.top = overlay.options.top
-				if (overlay.options?.left !== undefined) opts.left = overlay.options.left
-				if (overlay.options?.bottom !== undefined && overlay.options?.top === undefined) {
-					opts.gravity = 'south'
+				let overlayBuf = Buffer.from(await overlay.streamPromise)
+
+				// Apply opacity to overlay by compositing with a semi-transparent blank
+				if (overlay.options?.opacity !== undefined && overlay.options.opacity < 1) {
+					const overlayMeta = await sharp(overlayBuf).metadata()
+					const w = overlayMeta.width ?? 1
+					const h = overlayMeta.height ?? 1
+					const alpha = Math.round(overlay.options.opacity * 255)
+					// Create a semi-transparent overlay: ensure alpha, then composite with a mask
+					overlayBuf = await sharp(overlayBuf)
+						.ensureAlpha()
+						.composite([{
+							input: Buffer.from(new Uint8Array(w * h * 4).fill(0).map((_, i) => i % 4 === 3 ? alpha : 255)),
+							raw: { width: w, height: h, channels: 4 },
+							blend: 'dest-in' as any,
+						}])
+						.toBuffer()
 				}
-				if (overlay.options?.right !== undefined && overlay.options?.left === undefined) {
-					opts.gravity = 'east'
+
+				const opts: sharp.OverlayOptions = { input: overlayBuf }
+
+				// Compute position — handle bottom/right by converting to top/left
+				const hasTop = overlay.options?.top !== undefined
+				const hasLeft = overlay.options?.left !== undefined
+				const hasBottom = overlay.options?.bottom !== undefined
+				const hasRight = overlay.options?.right !== undefined
+
+				if (hasBottom || hasRight) {
+					const overlayMeta = await sharp(overlayBuf).metadata()
+					const baseW = baseMeta.width ?? 0
+					const baseH = baseMeta.height ?? 0
+					const overlayW = overlayMeta.width ?? 0
+					const overlayH = overlayMeta.height ?? 0
+
+					if (hasTop) {
+						opts.top = overlay.options!.top
+					} else if (hasBottom) {
+						opts.top = Math.max(0, baseH - overlayH - overlay.options!.bottom!)
+					}
+					if (hasLeft) {
+						opts.left = overlay.options!.left
+					} else if (hasRight) {
+						opts.left = Math.max(0, baseW - overlayW - overlay.options!.right!)
+					}
+				} else {
+					if (hasTop) opts.top = overlay.options!.top
+					if (hasLeft) opts.left = overlay.options!.left
 				}
+
 				if (overlay.options?.repeat === 'repeat') {
 					opts.tile = true
 				}
@@ -329,7 +432,24 @@ class LazyImageTransformer {
 		if (options.quality !== undefined) {
 			formatOpts.quality = options.quality
 		}
-		const outputBuf = await sharp(currentBuf).toFormat(sharpFmt, formatOpts).toBuffer()
+		// Compression: "fast" → lower effort for supported formats
+		if (options.compression === 'fast') {
+			if (sharpFmt === 'png') formatOpts.compressionLevel = 1
+			if (sharpFmt === 'webp') formatOpts.effort = 0
+			if (sharpFmt === 'avif') formatOpts.effort = 0
+		}
+
+		let outputPipeline = sharp(currentBuf)
+
+		// Metadata handling
+		if (options.metadata === 'keep') {
+			outputPipeline = outputPipeline.keepMetadata()
+		} else if (options.metadata === 'copyright') {
+			outputPipeline = outputPipeline.withMetadata()
+		}
+		// 'none' is the default — Sharp strips metadata by default
+
+		const outputBuf = await outputPipeline.toFormat(sharpFmt, formatOpts).toBuffer()
 		const contentType = options.format
 
 		return {

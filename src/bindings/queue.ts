@@ -39,6 +39,8 @@ interface ConsumerConfig {
 	maxBatchTimeout: number
 	maxRetries: number
 	deadLetterQueue: string | null
+	maxConcurrency?: number | null
+	retryDelay?: number | null
 	retentionPeriodSeconds?: number // default 345600 (4 days), matching CF default
 }
 
@@ -195,6 +197,7 @@ export class QueueConsumer {
 	private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = []
 	private batchTimer: ReturnType<typeof setTimeout> | null = null
 	private polling = false
+	private _activeDeliveries = 0
 
 	constructor(
 		db: Database,
@@ -230,6 +233,8 @@ export class QueueConsumer {
 
 	async poll(): Promise<void> {
 		if (this.polling) return
+		// Check max_concurrency gate
+		if (this.config.maxConcurrency && this._activeDeliveries >= this.config.maxConcurrency) return
 		this.polling = true
 		try {
 			const now = Date.now()
@@ -257,6 +262,17 @@ export class QueueConsumer {
 	}
 
 	private async deliverBatch(
+		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
+	): Promise<void> {
+		this._activeDeliveries++
+		try {
+			await this._deliverBatchInner(rows)
+		} finally {
+			this._activeDeliveries--
+		}
+	}
+
+	private async _deliverBatchInner(
 		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
 	): Promise<void> {
 		// Increment attempts for all fetched messages
@@ -330,7 +346,7 @@ export class QueueConsumer {
 				this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [Date.now(), row.id])
 			} else {
 				// Retry
-				const delay = decision.delaySeconds ?? 0
+				const delay = decision.delaySeconds ?? this.config.retryDelay ?? 0
 				if (currentAttempts >= this.config.maxRetries) {
 					// Max retries exceeded — move to DLQ or mark as failed
 					if (this.config.deadLetterQueue) {

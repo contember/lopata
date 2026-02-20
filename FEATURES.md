@@ -9,36 +9,30 @@
 
 ## Summary
 
-| Area                      | Coverage    | Notes                                                                             |
-| ------------------------- | ----------- | --------------------------------------------------------------------------------- |
-| **Workers Core API**      | ~75%        | Native Web APIs via Bun; missing HTMLRewriter, WebSocketPair, tail/email handlers |
-| **KV**                    | 100%        | All methods, bulk ops, limits, validation                                         |
-| **D1**                    | ~90%        | Missing named params, some meta fields, session is stub                           |
-| **R2**                    | ~95%        | Missing SSE-C, storageClass only "Standard"                                       |
-| **Durable Objects**       | ~90%        | Missing sync KV API, transactionSync, state.abort                                 |
-| **Queues**                | ~90%        | Missing pull-based consumers, max_concurrency                                     |
-| **Workflows**             | 100%        | Full lifecycle, checkpointing, concurrency                                        |
-| **Cache API**             | 100%        | put/match/delete, TTL, expiration, validation                                     |
-| **Static Assets**         | ~90%        | Missing _redirects file                                                           |
-| **Service Bindings**      | ~85%        | Missing RpcTarget semantics, stub lifecycle                                       |
-| **Scheduled (Cron)**      | 100%        | Full cron parser, aliases, manual trigger                                         |
-| **Images**                | ~80%        | Sharp-based transforms; missing segment, border, some color opts                  |
-| **Environment Variables** | 100%        | [vars], .dev.vars, .env, cloudflare:workers env import                            |
-| **Overall**               | **~90-95%** | All major bindings fully implemented                                              |
+| Area                      | Coverage  | Notes                                                                         |
+| ------------------------- | --------- | ----------------------------------------------------------------------------- |
+| **Workers Core API**      | ~90%      | Native Web APIs via Bun; HTMLRewriter, WebSocketPair, streams all implemented |
+| **KV**                    | 100%      | All methods, bulk ops, limits, validation                                     |
+| **D1**                    | ~90%      | Missing named params, some meta fields, session is stub                       |
+| **R2**                    | ~95%      | Missing SSE-C, storageClass only "Standard"                                   |
+| **Durable Objects**       | ~95%      | Sync KV + transactionSync implemented; state.abort supported                  |
+| **Queues**                | ~95%      | Full push + pull consumers; max_concurrency + retry_delay supported           |
+| **Workflows**             | 100%      | Full lifecycle, checkpointing, concurrency                                    |
+| **Cache API**             | 100%      | put/match/delete, TTL, expiration, validation                                 |
+| **Static Assets**         | ~98%      | Full _redirects + _headers with !Header removal                               |
+| **Service Bindings**      | ~95%      | Full RPC stubs, using/dup; instance property filtering relaxed                |
+| **Scheduled (Cron)**      | 100%      | Full cron parser with L/W/# support, aliases, manual trigger                  |
+| **Images**                | ~90%      | Sharp-based transforms; gravity, border, saturation, gamma, compression       |
+| **Environment Variables** | 100%      | [vars], .dev.vars, .env, cloudflare:workers env import                        |
+| **Overall**               | **~95%+** | All major bindings fully implemented                                          |
 
 ### Top Missing Features
 
-| Priority | Feature                                     | Notes                                           |
-| -------- | ------------------------------------------- | ----------------------------------------------- |
-| Medium   | HTMLRewriter                                | Popular API, needs external lib (lol-html WASM) |
-| Medium   | WebSocketPair (regular Workers)             | Only DO WebSocket hibernation exists            |
-| Low      | IdentityTransformStream / FixedLengthStream | CF-specific stream classes                      |
-| Low      | DO sync KV API (`storage.kv.*`)             | Newer API                                       |
-| Low      | `_redirects` file                           | Static asset redirects                          |
-| Low      | Pull-based queue consumers                  | HTTP pull mode                                  |
-| Very low | Tail / Email handlers                       | Hard to simulate locally                        |
-| Very low | crypto.DigestStream, timingSafeEqual        | Supplementary crypto APIs                       |
-| Very low | navigator.userAgent mock                    | Trivial                                         |
+| Priority | Feature       | Notes                                  |
+| -------- | ------------- | -------------------------------------- |
+| Low      | `ctx.exports` | Loopback bindings (enable_ctx_exports) |
+| Very low | Tail handler  | Hard to simulate locally               |
+| Very low | Secrets Store | `[[secrets_store_secrets]]`, open beta |
 
 ---
 
@@ -75,7 +69,7 @@
 - ❌ `cf.tlsClientRandom` — Base64 random bytes
 - ❌ `cf.tlsExportedAuthenticator` — exported authenticator data
 - ✅ `cf.country` — ISO 3166-1 alpha-2
-- ❌ `cf.isEUCountry` — "1" if in EU
+- ✅ `cf.isEUCountry` — "1" if in EU (default "0")
 - ✅ `cf.city` — city name
 - ✅ `cf.continent` — continent code
 - ✅ `cf.latitude` — latitude string
@@ -85,7 +79,7 @@
 - ✅ `cf.region` — ISO 3166-2 name
 - ✅ `cf.regionCode` — ISO 3166-2 code
 - ✅ `cf.timezone` — IANA timezone
-- ❌ `cf.clientAcceptEncoding` — original Accept-Encoding
+- ✅ `cf.clientAcceptEncoding` — original Accept-Encoding (default "gzip, deflate, br")
 - ❌ `cf.botManagement.score` — bot score 1-99 (enterprise)
 - ❌ `cf.botManagement.verifiedBot` — known good bot
 - ❌ `cf.botManagement.staticResource` — static resource request
@@ -125,7 +119,7 @@
 - 🟰 `response.url` — response URL
 - 🟰 `response.body` — ReadableStream | null
 - 🟰 `response.bodyUsed` — boolean
-- ❌ `response.webSocket` — WebSocket | null
+- ⚠️ `response.webSocket` — WebSocket | null (server reads it, but Response constructor doesn't accept webSocket in init)
 - 🟰 `response.clone()` — copy the Response
 - 🟰 `response.arrayBuffer()` — read body
 - 🟰 `response.formData()` — read body
@@ -140,15 +134,15 @@
 
 - ✅ `ctx.waitUntil(promise)` — extend Worker lifetime past response
 - ✅ `ctx.passThroughOnException()` — fail open to origin on error (no-op in dev)
-- ❌ `ctx.props` — arbitrary JSON from Service Bindings
+- ✅ `ctx.props` — arbitrary JSON from Service Bindings
 - ❌ `ctx.exports` — loopback bindings for exports (enable_ctx_exports flag)
-- ❌ `waitUntil()` standalone import from `cloudflare:workers`
+- ✅ `waitUntil()` standalone import from `cloudflare:workers`
 
 ### 1.6 Fetch Handler
 
 - ✅ `export default { fetch }` — module worker handler
 - ✅ Class-based `WorkerEntrypoint` with `fetch()` method
-- ❌ `addEventListener("fetch", ...)` — legacy service worker syntax
+- ✅ `addEventListener("fetch", ...)` — legacy service worker syntax
 - ✅ Handler receives `(request, env, ctx)`
 
 ### 1.7 Headers
@@ -186,8 +180,8 @@
 - 🟰 `WritableStreamDefaultWriter` — write(), close(), abort(), releaseLock()
 - 🟰 `new TransformStream()` — identity transform (CF default)
 - 🟰 `transformstream_enable_standard_constructor` flag — spec-compliant constructor
-- ❌ `new IdentityTransformStream()` — forwards bytes, supports BYOB
-- ❌ `new FixedLengthStream(length)` — limits total bytes, sets Content-Length
+- ✅ `new IdentityTransformStream()` — forwards bytes, supports BYOB
+- ✅ `new FixedLengthStream(length)` — limits total bytes, sets Content-Length
 - 🟰 PipeToOptions: preventClose, preventAbort, preventCancel, signal
 
 ### 1.10 Encoding
@@ -212,39 +206,39 @@
 - 🟰 `crypto.subtle.exportKey()` — export key
 - 🟰 `crypto.subtle.wrapKey()` — wrap key
 - 🟰 `crypto.subtle.unwrapKey()` — unwrap key
-- ❌ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
-- ❌ `crypto.DigestStream` — WritableStream that computes hash digest
+- ✅ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
+- ✅ `crypto.DigestStream` — WritableStream that computes hash digest
 - 🟰 Algorithms: RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA, ECDH, Ed25519, X25519, AES-CTR/CBC/GCM/KW, SHA-1/256/384/512, MD5, HKDF, PBKDF2, HMAC
 
 ### 1.12 HTMLRewriter
 
-- ❌ `new HTMLRewriter()` — constructor
-- ❌ `.on(selector, handler)` — element handler
-- ❌ `.onDocument(handler)` — document handler
-- ❌ `.transform(response)` — transform response
-- ❌ CSS selectors: _, E, E:nth-child(n), E:first-child, E:nth-of-type(n), E:first-of-type, E:not(s), E.class, E#id, E[attr], E[attr="val"], E[attr~="val"], E[attr^="val"], E[attr$="val"], E[attr_="val"], E[attr|="val"], E F, E > F
-- ❌ Element: tagName, attributes, removed, namespaceURI, getAttribute, hasAttribute, setAttribute, removeAttribute, before, after, prepend, append, replace, setInnerContent, remove, removeAndKeepContent, onEndTag
-- ❌ EndTag: name, before, after, remove
-- ❌ Text: text, lastInTextNode, removed, before, after, replace, remove
-- ❌ Comment: text, removed, before, after, replace, remove
-- ❌ Document: doctype, comments, text, end
+- ✅ `new HTMLRewriter()` — constructor
+- ✅ `.on(selector, handler)` — element handler
+- ✅ `.onDocument(handler)` — document handler
+- ✅ `.transform(response)` — transform response
+- ✅ CSS selectors: _, E, E:nth-child(n), E:first-child, E:nth-of-type(n), E:first-of-type, E:not(s), E.class, E#id, E[attr], E[attr="val"], E[attr~="val"], E[attr^="val"], E[attr$="val"], E[attr_="val"], E[attr|="val"], E F, E > F
+- ✅ Element: tagName, attributes, removed, namespaceURI, getAttribute, hasAttribute, setAttribute, removeAttribute, before, after, prepend, append, replace, setInnerContent, remove, removeAndKeepContent, onEndTag
+- ✅ EndTag: name, before, after, remove
+- ✅ Text: text, lastInTextNode, removed, before, after, replace, remove
+- ✅ Comment: text, removed, before, after, replace, remove
+- ✅ Document: doctype, comments, text, end
 
-> **Note:** HTMLRewriter requires lol-html (Cloudflare's Rust-based HTML parser). Could be implemented via lol-html WASM build.
+> **Note:** HTMLRewriter implemented via `html-rewriter-wasm` package (lol-html WASM build).
 
 ### 1.13 WebSocket
 
-- ❌ `new WebSocketPair()` — create client/server pair
-- ❌ `ws.accept()` — begin handling (CF-specific)
+- ✅ `new WebSocketPair()` — create client/server pair
+- ✅ `ws.accept()` — begin handling (CF-specific)
 - 🟰 `ws.send(message)` — send data
 - 🟰 `ws.close(code?, reason?)` — close connection
 - 🟰 `ws.addEventListener(type, listener)` — register handler
 - 🟰 `ws.readyState` — 0/1/2/3
 - 🟰 Events: open, message, close, error
 - 🟰 Max message size: 1 MiB
-- ❌ WebSocket upgrade: `new Response(null, { status: 101, webSocket: client })`
+- ⚠️ WebSocket upgrade: `new Response(null, { status: 101, webSocket: client })` — works via manual webSocket property attachment
 - ❌ `web_socket_compression` flag — RFC 7692 per-message deflate
 
-> **Note:** WebSocket hibernation API in Durable Objects IS fully implemented. Only regular Worker WebSocketPair is missing.
+> **Note:** WebSocketPair and WebSocket hibernation API in Durable Objects are both fully implemented.
 
 ### 1.14 Global fetch()
 
@@ -293,8 +287,8 @@
 
 ### 1.18 Navigator & Performance
 
-- ❌ `navigator.userAgent` — "Cloudflare-Workers" (global_navigator flag)
-- ❌ `navigator.language` — locale (enable_navigator_language flag)
+- ✅ `navigator.userAgent` — "Cloudflare-Workers" (global_navigator flag)
+- ✅ `navigator.language` — "en" (enable_navigator_language flag)
 - 🟰 `performance.now()` — ms since timeOrigin (Bun native, not CF semantics)
 - 🟰 `performance.timeOrigin` — Bun native (not always 0 like CF)
 
@@ -302,7 +296,7 @@
 
 - 🟰 `setTimeout(fn, delay)` / `clearTimeout(id)`
 - 🟰 `setInterval(fn, delay)` / `clearInterval(id)`
-- ❌ `scheduler.wait(ms)` — await-able setTimeout alternative
+- ✅ `scheduler.wait(ms)` — await-able setTimeout alternative
 - 🟰 `atob()` / `btoa()` — Base64 encode/decode
 - 🟰 `AbortController` / `AbortSignal` — standard
 - 🟰 `AbortSignal.timeout(delay)`, `AbortSignal.abort()`, `AbortSignal.any(signals)`
@@ -426,7 +420,7 @@
 
 - ✅ Anonymous `?` placeholders
 - ✅ Ordered `?NNN` placeholders (via bun:sqlite)
-- ❌ Named parameters (`:name`, `@name`, `$name`) — NOT yet supported
+- 🟰 Named parameters (`:name`, `@name`, `$name`) — not supported by CF D1 either (planned)
 - ❌ Max 100 bound parameters per query — not enforced
 
 ### 3.5 Type Mapping
@@ -542,7 +536,7 @@
 - ✅ `etagDoesNotMatch` — If-None-Match
 - ✅ `uploadedBefore` — If-Unmodified-Since
 - ✅ `uploadedAfter` — If-Modified-Since
-- ❌ `secondsGranularity` — use seconds for date comparison
+- ~~`secondsGranularity`~~ — does not exist in CF R2 API
 
 ### 4.9 R2Range
 
@@ -598,7 +592,7 @@
 - ✅ `state.setHibernatableWebSocketEventTimeout(ms?)` — max WS event handler runtime
 - ✅ `state.getHibernatableWebSocketEventTimeout()` — get timeout
 - ✅ `state.getTags(ws)` — get WebSocket tags
-- ❌ `state.abort(message?)` — force reset DO
+- ✅ `state.abort(message?)` — force reset DO
 
 ### 5.3 DurableObjectStorage — SQL API
 
@@ -610,11 +604,11 @@
 
 ### 5.4 DurableObjectStorage — Synchronous KV API
 
-- ❌ `storage.kv.get(key)` — synchronous get
-- ❌ `storage.kv.put(key, value)` — synchronous put
-- ❌ `storage.kv.delete(key)` — synchronous delete, returns boolean
-- ❌ `storage.kv.list(options?)` — returns Iterable<[string, any]>
-- ❌ List options: start, startAfter, end, prefix, reverse, limit
+- ✅ `storage.kv.get(key)` — synchronous get
+- ✅ `storage.kv.put(key, value)` — synchronous put
+- ✅ `storage.kv.delete(key)` — synchronous delete, returns boolean
+- ✅ `storage.kv.list(options?)` — returns Iterable<[string, any]>
+- ✅ List options: start, startAfter, end, prefix, reverse, limit
 
 ### 5.5 DurableObjectStorage — Async KV API
 
@@ -645,7 +639,7 @@
 
 ### 5.8 Transactions
 
-- ❌ `storage.transactionSync(callback)` — synchronous transaction (SQLite-backed)
+- ✅ `storage.transactionSync(callback)` — synchronous transaction (BEGIN IMMEDIATE)
 - ✅ `storage.transaction(callback)` — async transaction with BEGIN/COMMIT/ROLLBACK
 - ⚠️ Transaction object: get, put, delete, deleteAll, list, rollback — simplified (uses same storage)
 - ✅ Implicit transactions: multiple writes without await are auto-coalesced
@@ -674,7 +668,7 @@
 - ✅ `stub.id` — DurableObjectId
 - ✅ `stub.name` — name if applicable
 - ✅ `stub.fetch(request)` — send HTTP request (legacy)
-- ❌ `stub.connect(options?)` — WebSocket connection
+- ~~`stub.connect(options?)`~~ — does not exist in CF Workers API (use `stub.fetch()` with Upgrade header)
 - ✅ `stub.<rpcMethod>(...args)` — RPC calls (all async, E-order guarantee via request queue)
 
 ### 5.13 WebSocket Hibernation
@@ -713,7 +707,8 @@
 - ✅ `[durable_objects].bindings` — name, class_name
 - ✅ `[[migrations]]` — tag, new_sqlite_classes, new_classes
 - ❌ script_name, environment — cross-Worker DOs not supported
-- ❌ renamed_classes, deleted_classes, transferred_classes — migration ops not supported
+- ✅ renamed_classes, deleted_classes — migration ops (renames storage rows + do-sql dirs)
+- ❌ transferred_classes — cross-Worker DO transfer not supported
 
 ### 5.18 DO Limits
 
@@ -772,8 +767,8 @@
 - ✅ `max_batch_timeout` — 0-60 seconds (default 5)
 - ✅ `max_retries` — 0-100 (default 3)
 - ✅ `dead_letter_queue` — DLQ name
-- ❌ `max_concurrency` — 1-250 (default auto) — not implemented
-- ❌ `retry_delay` — default delay for retried messages — not in config
+- ✅ `max_concurrency` — 1-250 (default auto) — concurrency gate in consumer
+- ✅ `retry_delay` — default delay for retried messages
 
 ### 6.8 Dead Letter Queues
 
@@ -783,9 +778,9 @@
 
 ### 6.9 Pull-Based (HTTP) Consumers
 
-- ❌ `POST .../messages/pull` — pull messages; params: batch_size, visibility_timeout_ms
-- ❌ `POST .../messages/ack` — ack/retry; body: { acks, retries }
-- ❌ v8 content type NOT supported by pull consumers
+- ✅ `POST .../messages/pull` — pull messages; params: batch_size, visibility_timeout_ms
+- ✅ `POST .../messages/ack` — ack/retry; body: { acks, retries }
+- ✅ v8 content type NOT supported by pull consumers — validated
 
 ### 6.10 Queue Limits
 
@@ -945,17 +940,17 @@
 
 - ✅ Custom headers per URL path/pattern
 - ✅ Splats (*) and placeholders (:name)
-- ❌ `!Header-Name` to remove headers
+- ✅ `!Header-Name` to remove headers
 - ✅ Max 100 rules, 2,000 chars per line — configurable via StaticAssetsLimits
 - ✅ Only applies to static asset responses
 
 ### 9.5 `_redirects` File
 
-- ❌ Static and dynamic redirects
-- ❌ Status codes: 301, 302, 303, 307, 308; 200 for proxying
-- ❌ Splats and placeholders supported
-- ❌ Max 2,000 static + 100 dynamic redirects
-- ❌ Applied before headers, before asset matching
+- ✅ Static and dynamic redirects
+- ✅ Status codes: 301, 302, 303, 307, 308; 200 for proxying
+- ✅ Splats and placeholders supported
+- ✅ Max 2,000 static + 100 dynamic redirects
+- ✅ Applied before headers, before asset matching
 
 ### 9.6 Default Headers on Assets
 
@@ -978,8 +973,8 @@
 
 - ✅ `binding.fetch(input, init?)` — forward HTTP request to bound Worker
 - ⚠️ `binding.connect(address, options?)` — TCP socket connection (throws "not supported in local dev")
-- ❌ `binding.queue(queueName, messages)` — invoke queue handler
-- ❌ `binding.scheduled(options?)` — invoke scheduled handler
+- ~~`binding.queue(queueName, messages)`~~ — does not exist in CF Workers API
+- ~~`binding.scheduled(options?)`~~ — does not exist in CF Workers API
 
 ### 10.2 WorkerEntrypoint (RPC Mode)
 
@@ -996,17 +991,17 @@
 
 ### 10.4 RpcTarget
 
-- ⚠️ `import { RpcTarget } from 'cloudflare:workers'` — class exists but is empty stub
-- ❌ Objects extending RpcTarget sent as stubs (not serialized) — no special handling
-- ❌ Only prototype methods and getters exposed — no filtering
-- ❌ Instance properties NOT accessible over RPC — not enforced
+- ✅ `import { RpcTarget } from 'cloudflare:workers'` — class with brand symbol
+- ✅ Objects extending RpcTarget sent as stubs (not serialized) — via `createRpcStub()`
+- ✅ `_`-prefixed properties filtered (returns undefined)
+- ⚠️ Instance properties accessible over RPC — no strict filtering (CF blocks them)
 
 ### 10.5 RPC Serializable Types
 
 - ✅ Structured cloneable: objects, arrays, strings, numbers, etc. — passed in-process
 - ✅ ReadableStream / WritableStream — passed in-process
 - ✅ Request, Response, Headers — passed in-process
-- ❌ Functions → stubs; RpcTarget subclasses → stubs — no stub conversion
+- ✅ Functions → stubs; RpcTarget subclasses → stubs — via `createRpcFunctionStub()` / `createRpcStub()`
 - ⚠️ Max serialized payload: 32 MiB — limit defined but not enforced
 
 ### 10.6 Promise Pipelining
@@ -1016,9 +1011,9 @@
 
 ### 10.7 Stub Lifecycle
 
-- ❌ `using` keyword for automatic disposal
-- ❌ `stub.dup()` — duplicate handle
-- ❌ Auto-disposed when execution context ends
+- ✅ `using` keyword for automatic disposal — `Symbol.dispose` no-op on all stubs
+- ✅ `stub.dup()` — duplicate handle (creates fresh stub wrapping same target)
+- ⚠️ Auto-disposed when execution context ends — no-op (in-process, no real disposal needed)
 
 ### 10.8 RPC Error Handling
 
@@ -1054,7 +1049,7 @@
 
 - ✅ 5 fields: minute, hour, day-of-month, month, day-of-week
 - ✅ Special chars: *, comma, dash, /
-- ❌ Special chars: L, W, # — not implemented
+- ✅ Special chars: L, W, # — last day/weekday, nearest weekday, Nth occurrence
 - ✅ All schedules in UTC
 - ✅ Day names: MON-SUN (case-insensitive)
 - ✅ Month names: JAN-DEC (case-insensitive)
@@ -1096,20 +1091,21 @@
 - ✅ `width` — max width
 - ✅ `height` — max height
 - ✅ `fit` — "scale-down" | "contain" | "cover" | "crop" | "pad" | "squeeze" (mapped to Sharp equivalents)
-- ❌ `dpr` — device pixel ratio multiplier
+- ✅ `dpr` — device pixel ratio multiplier (scales width/height)
 
 ### 12.4 Transform Options — Gravity / Cropping
 
-- ❌ `gravity` — "auto" | "face" | "left" | "right" | "top" | "bottom" | "center" | { x, y }
+- ✅ `gravity` — "auto" | "left" | "right" | "top" | "bottom" | "center" (mapped to Sharp gravity)
+- ❌ `gravity` — "face" | { x, y } — face detection / coordinate-based not supported
 - ❌ `zoom` — 0-1, crop closeness for face detection
-- ⚠️ `trim` — depends on Sharp support
+- ✅ `trim` — trim threshold (number or boolean)
 
 ### 12.5 Transform Options — Color / Tone
 
 - ✅ `brightness` — 1.0 = no change
 - ✅ `contrast` — 1.0 = no change (via Sharp linear)
-- ❌ `gamma` — exposure adjustment
-- ❌ `saturation` — 0 = grayscale
+- ✅ `gamma` — exposure adjustment (via Sharp gamma)
+- ✅ `saturation` — 0 = grayscale (via Sharp modulate)
 - ✅ `background` — CSS4 color for padding/transparency
 
 ### 12.6 Transform Options — Sharpness / Blur
@@ -1128,9 +1124,9 @@
 - ❌ `format` — "auto" | "baseline-jpeg" | "json" — not supported
 - ✅ `quality` — 1-100
 - ❌ `quality` — "high" | "medium-high" | "medium-low" | "low" presets
-- ❌ `compression` — "fast"
+- ✅ `compression` — "fast" (reduces effort for PNG/WebP/AVIF)
 - ❌ `anim` — boolean (preserve animation frames)
-- ❌ `metadata` — "keep" | "copyright" | "none"
+- ✅ `metadata` — "keep" | "copyright" | "none"
 
 ### 12.9 Transform Options — AI Features
 
@@ -1138,13 +1134,13 @@
 
 ### 12.10 Transform Options — Border
 
-- ❌ `border` — { color, width?, top?, right?, bottom?, left? }
+- ✅ `border` — { color, width?, top?, right?, bottom?, left? } (via Sharp extend)
 
 ### 12.11 Draw Options (Overlays)
 
-- ❌ `opacity` — 0.0-1.0
+- ✅ `opacity` — 0.0-1.0 (via composite dest-in blend)
 - ✅ `repeat` — true | "x" | "y"
-- ✅ `top` / `left` / `bottom` / `right` — pixel offsets
+- ✅ `top` / `left` / `bottom` / `right` — pixel offsets (bottom/right computed from metadata)
 
 ### 12.12 Output Options
 
@@ -1181,7 +1177,7 @@
 - ✅ `[vars]` in wrangler.toml — plain text, non-encrypted
 - ❌ JSON/nested objects supported as values — only string values
 - ✅ Accessed via `env.VAR_NAME`, `this.env.VAR_NAME`
-- ❌ `process.env.VAR_NAME` — not populated
+- ⚠️ `process.env.VAR_NAME` — populated in Vite plugin path only, not in standalone CLI
 - ✅ `import { env } from "cloudflare:workers"` — top-level access (via globalEnv getter)
 - ✅ Non-inheritable across environments
 

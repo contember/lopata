@@ -116,6 +116,10 @@ export class InProcessExecutor implements DOExecutor {
 		return this._state.getWebSockets().length
 	}
 
+	isAborted(): boolean {
+		return this._state._isAborted()
+	}
+
 	async dispose(): Promise<void> {
 		if (this._containerRuntime) {
 			await this._containerRuntime.cleanup()
