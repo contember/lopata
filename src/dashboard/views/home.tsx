@@ -98,6 +98,36 @@ function Section({ title, children }: { title: string; children: any }) {
 	)
 }
 
+/* ── Optional deps card ── */
+
+function OptionalDepsCard() {
+	const { data: deps } = useQuery('warnings.optionalDeps')
+	if (!deps) return null
+	const missing = deps.filter(d => !d.installed)
+	if (!missing.length) return null
+
+	return (
+		<div class="bg-panel rounded-lg border border-amber-500/20 p-5">
+			<div class="text-xs font-semibold uppercase tracking-wider text-amber-400 mb-3">Optional packages</div>
+			<div class="flex flex-col gap-2">
+				{deps.map(dep => (
+					<div key={dep.id}>
+						<div class="flex items-center gap-2">
+							<span class={`text-xs ${dep.installed ? 'text-emerald-400' : 'text-amber-400'}`}>
+								{dep.installed ? '\u2713' : '\u2717'}
+							</span>
+							<span class={`text-xs ${dep.installed ? 'text-text-muted' : 'text-text-secondary'}`}>{dep.description}</span>
+						</div>
+						{!dep.installed && (
+							<code class="block ml-5 mt-0.5 text-[10px] text-amber-400/80 bg-amber-500/10 px-1.5 py-0.5 rounded w-fit">{dep.install} --dev</code>
+						)}
+					</div>
+				))}
+			</div>
+		</div>
+	)
+}
+
 /* ── Main view ── */
 
 export function HomeView() {
@@ -239,6 +269,7 @@ export function HomeView() {
 
 				{/* ── Right: System sidebar ── */}
 				<div class="flex flex-col gap-5">
+					<OptionalDepsCard />
 					<div class="bg-panel rounded-lg border border-border p-5">
 						<div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Resources</div>
 						<div class="flex flex-col gap-2">

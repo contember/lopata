@@ -1,5 +1,4 @@
 import type { DocumentHandlers, ElementHandlers } from 'html-rewriter-wasm'
-import { addWarning } from '../warnings'
 
 type RawHTMLRewriterType = new (sink: (chunk: Uint8Array) => void) => {
 	on(selector: string, handler: ElementHandlers): void
@@ -13,7 +12,7 @@ let RawHTMLRewriter: RawHTMLRewriterType | null = null
 try {
 	;({ HTMLRewriter: RawHTMLRewriter } = await import('html-rewriter-wasm'))
 } catch {
-	addWarning({ id: 'html-rewriter-wasm', message: 'HTMLRewriter is a passthrough — html-rewriter-wasm is not installed', install: 'bun add html-rewriter-wasm' })
+	// html-rewriter-wasm not installed — passthrough mode
 }
 
 let _warned = false

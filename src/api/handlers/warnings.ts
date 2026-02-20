@@ -1,8 +1,8 @@
-import type { Warning } from '../../warnings'
-import { getWarnings } from '../../warnings'
+import type { OptionalDep } from '../../warnings'
+import { getOptionalDeps } from '../../warnings'
 
 export const handlers = {
-	'warnings.get'(_input: {}): Warning[] {
-		return getWarnings()
+	'warnings.optionalDeps'(_input: {}): OptionalDep[] {
+		return getOptionalDeps()
 	},
 }

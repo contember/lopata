@@ -2,7 +2,6 @@
 // Supports resize, rotate, format conversion, quality, draw overlays, and AVIF dimensions.
 
 import type SharpNs from 'sharp'
-import { addWarning } from '../warnings'
 
 type ImageFormat = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/avif' | 'image/svg+xml'
 
@@ -68,7 +67,6 @@ async function getSharp(): Promise<typeof SharpNs | null> {
 			_sharp = (await import('sharp')).default
 		} catch {
 			_sharp = null
-			addWarning({ id: 'sharp', message: 'Image transformations will pass through unchanged — sharp is not installed', install: 'bun add sharp' })
 		}
 		_sharpResolved = true
 	}
