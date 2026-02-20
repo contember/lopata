@@ -14,7 +14,7 @@ function createFile(relativePath: string, content: string) {
 }
 
 beforeEach(() => {
-	tmpDir = mkdtempSync(path.join(os.tmpdir(), 'bunflare-static-'))
+	tmpDir = mkdtempSync(path.join(os.tmpdir(), 'lopata-static-'))
 })
 
 afterEach(() => {

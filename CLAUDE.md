@@ -1,4 +1,4 @@
-## Project: Bunflare
+## Project: Lopata
 
 Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local binding implementations (no workerd, no miniflare).
 
@@ -9,14 +9,14 @@ Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local bindi
 
 ### Commands
 
-- `bunflare dev` — start the local dev server (port 8787)
+- `lopata dev` — start the local dev server (port 8787)
 - `bun test tests/` — run integration tests
 - `bunx tsc --noEmit` — type check
 
 ### Key patterns
 
 - `src/plugin.ts` uses `Bun.plugin()` with `build.module()` to shim `cloudflare:workers` and `cloudflare:workflows`
-- All bindings persist to SQLite (`.bunflare/data.sqlite`) or files (`.bunflare/r2/`), NOT in-memory
+- All bindings persist to SQLite (`.lopata/data.sqlite`) or files (`.lopata/r2/`), NOT in-memory
 - `src/env.ts` builds the `env` object and wires DO/Workflow classes after worker module import
 - Each binding has its own test file in `tests/`
 

@@ -9,7 +9,7 @@ function html(body: string): Response {
 	return new Response(
 		`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bunflare Playground</title>
+<title>Lopata Playground</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 2rem; background: #0a0a0a; color: #e0e0e0; }
@@ -81,7 +81,7 @@ function formVal(id) { return document.getElementById(id).value; }
 
 function indexPage(): Response {
 	return html(`
-<h1>Bunflare Playground</h1>
+<h1>Lopata Playground</h1>
 <p class="subtitle">Local Cloudflare Worker runtime — test all bindings below</p>
 
 <h2>KV Store</h2>
@@ -194,7 +194,7 @@ function indexPage(): Response {
     <a href="#" onclick="api('GET','/echo/info');return false">RPC: info()</a>
   </div>
   <form onsubmit="api('GET','/echo/greet?name='+encodeURIComponent(formVal('echo-name')));return false">
-    <label>Name <input id="echo-name" value="Bunflare"></label>
+    <label>Name <input id="echo-name" value="Lopata"></label>
     <button type="submit" class="secondary">RPC: greet(name)</button>
   </form>
   <form onsubmit="api('POST','/echo/fetch',formVal('echo-body'));return false" style="margin-top:0.5rem">

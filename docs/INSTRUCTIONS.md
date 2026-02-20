@@ -1,6 +1,6 @@
 # Agent Instructions
 
-Instrukce pro AI agenta implementujícího bunflare runtime.
+Instrukce pro AI agenta implementujícího lopata runtime.
 
 ## Dostupné dokumenty
 
@@ -36,7 +36,7 @@ Instrukce pro AI agenta implementujícího bunflare runtime.
 3. Ověř že stávající funkcionalita stále funguje (všechny testy prochází)
 ```
 
-**DŮLEŽITÉ:** Nespouštěj `bunflare dev` pro testování — používej integrační testy. Pokud přeci jen spustíš server, vždy ho ukonči (kill) aby neblokoval port 8787.
+**DŮLEŽITÉ:** Nespouštěj `lopata dev` pro testování — používej integrační testy. Pokud přeci jen spustíš server, vždy ho ukonči (kill) aby neblokoval port 8787.
 
 ### 4. Commitni změny
 
@@ -195,7 +195,7 @@ bun test tests/
 bunx tsc --noEmit
 
 # Start dev server
-bunflare dev
+lopata dev
 ```
 
 ## Ukončení

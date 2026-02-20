@@ -5,7 +5,7 @@ import { globalsPlugin } from './globals-plugin.ts'
 import { modulesPlugin } from './modules-plugin.ts'
 import { reactRouterPlugin } from './react-router-plugin.ts'
 
-export interface BunflarePluginConfig {
+export interface LopataPluginConfig {
 	/** Path to wrangler.jsonc/.json/.toml config. Auto-detected if not specified. */
 	configPath?: string
 	/** Vite environment name for SSR. Default: "ssr" */
@@ -15,7 +15,7 @@ export interface BunflarePluginConfig {
 }
 
 /**
- * Bunflare Vite plugin — drop-in replacement for `@cloudflare/vite-plugin`.
+ * Lopata Vite plugin — drop-in replacement for `@cloudflare/vite-plugin`.
  *
  * Provides Cloudflare Worker compatibility in Vite dev mode:
  * - CF module resolution (cloudflare:workers, cloudflare:workflows, @cloudflare/containers)
@@ -26,7 +26,7 @@ export interface BunflarePluginConfig {
  * Install as a dependency (or link:) so Vite externalizes it at config bundle time.
  * Runtime imports then go through Bun's native module loader.
  */
-export function bunflare(config?: BunflarePluginConfig): Plugin[] {
+export function lopata(config?: LopataPluginConfig): Plugin[] {
 	const envName = config?.viteEnvironment?.name ?? 'ssr'
 
 	return [

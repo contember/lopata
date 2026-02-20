@@ -135,12 +135,12 @@ export class Generation {
 					if (err instanceof Error) {
 						// Prefer fetch call-site stack — it shows the user's code that
 						// triggered the outbound call (e.g. graphql client → user handler).
-						// Fall back to callerStack which only shows bunflare entry frames.
+						// Fall back to callerStack which only shows lopata entry frames.
 						const ctx = getActiveContext()
 						const fetchCallStack = ctx?.fetchStack.current
 						stitchAsyncStack(err, fetchCallStack ?? callerStack)
 					}
-					console.error('[bunflare] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+					console.error('[lopata] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
 					return renderErrorPage(err, request, this.env, this.config, this.workerName)
 				}
 
@@ -228,7 +228,7 @@ export class Generation {
 				await ctx._awaitAll()
 				return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
 			} catch (err) {
-				console.error('[bunflare] Scheduled handler error:', err)
+				console.error('[lopata] Scheduled handler error:', err)
 				persistError(err, 'scheduled', this.workerName)
 				throw err
 			}
@@ -277,7 +277,7 @@ export class Generation {
 				await ctx._awaitAll()
 				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
 			} catch (err) {
-				console.error('[bunflare] Email handler error:', err)
+				console.error('[lopata] Email handler error:', err)
 				persistError(err, 'email', this.workerName)
 				throw err
 			}
@@ -374,7 +374,7 @@ export class Generation {
  * ALS.run() in Bun/JSC.
  *
  * Only appends if the error's stack looks truncated (few frames or contains
- * processTicksAndRejections). Strips bunflare runtime frames from the
+ * processTicksAndRejections). Strips lopata runtime frames from the
  * captured stack so only user/library code is shown.
  */
 function stitchAsyncStack(err: Error, callerError: Error | null): void {
@@ -390,8 +390,8 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 
 	const callerLines = callerError.stack.split('\n').slice(1)
 
-	// Strip bunflare runtime frames — keep only user/library code
-	const filtered = callerLines.filter(l => !l.includes('/bunflare/src/'))
+	// Strip lopata runtime frames — keep only user/library code
+	const filtered = callerLines.filter(l => !l.includes('/lopata/src/'))
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')

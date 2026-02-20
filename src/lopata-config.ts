@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
-export interface BunflareConfig {
+export interface LopataConfig {
 	/** Path to the main worker's wrangler config (HTTP entrypoint) */
 	main: string
 	/** Auxiliary workers, each with a service name and wrangler config path */
@@ -28,21 +28,21 @@ export interface BunflareConfig {
 	}
 }
 
-export function defineConfig(config: BunflareConfig): BunflareConfig {
+export function defineConfig(config: LopataConfig): LopataConfig {
 	return config
 }
 
 /**
- * Try to load `bunflare.config.ts` from the given directory.
+ * Try to load `lopata.config.ts` from the given directory.
  * Returns null if the file doesn't exist.
  * All paths in the returned config are resolved relative to baseDir.
  */
-export async function loadBunflareConfig(baseDir: string): Promise<BunflareConfig | null> {
-	const configPath = join(baseDir, 'bunflare.config.ts')
+export async function loadLopataConfig(baseDir: string): Promise<LopataConfig | null> {
+	const configPath = join(baseDir, 'lopata.config.ts')
 	if (!existsSync(configPath)) return null
 
 	const mod = await import(configPath)
-	const config: BunflareConfig = mod.default ?? mod
+	const config: LopataConfig = mod.default ?? mod
 
 	// Resolve all paths relative to baseDir
 	config.main = resolve(baseDir, config.main)

@@ -62,7 +62,7 @@ export class ContainerRuntime {
 	onActivityExpired?: () => void | Promise<void>
 
 	constructor(className: string, idHex: string, image: string, docker: DockerManager) {
-		this._containerName = `bunflare-${className}-${idHex.slice(0, 12)}`
+		this._containerName = `lopata-${className}-${idHex.slice(0, 12)}`
 		this._image = image
 		this._docker = docker
 	}
@@ -128,7 +128,7 @@ export class ContainerRuntime {
 
 		// Build image if needed (lazy, mtime-cached)
 		const sanitized = this._image.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/^[^a-z0-9]+/, '')
-		const tag = `bunflare-${sanitized || 'image'}`
+		const tag = `lopata-${sanitized || 'image'}`
 		// If image looks like a Dockerfile path, build it
 		const isDockerfile = /Dockerfile/i.test(this._image) || this._image.startsWith('./') || this._image.startsWith('/')
 		if (isDockerfile) {
@@ -414,7 +414,7 @@ export class ContainerContext {
 	start(options?: { envVars?: Record<string, string> }): void {
 		// Non-blocking kickoff
 		this._runtime.start(options).catch(err => {
-			console.error(`[bunflare] Container start error:`, err)
+			console.error(`[lopata] Container start error:`, err)
 		})
 	}
 
@@ -433,7 +433,7 @@ export class ContainerContext {
 				return runtime.fetch(input, init, port)
 			},
 			connect(): never {
-				throw new Error('TCP connect() is not supported in bunflare dev mode. Use fetch() for HTTP forwarding.')
+				throw new Error('TCP connect() is not supported in lopata dev mode. Use fetch() for HTTP forwarding.')
 			},
 		}
 	}
@@ -580,7 +580,7 @@ export class ContainerBase extends DurableObjectBase {
 	 */
 	async start(_startOptions?: unknown, _waitOptions?: unknown): Promise<void> {
 		await this._containerRuntime?.start().catch(err => {
-			console.error('[bunflare] Container start error:', err)
+			console.error('[lopata] Container start error:', err)
 		})
 	}
 

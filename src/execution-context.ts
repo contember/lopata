@@ -3,7 +3,7 @@ export class ExecutionContext {
 
 	waitUntil(promise: Promise<unknown>): void {
 		this._promises.push(promise.catch(err => {
-			console.error('[bunflare] waitUntil promise rejected:', err)
+			console.error('[lopata] waitUntil promise rejected:', err)
 		}))
 	}
 

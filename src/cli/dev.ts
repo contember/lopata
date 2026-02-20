@@ -6,7 +6,7 @@ import path from 'node:path'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
-import { loadBunflareConfig } from '../bunflare-config'
+import { loadLopataConfig } from '../lopata-config'
 import { autoLoadConfig, loadConfig } from '../config'
 import { handleApiRequest, setDashboardConfig, setGenerationManager, setWorkerRegistry } from '../api'
 import { handleDashboardRequest } from '../dashboard/api'
@@ -28,55 +28,55 @@ export async function run(ctx: CliContext) {
 	const baseDir = process.cwd()
 	const watchers: FileWatcher[] = []
 
-	// Try to load bunflare.config.ts for multi-worker mode
-	const bunflareConfig = await loadBunflareConfig(baseDir)
+	// Try to load lopata.config.ts for multi-worker mode
+	const lopataConfig = await loadLopataConfig(baseDir)
 
 	let manager: GenerationManager
 
-	if (bunflareConfig) {
+	if (lopataConfig) {
 		// ─── Multi-worker mode ─────────────────────────────────────────
-		console.log('[bunflare] Multi-worker mode (bunflare.config.ts found)')
+		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
 
 		// Create executor factory based on isolation mode
 		let executorFactory: import('../bindings/do-executor').DOExecutorFactory | undefined
-		if (bunflareConfig.isolation === 'isolated') {
+		if (lopataConfig.isolation === 'isolated') {
 			const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
 			executorFactory = new WorkerExecutorFactory()
-			console.log('[bunflare] DO isolation: isolated (Worker threads)')
-		} else if (bunflareConfig.isolation && bunflareConfig.isolation !== 'dev') {
-			console.warn(`[bunflare] Unknown isolation mode "${bunflareConfig.isolation}", using "dev"`)
+			console.log('[lopata] DO isolation: isolated (Worker threads)')
+		} else if (lopataConfig.isolation && lopataConfig.isolation !== 'dev') {
+			console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}", using "dev"`)
 		}
 
 		const registry = new WorkerRegistry()
 
 		// Load main worker config
-		const mainConfig = await loadConfig(bunflareConfig.main, envFlag)
-		const mainBaseDir = path.dirname(bunflareConfig.main)
-		console.log(`[bunflare] Main worker: ${mainConfig.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
+		const mainConfig = await loadConfig(lopataConfig.main, envFlag)
+		const mainBaseDir = path.dirname(lopataConfig.main)
+		console.log(`[lopata] Main worker: ${mainConfig.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(mainConfig)
 
 		const mainManager = new GenerationManager(mainConfig, mainBaseDir, {
 			workerName: mainConfig.name,
 			workerRegistry: registry,
 			isMain: true,
-			cron: bunflareConfig.cron,
+			cron: lopataConfig.cron,
 			executorFactory,
-			configPath: bunflareConfig.main,
-			browserConfig: bunflareConfig.browser,
+			configPath: lopataConfig.main,
+			browserConfig: lopataConfig.browser,
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
 		// Load auxiliary workers
-		for (const workerDef of bunflareConfig.workers ?? []) {
+		for (const workerDef of lopataConfig.workers ?? []) {
 			const auxConfig = await loadConfig(workerDef.config, envFlag)
 			const auxBaseDir = path.dirname(workerDef.config)
-			console.log(`[bunflare] Auxiliary worker: ${workerDef.name} (${auxConfig.name})`)
+			console.log(`[lopata] Auxiliary worker: ${workerDef.name} (${auxConfig.name})`)
 
 			const auxManager = new GenerationManager(auxConfig, auxBaseDir, {
 				workerName: workerDef.name,
 				workerRegistry: registry,
 				isMain: false,
-				cron: bunflareConfig.cron,
+				cron: lopataConfig.cron,
 				executorFactory,
 				configPath: workerDef.config,
 			})
@@ -85,28 +85,28 @@ export async function run(ctx: CliContext) {
 			// Load aux worker first so main's service bindings can resolve
 			try {
 				const gen = await auxManager.reload()
-				console.log(`[bunflare] Auxiliary worker "${workerDef.name}" → generation ${gen.id}`)
+				console.log(`[lopata] Auxiliary worker "${workerDef.name}" → generation ${gen.id}`)
 			} catch (err) {
-				console.error(`[bunflare] Failed to load auxiliary worker "${workerDef.name}":`, err)
+				console.error(`[lopata] Failed to load auxiliary worker "${workerDef.name}":`, err)
 			}
 
 			// File watcher for aux worker
 			const auxSrcDir = path.dirname(path.resolve(auxBaseDir, auxConfig.main))
 			const auxWatcher = new FileWatcher(auxSrcDir, () => {
 				auxManager.reload().then(gen => {
-					console.log(`[bunflare] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id}`)
+					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id}`)
 				}).catch(err => {
-					console.error(`[bunflare] Reload failed for "${workerDef.name}":`, err)
+					console.error(`[lopata] Reload failed for "${workerDef.name}":`, err)
 				})
 			})
 			auxWatcher.start()
 			watchers.push(auxWatcher)
-			console.log(`[bunflare] Watching ${auxSrcDir} for changes (${workerDef.name})`)
+			console.log(`[lopata] Watching ${auxSrcDir} for changes (${workerDef.name})`)
 		}
 
 		// Load main worker after aux workers
 		const firstGen = await mainManager.reload()
-		console.log(`[bunflare] Main worker → generation ${firstGen.id}`)
+		console.log(`[lopata] Main worker → generation ${firstGen.id}`)
 
 		manager = mainManager
 		setGenerationManager(manager)
@@ -116,37 +116,37 @@ export async function run(ctx: CliContext) {
 		const mainSrcDir = path.dirname(path.resolve(mainBaseDir, mainConfig.main))
 		const mainWatcher = new FileWatcher(mainSrcDir, () => {
 			mainManager.reload().then(gen => {
-				console.log(`[bunflare] Main worker reloaded → generation ${gen.id}`)
+				console.log(`[lopata] Main worker reloaded → generation ${gen.id}`)
 			}).catch(err => {
-				console.error('[bunflare] Reload failed:', err)
+				console.error('[lopata] Reload failed:', err)
 			})
 		})
 		mainWatcher.start()
 		watchers.push(mainWatcher)
-		console.log(`[bunflare] Watching ${mainSrcDir} for changes (main)`)
+		console.log(`[lopata] Watching ${mainSrcDir} for changes (main)`)
 	} else {
 		// ─── Single-worker mode (current behavior) ────────────────────
 		const config = await autoLoadConfig(baseDir, envFlag)
-		console.log(`[bunflare] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
+		console.log(`[lopata] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(config)
 
 		manager = new GenerationManager(config, baseDir)
 		const firstGen = await manager.reload()
-		console.log(`[bunflare] Generation ${firstGen.id} loaded`)
+		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
 
 		// File watcher — watch the source directory
 		const srcDir = path.dirname(path.resolve(baseDir, config.main))
 		const watcher = new FileWatcher(srcDir, () => {
 			manager.reload().then(gen => {
-				console.log(`[bunflare] Reloaded → generation ${gen.id}`)
+				console.log(`[lopata] Reloaded → generation ${gen.id}`)
 			}).catch(err => {
-				console.error('[bunflare] Reload failed:', err)
+				console.error('[lopata] Reload failed:', err)
 			})
 		})
 		watcher.start()
 		watchers.push(watcher)
-		console.log(`[bunflare] Watching ${srcDir} for changes`)
+		console.log(`[lopata] Watching ${srcDir} for changes`)
 	}
 
 	// Start server — one Bun.serve(), delegates to active generation
@@ -379,8 +379,8 @@ export async function run(ctx: CliContext) {
 		},
 	})
 
-	console.log(`[bunflare] Server running at http://${hostname}:${port}`)
-	console.log(`[bunflare] Dashboard: http://${hostname}:${port}/__dashboard`)
+	console.log(`[lopata] Server running at http://${hostname}:${port}`)
+	console.log(`[lopata] Dashboard: http://${hostname}:${port}/__dashboard`)
 
 	// Keep the process alive until terminated
 	await new Promise(() => {})

@@ -24,7 +24,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		case 'execute': {
 			const dbName = args[1]
 			if (!dbName) {
-				console.error("Usage: bunflare d1 execute <database> --command 'SQL' | --file <path>")
+				console.error("Usage: lopata d1 execute <database> --command 'SQL' | --file <path>")
 				process.exit(1)
 			}
 			const config = await ctx.config()
@@ -41,7 +41,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			const command = parseFlag(ctx.args, '--command')
 			const filePath = parseFlag(ctx.args, '--file')
 			if (!command && !filePath) {
-				console.error("Usage: bunflare d1 execute <database> --command 'SQL' | --file <path>")
+				console.error("Usage: lopata d1 execute <database> --command 'SQL' | --file <path>")
 				process.exit(1)
 			}
 
@@ -54,7 +54,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		case 'migrations': {
 			const subAction = args[1]
 			if (subAction !== 'apply') {
-				console.error('Usage: bunflare d1 migrations apply [database]')
+				console.error('Usage: lopata d1 migrations apply [database]')
 				process.exit(1)
 			}
 			const targetDb = args[2]
@@ -63,7 +63,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		default:
-			console.error(`Usage: bunflare d1 <list|execute|migrations> [options]`)
+			console.error(`Usage: lopata d1 <list|execute|migrations> [options]`)
 			process.exit(1)
 	}
 }

@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "bunflare",
+	"name": "lopata",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-02-12",
 	"compatibility_flags": ["nodejs_compat_v2"],
@@ -9,7 +9,7 @@
 		{ "binding": "KV", "id": "<KV_NAMESPACE_ID>" }
 	],
 	"r2_buckets": [
-		{ "binding": "R2", "bucket_name": "bunflare-bucket" }
+		{ "binding": "R2", "bucket_name": "lopata-bucket" }
 	],
 	"durable_objects": {
 		"bindings": [
@@ -20,7 +20,7 @@
 		]
 	},
 	"workflows": [
-		{ "name": "bunflare-workflow", "binding": "MY_WORKFLOW", "class_name": "MyWorkflow" }
+		{ "name": "lopata-workflow", "binding": "MY_WORKFLOW", "class_name": "MyWorkflow" }
 	],
 	"queues": {
 		"producers": [
@@ -31,7 +31,7 @@
 		]
 	},
 	"d1_databases": [
-		{ "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
+		{ "binding": "DB", "database_name": "lopata-db", "database_id": "<D1_DATABASE_ID>" }
 	],
 	"services": [
 		{ "binding": "ECHO", "service": "echo-worker" },

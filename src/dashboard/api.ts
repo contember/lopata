@@ -31,7 +31,7 @@ if (existsSync(join(distDir, 'index.html'))) {
 	})
 
 	if (!result.success) {
-		console.error('[bunflare] Dashboard build failed:', result.logs)
+		console.error('[lopata] Dashboard build failed:', result.logs)
 		throw new Error('Dashboard build failed')
 	}
 

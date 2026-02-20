@@ -59,7 +59,7 @@ export const handlers = {
 
 		// Count running Docker containers per class
 		for (const [className, summary] of seen) {
-			const entries = await listDockerContainers(`bunflare-${className}-`)
+			const entries = await listDockerContainers(`lopata-${className}-`)
 			summary.runningCount = entries.filter(e => e.State === 'running').length
 		}
 
@@ -75,11 +75,11 @@ export const handlers = {
 		).all(className)
 
 		// Secondary source: Docker containers for state info
-		const dockerEntries = await listDockerContainers(`bunflare-${className}-`)
+		const dockerEntries = await listDockerContainers(`lopata-${className}-`)
 		const dockerByPrefix = new Map<string, DockerPsEntry>()
 		for (const e of dockerEntries) {
-			// Container name format: bunflare-{className}-{idHex.slice(0,12)}
-			const prefix = e.Names.replace(`bunflare-${className}-`, '')
+			// Container name format: lopata-{className}-{idHex.slice(0,12)}
+			const prefix = e.Names.replace(`lopata-${className}-`, '')
 			if (prefix) dockerByPrefix.set(prefix, e)
 		}
 
@@ -93,7 +93,7 @@ export const handlers = {
 			return {
 				id: inst.id,
 				doName: inst.name,
-				containerName: docker?.Names ?? `bunflare-${className}-${idPrefix}`,
+				containerName: docker?.Names ?? `lopata-${className}-${idPrefix}`,
 				state: docker?.State ?? 'stopped',
 				ports: docker ? parsePorts(docker.Ports) : {},
 			}
@@ -123,7 +123,7 @@ export const handlers = {
 			'SELECT id, name FROM do_instances WHERE namespace = ? AND id = ?',
 		).get(className, id)
 
-		const containerName = `bunflare-${className}-${id.slice(0, 12)}`
+		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 
 		// Get Docker state
 		const dockerInfo = await docker.inspect(containerName)
@@ -173,21 +173,21 @@ export const handlers = {
 
 	async 'containers.getLogs'({ className, id, tail }: { className: string; id: string; tail?: number }): Promise<{ logs: string }> {
 		const docker = new DockerManager()
-		const containerName = `bunflare-${className}-${id.slice(0, 12)}`
+		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 		const logs = await docker.logs(containerName, tail)
 		return { logs }
 	},
 
 	async 'containers.stop'({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
 		const docker = new DockerManager()
-		const containerName = `bunflare-${className}-${id.slice(0, 12)}`
+		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 		await docker.stop(containerName, 10)
 		return { ok: true }
 	},
 
 	async 'containers.destroy'({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
 		const docker = new DockerManager()
-		const containerName = `bunflare-${className}-${id.slice(0, 12)}`
+		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 		await docker.remove(containerName)
 		return { ok: true }
 	},

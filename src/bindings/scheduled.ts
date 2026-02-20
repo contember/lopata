@@ -167,7 +167,7 @@ export function startCronScheduler(
 			if (cronMatchesDate(cron, now)) {
 				const controller = createScheduledController(cron.expression, now.getTime())
 				const ctx = new ExecutionContext()
-				console.log(`[bunflare] Cron triggered: ${cron.expression}`)
+				console.log(`[lopata] Cron triggered: ${cron.expression}`)
 				startSpan({
 					name: 'scheduled',
 					kind: 'server',
@@ -177,7 +177,7 @@ export function startCronScheduler(
 					await handler(controller, env, ctx)
 					await ctx._awaitAll()
 				}).catch((err) => {
-					console.error(`[bunflare] Scheduled handler error (${cron.expression}):`, err)
+					console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
 					persistError(err, 'scheduled', workerName)
 				})
 			}

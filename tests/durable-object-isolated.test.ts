@@ -25,8 +25,8 @@ let modulePath: string
 let configPath: string
 
 beforeAll(() => {
-	tempDir = mkdtempSync(join(tmpdir(), 'bunflare-isolated-'))
-	dataDir = join(tempDir, '.bunflare')
+	tempDir = mkdtempSync(join(tmpdir(), 'lopata-isolated-'))
+	dataDir = join(tempDir, '.lopata')
 	mkdirSync(dataDir, { recursive: true })
 
 	// Create a worker module with test DO classes

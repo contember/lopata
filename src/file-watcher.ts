@@ -2,7 +2,7 @@ import { type FSWatcher, watch } from 'node:fs'
 import path from 'node:path'
 
 const WATCH_EXTENSIONS = new Set(['.ts', '.js', '.tsx', '.jsx', '.json'])
-const IGNORE_DIRS = new Set(['.bunflare', 'node_modules', '.git'])
+const IGNORE_DIRS = new Set(['.lopata', 'node_modules', '.git'])
 
 export class FileWatcher {
 	private dir: string

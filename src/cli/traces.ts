@@ -5,8 +5,8 @@ import type { CliContext } from './context'
 import { hasFlag, parseFlag } from './context'
 
 const USAGE = `Usage:
-  bunflare trace list [options]   List traces
-  bunflare trace get <traceId>    Get trace detail
+  lopata trace list [options]   List traces
+  lopata trace get <traceId>    Get trace detail
 
 Options:
   --json              Output as JSON
@@ -68,7 +68,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		case 'get': {
 			const traceId = args[1]
 			if (!traceId) {
-				console.error('Usage: bunflare trace get <traceId>')
+				console.error('Usage: lopata trace get <traceId>')
 				process.exit(1)
 			}
 

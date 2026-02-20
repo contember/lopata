@@ -16,13 +16,13 @@ function resolvePath(relativePath: string): string {
 
 /**
  * Resolves Cloudflare virtual modules (cloudflare:workers, cloudflare:workflows,
- * @cloudflare/containers) to re-exports from Bunflare runtime binding implementations.
+ * @cloudflare/containers) to re-exports from Lopata runtime binding implementations.
  *
  * Only active in the SSR environment.
  */
 export function modulesPlugin(envName: string): Plugin {
 	return {
-		name: 'bunflare:modules',
+		name: 'lopata:modules',
 
 		resolveId(id: string) {
 			if (this.environment?.name !== envName) return
@@ -37,7 +37,7 @@ export function modulesPlugin(envName: string): Plugin {
 				const workflow = resolvePath('bindings/workflow')
 				const websocketPair = resolvePath('bindings/websocket-pair')
 
-				// env is a proxy to globalThis.__bunflare_env so it works across
+				// env is a proxy to globalThis.__lopata_env so it works across
 				// Vite SSR runner and native Bun module graphs (which are separate
 				// module instances — a direct re-export of globalEnv would be empty
 				// in the SSR runner because setGlobalEnv() writes to the native instance).
@@ -47,12 +47,12 @@ export { WorkflowEntrypointBase as WorkflowEntrypoint } from "${workflow}";
 export { WebSocketRequestResponsePair } from "${durableObject}";
 export { WebSocketPair } from "${websocketPair}";
 export const env = new Proxy({}, {
-  get(_, prop) { return globalThis.__bunflare_env?.[prop]; },
-  set(_, prop, value) { if (globalThis.__bunflare_env) globalThis.__bunflare_env[prop] = value; return true; },
-  has(_, prop) { return prop in (globalThis.__bunflare_env ?? {}); },
-  ownKeys() { return Object.keys(globalThis.__bunflare_env ?? {}); },
+  get(_, prop) { return globalThis.__lopata_env?.[prop]; },
+  set(_, prop, value) { if (globalThis.__lopata_env) globalThis.__lopata_env[prop] = value; return true; },
+  has(_, prop) { return prop in (globalThis.__lopata_env ?? {}); },
+  ownKeys() { return Object.keys(globalThis.__lopata_env ?? {}); },
   getOwnPropertyDescriptor(_, prop) {
-    const target = globalThis.__bunflare_env;
+    const target = globalThis.__lopata_env;
     if (target && prop in target) return { configurable: true, enumerable: true, value: target[prop] };
   },
 });
@@ -60,12 +60,12 @@ export class WorkerEntrypoint {
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
-    this[Symbol.for("bunflare.RpcTarget")] = true;
+    this[Symbol.for("lopata.RpcTarget")] = true;
   }
 }
 export class RpcTarget {
   constructor() {
-    this[Symbol.for("bunflare.RpcTarget")] = true;
+    this[Symbol.for("lopata.RpcTarget")] = true;
   }
 }
 `

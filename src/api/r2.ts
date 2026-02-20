@@ -32,7 +32,7 @@ export async function handleR2Upload(request: Request): Promise<Response> {
 
 		return withCors(Response.json({ ok: true }))
 	} catch (err) {
-		console.error('[bunflare api] R2 upload error:', err)
+		console.error('[lopata api] R2 upload error:', err)
 		return withCors(Response.json({ error: String(err) }, { status: 500 }))
 	}
 }

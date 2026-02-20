@@ -179,7 +179,7 @@ directory = "./public"
 
 describe('autoLoadConfig', () => {
 	test('auto-detects wrangler.jsonc', async () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-autoload-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-autoload-'))
 		writeFileSync(join(tmpDir, 'wrangler.jsonc'), '{ "name": "jsonc-worker", "main": "index.ts" }')
 
 		const config = await autoLoadConfig(tmpDir)
@@ -188,7 +188,7 @@ describe('autoLoadConfig', () => {
 	})
 
 	test('auto-detects wrangler.json when no .jsonc', async () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-autoload-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-autoload-'))
 		writeFileSync(join(tmpDir, 'wrangler.json'), '{ "name": "json-worker", "main": "index.ts" }')
 
 		const config = await autoLoadConfig(tmpDir)
@@ -197,7 +197,7 @@ describe('autoLoadConfig', () => {
 	})
 
 	test('auto-detects wrangler.toml when no JSON files', async () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-autoload-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-autoload-'))
 		writeFileSync(join(tmpDir, 'wrangler.toml'), 'name = "toml-worker"\nmain = "index.ts"')
 
 		const config = await autoLoadConfig(tmpDir)
@@ -206,7 +206,7 @@ describe('autoLoadConfig', () => {
 	})
 
 	test('prefers wrangler.jsonc over wrangler.toml', async () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-autoload-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-autoload-'))
 		writeFileSync(join(tmpDir, 'wrangler.jsonc'), '{ "name": "jsonc-wins", "main": "index.ts" }')
 		writeFileSync(join(tmpDir, 'wrangler.toml'), 'name = "toml-loses"\nmain = "index.ts"')
 
@@ -216,7 +216,7 @@ describe('autoLoadConfig', () => {
 	})
 
 	test('throws when no config found', async () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-autoload-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-autoload-'))
 		expect(autoLoadConfig(tmpDir)).rejects.toThrow('No wrangler config found')
 		rmSync(tmpDir, { recursive: true })
 	})

@@ -32,7 +32,7 @@ function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritt
 		duration: durationMs,
 		changes,
 		last_row_id: db.query<{ id: number }, []>('SELECT last_insert_rowid() as id').get()!.id,
-		served_by: 'bunflare-d1',
+		served_by: 'lopata-d1',
 		rows_read: rowsRead,
 		rows_written: rowsWritten,
 		size_after: page_count * page_size,

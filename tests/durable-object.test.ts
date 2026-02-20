@@ -807,7 +807,7 @@ describe('DurableObject SQL Storage', () => {
 	let dataDir: string
 
 	beforeEach(() => {
-		dataDir = mkdtempSync(join(tmpdir(), 'bunflare-do-sql-'))
+		dataDir = mkdtempSync(join(tmpdir(), 'lopata-do-sql-'))
 	})
 
 	describe('SqlStorage', () => {

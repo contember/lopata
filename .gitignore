@@ -36,5 +36,5 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Wrangler
 .wrangler
 
-# Bunflare local data
-.bunflare
+# Lopata local data
+.lopata

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Bunflare - Automated Implementation Script
+# Lopata - Automated Implementation Script
 # Spouští Claude Code v loop, dokud nejsou všechny issues hotové
 
 set -e
@@ -11,7 +11,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "========================================"
-echo "Bunflare - Automated Implementation"
+echo "Lopata - Automated Implementation"
 echo "========================================"
 echo "Project: $PROJECT_DIR"
 echo ""

@@ -75,7 +75,7 @@ let mockDocker: MockDockerManager
 beforeEach(() => {
 	db = new Database(':memory:')
 	runMigrations(db)
-	dataDir = mkdtempSync(join(tmpdir(), 'bunflare-container-test-'))
+	dataDir = mkdtempSync(join(tmpdir(), 'lopata-container-test-'))
 	mockDocker = new MockDockerManager()
 })
 
@@ -97,7 +97,7 @@ describe('ContainerRuntime', () => {
 	test('start transitions to running', async () => {
 		await runtime.start()
 		expect(runtime.status).toBe('running')
-		expect(mockDocker.runningContainers.has('bunflare-TestContainer-abcdef123456')).toBe(true)
+		expect(mockDocker.runningContainers.has('lopata-TestContainer-abcdef123456')).toBe(true)
 	})
 
 	test('start is idempotent when already running', async () => {
@@ -121,14 +121,14 @@ describe('ContainerRuntime', () => {
 		await runtime.start()
 		await runtime.destroy()
 		expect(runtime.status).toBe('stopped')
-		expect(mockDocker.removed).toContain('bunflare-TestContainer-abcdef123456')
+		expect(mockDocker.removed).toContain('lopata-TestContainer-abcdef123456')
 	})
 
 	test('signal forwards to docker', async () => {
 		await runtime.start()
 		await runtime.signal(15)
 		expect(mockDocker.signals).toContainEqual({
-			name: 'bunflare-TestContainer-abcdef123456',
+			name: 'lopata-TestContainer-abcdef123456',
 			sig: 15,
 		})
 	})
@@ -139,7 +139,7 @@ describe('ContainerRuntime', () => {
 	})
 
 	test('container name format', () => {
-		expect(runtime.containerName).toBe('bunflare-TestContainer-abcdef123456')
+		expect(runtime.containerName).toBe('lopata-TestContainer-abcdef123456')
 	})
 
 	test('getState includes exitCode when stopped_with_code', async () => {
@@ -202,7 +202,7 @@ describe('ContainerRuntime', () => {
 		await runtime.start()
 		await runtime.cleanup()
 		expect(runtime.status).toBe('stopped')
-		expect(mockDocker.removed).toContain('bunflare-TestContainer-abcdef123456')
+		expect(mockDocker.removed).toContain('lopata-TestContainer-abcdef123456')
 	})
 })
 

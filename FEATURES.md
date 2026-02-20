@@ -1,6 +1,6 @@
 # Cloudflare Workers Compatibility Matrix — Feature List
 
-> Comprehensive list of Cloudflare Workers features and APIs for Bunflare compatibility tracking.
+> Comprehensive list of Cloudflare Workers features and APIs for Lopata compatibility tracking.
 > Each item is a short description of a feature / flag / config option / class / method.
 >
 > **Legend:** ✅ implemented — ⚠️ partial / stub — ❌ not implemented — 🟰 native (provided by Bun runtime)
@@ -416,7 +416,7 @@
 - ✅ `changed_db` — whether DB was modified
 - ✅ `changes` — number of rows changed
 - ✅ `size_after` — DB size in bytes after query
-- ✅ `served_by` — "bunflare-d1"
+- ✅ `served_by` — "lopata-d1"
 - ❌ `served_by_region` — execution region
 - ❌ `served_by_primary` — whether primary handled query
 - ❌ `timings.sql_duration_ms` — pure SQL time
@@ -606,7 +606,7 @@
 - ✅ `storage.sql.databaseSize` — current DB size in bytes
 - ✅ SqlStorageCursor: columnNames, rowsRead, rowsWritten, [Symbol.iterator], next(), toArray(), one(), raw()
 
-> **Note:** Each DO instance gets its own SQLite file at `.bunflare/do-sql/<namespace>/<id>.sqlite`
+> **Note:** Each DO instance gets its own SQLite file at `.lopata/do-sql/<namespace>/<id>.sqlite`
 
 ### 5.4 DurableObjectStorage — Synchronous KV API
 

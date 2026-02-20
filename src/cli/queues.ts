@@ -40,7 +40,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			switch (sub) {
 				case 'list': {
 					if (!queueName) {
-						console.error('Usage: bunflare queues message list <queue>')
+						console.error('Usage: lopata queues message list <queue>')
 						process.exit(1)
 					}
 					const db = ctx.db()
@@ -69,7 +69,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				case 'send': {
 					const body = args[3]
 					if (!queueName || body === undefined) {
-						console.error('Usage: bunflare queues message send <queue> <body>')
+						console.error('Usage: lopata queues message send <queue> <body>')
 						process.exit(1)
 					}
 					const { SqliteQueueProducer } = await import('../bindings/queue')
@@ -87,7 +87,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				}
 				case 'purge': {
 					if (!queueName) {
-						console.error('Usage: bunflare queues message purge <queue>')
+						console.error('Usage: lopata queues message purge <queue>')
 						process.exit(1)
 					}
 					const db = ctx.db()
@@ -97,13 +97,13 @@ export async function run(ctx: CliContext, args: string[]) {
 					break
 				}
 				default:
-					console.error('Usage: bunflare queues message <list|send|purge> <queue>')
+					console.error('Usage: lopata queues message <list|send|purge> <queue>')
 					process.exit(1)
 			}
 			break
 		}
 		default:
-			console.error('Usage: bunflare queues <list|message> [options]')
+			console.error('Usage: lopata queues <list|message> [options]')
 			process.exit(1)
 	}
 }

@@ -65,7 +65,7 @@ export async function dispatch(request: Request, ctx: HandlerContext): Promise<R
 		const result = await (handler as Function)(body.input ?? {}, ctx)
 		return withCors(json(result))
 	} catch (err) {
-		console.error('[bunflare api] RPC error:', err)
+		console.error('[lopata api] RPC error:', err)
 		return withCors(json({ error: String(err) }, 500))
 	}
 }

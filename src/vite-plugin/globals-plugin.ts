@@ -13,7 +13,7 @@ let initialized = false
  */
 export function globalsPlugin(): Plugin {
 	return {
-		name: 'bunflare:globals',
+		name: 'lopata:globals',
 
 		async configureServer() {
 			if (initialized) return

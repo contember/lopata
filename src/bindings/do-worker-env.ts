@@ -2,7 +2,7 @@
  * Lightweight env builder for DO worker threads.
  *
  * Each worker thread opens its own Database connection to the same
- * .bunflare/data.sqlite (WAL mode ensures safe concurrent access).
+ * .lopata/data.sqlite (WAL mode ensures safe concurrent access).
  * It builds binding instances (KV, R2, D1, queues) that wrap the
  * shared DB/filesystem — these are stateless wrappers safe to duplicate.
  */

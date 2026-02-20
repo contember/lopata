@@ -64,7 +64,7 @@ describe('buildEnv - environment variables', () => {
 	})
 
 	test('reads .dev.vars file and merges into env', () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-test-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
 		writeFileSync(join(tmpDir, '.dev.vars'), 'SECRET_KEY=supersecret\nDB_URL=postgres://localhost/test')
 
 		const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
@@ -75,7 +75,7 @@ describe('buildEnv - environment variables', () => {
 	})
 
 	test('.dev.vars overrides vars from config', () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-test-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
 		writeFileSync(join(tmpDir, '.dev.vars'), 'API_HOST=http://localhost:3000')
 
 		const { env } = buildEnv(
@@ -93,7 +93,7 @@ describe('buildEnv - environment variables', () => {
 	})
 
 	test('handles non-existent .dev.vars gracefully', () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-test-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
 		const { env } = buildEnv(
 			{
 				name: 'test',
@@ -107,7 +107,7 @@ describe('buildEnv - environment variables', () => {
 	})
 
 	test('reads .env file when .dev.vars does not exist', () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-test-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
 		writeFileSync(join(tmpDir, '.env'), 'FROM_ENV=yes\nDB=postgres')
 
 		const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
@@ -118,7 +118,7 @@ describe('buildEnv - environment variables', () => {
 	})
 
 	test('.dev.vars takes priority over .env', () => {
-		const tmpDir = mkdtempSync(join(tmpdir(), 'bunflare-test-'))
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
 		writeFileSync(join(tmpDir, '.dev.vars'), 'KEY=from-dev-vars')
 		writeFileSync(join(tmpDir, '.env'), 'KEY=from-env')
 

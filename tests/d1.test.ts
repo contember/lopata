@@ -19,7 +19,7 @@ describe('D1Database', () => {
 			expect(result.success).toBe(true)
 			expect(result.meta.changes).toBe(1)
 			expect(result.meta.last_row_id).toBe(1)
-			expect(result.meta.served_by).toBe('bunflare-d1')
+			expect(result.meta.served_by).toBe('lopata-d1')
 			expect(result.meta.duration).toBeGreaterThanOrEqual(0)
 		})
 

@@ -246,14 +246,14 @@ plugin({
 						constructor(ctx: unknown, env: unknown) {
 							this.ctx = ctx
 							this.env = env
-							;(this as any)[Symbol.for('bunflare.RpcTarget')] = true
+							;(this as any)[Symbol.for('lopata.RpcTarget')] = true
 						}
 					},
 					WebSocketRequestResponsePair,
 					WebSocketPair,
 					RpcTarget: class RpcTarget {
 						constructor() {
-							;(this as any)[Symbol.for('bunflare.RpcTarget')] = true
+							;(this as any)[Symbol.for('lopata.RpcTarget')] = true
 						}
 					},
 					env: globalEnv,

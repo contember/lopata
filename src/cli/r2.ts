@@ -36,7 +36,7 @@ function resolveBucket(
 export async function run(ctx: CliContext, args: string[]) {
 	const sub = args[0]
 	if (sub !== 'object') {
-		console.error(`Usage: bunflare r2 object <list|get|put|delete> <bucket/key>`)
+		console.error(`Usage: lopata r2 object <list|get|put|delete> <bucket/key>`)
 		process.exit(1)
 	}
 
@@ -79,7 +79,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 		case 'get': {
 			if (!objectPath || !objectPath.includes('/')) {
-				console.error('Usage: bunflare r2 object get <bucket/key>')
+				console.error('Usage: lopata r2 object get <bucket/key>')
 				process.exit(1)
 			}
 			const { bucketName, key } = parseObjectPath(objectPath)
@@ -98,12 +98,12 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 		case 'put': {
 			if (!objectPath || !objectPath.includes('/')) {
-				console.error('Usage: bunflare r2 object put <bucket/key> --file <path>')
+				console.error('Usage: lopata r2 object put <bucket/key> --file <path>')
 				process.exit(1)
 			}
 			const filePath = parseFlag(ctx.args, '--file') ?? parseFlag(ctx.args, '-f')
 			if (!filePath) {
-				console.error('Usage: bunflare r2 object put <bucket/key> --file <path>')
+				console.error('Usage: lopata r2 object put <bucket/key> --file <path>')
 				process.exit(1)
 			}
 			const { bucketName, key } = parseObjectPath(objectPath)
@@ -116,7 +116,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 		case 'delete': {
 			if (!objectPath || !objectPath.includes('/')) {
-				console.error('Usage: bunflare r2 object delete <bucket/key>')
+				console.error('Usage: lopata r2 object delete <bucket/key>')
 				process.exit(1)
 			}
 			const { bucketName, key } = parseObjectPath(objectPath)
@@ -127,7 +127,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		default:
-			console.error(`Usage: bunflare r2 object <list|get|put|delete> <bucket/key>`)
+			console.error(`Usage: lopata r2 object <list|get|put|delete> <bucket/key>`)
 			process.exit(1)
 	}
 }

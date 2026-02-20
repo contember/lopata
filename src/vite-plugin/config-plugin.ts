@@ -8,13 +8,13 @@ import type { ModuleRunner } from 'vite/module-runner'
  * checks `isRunnableDevEnvironment(ssrEnvironment)` — if true, it tries to
  * handle SSR requests itself (loading virtual:react-router/server-build).
  * By extending DevEnvironment directly (not RunnableDevEnvironment), the
- * instanceof check returns false, React Router calls next(), and Bunflare's
+ * instanceof check returns false, React Router calls next(), and Lopata's
  * middleware handles the request through the worker's fetch() handler.
  *
- * We still provide a `runner` getter for Bunflare's own middleware to import
+ * We still provide a `runner` getter for Lopata's own middleware to import
  * modules through Vite's transform pipeline (JSX, HMR, etc.).
  */
-class BunflareDevEnvironment extends DevEnvironment {
+class LopataDevEnvironment extends DevEnvironment {
 	private _runner: ModuleRunner | undefined
 
 	get runner(): ModuleRunner {
@@ -34,17 +34,17 @@ class BunflareDevEnvironment extends DevEnvironment {
 
 /**
  * Sets SSR environment resolve conditions for Cloudflare Workers compatibility.
- * Creates a BunflareDevEnvironment (non-runnable) so framework plugins (React Router)
- * delegate SSR handling to Bunflare's middleware.
+ * Creates a LopataDevEnvironment (non-runnable) so framework plugins (React Router)
+ * delegate SSR handling to Lopata's middleware.
  */
 export function configPlugin(envName: string): Plugin {
 	return {
-		name: 'bunflare:config',
+		name: 'lopata:config',
 		config() {
 			return {
 				server: {
 					watch: {
-						ignored: ['**/.bunflare/**'],
+						ignored: ['**/.lopata/**'],
 					},
 				},
 				environments: {
@@ -54,7 +54,7 @@ export function configPlugin(envName: string): Plugin {
 						},
 						dev: {
 							createEnvironment(name, config) {
-								return new BunflareDevEnvironment(name, config, {
+								return new LopataDevEnvironment(name, config, {
 									hot: true,
 									transport: createServerHotChannel(),
 								})

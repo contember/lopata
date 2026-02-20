@@ -10,7 +10,7 @@
 import { warnInvalidRpcArgs, warnInvalidRpcReturn } from '../rpc-validate'
 
 // Brand symbol shared across plugin.ts and vite-plugin/modules-plugin.ts
-export const RPC_TARGET_BRAND = Symbol.for('bunflare.RpcTarget')
+export const RPC_TARGET_BRAND = Symbol.for('lopata.RpcTarget')
 
 export function isRpcTarget(value: unknown): boolean {
 	return (

@@ -88,7 +88,7 @@ export function createContext(argv: string[]): CliContext {
 			if (_db) return _db
 			const { Database } = require('bun:sqlite') as typeof import('bun:sqlite')
 			const { mkdirSync } = require('node:fs') as typeof import('node:fs')
-			const dataDir = join(baseDir, '.bunflare')
+			const dataDir = join(baseDir, '.lopata')
 			mkdirSync(dataDir, { recursive: true })
 			mkdirSync(join(dataDir, 'r2'), { recursive: true })
 			mkdirSync(join(dataDir, 'd1'), { recursive: true })
@@ -100,6 +100,6 @@ export function createContext(argv: string[]): CliContext {
 			runMigrations(_db)
 			return _db
 		},
-		dataDir: () => join(baseDir, '.bunflare'),
+		dataDir: () => join(baseDir, '.lopata'),
 	}
 }

@@ -135,17 +135,17 @@ const THEME_CYCLE: Record<Theme, Theme> = { auto: 'light', light: 'dark', dark: 
 
 function ThemeSwitcher() {
 	const [theme, setTheme] = useState<Theme>(() => {
-		const saved = localStorage.getItem('bunflare-theme')
+		const saved = localStorage.getItem('lopata-theme')
 		return saved === 'light' || saved === 'dark' ? saved : 'auto'
 	})
 
 	useEffect(() => {
 		if (theme === 'auto') {
 			document.documentElement.removeAttribute('data-theme')
-			localStorage.removeItem('bunflare-theme')
+			localStorage.removeItem('lopata-theme')
 		} else {
 			document.documentElement.setAttribute('data-theme', theme)
-			localStorage.setItem('bunflare-theme', theme)
+			localStorage.setItem('lopata-theme', theme)
 		}
 	}, [theme])
 
@@ -210,7 +210,7 @@ function App() {
 					<a href="#/" class="flex items-center gap-2.5 no-underline">
 						<span class="w-7 h-7 rounded-lg bg-accent-lime flex items-center justify-center text-xs font-bold text-surface">B</span>
 						<div>
-							<div class="text-sm font-mono font-semibold text-ink leading-tight">Bunflare</div>
+							<div class="text-sm font-mono font-semibold text-ink leading-tight">Lopata</div>
 							<div class="text-[10px] text-text-muted font-mono">Dev Console</div>
 						</div>
 					</a>

@@ -33,7 +33,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		default:
-			console.error('Usage: bunflare cache <list|purge> [options]')
+			console.error('Usage: lopata cache <list|purge> [options]')
 			process.exit(1)
 	}
 }

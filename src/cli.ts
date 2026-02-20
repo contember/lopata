@@ -68,9 +68,9 @@ switch (command) {
 
 function printHelp() {
 	console.log(`
-bunflare — local Cloudflare Worker dev tools
+lopata — local Cloudflare Worker dev tools
 
-Usage: bunflare <command> [options]
+Usage: lopata <command> [options]
 
 Commands:
   dev                         Start local dev server

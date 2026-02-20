@@ -5,7 +5,7 @@ import { parseFlag, resolveBinding } from './context'
 export async function run(ctx: CliContext, args: string[]) {
 	const sub = args[0]
 	if (sub !== 'key') {
-		console.error(`Usage: bunflare kv key <list|get|put|delete> [options]`)
+		console.error(`Usage: lopata kv key <list|get|put|delete> [options]`)
 		process.exit(1)
 	}
 
@@ -39,7 +39,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		case 'get': {
 			const key = args[2]
 			if (!key) {
-				console.error('Usage: bunflare kv key get <key> [--binding NAME]')
+				console.error('Usage: lopata kv key get <key> [--binding NAME]')
 				process.exit(1)
 			}
 			const value = await kv.get(key)
@@ -60,7 +60,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			const key = args[2]
 			const value = args[3]
 			if (!key || value === undefined) {
-				console.error('Usage: bunflare kv key put <key> <value> [--binding NAME]')
+				console.error('Usage: lopata kv key put <key> <value> [--binding NAME]')
 				process.exit(1)
 			}
 			await kv.put(key, value)
@@ -70,7 +70,7 @@ export async function run(ctx: CliContext, args: string[]) {
 		case 'delete': {
 			const key = args[2]
 			if (!key) {
-				console.error('Usage: bunflare kv key delete <key> [--binding NAME]')
+				console.error('Usage: lopata kv key delete <key> [--binding NAME]')
 				process.exit(1)
 			}
 			await kv.delete(key)
@@ -78,7 +78,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		default:
-			console.error(`Usage: bunflare kv key <list|get|put|delete> [options]`)
+			console.error(`Usage: lopata kv key <list|get|put|delete> [options]`)
 			process.exit(1)
 	}
 }

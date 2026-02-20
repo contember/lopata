@@ -62,7 +62,7 @@ if (existsSync(distFile)) {
 	})
 
 	if (!result.success) {
-		console.error('[bunflare] Error page build failed:', result.logs)
+		console.error('[lopata] Error page build failed:', result.logs)
 		throw new Error('Error page build failed')
 	}
 
@@ -246,7 +246,7 @@ export async function renderErrorPage(
 	const wantsHtml = (request.headers.get('Accept') ?? '').includes('text/html')
 
 	if (wantsHtml && errorPageHtml) {
-		const script = `<script>window.__BUNFLARE_ERROR__ = ${JSON.stringify(data).replace(/</g, '\\u003c')};</script>`
+		const script = `<script>window.__LOPATA_ERROR__ = ${JSON.stringify(data).replace(/</g, '\\u003c')};</script>`
 		const html = errorPageHtml.replace('</head>', `${script}\n</head>`)
 
 		return new Response(html, {

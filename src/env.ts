@@ -112,7 +112,7 @@ export function buildEnv(
 	// KV namespaces
 	const db = getDatabase()
 	for (const kv of config.kv_namespaces ?? []) {
-		console.log(`[bunflare] KV namespace: ${kv.binding}`)
+		console.log(`[lopata] KV namespace: ${kv.binding}`)
 		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
 			type: 'kv',
 			name: kv.binding,
@@ -122,7 +122,7 @@ export function buildEnv(
 
 	// R2 buckets
 	for (const r2 of config.r2_buckets ?? []) {
-		console.log(`[bunflare] R2 bucket: ${r2.binding} (${r2.bucket_name})`)
+		console.log(`[lopata] R2 bucket: ${r2.binding} (${r2.bucket_name})`)
 		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, getDataDir()), {
 			type: 'r2',
 			name: r2.binding,
@@ -132,7 +132,7 @@ export function buildEnv(
 
 	// Durable Objects
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		console.log(`[bunflare] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
+		console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
 		const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory)
 		env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name)
 		registry.durableObjects.push({
@@ -144,7 +144,7 @@ export function buildEnv(
 
 	// Workflows
 	for (const wf of config.workflows ?? []) {
-		console.log(`[bunflare] Workflow: ${wf.binding} -> ${wf.class_name}`)
+		console.log(`[lopata] Workflow: ${wf.binding} -> ${wf.class_name}`)
 		const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name, wf.limits)
 		env[wf.binding] = instrumentBinding(binding, {
 			type: 'workflow',
@@ -160,13 +160,13 @@ export function buildEnv(
 
 	// D1 databases
 	for (const d1 of config.d1_databases ?? []) {
-		console.log(`[bunflare] D1 database: ${d1.binding} (${d1.database_name})`)
+		console.log(`[lopata] D1 database: ${d1.binding} (${d1.database_name})`)
 		env[d1.binding] = instrumentD1(openD1Database(getDataDir(), d1.database_name), d1.binding)
 	}
 
 	// Queue producers
 	for (const producer of config.queues?.producers ?? []) {
-		console.log(`[bunflare] Queue producer: ${producer.binding} -> ${producer.queue}`)
+		console.log(`[lopata] Queue producer: ${producer.binding} -> ${producer.queue}`)
 		env[producer.binding] = instrumentBinding(new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0), {
 			type: 'queue',
 			name: producer.binding,
@@ -176,7 +176,7 @@ export function buildEnv(
 
 	// Queue consumers (configs — actual consumers started in dev.ts after worker import)
 	for (const consumer of config.queues?.consumers ?? []) {
-		console.log(`[bunflare] Queue consumer: ${consumer.queue}`)
+		console.log(`[lopata] Queue consumer: ${consumer.queue}`)
 		registry.queueConsumers.push({
 			queue: consumer.queue,
 			maxBatchSize: consumer.max_batch_size ?? 10,
@@ -188,7 +188,7 @@ export function buildEnv(
 
 	// Service bindings
 	for (const svc of config.services ?? []) {
-		console.log(`[bunflare] Service binding: ${svc.binding} -> ${svc.service}${svc.entrypoint ? ` (${svc.entrypoint})` : ''}`)
+		console.log(`[lopata] Service binding: ${svc.binding} -> ${svc.service}${svc.entrypoint ? ` (${svc.entrypoint})` : ''}`)
 		const proxy = createServiceBinding(svc.service, svc.entrypoint)
 		env[svc.binding] = instrumentServiceBinding(proxy as object, svc.service) as Record<string, unknown>
 		registry.serviceBindings.push({
@@ -201,7 +201,7 @@ export function buildEnv(
 
 	// Images binding
 	if (config.images) {
-		console.log(`[bunflare] Images binding: ${config.images.binding}`)
+		console.log(`[lopata] Images binding: ${config.images.binding}`)
 		env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
 			type: 'images',
 			name: config.images.binding,
@@ -211,7 +211,7 @@ export function buildEnv(
 
 	// Send email bindings
 	for (const email of config.send_email ?? []) {
-		console.log(`[bunflare] Send email binding: ${email.name}`)
+		console.log(`[lopata] Send email binding: ${email.name}`)
 		env[email.name] = instrumentBinding(
 			new SendEmailBinding(db, email.name, email.destination_address, email.allowed_destination_addresses),
 			{ type: 'email', name: email.name, methods: ['send'] },
@@ -221,7 +221,7 @@ export function buildEnv(
 	// Hyperdrive
 	for (const hd of config.hyperdrive ?? []) {
 		const connStr = hd.localConnectionString ?? ''
-		console.log(`[bunflare] Hyperdrive: ${hd.binding}`)
+		console.log(`[lopata] Hyperdrive: ${hd.binding}`)
 		env[hd.binding] = new HyperdriveBinding(connStr)
 	}
 
@@ -229,7 +229,7 @@ export function buildEnv(
 	if (config.ai) {
 		const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID) as string | undefined
 		const apiToken = (env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN) as string | undefined
-		console.log(`[bunflare] AI binding: ${config.ai.binding}`)
+		console.log(`[lopata] AI binding: ${config.ai.binding}`)
 		env[config.ai.binding] = instrumentBinding(
 			new AiBinding(db, accountId, apiToken),
 			{ type: 'ai', name: config.ai.binding, methods: ['run', 'models'] },
@@ -238,7 +238,7 @@ export function buildEnv(
 
 	// Analytics Engine datasets
 	for (const ae of config.analytics_engine_datasets ?? []) {
-		console.log(`[bunflare] Analytics Engine: ${ae.binding} (dataset: ${ae.dataset ?? ae.binding})`)
+		console.log(`[lopata] Analytics Engine: ${ae.binding} (dataset: ${ae.dataset ?? ae.binding})`)
 		env[ae.binding] = instrumentBinding(
 			new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding),
 			{ type: 'analytics_engine', name: ae.binding, methods: ['writeDataPoint'] },
@@ -259,12 +259,12 @@ export function buildEnv(
 					maxInstances: container.max_instances,
 					namespace: existing.namespace,
 				})
-				console.log(`[bunflare] Container: ${container.class_name} (reusing DO binding, image: ${container.image})`)
+				console.log(`[lopata] Container: ${container.class_name} (reusing DO binding, image: ${container.image})`)
 			}
 		} else {
 			// Create a new DO namespace for this container
 			const bindingName = container.name ?? container.class_name
-			console.log(`[bunflare] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`)
+			console.log(`[lopata] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`)
 			const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
 			env[bindingName] = instrumentDONamespace(namespace, container.class_name)
 			registry.durableObjects.push({
@@ -287,20 +287,20 @@ export function buildEnv(
 		const assets = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
 		registry.staticAssets = assets
 		if (config.assets.binding) {
-			console.log(`[bunflare] Static assets: ${config.assets.binding} -> ${config.assets.directory}`)
+			console.log(`[lopata] Static assets: ${config.assets.binding} -> ${config.assets.directory}`)
 			env[config.assets.binding] = instrumentBinding(assets, {
 				type: 'assets',
 				name: config.assets.binding,
 				methods: ['fetch'],
 			})
 		} else {
-			console.log(`[bunflare] Static assets: ${config.assets.directory} (auto-serve)`)
+			console.log(`[lopata] Static assets: ${config.assets.directory} (auto-serve)`)
 		}
 	}
 
 	// Browser Rendering binding
 	if (config.browser) {
-		console.log(`[bunflare] Browser binding: ${config.browser.binding}`)
+		console.log(`[lopata] Browser binding: ${config.browser.binding}`)
 		env[config.browser.binding] = instrumentBinding(
 			new BrowserBinding(browserConfig ?? {}),
 			{ type: 'browser', name: config.browser.binding, methods: ['launch', 'connect', 'sessions'] },
@@ -333,7 +333,7 @@ export function wireClassRefs(
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Durable Object class "${entry.className}" not exported from worker module`)
 		entry.namespace._setClass(cls as any, env)
-		console.log(`[bunflare] Wired DO class: ${entry.className}`)
+		console.log(`[lopata] Wired DO class: ${entry.className}`)
 	}
 
 	for (const entry of registry.workflows) {
@@ -341,7 +341,7 @@ export function wireClassRefs(
 		if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`)
 		entry.binding._setClass(cls as any, env)
 		entry.binding.resumeInterrupted()
-		console.log(`[bunflare] Wired Workflow class: ${entry.className}`)
+		console.log(`[lopata] Wired Workflow class: ${entry.className}`)
 	}
 
 	// Wire container configs onto namespaces
@@ -353,7 +353,7 @@ export function wireClassRefs(
 			maxInstances: entry.maxInstances,
 			dockerManager,
 		})
-		console.log(`[bunflare] Wired container config: ${entry.className} (image: ${entry.image})`)
+		console.log(`[lopata] Wired container config: ${entry.className} (image: ${entry.image})`)
 	}
 
 	// Wire service bindings
@@ -367,7 +367,7 @@ export function wireClassRefs(
 				// Backward compat: self-reference
 				wire(() => ({ workerModule, env }))
 			}
-			console.log(`[bunflare] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
+			console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 		}
 	}
 }

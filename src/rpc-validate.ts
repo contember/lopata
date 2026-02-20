@@ -2,7 +2,7 @@
  * RPC argument/return-value validation.
  *
  * Cloudflare Workers RPC serialises payloads via structured clone with
- * extensions (function stubs, RpcTarget stubs).  Bunflare runs everything
+ * extensions (function stubs, RpcTarget stubs).  Lopata runs everything
  * in-process so values pass by reference — code that works locally may
  * break in production.  This module warns at dev time when a value
  * contains types that CF cannot serialise.
@@ -129,7 +129,7 @@ function _validate(value: unknown, path: string, seen: WeakSet<object>): string[
 	}
 
 	// --- RpcTarget instance: valid (becomes a stub on CF) ---
-	const brand = Symbol.for('bunflare.RpcTarget')
+	const brand = Symbol.for('lopata.RpcTarget')
 	if ((obj as Record<symbol, unknown>)[brand] === true) return []
 
 	// --- anything else: custom class instance ---
@@ -147,7 +147,7 @@ export function warnInvalidRpcArgs(args: unknown[], methodName: string): void {
 	for (let i = 0; i < args.length; i++) {
 		const errors = validateRpcValue(args[i], `arg${i}`)
 		for (const msg of errors) {
-			console.warn(`[bunflare] RPC ${methodName}() argument warning: ${msg}`)
+			console.warn(`[lopata] RPC ${methodName}() argument warning: ${msg}`)
 		}
 	}
 }
@@ -155,6 +155,6 @@ export function warnInvalidRpcArgs(args: unknown[], methodName: string): void {
 export function warnInvalidRpcReturn(value: unknown, methodName: string): void {
 	const errors = validateRpcValue(value, 'return')
 	for (const msg of errors) {
-		console.warn(`[bunflare] RPC ${methodName}() return value warning: ${msg}`)
+		console.warn(`[lopata] RPC ${methodName}() return value warning: ${msg}`)
 	}
 }

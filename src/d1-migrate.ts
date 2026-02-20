@@ -33,5 +33,5 @@ if (databases.length === 0) {
 	process.exit(0)
 }
 
-const dataDir = join(baseDir, '.bunflare')
+const dataDir = join(baseDir, '.lopata')
 await applyMigrations(databases, dataDir)

@@ -3,7 +3,7 @@ import type { BrowserHistoryEntry, HistoryEntry, SortDir } from './types'
 
 // ─── Query history (localStorage, scoped per database) ───────────────
 
-const HISTORY_PREFIX = 'bunflare-sql-history'
+const HISTORY_PREFIX = 'lopata-sql-history'
 const HISTORY_MAX = 100
 
 function historyKey(scope?: string): string {
@@ -48,7 +48,7 @@ export function useHistory(scope?: string) {
 
 // ─── Browser history (structured, localStorage, scoped per database) ─
 
-const BROWSER_HISTORY_PREFIX = 'bunflare-browser-history'
+const BROWSER_HISTORY_PREFIX = 'lopata-browser-history'
 const BROWSER_HISTORY_MAX = 50
 
 function browserHistoryKey(scope?: string): string {
@@ -92,7 +92,7 @@ export function useBrowserHistory(scope?: string) {
 
 // ─── Per-table view state (filters + sort, localStorage) ────────────
 
-const TABLE_STATE_PREFIX = 'bunflare-table-state'
+const TABLE_STATE_PREFIX = 'lopata-table-state'
 
 interface TableViewState {
 	filters: Record<string, string>

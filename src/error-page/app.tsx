@@ -51,7 +51,7 @@ interface ErrorPageData {
 
 declare global {
 	interface Window {
-		__BUNFLARE_ERROR__: ErrorPageData
+		__LOPATA_ERROR__: ErrorPageData
 	}
 }
 
@@ -295,7 +295,7 @@ function SimpleTraceWaterfall({ trace }: { trace: NonNullable<ErrorPageData['tra
 }
 
 function App() {
-	const data = window.__BUNFLARE_ERROR__
+	const data = window.__LOPATA_ERROR__
 
 	if (!data) {
 		return <div class="p-8 text-gray-400">No error data available.</div>
@@ -387,7 +387,7 @@ function App() {
 			</Section>
 
 			<div class="text-center text-xs text-gray-400 py-4">
-				Bunflare Dev Server
+				Lopata Dev Server
 			</div>
 		</div>
 	)

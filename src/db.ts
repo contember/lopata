@@ -2,14 +2,14 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
-const DATA_DIR = join(process.cwd(), '.bunflare')
+const DATA_DIR = join(process.cwd(), '.lopata')
 const DB_PATH = join(DATA_DIR, 'data.sqlite')
 
 let instance: Database | null = null
 
 /**
- * Returns the shared SQLite database singleton for bunflare runtime data.
- * Creates the .bunflare/ directory and database file on first call.
+ * Returns the shared SQLite database singleton for lopata runtime data.
+ * Creates the .lopata/ directory and database file on first call.
  */
 export function getDatabase(): Database {
 	if (instance) return instance
@@ -252,7 +252,7 @@ export function runMigrations(db: Database): void {
 	db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_engine_dataset_ts ON analytics_engine(dataset, timestamp)`)
 }
 
-/** Returns the path to the .bunflare data directory. */
+/** Returns the path to the .lopata data directory. */
 export function getDataDir(): string {
 	return DATA_DIR
 }

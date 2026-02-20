@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-const DATA_DIR = join(process.cwd(), '.bunflare')
+const DATA_DIR = join(process.cwd(), '.lopata')
 const DB_PATH = join(DATA_DIR, 'traces.sqlite')
 
 let instance: Database | null = null

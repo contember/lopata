@@ -4,13 +4,13 @@ const SERVER_BUILD_ID = '\0virtual:react-router/server-build'
 
 /**
  * Instruments React Router loaders, actions, and SSR rendering with
- * Bunflare tracing spans via the `unstable_instrumentations` API.
+ * Lopata tracing spans via the `unstable_instrumentations` API.
  *
  * Works by transforming React Router's `virtual:react-router/server-build`
  * virtual module to inject an `unstable_ServerInstrumentation` and wrap
  * the `handleRequest` (default export) with a render span.
  *
- * Uses the `globalThis.__bunflare_startSpan` bridge set up by
+ * Uses the `globalThis.__lopata_startSpan` bridge set up by
  * `dev-server-plugin.ts` to call into the tracing runtime, which lives
  * in Bun's native module graph (separate from Vite's SSR runner).
  *
@@ -18,7 +18,7 @@ const SERVER_BUILD_ID = '\0virtual:react-router/server-build'
  */
 export function reactRouterPlugin(): Plugin {
 	return {
-		name: 'bunflare:react-router',
+		name: 'lopata:react-router',
 
 		transform(code, id) {
 			if (id !== SERVER_BUILD_ID) return
@@ -34,7 +34,7 @@ const __bf_instr = {
   route({ id, path, instrument }) {
     instrument({
       loader: async (callHandler, info) => {
-        const startSpan = globalThis.__bunflare_startSpan;
+        const startSpan = globalThis.__lopata_startSpan;
         if (!startSpan) { await callHandler(); return; }
         await startSpan({
           name: "loader " + id,
@@ -50,7 +50,7 @@ const __bf_instr = {
         });
       },
       action: async (callHandler, info) => {
-        const startSpan = globalThis.__bunflare_startSpan;
+        const startSpan = globalThis.__lopata_startSpan;
         if (!startSpan) { await callHandler(); return; }
         await startSpan({
           name: "action " + id,
@@ -72,7 +72,7 @@ const __bf_instr = {
 const __bf_entry = {
   ...entryServer,
   default: async function(...args) {
-    const startSpan = globalThis.__bunflare_startSpan;
+    const startSpan = globalThis.__lopata_startSpan;
     if (!startSpan) return entryServer.default(...args);
     return startSpan({
       name: "react-router.render",

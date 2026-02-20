@@ -308,7 +308,7 @@ export class QueueConsumer {
 			try {
 				await this.handler(batch, this.env, ctx)
 			} catch (err) {
-				console.error(`[bunflare] Queue consumer error (${this.config.queue}):`, err)
+				console.error(`[lopata] Queue consumer error (${this.config.queue}):`, err)
 				persistError(err, 'queue', this.workerName)
 				// On handler error, retry all messages
 				handlerError = true
@@ -339,7 +339,7 @@ export class QueueConsumer {
 							[this.config.deadLetterQueue, Date.now(), row.id],
 						)
 					} else {
-						console.warn(`[bunflare] Queue message ${row.id} exceeded max retries (${this.config.maxRetries}), discarding`)
+						console.warn(`[lopata] Queue message ${row.id} exceeded max retries (${this.config.maxRetries}), discarding`)
 						this.db.run("UPDATE queue_messages SET status = 'failed', completed_at = ? WHERE id = ?", [Date.now(), row.id])
 					}
 				} else {

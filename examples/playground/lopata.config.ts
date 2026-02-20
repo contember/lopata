@@ -1,4 +1,4 @@
-import { defineConfig } from '../../src/bunflare-config'
+import { defineConfig } from '../../src/lopata-config'
 
 export default defineConfig({
 	main: './wrangler.jsonc',

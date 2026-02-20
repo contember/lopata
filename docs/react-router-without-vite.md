@@ -1,6 +1,6 @@
 # React Router bez Vite — co by to znamenalo
 
-React Router v7 je navržený jako Vite-first framework. Všechna jeho "magie" (file-based routing, type-safe loaders, client/server code splitting) žije ve Vite pluginu (`@react-router/dev/vite`). Tento dokument popisuje, co by bylo potřeba reimplementovat, aby React Router fungoval v Bunflare čistě přes Bun bez Vite.
+React Router v7 je navržený jako Vite-first framework. Všechna jeho "magie" (file-based routing, type-safe loaders, client/server code splitting) žije ve Vite pluginu (`@react-router/dev/vite`). Tento dokument popisuje, co by bylo potřeba reimplementovat, aby React Router fungoval v Lopata čistě přes Bun bez Vite.
 
 ## Co dělá React Router Vite plugin
 
@@ -138,7 +138,7 @@ V SPA módu servíruje `/__manifest` endpoint pro client-side route discovery.
 
 ## Porovnání s Vite plugin přístupem
 
-Alternativa: napsat `@bunflare/vite-plugin` jako drop-in replacement pro `@cloudflare/vite-plugin`. Vite + React Router plugin řeší body 1-6 výše. Bunflare plugin jen dodá:
+Alternativa: napsat `@lopata/vite-plugin` jako drop-in replacement pro `@cloudflare/vite-plugin`. Vite + React Router plugin řeší body 1-6 výše. Lopata plugin jen dodá:
 
 - Resolving `cloudflare:workers` → lokální bindings (~50 řádků)
 - Globální CF APIs (caches, HTMLRewriter) (~50 řádků)

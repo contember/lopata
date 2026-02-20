@@ -10,12 +10,12 @@ interface DevServerPluginOptions {
 
 /**
  * Main Vite dev server middleware plugin. Intercepts SSR requests and
- * dispatches them through the worker's fetch() handler with Bunflare
+ * dispatches them through the worker's fetch() handler with Lopata
  * bindings as the env object.
  *
  * Returns a callback from configureServer (post-middleware) so that
  * framework plugins (React Router, SolidStart, etc.) get first crack
- * at requests. Bunflare acts as the fallback.
+ * at requests. Lopata acts as the fallback.
  *
  * Also sets up:
  * - Request-level tracing (startSpan around fetch)
@@ -51,7 +51,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let currentModule: Record<string, unknown> | null = null
 
 	return {
-		name: 'bunflare:dev-server',
+		name: 'lopata:dev-server',
 
 		async configureServer(viteServer: ViteDevServer) {
 			server = viteServer
@@ -88,7 +88,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			} else {
 				config = await configMod.autoLoadConfig(projectRoot)
 			}
-			console.log(`[bunflare:vite] Loaded config: ${config.name}`)
+			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// 2. Build env with bindings
 			const built = envMod.buildEnv(config, projectRoot)
@@ -98,12 +98,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			// Set globalEnv immediately so that top-level module code
 			// (e.g. `import { env } from "cloudflare:workers"`) sees bindings
 			// before the first request triggers worker module import.
-			// Also set globalThis.__bunflare_env — the modules-plugin env proxy
+			// Also set globalThis.__lopata_env — the modules-plugin env proxy
 			// reads from this, bridging the Vite SSR runner ↔ native module graphs.
 			setGlobalEnv(env)
-			;(globalThis as any).__bunflare_env = env
-			;(globalThis as any).__bunflare_startSpan = startSpan
-			;(globalThis as any).__bunflare_setSpanStatus = spanMod.setSpanStatus
+			;(globalThis as any).__lopata_env = env
+			;(globalThis as any).__lopata_startSpan = startSpan
+			;(globalThis as any).__lopata_setSpanStatus = spanMod.setSpanStatus
 
 			// Propagate string vars/secrets to process.env so libraries
 			// that read process.env (e.g. better-auth, Sentry) see them.
@@ -141,7 +141,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					const auxConfigPath = resolve(projectRoot, workerDef.configPath)
 					const auxBaseDir = dirname(auxConfigPath)
 					const auxConfig = await configMod.loadConfig(auxConfigPath)
-					console.log(`[bunflare:vite] Auxiliary worker: ${auxConfig.name}`)
+					console.log(`[lopata:vite] Auxiliary worker: ${auxConfig.name}`)
 
 					const auxManager = new GenerationManager(auxConfig, auxBaseDir, {
 						workerName: auxConfig.name,
@@ -152,9 +152,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 					try {
 						const gen = await auxManager.reload()
-						console.log(`[bunflare:vite] Auxiliary worker "${auxConfig.name}" loaded (gen ${gen.id})`)
+						console.log(`[lopata:vite] Auxiliary worker "${auxConfig.name}" loaded (gen ${gen.id})`)
 					} catch (err) {
-						console.error(`[bunflare:vite] Failed to load auxiliary worker "${auxConfig.name}":`, err)
+						console.error(`[lopata:vite] Failed to load auxiliary worker "${auxConfig.name}":`, err)
 					}
 				}
 
@@ -184,7 +184,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							const response = await (handleApiRequest as (r: Request) => Response | Promise<Response>)(request)
 							writeResponse(response, res)
 						} catch (err) {
-							console.error('[bunflare:vite] API error:', err)
+							console.error('[lopata:vite] API error:', err)
 							if (!res.headersSent) {
 								res.writeHead(500, { 'content-type': 'text/plain' })
 								res.end(String(err))
@@ -200,7 +200,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							const response = await (handleDashboardRequest as (r: Request) => Response | Promise<Response>)(request)
 							writeResponse(response, res)
 						} catch (err) {
-							console.error('[bunflare:vite] Dashboard error:', err)
+							console.error('[lopata:vite] Dashboard error:', err)
 							if (!res.headersSent) {
 								res.writeHead(500, { 'content-type': 'text/plain' })
 								res.end(String(err))
@@ -212,7 +212,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					try {
 						const ssrEnv = server.environments[options.envName]
 						if (!ssrEnv || !('runner' in ssrEnv)) {
-							console.error(`[bunflare:vite] SSR environment "${options.envName}" not found or has no runner`)
+							console.error(`[lopata:vite] SSR environment "${options.envName}" not found or has no runner`)
 							return next()
 						}
 
@@ -231,7 +231,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 							wireClassRefs(registry, workerModule, env, workerRegistry)
 							setGlobalEnv(env)
-							console.log('[bunflare:vite] Worker module (re)loaded, classes wired')
+							console.log('[lopata:vite] Worker module (re)loaded, classes wired')
 						}
 
 						const request = nodeReqToRequest(req)
@@ -239,7 +239,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 						const handler = workerModule.default as Record<string, unknown>
 						if (!handler || typeof handler.fetch !== 'function') {
-							console.error('[bunflare:vite] Worker module default export has no fetch() method')
+							console.error('[lopata:vite] Worker module default export has no fetch() method')
 							return next()
 						}
 
@@ -261,14 +261,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 								if (err instanceof Error) {
 									stitchAsyncStack(err, callerStack)
 								}
-								console.error('[bunflare:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+								console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
 								return (renderErrorPage as Function)(err, request, env, config)
 							}
 						}) as Response
 
 						writeResponse(response, res)
 					} catch (err) {
-						console.error('[bunflare:vite] Request error:', err)
+						console.error('[lopata:vite] Request error:', err)
 						if (!res.headersSent) {
 							res.writeHead(500, { 'content-type': 'text/plain' })
 							res.end(err instanceof Error ? err.stack ?? err.message : String(err))
@@ -379,27 +379,27 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				})
 			})
 
-			console.log('[bunflare:vite] Dashboard: http://localhost:5173/__dashboard')
+			console.log('[lopata:vite] Dashboard: http://localhost:5173/__dashboard')
 		}).catch(() => {
 			// ws not available — trace streaming disabled
-			console.log('[bunflare:vite] Dashboard available (trace streaming disabled — ws package not found)')
+			console.log('[lopata:vite] Dashboard available (trace streaming disabled — ws package not found)')
 		})
 	}
 }
 
 function invalidateVirtualModules(ssrEnv: any): void {
-	// Only invalidate Bunflare's own virtual modules, NOT framework modules
+	// Only invalidate Lopata's own virtual modules, NOT framework modules
 	// (e.g. React Router's virtual:react-router/server-manifest uses
 	// Math.random() for dev version — invalidating it generates a new version
 	// that mismatches the client's cached manifest, causing
 	// "manifest version mismatch during eager route discovery" errors).
-	const isBunflareModule = (id: string) => id.includes('\0cloudflare:') || id.includes('\0@cloudflare/')
+	const isLopataModule = (id: string) => id.includes('\0cloudflare:') || id.includes('\0@cloudflare/')
 
 	// Server-side: clear transformResult so fetchModule returns fresh code
 	const modGraph = ssrEnv.moduleGraph
 	if (modGraph?.idToModuleMap) {
 		for (const [id, mod] of modGraph.idToModuleMap) {
-			if (isBunflareModule(id)) {
+			if (isLopataModule(id)) {
 				modGraph.invalidateModule(mod)
 			}
 		}
@@ -410,7 +410,7 @@ function invalidateVirtualModules(ssrEnv: any): void {
 	const evaluatedModules = runner?.evaluatedModules
 	if (evaluatedModules?.idToModuleMap) {
 		for (const [id, node] of evaluatedModules.idToModuleMap) {
-			if (isBunflareModule(id)) {
+			if (isLopataModule(id)) {
 				evaluatedModules.invalidateModule(node)
 			}
 		}
@@ -427,7 +427,7 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (!looksShort) return
 
 	const callerLines = callerError.stack.split('\n').slice(1)
-	const filtered = callerLines.filter(l => !l.includes('/bunflare/src/'))
+	const filtered = callerLines.filter(l => !l.includes('/lopata/src/'))
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')

@@ -10,7 +10,7 @@ function stitchAsyncStack(err: Error, callerError: Error): void {
 	if (errFrames.length > 5 && !err.stack.includes('processTicksAndRejections')) return
 
 	const callerLines = callerError.stack.split('\n').slice(1)
-	const filtered = callerLines.filter(l => !l.includes('/bunflare/src/'))
+	const filtered = callerLines.filter(l => !l.includes('/lopata/src/'))
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')

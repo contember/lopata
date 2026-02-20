@@ -382,7 +382,7 @@ describe('Integration: DO stub with RpcTarget return', () => {
 		class ChildTarget {
 			childValue = 99
 			constructor() {
-				;(this as any)[Symbol.for('bunflare.RpcTarget')] = true
+				;(this as any)[Symbol.for('lopata.RpcTarget')] = true
 			}
 			getChildValue() {
 				return this.childValue
@@ -426,7 +426,7 @@ describe('Integration: DO stub with RpcTarget return', () => {
 
 		class ChildTarget {
 			constructor() {
-				;(this as any)[Symbol.for('bunflare.RpcTarget')] = true
+				;(this as any)[Symbol.for('lopata.RpcTarget')] = true
 			}
 			compute(a: number, b: number) {
 				return a + b
@@ -461,7 +461,7 @@ describe('Integration: Service binding with RpcTarget return', () => {
 	test('service binding RPC returning RpcTarget gets wrapped', async () => {
 		class ChildTarget {
 			constructor() {
-				;(this as any)[Symbol.for('bunflare.RpcTarget')] = true
+				;(this as any)[Symbol.for('lopata.RpcTarget')] = true
 			}
 			getValue() {
 				return 'from-child'
