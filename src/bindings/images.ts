@@ -30,6 +30,8 @@ export interface ImageTransformOptions {
 	background?: string
 	dpr?: number
 	border?: { color?: string; width?: number; top?: number; right?: number; bottom?: number; left?: number }
+	format?: 'avif' | 'webp' | 'jpeg' | 'png' | 'gif' | 'auto'
+	quality?: number | 'high' | 'medium-high' | 'medium-low' | 'low'
 }
 
 export interface DrawOptions {
@@ -43,7 +45,7 @@ export interface DrawOptions {
 
 export interface OutputOptions {
 	format: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/avif' | 'image/gif'
-	quality?: number
+	quality?: number | 'high' | 'medium-high' | 'medium-low' | 'low'
 	compression?: 'fast'
 	metadata?: 'keep' | 'copyright' | 'none'
 }
@@ -252,6 +254,19 @@ const CF_FIT_TO_SHARP: Record<string, 'contain' | 'cover' | 'fill' | 'inside' | 
 	pad: 'contain',
 }
 
+const QUALITY_PRESETS: Record<string, number> = {
+	high: 85,
+	'medium-high': 72,
+	'medium-low': 50,
+	low: 30,
+}
+
+function resolveQuality(q: number | string | undefined): number | undefined {
+	if (q === undefined) return undefined
+	if (typeof q === 'number') return q
+	return QUALITY_PRESETS[q]
+}
+
 const CF_GRAVITY_TO_SHARP: Record<string, string> = {
 	auto: 'attention',
 	center: 'centre',
@@ -284,10 +299,12 @@ class LazyImageTransformer {
 
 	async output(options: OutputOptions): Promise<ImageOutputResult> {
 		let currentBuf = Buffer.from(await this.streamPromise)
+		let transformFormat: string | undefined
 
 		// Apply each transform as a separate Sharp pipeline to ensure correct ordering
 		// (Sharp internally reorders operations within a single pipeline)
 		for (const t of this.transforms) {
+			if (t.format) transformFormat = t.format
 			let pipeline = sharp(currentBuf)
 
 			// DPR: multiply dimensions before resize
@@ -426,11 +443,30 @@ class LazyImageTransformer {
 			currentBuf = Buffer.from(await sharp(currentBuf).composite(composites).toBuffer())
 		}
 
-		// Output format
-		const sharpFmt = MIME_TO_SHARP[options.format] ?? 'png'
+		// Resolve output format — transform format overrides output if set
+		// "auto" → detect best format from source (default to webp)
+		let resolvedMime = options.format
+		if (transformFormat) {
+			if (transformFormat === 'auto') {
+				// Detect source format from buffer, default to webp
+				const sourceFormat = detectFormat(currentBuf)
+				resolvedMime = sourceFormat && sourceFormat !== 'image/svg+xml' ? sourceFormat : 'image/webp'
+			} else {
+				const shortToMime: Record<string, OutputOptions['format']> = {
+					avif: 'image/avif',
+					webp: 'image/webp',
+					jpeg: 'image/jpeg',
+					png: 'image/png',
+					gif: 'image/gif',
+				}
+				resolvedMime = shortToMime[transformFormat] ?? resolvedMime
+			}
+		}
+		const sharpFmt = MIME_TO_SHARP[resolvedMime] ?? 'png'
 		const formatOpts: Record<string, unknown> = {}
-		if (options.quality !== undefined) {
-			formatOpts.quality = options.quality
+		const resolvedQuality = resolveQuality(options.quality)
+		if (resolvedQuality !== undefined) {
+			formatOpts.quality = resolvedQuality
 		}
 		// Compression: "fast" → lower effort for supported formats
 		if (options.compression === 'fast') {
@@ -450,7 +486,7 @@ class LazyImageTransformer {
 		// 'none' is the default — Sharp strips metadata by default
 
 		const outputBuf = await outputPipeline.toFormat(sharpFmt, formatOpts).toBuffer()
-		const contentType = options.format
+		const contentType = resolvedMime
 
 		return {
 			image(): ReadableStream<Uint8Array> {

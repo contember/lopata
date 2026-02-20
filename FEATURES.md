@@ -275,15 +275,15 @@
 
 ### 1.17 Email Handler
 
-- ❌ `export default { email }` — email handler
-- ❌ `message.from` — envelope From
-- ❌ `message.to` — envelope To
-- ❌ `message.headers` — Headers
-- ❌ `message.raw` — ReadableStream
-- ❌ `message.rawSize` — size in bytes
-- ❌ `message.setReject(reason)` — reject message
-- ❌ `message.forward(rcptTo, headers?)` — forward
-- ❌ `message.reply(message)` — reply
+- ✅ `export default { email }` — email handler
+- ✅ `message.from` — envelope From
+- ✅ `message.to` — envelope To
+- ✅ `message.headers` — Headers (parsed from raw bytes)
+- ✅ `message.raw` — ReadableStream
+- ✅ `message.rawSize` — size in bytes
+- ✅ `message.setReject(reason)` — reject message
+- ✅ `message.forward(rcptTo, headers?)` — forward (persisted to DB)
+- ✅ `message.reply(message)` — reply (persisted to DB)
 
 ### 1.18 Navigator & Performance
 
@@ -1121,9 +1121,10 @@
 ### 12.8 Transform Options — Format / Encoding
 
 - ✅ `format` — "avif" | "webp" | "jpeg" | "png" | "gif" — via Sharp
-- ❌ `format` — "auto" | "baseline-jpeg" | "json" — not supported
+- ✅ `format` — "auto" (picks format from source, defaults to webp)
+- ❌ `format` — "baseline-jpeg" | "json" — not supported
 - ✅ `quality` — 1-100
-- ❌ `quality` — "high" | "medium-high" | "medium-low" | "low" presets
+- ✅ `quality` — "high" (85) | "medium-high" (72) | "medium-low" (50) | "low" (30) presets
 - ✅ `compression` — "fast" (reduces effort for PNG/WebP/AVIF)
 - ❌ `anim` — boolean (preserve animation frames)
 - ✅ `metadata` — "keep" | "copyright" | "none"
