@@ -30,8 +30,10 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 		childMap.get(key)!.push(s)
 	}
 
-	// Auto-expand: first 2 levels OR spans with >10% duration
-	const getAutoExpanded = (): Set<string> => {
+	// Reset collapsed/expanded state when the set of spans changes (new spans added/removed)
+	const spanIdKey = spans.map(s => s.spanId).join(',')
+	useEffect(() => {
+		if (spans.length === 0) return
 		const autoCollapsed = new Set<string>()
 		function walk(parentId: string | null, depth: number) {
 			const children = childMap.get(parentId) ?? []
@@ -48,16 +50,9 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 			}
 		}
 		walk(null, 0)
-		return autoCollapsed
-	}
-
-	// Initialize collapsed state when spans change
-	useEffect(() => {
-		if (spans.length > 0) {
-			setCollapsedSpans(getAutoExpanded())
-			setExpandedSpan(null)
-		}
-	}, [spans, getAutoExpanded])
+		setCollapsedSpans(autoCollapsed)
+		setExpandedSpan(null)
+	}, [spanIdKey])
 
 	const toggleCollapse = (spanId: string) => {
 		setCollapsedSpans(prev => {
@@ -139,7 +134,7 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 									<span class="truncate">{span.name}</span>
 								</div>
 								{/* Bar area */}
-								<div class="flex-1 h-6 relative bg-panel-secondary rounded">
+								<div class="flex-1 h-6 relative bg-panel-secondary rounded overflow-hidden">
 									<div
 										class={`absolute top-0.5 bottom-0.5 rounded flex items-center overflow-hidden ${
 											span.status !== 'error' && span.status !== 'ok' ? 'animate-pulse' : ''
@@ -169,14 +164,11 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 											)
 										})}
 									</div>
-									{/* Duration label */}
-									<span
-										class="absolute top-0.5 text-[10px] text-text-secondary whitespace-nowrap"
-										style={{ left: `${offset + width + 1}%` }}
-									>
-										{span.durationMs !== null ? formatDuration(span.durationMs) : '...'}
-									</span>
 								</div>
+								{/* Duration */}
+								<span class="text-[10px] text-text-secondary whitespace-nowrap w-14 text-right flex-shrink-0 pl-1">
+									{span.durationMs !== null ? formatDuration(span.durationMs) : '...'}
+								</span>
 							</div>
 
 							{/* Expanded detail */}

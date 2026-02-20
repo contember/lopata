@@ -348,7 +348,7 @@ export function TracesView() {
 					)}
 
 					{/* Trace list */}
-					<div class="flex-1 overflow-y-auto scrollbar-thin">
+					<div class="flex-1 overflow-y-auto scrollbar-thin min-h-0">
 						{isSearching
 							? <div class="text-text-muted font-medium text-center py-12">Searching...</div>
 							: displayTraces.length === 0
