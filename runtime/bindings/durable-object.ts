@@ -5,7 +5,7 @@ import type { ContainerContext } from "./container";
 import type { ContainerConfig } from "./container";
 import type { DOExecutor, DOExecutorFactory } from "./do-executor";
 import { persistError, startSpan } from "../tracing/span";
-import { NON_RPC_PROPS, createRpcPromise } from "./rpc-stub";
+import { NON_RPC_PROPS } from "./rpc-stub";
 
 // --- SQL Storage Cursor ---
 
@@ -967,8 +967,7 @@ export class DurableObjectNamespaceImpl {
         const rpcCallable = (...args: unknown[]) => {
           const executor = self._getOrCreateExecutor(idStr, id)!;
           self._lastActivity.set(idStr, Date.now());
-          const promise = executor.executeRpc(String(prop), args);
-          return createRpcPromise(promise);
+          return executor.executeRpc(String(prop), args);
         };
 
         // Make it thenable for property access: `await stub.myProp`

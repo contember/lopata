@@ -720,11 +720,11 @@ export default {
     }
     if (path === "/echo/greet" && method === "GET") {
       const name = url.searchParams.get("name") ?? "world";
-      const greeting = await env.ECHO.greet(name);
+      const greeting = await (env.ECHO as any).greet(name);
       return Response.json({ greeting });
     }
     if (path === "/echo/info" && method === "GET") {
-      const info = await env.ECHO.info();
+      const info = await (env.ECHO as any).info();
       return Response.json(info);
     }
 

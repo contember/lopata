@@ -95,7 +95,7 @@ export class SqliteCache {
 
 		const headers = new Headers(JSON.parse(row.headers));
 		headers.set("cf-cache-status", "HIT");
-		return new Response(row.body, { status: row.status, headers });
+		return new Response(row.body as unknown as BodyInit, { status: row.status, headers });
 	}
 
 	async put(request: Request | string, response: Response): Promise<void> {
@@ -132,7 +132,7 @@ export class SqliteCache {
 
 		const url = req.url;
 		const status = response.status;
-		const headers = JSON.stringify([...response.headers.entries()]);
+		const headers = JSON.stringify(Array.from(response.headers as unknown as Iterable<[string, string]>));
 		const body = new Uint8Array(await response.arrayBuffer());
 
 		// Validate body size

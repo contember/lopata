@@ -397,8 +397,11 @@ describe("Integration: DO stub with RpcTarget return", () => {
     const id = ns.idFromName("pipeline-test");
     const stub = ns.get(id) as any;
 
-    // Pipeline: stub.getChild().compute(2, 3) without intermediate await
-    const result = await stub.getChild().compute(2, 3);
+    // RPC return value is wrapped as RpcStub — use intermediate await
+    // (Promise pipelining without await requires Proxy(Promise) which
+    // is incompatible with bun:test .rejects assertions)
+    const child = await stub.getChild();
+    const result = await child.compute(2, 3);
     expect(result).toBe(5);
 
     ns.destroy();

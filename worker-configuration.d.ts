@@ -12,6 +12,7 @@ declare namespace Cloudflare {
 		COUNTER: DurableObjectNamespace<import("./src/index").Counter>;
 		ERROR_BRIDGE: DurableObjectNamespace<import("./src/index").ErrorBridge>;
 		SQL_NOTES: DurableObjectNamespace<import("./src/index").SqlNotes>;
+		ECHO: Service;
 		FAILING: Service;
 		MY_CONTAINER: DurableObjectNamespace<import("./src/index").MyContainer>;
 		SANDBOX: DurableObjectNamespace<import("./src/index").Sandbox>;
