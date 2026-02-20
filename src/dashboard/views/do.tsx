@@ -151,6 +151,10 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 					<SqlBrowser
 						tables={sqlTables}
 						execQuery={(sql) => rpc('do.sqlQuery', { ns, id, sql })}
+						generateSql={async (prompt) => {
+							const res = await rpc('do.generateSql', { ns, id, prompt })
+							return res.sql
+						}}
 						historyScope={`do:${ns}:${id}`}
 						basePath={basePath}
 						routeTab={routeTab}

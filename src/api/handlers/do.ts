@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { getDatabase, getDataDir } from '../../db'
+import { generateSqlFromPrompt } from '../generate-sql'
 import type { D1Table, DoDetail, DoInstance, DoNamespace, HandlerContext, OkResponse, QueryResult } from '../types'
 import { getAllConfigs, getDoNamespace } from '../types'
 
@@ -91,6 +92,13 @@ export const handlers = {
 		if (!namespace) throw new Error(`Durable Object namespace "${ns}" not found (worker not loaded?)`)
 		await namespace.triggerAlarm(id)
 		return { ok: true }
+	},
+
+	async 'do.generateSql'({ ns, id, prompt }: { ns: string; id: string; prompt: string }, ctx: HandlerContext): Promise<{ sql: string }> {
+		const dbPath = join(getDataDir(), 'do-sql', ns, `${id}.sqlite`)
+		if (!existsSync(dbPath)) throw new Error('SQL database not found for this instance')
+		const sql = await generateSqlFromPrompt(new Database(dbPath), prompt, ctx.lopataConfig)
+		return { sql }
 	},
 
 	'do.sqlQuery'({ ns, id, sql }: { ns: string; id: string; sql: string }): QueryResult {
