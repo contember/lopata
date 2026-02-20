@@ -1,60 +1,60 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "bunflare",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat_v2"],
-  "observability": { "enabled": true },
-  "kv_namespaces": [
-    { "binding": "KV", "id": "<KV_NAMESPACE_ID>" }
-  ],
-  "r2_buckets": [
-    { "binding": "R2", "bucket_name": "bunflare-bucket" }
-  ],
-  "durable_objects": {
-    "bindings": [
-      { "name": "COUNTER", "class_name": "Counter" },
-      { "name": "ERROR_BRIDGE", "class_name": "ErrorBridge" },
-      { "name": "SQL_NOTES", "class_name": "SqlNotes" },
-      { "name": "SANDBOX", "class_name": "Sandbox" }
-    ]
-  },
-  "workflows": [
-    { "name": "bunflare-workflow", "binding": "MY_WORKFLOW", "class_name": "MyWorkflow" }
-  ],
-  "queues": {
-    "producers": [
-      { "binding": "MY_QUEUE", "queue": "my-queue" }
-    ],
-    "consumers": [
-      { "queue": "my-queue", "max_batch_size": 10, "max_retries": 3 }
-    ]
-  },
-  "d1_databases": [
-    { "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
-  ],
-  "services": [
-    { "binding": "ECHO", "service": "echo-worker" },
-    { "binding": "FAILING", "service": "failing-worker" }
-  ],
-  "containers": [
-    { "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 },
-    { "class_name": "Sandbox", "image": "./Dockerfile.sandbox", "max_instances": 1 }
-  ],
-  "analytics_engine_datasets": [
-    { "binding": "ANALYTICS", "dataset": "playground" }
-  ],
-  "send_email": [
-    { "name": "MAILER" }
-  ],
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  },
-  "migrations": [
-    { "tag": "v1", "new_classes": ["Counter"] },
-    { "tag": "v2", "new_classes": ["MyContainer"] },
-    { "tag": "v3", "new_classes": ["ErrorBridge"] },
-    { "tag": "v4", "new_sqlite_classes": ["SqlNotes"] },
-    { "tag": "v5", "new_sqlite_classes": ["Sandbox"] }
-  ]
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "bunflare",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"compatibility_flags": ["nodejs_compat_v2"],
+	"observability": { "enabled": true },
+	"kv_namespaces": [
+		{ "binding": "KV", "id": "<KV_NAMESPACE_ID>" }
+	],
+	"r2_buckets": [
+		{ "binding": "R2", "bucket_name": "bunflare-bucket" }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "COUNTER", "class_name": "Counter" },
+			{ "name": "ERROR_BRIDGE", "class_name": "ErrorBridge" },
+			{ "name": "SQL_NOTES", "class_name": "SqlNotes" },
+			{ "name": "SANDBOX", "class_name": "Sandbox" }
+		]
+	},
+	"workflows": [
+		{ "name": "bunflare-workflow", "binding": "MY_WORKFLOW", "class_name": "MyWorkflow" }
+	],
+	"queues": {
+		"producers": [
+			{ "binding": "MY_QUEUE", "queue": "my-queue" }
+		],
+		"consumers": [
+			{ "queue": "my-queue", "max_batch_size": 10, "max_retries": 3 }
+		]
+	},
+	"d1_databases": [
+		{ "binding": "DB", "database_name": "bunflare-db", "database_id": "<D1_DATABASE_ID>" }
+	],
+	"services": [
+		{ "binding": "ECHO", "service": "echo-worker" },
+		{ "binding": "FAILING", "service": "failing-worker" }
+	],
+	"containers": [
+		{ "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 },
+		{ "class_name": "Sandbox", "image": "./Dockerfile.sandbox", "max_instances": 1 }
+	],
+	"analytics_engine_datasets": [
+		{ "binding": "ANALYTICS", "dataset": "playground" }
+	],
+	"send_email": [
+		{ "name": "MAILER" }
+	],
+	"triggers": {
+		"crons": ["*/5 * * * *"]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_classes": ["Counter"] },
+		{ "tag": "v2", "new_classes": ["MyContainer"] },
+		{ "tag": "v3", "new_classes": ["ErrorBridge"] },
+		{ "tag": "v4", "new_sqlite_classes": ["SqlNotes"] },
+		{ "tag": "v5", "new_sqlite_classes": ["Sandbox"] }
+	]
 }

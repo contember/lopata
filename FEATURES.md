@@ -9,36 +9,36 @@
 
 ## Summary
 
-| Area | Coverage | Notes |
-|------|----------|-------|
-| **Workers Core API** | ~75% | Native Web APIs via Bun; missing HTMLRewriter, WebSocketPair, tail/email handlers |
-| **KV** | 100% | All methods, bulk ops, limits, validation |
-| **D1** | ~90% | Missing named params, some meta fields, session is stub |
-| **R2** | ~95% | Missing SSE-C, storageClass only "Standard" |
-| **Durable Objects** | ~90% | Missing sync KV API, transactionSync, state.abort |
-| **Queues** | ~90% | Missing pull-based consumers, max_concurrency |
-| **Workflows** | 100% | Full lifecycle, checkpointing, concurrency |
-| **Cache API** | 100% | put/match/delete, TTL, expiration, validation |
-| **Static Assets** | ~90% | Missing _redirects file |
-| **Service Bindings** | ~85% | Missing RpcTarget semantics, stub lifecycle |
-| **Scheduled (Cron)** | 100% | Full cron parser, aliases, manual trigger |
-| **Images** | ~80% | Sharp-based transforms; missing segment, border, some color opts |
-| **Environment Variables** | 100% | [vars], .dev.vars, .env, cloudflare:workers env import |
-| **Overall** | **~90-95%** | All major bindings fully implemented |
+| Area                      | Coverage    | Notes                                                                             |
+| ------------------------- | ----------- | --------------------------------------------------------------------------------- |
+| **Workers Core API**      | ~75%        | Native Web APIs via Bun; missing HTMLRewriter, WebSocketPair, tail/email handlers |
+| **KV**                    | 100%        | All methods, bulk ops, limits, validation                                         |
+| **D1**                    | ~90%        | Missing named params, some meta fields, session is stub                           |
+| **R2**                    | ~95%        | Missing SSE-C, storageClass only "Standard"                                       |
+| **Durable Objects**       | ~90%        | Missing sync KV API, transactionSync, state.abort                                 |
+| **Queues**                | ~90%        | Missing pull-based consumers, max_concurrency                                     |
+| **Workflows**             | 100%        | Full lifecycle, checkpointing, concurrency                                        |
+| **Cache API**             | 100%        | put/match/delete, TTL, expiration, validation                                     |
+| **Static Assets**         | ~90%        | Missing _redirects file                                                           |
+| **Service Bindings**      | ~85%        | Missing RpcTarget semantics, stub lifecycle                                       |
+| **Scheduled (Cron)**      | 100%        | Full cron parser, aliases, manual trigger                                         |
+| **Images**                | ~80%        | Sharp-based transforms; missing segment, border, some color opts                  |
+| **Environment Variables** | 100%        | [vars], .dev.vars, .env, cloudflare:workers env import                            |
+| **Overall**               | **~90-95%** | All major bindings fully implemented                                              |
 
 ### Top Missing Features
 
-| Priority | Feature | Notes |
-|----------|---------|-------|
-| Medium | HTMLRewriter | Popular API, needs external lib (lol-html WASM) |
-| Medium | WebSocketPair (regular Workers) | Only DO WebSocket hibernation exists |
-| Low | IdentityTransformStream / FixedLengthStream | CF-specific stream classes |
-| Low | DO sync KV API (`storage.kv.*`) | Newer API |
-| Low | `_redirects` file | Static asset redirects |
-| Low | Pull-based queue consumers | HTTP pull mode |
-| Very low | Tail / Email handlers | Hard to simulate locally |
-| Very low | crypto.DigestStream, timingSafeEqual | Supplementary crypto APIs |
-| Very low | navigator.userAgent mock | Trivial |
+| Priority | Feature                                     | Notes                                           |
+| -------- | ------------------------------------------- | ----------------------------------------------- |
+| Medium   | HTMLRewriter                                | Popular API, needs external lib (lol-html WASM) |
+| Medium   | WebSocketPair (regular Workers)             | Only DO WebSocket hibernation exists            |
+| Low      | IdentityTransformStream / FixedLengthStream | CF-specific stream classes                      |
+| Low      | DO sync KV API (`storage.kv.*`)             | Newer API                                       |
+| Low      | `_redirects` file                           | Static asset redirects                          |
+| Low      | Pull-based queue consumers                  | HTTP pull mode                                  |
+| Very low | Tail / Email handlers                       | Hard to simulate locally                        |
+| Very low | crypto.DigestStream, timingSafeEqual        | Supplementary crypto APIs                       |
+| Very low | navigator.userAgent mock                    | Trivial                                         |
 
 ---
 
@@ -222,7 +222,7 @@
 - ❌ `.on(selector, handler)` — element handler
 - ❌ `.onDocument(handler)` — document handler
 - ❌ `.transform(response)` — transform response
-- ❌ CSS selectors: *, E, E:nth-child(n), E:first-child, E:nth-of-type(n), E:first-of-type, E:not(s), E.class, E#id, E[attr], E[attr="val"], E[attr~="val"], E[attr^="val"], E[attr$="val"], E[attr*="val"], E[attr|="val"], E F, E > F
+- ❌ CSS selectors: _, E, E:nth-child(n), E:first-child, E:nth-of-type(n), E:first-of-type, E:not(s), E.class, E#id, E[attr], E[attr="val"], E[attr~="val"], E[attr^="val"], E[attr$="val"], E[attr_="val"], E[attr|="val"], E F, E > F
 - ❌ Element: tagName, attributes, removed, namespaceURI, getAttribute, hasAttribute, setAttribute, removeAttribute, before, after, prepend, append, replace, setInnerContent, remove, removeAndKeepContent, onEndTag
 - ❌ EndTag: name, before, after, remove
 - ❌ Text: text, lastInTextNode, removed, before, after, replace, remove

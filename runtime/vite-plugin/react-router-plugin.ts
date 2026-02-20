@@ -1,6 +1,6 @@
-import type { Plugin } from "vite";
+import type { Plugin } from 'vite'
 
-const SERVER_BUILD_ID = "\0virtual:react-router/server-build";
+const SERVER_BUILD_ID = '\0virtual:react-router/server-build'
 
 /**
  * Instruments React Router loaders, actions, and SSR rendering with
@@ -17,19 +17,19 @@ const SERVER_BUILD_ID = "\0virtual:react-router/server-build";
  * If React Router is not used, this plugin is a no-op.
  */
 export function reactRouterPlugin(): Plugin {
-  return {
-    name: "bunflare:react-router",
+	return {
+		name: 'bunflare:react-router',
 
-    transform(code, id) {
-      if (id !== SERVER_BUILD_ID) return;
+		transform(code, id) {
+			if (id !== SERVER_BUILD_ID) return
 
-      // Replace the `export const entry = { module: entryServer };` line
-      // with our instrumented version that adds tracing.
-      const entryPattern = /export const entry\s*=\s*\{\s*module:\s*entryServer\s*\};/;
+			// Replace the `export const entry = { module: entryServer };` line
+			// with our instrumented version that adds tracing.
+			const entryPattern = /export const entry\s*=\s*\{\s*module:\s*entryServer\s*\};/
 
-      if (!entryPattern.test(code)) return;
+			if (!entryPattern.test(code)) return
 
-      const injected = `
+			const injected = `
 const __bf_instr = {
   route({ id, path, instrument }) {
     instrument({
@@ -86,10 +86,10 @@ const __bf_entry = {
   ],
 };
 export const entry = { module: __bf_entry };
-`;
+`
 
-      const transformed = code.replace(entryPattern, injected);
-      return { code: transformed, map: null };
-    },
-  };
+			const transformed = code.replace(entryPattern, injected)
+			return { code: transformed, map: null }
+		},
+	}
 }

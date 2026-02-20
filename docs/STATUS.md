@@ -17,65 +17,66 @@ All issues completed. Project at 100%.
 
 ### Phase 1 — Core Implementation (completed)
 
-| #  | Issue                        | Status    | Notes |
-| -- | ---------------------------- | --------- | ----- |
-| 00 | persistence-layer            | completed | Foundation — db.ts, schema, .bunflare/ dir |
-| 14 | migrate-kv-to-sqlite         | completed | KV from in-memory Map to SQLite |
+| #  | Issue                        | Status    | Notes                                            |
+| -- | ---------------------------- | --------- | ------------------------------------------------ |
+| 00 | persistence-layer            | completed | Foundation — db.ts, schema, .bunflare/ dir       |
+| 14 | migrate-kv-to-sqlite         | completed | KV from in-memory Map to SQLite                  |
 | 15 | migrate-r2-to-files          | completed | R2 from in-memory Map to files + SQLite metadata |
-| 16 | migrate-do-storage-to-sqlite | completed | DO storage from in-memory Map to SQLite |
-| 17 | migrate-workflows-to-sqlite  | completed | Workflow binding to SQLite |
-| 07 | environment-variables        | completed | Parse vars from config + .dev.vars |
-| 01 | d1-database                  | completed | |
-| 02 | queues                       | completed | |
-| 03 | service-bindings             | completed | |
-| 04 | scheduled-handler            | completed | |
-| 05 | static-assets                | completed | |
-| 06 | cache-api                    | completed | |
-| 08 | workflow-instance-management | completed | |
-| 09 | images-binding               | completed | |
-| 13 | do-misc                      | completed | |
-| 10 | do-alarms                    | completed | |
-| 11 | do-websocket-support         | completed | |
-| 12 | do-sql-storage               | completed | |
+| 16 | migrate-do-storage-to-sqlite | completed | DO storage from in-memory Map to SQLite          |
+| 17 | migrate-workflows-to-sqlite  | completed | Workflow binding to SQLite                       |
+| 07 | environment-variables        | completed | Parse vars from config + .dev.vars               |
+| 01 | d1-database                  | completed |                                                  |
+| 02 | queues                       | completed |                                                  |
+| 03 | service-bindings             | completed |                                                  |
+| 04 | scheduled-handler            | completed |                                                  |
+| 05 | static-assets                | completed |                                                  |
+| 06 | cache-api                    | completed |                                                  |
+| 08 | workflow-instance-management | completed |                                                  |
+| 09 | images-binding               | completed |                                                  |
+| 13 | do-misc                      | completed |                                                  |
+| 10 | do-alarms                    | completed |                                                  |
+| 11 | do-websocket-support         | completed |                                                  |
+| 12 | do-sql-storage               | completed |                                                  |
 
 ### Phase 2 — API Completeness (completed)
 
 Issues ordered by priority — high-impact gaps first, optional/low-priority last.
 
-| #  | Issue                        | Status  | Notes |
-| -- | ---------------------------- | ------- | ----- |
-| 27 | do-gaps                      | completed | Stub fetch(), list startAfter, sync(), WS validation |
-| 18 | kv-gaps                      | completed | Bulk ops, key/value/metadata validation, configurable limits |
-| 20 | d1-gaps                      | completed | dump(), exec() parsing, type conversion, meta accuracy |
-| 21 | queues-gaps                  | completed | Content types, validation, attempts fix, waitUntil |
-| 23 | cache-api-gaps               | completed | TTL/expiration, Cache-Control, cf-cache-status, validation, limits |
-| 26 | workflows-gaps               | completed | Step retry, checkpointing, status structure, queued, retention, concurrency |
-| 19 | r2-gaps                      | completed | Multipart, conditionals, range reads, list delimiter, validation, R2Object props |
-| 24 | static-assets-gaps           | completed | ETag, Cache-Control, _headers, run_worker_first, 307 fix, hierarchical 404 |
-| 22 | service-bindings-gaps        | completed | RPC property access, async consistency, subrequest limits, TCP stub |
-| 28 | config-gaps                  | completed | wrangler.toml, env-specific config, global env import |
-| 29 | scheduled-gaps               | completed | Special cron strings, day/month names, controller.type |
-| 25 | images-transforms            | completed | Sharp-based transforms, AVIF dimensions, draw overlay, quality |
+| #  | Issue                 | Status    | Notes                                                                            |
+| -- | --------------------- | --------- | -------------------------------------------------------------------------------- |
+| 27 | do-gaps               | completed | Stub fetch(), list startAfter, sync(), WS validation                             |
+| 18 | kv-gaps               | completed | Bulk ops, key/value/metadata validation, configurable limits                     |
+| 20 | d1-gaps               | completed | dump(), exec() parsing, type conversion, meta accuracy                           |
+| 21 | queues-gaps           | completed | Content types, validation, attempts fix, waitUntil                               |
+| 23 | cache-api-gaps        | completed | TTL/expiration, Cache-Control, cf-cache-status, validation, limits               |
+| 26 | workflows-gaps        | completed | Step retry, checkpointing, status structure, queued, retention, concurrency      |
+| 19 | r2-gaps               | completed | Multipart, conditionals, range reads, list delimiter, validation, R2Object props |
+| 24 | static-assets-gaps    | completed | ETag, Cache-Control, _headers, run_worker_first, 307 fix, hierarchical 404       |
+| 22 | service-bindings-gaps | completed | RPC property access, async consistency, subrequest limits, TCP stub              |
+| 28 | config-gaps           | completed | wrangler.toml, env-specific config, global env import                            |
+| 29 | scheduled-gaps        | completed | Special cron strings, day/month names, controller.type                           |
+| 25 | images-transforms     | completed | Sharp-based transforms, AVIF dimensions, draw overlay, quality                   |
 
 ### Phase 3 — Remaining API Gaps (pending)
 
 Issues ordered by priority — high-impact first.
 
-| #  | Issue                        | Status  | Priority  | Notes |
-| -- | ---------------------------- | ------- | --------- | ----- |
-| 30 | html-rewriter                | completed | medium    | HTMLRewriter class via html-rewriter-wasm (lol-html WASM) |
-| 31 | websocket-pair               | completed | medium    | WebSocketPair + WS upgrade for regular Workers |
-| 32 | cf-streams                   | completed | low       | IdentityTransformStream, FixedLengthStream |
-| 33 | do-sync-kv                   | completed | low       | storage.kv.get/put/delete/list (synchronous) |
-| 34 | redirects-file               | completed | low       | _redirects file: static/dynamic redirects, splats, placeholders, rewrite |
-| 35 | crypto-extras                | completed | very low  | crypto.subtle.timingSafeEqual, crypto.DigestStream |
-| 36 | navigator-globals            | completed | very low  | navigator.userAgent, navigator.language, performance.timeOrigin, scheduler.wait |
-| 37 | queue-pull-consumers         | completed | low       | HTTP pull/ack endpoints for queues |
-| 38 | do-transaction-sync          | completed | low       | storage.transactionSync() |
+| #  | Issue                | Status    | Priority | Notes                                                                           |
+| -- | -------------------- | --------- | -------- | ------------------------------------------------------------------------------- |
+| 30 | html-rewriter        | completed | medium   | HTMLRewriter class via html-rewriter-wasm (lol-html WASM)                       |
+| 31 | websocket-pair       | completed | medium   | WebSocketPair + WS upgrade for regular Workers                                  |
+| 32 | cf-streams           | completed | low      | IdentityTransformStream, FixedLengthStream                                      |
+| 33 | do-sync-kv           | completed | low      | storage.kv.get/put/delete/list (synchronous)                                    |
+| 34 | redirects-file       | completed | low      | _redirects file: static/dynamic redirects, splats, placeholders, rewrite        |
+| 35 | crypto-extras        | completed | very low | crypto.subtle.timingSafeEqual, crypto.DigestStream                              |
+| 36 | navigator-globals    | completed | very low | navigator.userAgent, navigator.language, performance.timeOrigin, scheduler.wait |
+| 37 | queue-pull-consumers | completed | low      | HTTP pull/ack endpoints for queues                                              |
+| 38 | do-transaction-sync  | completed | low      | storage.transactionSync()                                                       |
 
 ## Dependencies
 
 ### Phase 1
+
 - **00** must be completed first (shared DB singleton, schema, data directory)
 - **14, 15, 16, 17** (migrations) depend on **00** — do these right after 00
 - **08** (workflow management) depends on **17** (workflow persistence)
@@ -83,11 +84,13 @@ Issues ordered by priority — high-impact first.
 - All new binding issues (01-06, 09) depend on **00**
 
 ### Phase 2
+
 - No hard dependencies between Phase 2 issues — can be implemented in any order
 - All Phase 2 issues depend on their respective Phase 1 implementation being completed (already done)
 - **25** (images-transforms) requires `sharp` as an optional dependency
 
 ### Phase 3
+
 - **38** (do-transaction-sync) pairs with **33** (do-sync-kv) — implement together
 - **31** (websocket-pair) is independent — no dependency on other Phase 3 issues
 - **30** (html-rewriter) is independent — requires external dependency (lol-html WASM)

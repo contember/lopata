@@ -1,5 +1,5 @@
-import { DevEnvironment, createServerModuleRunner, createServerHotChannel, type Plugin } from "vite";
-import type { ModuleRunner } from "vite/module-runner";
+import { createServerHotChannel, createServerModuleRunner, DevEnvironment, type Plugin } from 'vite'
+import type { ModuleRunner } from 'vite/module-runner'
 
 /**
  * Custom DevEnvironment that is NOT a RunnableDevEnvironment.
@@ -15,21 +15,21 @@ import type { ModuleRunner } from "vite/module-runner";
  * modules through Vite's transform pipeline (JSX, HMR, etc.).
  */
 class BunflareDevEnvironment extends DevEnvironment {
-  private _runner: ModuleRunner | undefined;
+	private _runner: ModuleRunner | undefined
 
-  get runner(): ModuleRunner {
-    if (!this._runner) {
-      this._runner = createServerModuleRunner(this);
-    }
-    return this._runner;
-  }
+	get runner(): ModuleRunner {
+		if (!this._runner) {
+			this._runner = createServerModuleRunner(this)
+		}
+		return this._runner
+	}
 
-  override async close() {
-    if (this._runner) {
-      await this._runner.close();
-    }
-    await super.close();
-  }
+	override async close() {
+		if (this._runner) {
+			await this._runner.close()
+		}
+		await super.close()
+	}
 }
 
 /**
@@ -38,31 +38,31 @@ class BunflareDevEnvironment extends DevEnvironment {
  * delegate SSR handling to Bunflare's middleware.
  */
 export function configPlugin(envName: string): Plugin {
-  return {
-    name: "bunflare:config",
-    config() {
-      return {
-        server: {
-          watch: {
-            ignored: ["**/.bunflare/**"],
-          },
-        },
-        environments: {
-          [envName]: {
-            resolve: {
-              externalConditions: ["workerd", "worker"],
-            },
-            dev: {
-              createEnvironment(name, config) {
-                return new BunflareDevEnvironment(name, config, {
-                  hot: true,
-                  transport: createServerHotChannel(),
-                });
-              },
-            },
-          },
-        },
-      };
-    },
-  };
+	return {
+		name: 'bunflare:config',
+		config() {
+			return {
+				server: {
+					watch: {
+						ignored: ['**/.bunflare/**'],
+					},
+				},
+				environments: {
+					[envName]: {
+						resolve: {
+							externalConditions: ['workerd', 'worker'],
+						},
+						dev: {
+							createEnvironment(name, config) {
+								return new BunflareDevEnvironment(name, config, {
+									hot: true,
+									transport: createServerHotChannel(),
+								})
+							},
+						},
+					},
+				},
+			}
+		},
+	}
 }

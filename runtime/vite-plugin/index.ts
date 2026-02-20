@@ -1,17 +1,17 @@
-import type { Plugin } from "vite";
-import { configPlugin } from "./config-plugin.ts";
-import { modulesPlugin } from "./modules-plugin.ts";
-import { globalsPlugin } from "./globals-plugin.ts";
-import { devServerPlugin } from "./dev-server-plugin.ts";
-import { reactRouterPlugin } from "./react-router-plugin.ts";
+import type { Plugin } from 'vite'
+import { configPlugin } from './config-plugin.ts'
+import { devServerPlugin } from './dev-server-plugin.ts'
+import { globalsPlugin } from './globals-plugin.ts'
+import { modulesPlugin } from './modules-plugin.ts'
+import { reactRouterPlugin } from './react-router-plugin.ts'
 
 export interface BunflarePluginConfig {
-  /** Path to wrangler.jsonc/.json/.toml config. Auto-detected if not specified. */
-  configPath?: string;
-  /** Vite environment name for SSR. Default: "ssr" */
-  viteEnvironment?: { name?: string };
-  /** Auxiliary workers loaded via native Bun import (not through Vite). */
-  auxiliaryWorkers?: { configPath: string }[];
+	/** Path to wrangler.jsonc/.json/.toml config. Auto-detected if not specified. */
+	configPath?: string
+	/** Vite environment name for SSR. Default: "ssr" */
+	viteEnvironment?: { name?: string }
+	/** Auxiliary workers loaded via native Bun import (not through Vite). */
+	auxiliaryWorkers?: { configPath: string }[]
 }
 
 /**
@@ -27,17 +27,17 @@ export interface BunflarePluginConfig {
  * Runtime imports then go through Bun's native module loader.
  */
 export function bunflare(config?: BunflarePluginConfig): Plugin[] {
-  const envName = config?.viteEnvironment?.name ?? "ssr";
+	const envName = config?.viteEnvironment?.name ?? 'ssr'
 
-  return [
-    configPlugin(envName),
-    modulesPlugin(envName),
-    globalsPlugin(),
-    devServerPlugin({
-      configPath: config?.configPath,
-      envName,
-      auxiliaryWorkers: config?.auxiliaryWorkers,
-    }),
-    reactRouterPlugin(),
-  ];
+	return [
+		configPlugin(envName),
+		modulesPlugin(envName),
+		globalsPlugin(),
+		devServerPlugin({
+			configPath: config?.configPath,
+			envName,
+			auxiliaryWorkers: config?.auxiliaryWorkers,
+		}),
+		reactRouterPlugin(),
+	]
 }

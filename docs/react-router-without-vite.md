@@ -47,20 +47,21 @@ export { default as entry } from "./app/entry.server.tsx";
 Route soubor exportuje loader (server) i component (client) z jednoho souboru:
 
 ```typescript
-import { db } from "bun:sqlite"          // server-only
+import { db } from 'bun:sqlite' // server-only
 
-export const loader = async () => {       // server-only
-  return db.query("SELECT * FROM users")
+export const loader = async () => { // server-only
+	return db.query('SELECT * FROM users')
 }
 
-export default function Users({ loaderData }) {  // client + server
-  return <ul>{loaderData.map(u => <li>{u.name}</li>)}</ul>
+export default function Users({ loaderData }) { // client + server
+	return <ul>{loaderData.map(u => <li>{u.name}</li>)}</ul>
 }
 ```
 
 Vite plugin přes Babel transform vytvoří **client verzi** kde jsou server exporty (`loader`, `action`, `headers`) odstraněny. Tree-shaking pak vyhodí nepoužívané server-only importy (`bun:sqlite`).
 
 **Reimplementace:** Hlavní blocker. Bun's bundler nemá plugin API pro AST transformy. Možnosti:
+
 - **Babel transform** — napsat vlastní Babel plugin (~100 řádků), ale potřebuješ Babel pipeline
 - **es-module-lexer** — detekuje exporty, ale neumí je bezpečně odstranit (nemá AST)
 - **Separátní soubory** — jiná konvence: `route.server.ts` + `route.client.tsx`. Funguje ale rozbíjí React Router standard
@@ -71,6 +72,7 @@ Vite plugin přes Babel transform vytvoří **client verzi** kde jsou server exp
 Babel transform (`react-refresh/babel`) instrumentuje každou React komponentu pro hot-reloading bez ztráty stavu. Vite přidává HMR runtime, který při změně souboru nahradí jen změněnou komponentu.
 
 **Reimplementace:** Bun má `--hot` (full module reload), ale ne component-level HMR. Výsledek: každá změna = full page reload, ztráta stavu formulářů, scrollu, atd. Pro implementaci Fast Refresh by bylo potřeba:
+
 - Babel transform pro instrumentaci komponent
 - WebSocket server pro HMR komunikaci s browserem
 - HMR runtime v browseru (~500 řádků)
@@ -88,6 +90,7 @@ React Router SSR potřebuje vědět, které JS/CSS soubory patří ke které rou
 Toto vyžaduje client build s content-hash pojmenováním a manifest soubor.
 
 **Reimplementace:** `Bun.build()` umí bundlovat s `naming: "[name]-[hash].[ext]"`. Ale potřebuješ:
+
 - Entry pointy z každé route (ne z jednoho souboru)
 - Code splitting per-route
 - Manifest generování (který chunk patří ke které route)
@@ -100,8 +103,8 @@ Generuje `.react-router/types/` s type-safe interfaces:
 ```typescript
 // .react-router/types/app/routes/admin/users/+types/$id.ts
 export namespace Route {
-  export type LoaderArgs = { params: { id: string }, context: AppLoadContext }
-  export type ComponentProps = { loaderData: Awaited<ReturnType<typeof loader>> }
+	export type LoaderArgs = { params: { id: string }; context: AppLoadContext }
+	export type ComponentProps = { loaderData: Awaited<ReturnType<typeof loader>> }
 }
 ```
 
@@ -115,16 +118,16 @@ V SPA módu servíruje `/__manifest` endpoint pro client-side route discovery.
 
 ## Celkový odhad
 
-| Komponenta | Složitost | Řádků | Blocker? |
-|---|---|---|---|
-| Route discovery | střední | ~300 | ne |
-| Virtual server-build modul | střední | ~200 | ne |
-| Client/server code splitting | **vysoká** | ~500+ | **ano** |
-| React Fast Refresh | vysoká | ~800+ | ne (ale velký DX hit) |
-| Client manifest + asset serving | střední | ~300 | ne |
-| Type generování | nízká | ~50 (volání CLI) | ne |
-| File watcher + rebuild | nízká | ~100 | ne |
-| **Celkem** | | **~2000-2500** | |
+| Komponenta                      | Složitost  | Řádků            | Blocker?              |
+| ------------------------------- | ---------- | ---------------- | --------------------- |
+| Route discovery                 | střední    | ~300             | ne                    |
+| Virtual server-build modul      | střední    | ~200             | ne                    |
+| Client/server code splitting    | **vysoká** | ~500+            | **ano**               |
+| React Fast Refresh              | vysoká     | ~800+            | ne (ale velký DX hit) |
+| Client manifest + asset serving | střední    | ~300             | ne                    |
+| Type generování                 | nízká      | ~50 (volání CLI) | ne                    |
+| File watcher + rebuild          | nízká      | ~100             | ne                    |
+| **Celkem**                      |            | **~2000-2500**   |                       |
 
 ## Hlavní rizika
 
@@ -136,6 +139,7 @@ V SPA módu servíruje `/__manifest` endpoint pro client-side route discovery.
 ## Porovnání s Vite plugin přístupem
 
 Alternativa: napsat `@bunflare/vite-plugin` jako drop-in replacement pro `@cloudflare/vite-plugin`. Vite + React Router plugin řeší body 1-6 výše. Bunflare plugin jen dodá:
+
 - Resolving `cloudflare:workers` → lokální bindings (~50 řádků)
 - Globální CF APIs (caches, HTMLRewriter) (~50 řádků)
 - Dev server middleware s `buildEnv()` (~200 řádků)

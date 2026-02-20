@@ -146,35 +146,36 @@ Ke každému issue **napiš integrační testy** do `runtime/tests/`. Testy ově
 
 ```ts
 // runtime/tests/kv.test.ts
-import { test, expect, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
-import { SqliteKVNamespace } from "../bindings/kv";
+import { Database } from 'bun:sqlite'
+import { beforeEach, expect, test } from 'bun:test'
+import { SqliteKVNamespace } from '../bindings/kv'
 
-let kv: SqliteKVNamespace;
+let kv: SqliteKVNamespace
 
 beforeEach(() => {
-  const db = new Database(":memory:");
-  // create tables...
-  kv = new SqliteKVNamespace(db, "TEST_KV");
-});
+	const db = new Database(':memory:')
+	// create tables...
+	kv = new SqliteKVNamespace(db, 'TEST_KV')
+})
 
-test("put and get", async () => {
-  await kv.put("key", "value");
-  expect(await kv.get("key")).toBe("value");
-});
+test('put and get', async () => {
+	await kv.put('key', 'value')
+	expect(await kv.get('key')).toBe('value')
+})
 
-test("get non-existent key returns null", async () => {
-  expect(await kv.get("missing")).toBeNull();
-});
+test('get non-existent key returns null', async () => {
+	expect(await kv.get('missing')).toBeNull()
+})
 
-test("delete removes key", async () => {
-  await kv.put("key", "value");
-  await kv.delete("key");
-  expect(await kv.get("key")).toBeNull();
-});
+test('delete removes key', async () => {
+	await kv.put('key', 'value')
+	await kv.delete('key')
+	expect(await kv.get('key')).toBeNull()
+})
 ```
 
 Pravidla:
+
 - Při migraci existujícího bindingu (issues 14-17) VŽDY aktualizuj odpovídající test soubor — import, constructor, beforeEach setup
 - Když přidáváš nový binding, přidej jeho config fields do `WranglerConfig` v `runtime/config.ts`
 - Každý binding má vlastní test soubor: `runtime/tests/<binding>.test.ts`

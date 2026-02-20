@@ -1,27 +1,27 @@
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { Database } from 'bun:sqlite'
+import { mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
-const DATA_DIR = join(process.cwd(), ".bunflare");
-const DB_PATH = join(DATA_DIR, "data.sqlite");
+const DATA_DIR = join(process.cwd(), '.bunflare')
+const DB_PATH = join(DATA_DIR, 'data.sqlite')
 
-let instance: Database | null = null;
+let instance: Database | null = null
 
 /**
  * Returns the shared SQLite database singleton for bunflare runtime data.
  * Creates the .bunflare/ directory and database file on first call.
  */
 export function getDatabase(): Database {
-	if (instance) return instance;
+	if (instance) return instance
 
-	mkdirSync(DATA_DIR, { recursive: true });
-	mkdirSync(join(DATA_DIR, "r2"), { recursive: true });
-	mkdirSync(join(DATA_DIR, "d1"), { recursive: true });
+	mkdirSync(DATA_DIR, { recursive: true })
+	mkdirSync(join(DATA_DIR, 'r2'), { recursive: true })
+	mkdirSync(join(DATA_DIR, 'd1'), { recursive: true })
 
-	instance = new Database(DB_PATH, { create: true });
-	instance.run("PRAGMA journal_mode=WAL");
-	runMigrations(instance);
-	return instance;
+	instance = new Database(DB_PATH, { create: true })
+	instance.run('PRAGMA journal_mode=WAL')
+	runMigrations(instance)
+	return instance
 }
 
 /**
@@ -38,7 +38,7 @@ export function runMigrations(db: Database): void {
 			expiration INTEGER,
 			PRIMARY KEY (namespace, key)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS r2_objects (
@@ -53,7 +53,7 @@ export function runMigrations(db: Database): void {
 			checksums TEXT,
 			PRIMARY KEY (bucket, key)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS r2_multipart_uploads (
@@ -64,7 +64,7 @@ export function runMigrations(db: Database): void {
 			custom_metadata TEXT,
 			created_at TEXT NOT NULL
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS r2_multipart_parts (
@@ -75,7 +75,7 @@ export function runMigrations(db: Database): void {
 			file_path TEXT NOT NULL,
 			PRIMARY KEY (upload_id, part_number)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS do_instances (
@@ -85,7 +85,7 @@ export function runMigrations(db: Database): void {
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			PRIMARY KEY (namespace, id)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS do_storage (
@@ -95,7 +95,7 @@ export function runMigrations(db: Database): void {
 			value TEXT NOT NULL,
 			PRIMARY KEY (namespace, id, key)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS do_alarms (
@@ -104,7 +104,7 @@ export function runMigrations(db: Database): void {
 			alarm_time INTEGER NOT NULL,
 			PRIMARY KEY (namespace, id)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS queue_messages (
@@ -118,20 +118,20 @@ export function runMigrations(db: Database): void {
 			created_at INTEGER NOT NULL,
 			completed_at INTEGER
 		)
-	`);
+	`)
 
 	// Migrate: add status column if missing (existing databases)
 	{
-		const cols = db.query<{ name: string }, []>("PRAGMA table_info(queue_messages)").all();
-		if (!cols.some(c => c.name === "status")) {
-			db.run("ALTER TABLE queue_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'");
+		const cols = db.query<{ name: string }, []>('PRAGMA table_info(queue_messages)').all()
+		if (!cols.some(c => c.name === 'status')) {
+			db.run("ALTER TABLE queue_messages ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
 		}
-		if (!cols.some(c => c.name === "completed_at")) {
-			db.run("ALTER TABLE queue_messages ADD COLUMN completed_at INTEGER");
+		if (!cols.some(c => c.name === 'completed_at')) {
+			db.run('ALTER TABLE queue_messages ADD COLUMN completed_at INTEGER')
 		}
 	}
 
-	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_visible ON queue_messages(queue, visible_at)`);
+	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_visible ON queue_messages(queue, visible_at)`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS queue_leases (
@@ -140,9 +140,9 @@ export function runMigrations(db: Database): void {
 			queue TEXT NOT NULL,
 			expires_at INTEGER NOT NULL
 		)
-	`);
+	`)
 
-	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_leases_queue ON queue_leases(queue)`);
+	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_leases_queue ON queue_leases(queue)`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS workflow_instances (
@@ -157,7 +157,7 @@ export function runMigrations(db: Database): void {
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS workflow_events (
@@ -167,7 +167,7 @@ export function runMigrations(db: Database): void {
 			payload TEXT,
 			created_at INTEGER NOT NULL
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS workflow_steps (
@@ -177,7 +177,7 @@ export function runMigrations(db: Database): void {
 			completed_at INTEGER NOT NULL,
 			PRIMARY KEY (instance_id, step_name)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS workflow_step_attempts (
@@ -190,7 +190,7 @@ export function runMigrations(db: Database): void {
 			updated_at INTEGER,
 			PRIMARY KEY (instance_id, step_name)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS cache_entries (
@@ -202,7 +202,7 @@ export function runMigrations(db: Database): void {
 			expires_at INTEGER,
 			PRIMARY KEY (cache_name, url)
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS email_messages (
@@ -216,7 +216,7 @@ export function runMigrations(db: Database): void {
 			reject_reason TEXT,
 			created_at INTEGER NOT NULL
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS ai_requests (
@@ -230,7 +230,7 @@ export function runMigrations(db: Database): void {
 			is_streaming INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL
 		)
-	`);
+	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS analytics_engine (
@@ -248,11 +248,11 @@ export function runMigrations(db: Database): void {
 			double11 REAL, double12 REAL, double13 REAL, double14 REAL, double15 REAL,
 			double16 REAL, double17 REAL, double18 REAL, double19 REAL, double20 REAL
 		)
-	`);
-	db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_engine_dataset_ts ON analytics_engine(dataset, timestamp)`);
+	`)
+	db.run(`CREATE INDEX IF NOT EXISTS idx_analytics_engine_dataset_ts ON analytics_engine(dataset, timestamp)`)
 }
 
 /** Returns the path to the .bunflare data directory. */
 export function getDataDir(): string {
-	return DATA_DIR;
+	return DATA_DIR
 }

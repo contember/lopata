@@ -1,1 +1,1 @@
-export { Sandbox } from "@cloudflare/sandbox";
+export { Sandbox } from '@cloudflare/sandbox'

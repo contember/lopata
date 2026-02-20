@@ -10,61 +10,61 @@
 
 // --- Messages from worker → main ---
 export type WsBridgeOutbound =
-  | { type: "ws-send"; wsId: string; data: string | ArrayBuffer }
-  | { type: "ws-close"; wsId: string; code?: number; reason?: string }
-  | { type: "ws-accept"; wsId: string; tags: string[] };
+	| { type: 'ws-send'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'ws-close'; wsId: string; code?: number; reason?: string }
+	| { type: 'ws-accept'; wsId: string; tags: string[] }
 
 // --- Messages from main → worker ---
 export type WsBridgeInbound =
-  | { type: "ws-message"; wsId: string; data: string | ArrayBuffer }
-  | { type: "ws-close"; wsId: string; code: number; reason: string; wasClean: boolean }
-  | { type: "ws-error"; wsId: string };
+	| { type: 'ws-message'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'ws-close'; wsId: string; code: number; reason: string; wasClean: boolean }
+	| { type: 'ws-error'; wsId: string }
 
 /**
  * A WebSocket proxy that lives in the worker thread.
  * Implements enough of the WebSocket interface for DO's state.acceptWebSocket().
  */
 export class BridgeWebSocket extends EventTarget {
-  readonly wsId: string;
-  readyState = 1; // OPEN
-  private _postMessage: (msg: WsBridgeOutbound) => void;
+	readonly wsId: string
+	readyState = 1 // OPEN
+	private _postMessage: (msg: WsBridgeOutbound) => void
 
-  constructor(wsId: string, postMessage: (msg: WsBridgeOutbound) => void) {
-    super();
-    this.wsId = wsId;
-    this._postMessage = postMessage;
-  }
+	constructor(wsId: string, postMessage: (msg: WsBridgeOutbound) => void) {
+		super()
+		this.wsId = wsId
+		this._postMessage = postMessage
+	}
 
-  send(data: string | ArrayBuffer): void {
-    if (this.readyState !== 1) return;
-    this._postMessage({ type: "ws-send", wsId: this.wsId, data });
-  }
+	send(data: string | ArrayBuffer): void {
+		if (this.readyState !== 1) return
+		this._postMessage({ type: 'ws-send', wsId: this.wsId, data })
+	}
 
-  close(code?: number, reason?: string): void {
-    if (this.readyState >= 2) return;
-    this.readyState = 2; // CLOSING
-    this._postMessage({ type: "ws-close", wsId: this.wsId, code, reason });
-    this.readyState = 3; // CLOSED
-  }
+	close(code?: number, reason?: string): void {
+		if (this.readyState >= 2) return
+		this.readyState = 2 // CLOSING
+		this._postMessage({ type: 'ws-close', wsId: this.wsId, code, reason })
+		this.readyState = 3 // CLOSED
+	}
 
-  /** @internal Called by the worker entry when the main thread forwards a message */
-  _onMessage(data: string | ArrayBuffer): void {
-    this.dispatchEvent(new MessageEvent("message", { data }));
-  }
+	/** @internal Called by the worker entry when the main thread forwards a message */
+	_onMessage(data: string | ArrayBuffer): void {
+		this.dispatchEvent(new MessageEvent('message', { data }))
+	}
 
-  /** @internal Called by the worker entry when the main thread forwards a close */
-  _onClose(code: number, reason: string, wasClean: boolean): void {
-    this.readyState = 3;
-    this.dispatchEvent(new CloseEvent("close", { code, reason, wasClean }));
-  }
+	/** @internal Called by the worker entry when the main thread forwards a close */
+	_onClose(code: number, reason: string, wasClean: boolean): void {
+		this.readyState = 3
+		this.dispatchEvent(new CloseEvent('close', { code, reason, wasClean }))
+	}
 
-  /** @internal Called by the worker entry when the main thread forwards an error */
-  _onError(): void {
-    this.dispatchEvent(new Event("error"));
-  }
+	/** @internal Called by the worker entry when the main thread forwards an error */
+	_onError(): void {
+		this.dispatchEvent(new Event('error'))
+	}
 
-  /** Signal that this WS has been accepted by the DO (via state.acceptWebSocket) */
-  _signalAccepted(tags: string[]): void {
-    this._postMessage({ type: "ws-accept", wsId: this.wsId, tags });
-  }
+	/** Signal that this WS has been accepted by the DO (via state.acceptWebSocket) */
+	_signalAccepted(tags: string[]): void {
+		this._postMessage({ type: 'ws-accept', wsId: this.wsId, tags })
+	}
 }

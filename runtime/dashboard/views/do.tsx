@@ -1,168 +1,164 @@
-import { formatTime, parseHashRoute } from "../lib";
-import { useQuery, useMutation } from "../rpc/hooks";
-import { rpc } from "../rpc/client";
-import { EmptyState, Breadcrumb, Table, PageHeader, DeleteButton, TableLink, ServiceInfo, SqlBrowser, RefreshButton } from "../components";
-import type { Tab } from "../sql-browser/index";
+import { Breadcrumb, DeleteButton, EmptyState, PageHeader, RefreshButton, ServiceInfo, SqlBrowser, Table, TableLink } from '../components'
+import { formatTime, parseHashRoute } from '../lib'
+import { rpc } from '../rpc/client'
+import { useMutation, useQuery } from '../rpc/hooks'
+import type { Tab } from '../sql-browser/index'
 
 export function DoView({ route }: { route: string }) {
-  const { segments, query } = parseHashRoute(route);
-  if (segments.length <= 1) return <DoNamespaceList />;
-  if (segments.length === 2) return <DoInstanceList ns={decodeURIComponent(segments[1]!)} />;
-  if (segments.length >= 3) {
-    const ns = decodeURIComponent(segments[1]!);
-    const id = decodeURIComponent(segments[2]!);
-    const rawTab = segments[3] as Tab | undefined;
-    const tab: Tab = rawTab === "schema" || rawTab === "sql" ? rawTab : "data";
-    const tableName = segments[4] ? decodeURIComponent(segments[4]) : null;
-    const basePath = `/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}`;
-    return <DoInstanceDetail ns={ns} id={id} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />;
-  }
-  return null;
+	const { segments, query } = parseHashRoute(route)
+	if (segments.length <= 1) return <DoNamespaceList />
+	if (segments.length === 2) return <DoInstanceList ns={decodeURIComponent(segments[1]!)} />
+	if (segments.length >= 3) {
+		const ns = decodeURIComponent(segments[1]!)
+		const id = decodeURIComponent(segments[2]!)
+		const rawTab = segments[3] as Tab | undefined
+		const tab: Tab = rawTab === 'schema' || rawTab === 'sql' ? rawTab : 'data'
+		const tableName = segments[4] ? decodeURIComponent(segments[4]) : null
+		const basePath = `/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}`
+		return <DoInstanceDetail ns={ns} id={id} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />
+	}
+	return null
 }
 
 function DoNamespaceList() {
-  const { data: namespaces, refetch } = useQuery("do.listNamespaces");
-  const { data: configGroups } = useQuery("config.forService", { type: "do" });
+	const { data: namespaces, refetch } = useQuery('do.listNamespaces')
+	const { data: configGroups } = useQuery('config.forService', { type: 'do' })
 
-  const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0;
+	const totalInstances = namespaces?.reduce((s, ns) => s + ns.count, 0) ?? 0
 
-  return (
-    <div class="p-8 max-w-6xl">
-      <PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
-      <div class="flex gap-6 items-start">
-        <div class="flex-1 min-w-0">
-          {!namespaces?.length ? (
-            <EmptyState message="No Durable Object namespaces found" />
-          ) : (
-            <Table
-              headers={["Namespace", "Instances"]}
-              rows={namespaces.map(ns => [
-                <TableLink href={`#/do/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
-                <span class="tabular-nums">{ns.count}</span>,
-              ])}
-            />
-          )}
-        </div>
-        <ServiceInfo
-          description="Durable Objects provide strongly consistent coordination."
-          stats={[
-            { label: "Namespaces", value: namespaces?.length ?? 0 },
-            { label: "Instances", value: totalInstances.toLocaleString() },
-          ]}
-          configGroups={configGroups}
-          links={[
-            { label: "Documentation", href: "https://developers.cloudflare.com/durable-objects/" },
-            { label: "API Reference", href: "https://developers.cloudflare.com/api/resources/durable_objects/" },
-          ]}
-        />
-      </div>
-    </div>
-  );
+	return (
+		<div class="p-8 max-w-6xl">
+			<PageHeader title="Durable Objects" subtitle={`${namespaces?.length ?? 0} namespace(s)`} actions={<RefreshButton onClick={refetch} />} />
+			<div class="flex gap-6 items-start">
+				<div class="flex-1 min-w-0">
+					{!namespaces?.length ? <EmptyState message="No Durable Object namespaces found" /> : (
+						<Table
+							headers={['Namespace', 'Instances']}
+							rows={namespaces.map(ns => [
+								<TableLink href={`#/do/${encodeURIComponent(ns.namespace)}`}>{ns.namespace}</TableLink>,
+								<span class="tabular-nums">{ns.count}</span>,
+							])}
+						/>
+					)}
+				</div>
+				<ServiceInfo
+					description="Durable Objects provide strongly consistent coordination."
+					stats={[
+						{ label: 'Namespaces', value: namespaces?.length ?? 0 },
+						{ label: 'Instances', value: totalInstances.toLocaleString() },
+					]}
+					configGroups={configGroups}
+					links={[
+						{ label: 'Documentation', href: 'https://developers.cloudflare.com/durable-objects/' },
+						{ label: 'API Reference', href: 'https://developers.cloudflare.com/api/resources/durable_objects/' },
+					]}
+				/>
+			</div>
+		</div>
+	)
 }
 
 function DoInstanceList({ ns }: { ns: string }) {
-  const { data: instances, refetch } = useQuery("do.listInstances", { ns });
+	const { data: instances, refetch } = useQuery('do.listInstances', { ns })
 
-  return (
-    <div class="p-8">
-      <Breadcrumb items={[{ label: "Durable Objects", href: "#/do" }, { label: ns }]} />
-      <div class="mb-6 flex justify-end">
-        <RefreshButton onClick={refetch} />
-      </div>
-      {!instances?.length ? (
-        <EmptyState message="No instances found" />
-      ) : (
-        <Table
-          headers={["Instance ID", "Name", "Storage Keys", "Alarm"]}
-          rows={instances.map(inst => [
-            <TableLink href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} mono>{inst.id}</TableLink>,
-            inst.name ? <span class="text-sm">{inst.name}</span> : <span class="text-text-muted">—</span>,
-            <span class="tabular-nums">{inst.key_count}</span>,
-            inst.alarm ? formatTime(inst.alarm) : "—",
-          ])}
-        />
-      )}
-    </div>
-  );
+	return (
+		<div class="p-8">
+			<Breadcrumb items={[{ label: 'Durable Objects', href: '#/do' }, { label: ns }]} />
+			<div class="mb-6 flex justify-end">
+				<RefreshButton onClick={refetch} />
+			</div>
+			{!instances?.length ? <EmptyState message="No instances found" /> : (
+				<Table
+					headers={['Instance ID', 'Name', 'Storage Keys', 'Alarm']}
+					rows={instances.map(inst => [
+						<TableLink href={`#/do/${encodeURIComponent(ns)}/${encodeURIComponent(inst.id)}`} mono>{inst.id}</TableLink>,
+						inst.name ? <span class="text-sm">{inst.name}</span> : <span class="text-text-muted">—</span>,
+						<span class="tabular-nums">{inst.key_count}</span>,
+						inst.alarm ? formatTime(inst.alarm) : '—',
+					])}
+				/>
+			)}
+		</div>
+	)
 }
 
 function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }: {
-  ns: string;
-  id: string;
-  basePath: string;
-  routeTab: Tab;
-  routeTable: string | null;
-  routeQuery: URLSearchParams;
+	ns: string
+	id: string
+	basePath: string
+	routeTab: Tab
+	routeTable: string | null
+	routeQuery: URLSearchParams
 }) {
-  const { data, refetch } = useQuery("do.getInstance", { ns, id });
-  const deleteEntry = useMutation("do.deleteEntry");
-  const triggerAlarm = useMutation("do.triggerAlarm");
-  const { data: sqlTables } = useQuery("do.listSqlTables", { ns, id });
+	const { data, refetch } = useQuery('do.getInstance', { ns, id })
+	const deleteEntry = useMutation('do.deleteEntry')
+	const triggerAlarm = useMutation('do.triggerAlarm')
+	const { data: sqlTables } = useQuery('do.listSqlTables', { ns, id })
 
-  const handleDelete = async (key: string) => {
-    if (!confirm(`Delete storage key "${key}"?`)) return;
-    await deleteEntry.mutate({ ns, id, key });
-    refetch();
-  };
+	const handleDelete = async (key: string) => {
+		if (!confirm(`Delete storage key "${key}"?`)) return
+		await deleteEntry.mutate({ ns, id, key })
+		refetch()
+	}
 
-  const handleTriggerAlarm = async () => {
-    await triggerAlarm.mutate({ ns, id });
-    refetch();
-  };
+	const handleTriggerAlarm = async () => {
+		await triggerAlarm.mutate({ ns, id })
+		refetch()
+	}
 
-  if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>;
+	if (!data) return <div class="p-8 text-text-muted font-medium">Loading...</div>
 
-  return (
-    <div class="p-8">
-      <Breadcrumb items={[
-        { label: "Durable Objects", href: "#/do" },
-        { label: ns, href: `#/do/${encodeURIComponent(ns)}` },
-        { label: id.slice(0, 16) + "..." },
-      ]} />
-      <div class="mb-6 flex justify-end">
-        <RefreshButton onClick={refetch} />
-      </div>
-      {(data.alarm || data.hasAlarmHandler) && (
-        <div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink flex items-center justify-between">
-          <span>{data.alarm ? `Alarm set for: ${formatTime(data.alarm)}` : "No alarm scheduled"}</span>
-          {data.hasAlarmHandler && (
-            <button
-              onClick={handleTriggerAlarm}
-              disabled={triggerAlarm.isLoading}
-              class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {triggerAlarm.isLoading ? "Triggering..." : "Trigger now"}
-            </button>
-          )}
-        </div>
-      )}
-      {data.entries.length === 0 ? (
-        <EmptyState message="No storage entries" />
-      ) : (
-        <Table
-          headers={["Key", "Value", ""]}
-          rows={data.entries.map(e => [
-            <span class="font-mono text-xs font-medium">{e.key}</span>,
-            <pre class="text-xs max-w-lg truncate font-mono">{e.value}</pre>,
-            <DeleteButton onClick={() => handleDelete(e.key)} />,
-          ])}
-        />
-      )}
+	return (
+		<div class="p-8">
+			<Breadcrumb
+				items={[
+					{ label: 'Durable Objects', href: '#/do' },
+					{ label: ns, href: `#/do/${encodeURIComponent(ns)}` },
+					{ label: id.slice(0, 16) + '...' },
+				]}
+			/>
+			<div class="mb-6 flex justify-end">
+				<RefreshButton onClick={refetch} />
+			</div>
+			{(data.alarm || data.hasAlarmHandler) && (
+				<div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink flex items-center justify-between">
+					<span>{data.alarm ? `Alarm set for: ${formatTime(data.alarm)}` : 'No alarm scheduled'}</span>
+					{data.hasAlarmHandler && (
+						<button
+							onClick={handleTriggerAlarm}
+							disabled={triggerAlarm.isLoading}
+							class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+						>
+							{triggerAlarm.isLoading ? 'Triggering...' : 'Trigger now'}
+						</button>
+					)}
+				</div>
+			)}
+			{data.entries.length === 0 ? <EmptyState message="No storage entries" /> : (
+				<Table
+					headers={['Key', 'Value', '']}
+					rows={data.entries.map(e => [
+						<span class="font-mono text-xs font-medium">{e.key}</span>,
+						<pre class="text-xs max-w-lg truncate font-mono">{e.value}</pre>,
+						<DeleteButton onClick={() => handleDelete(e.key)} />,
+					])}
+				/>
+			)}
 
-      {/* SQL Storage */}
-      {sqlTables && sqlTables.length > 0 && (
-        <div class="mt-8">
-          <SqlBrowser
-            tables={sqlTables}
-            execQuery={(sql) => rpc("do.sqlQuery", { ns, id, sql })}
-            historyScope={`do:${ns}:${id}`}
-            basePath={basePath}
-            routeTab={routeTab}
-            routeTable={routeTable}
-            routeQuery={routeQuery}
-          />
-        </div>
-      )}
-    </div>
-  );
+			{/* SQL Storage */}
+			{sqlTables && sqlTables.length > 0 && (
+				<div class="mt-8">
+					<SqlBrowser
+						tables={sqlTables}
+						execQuery={(sql) => rpc('do.sqlQuery', { ns, id, sql })}
+						historyScope={`do:${ns}:${id}`}
+						basePath={basePath}
+						routeTab={routeTab}
+						routeTable={routeTable}
+						routeQuery={routeQuery}
+					/>
+				</div>
+			)}
+		</div>
+	)
 }

@@ -1,17 +1,17 @@
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import type { Plugin } from "vite";
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import type { Plugin } from 'vite'
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const VIRTUAL_MODULES: Record<string, string> = {
-  "cloudflare:workers": "\0cloudflare:workers",
-  "cloudflare:workflows": "\0cloudflare:workflows",
-  "@cloudflare/containers": "\0@cloudflare/containers",
-};
+	'cloudflare:workers': '\0cloudflare:workers',
+	'cloudflare:workflows': '\0cloudflare:workflows',
+	'@cloudflare/containers': '\0@cloudflare/containers',
+}
 
 function resolvePath(relativePath: string): string {
-  return resolve(__dirname, "..", relativePath);
+	return resolve(__dirname, '..', relativePath)
 }
 
 /**
@@ -21,27 +21,27 @@ function resolvePath(relativePath: string): string {
  * Only active in the SSR environment.
  */
 export function modulesPlugin(envName: string): Plugin {
-  return {
-    name: "bunflare:modules",
+	return {
+		name: 'bunflare:modules',
 
-    resolveId(id: string) {
-      if (this.environment?.name !== envName) return;
-      if (id in VIRTUAL_MODULES) {
-        return VIRTUAL_MODULES[id];
-      }
-    },
+		resolveId(id: string) {
+			if (this.environment?.name !== envName) return
+			if (id in VIRTUAL_MODULES) {
+				return VIRTUAL_MODULES[id]
+			}
+		},
 
-    load(id: string) {
-      if (id === "\0cloudflare:workers") {
-        const durableObject = resolvePath("bindings/durable-object");
-        const workflow = resolvePath("bindings/workflow");
-        const websocketPair = resolvePath("bindings/websocket-pair");
+		load(id: string) {
+			if (id === '\0cloudflare:workers') {
+				const durableObject = resolvePath('bindings/durable-object')
+				const workflow = resolvePath('bindings/workflow')
+				const websocketPair = resolvePath('bindings/websocket-pair')
 
-        // env is a proxy to globalThis.__bunflare_env so it works across
-        // Vite SSR runner and native Bun module graphs (which are separate
-        // module instances — a direct re-export of globalEnv would be empty
-        // in the SSR runner because setGlobalEnv() writes to the native instance).
-        return `
+				// env is a proxy to globalThis.__bunflare_env so it works across
+				// Vite SSR runner and native Bun module graphs (which are separate
+				// module instances — a direct re-export of globalEnv would be empty
+				// in the SSR runner because setGlobalEnv() writes to the native instance).
+				return `
 export { DurableObjectBase as DurableObject } from "${durableObject}";
 export { WorkflowEntrypointBase as WorkflowEntrypoint } from "${workflow}";
 export { WebSocketRequestResponsePair } from "${durableObject}";
@@ -68,21 +68,21 @@ export class RpcTarget {
     this[Symbol.for("bunflare.RpcTarget")] = true;
   }
 }
-`;
-      }
+`
+			}
 
-      if (id === "\0cloudflare:workflows") {
-        const workflow = resolvePath("bindings/workflow");
-        return `export { NonRetryableError } from "${workflow}";`;
-      }
+			if (id === '\0cloudflare:workflows') {
+				const workflow = resolvePath('bindings/workflow')
+				return `export { NonRetryableError } from "${workflow}";`
+			}
 
-      if (id === "\0@cloudflare/containers") {
-        const container = resolvePath("bindings/container");
-        return `
+			if (id === '\0@cloudflare/containers') {
+				const container = resolvePath('bindings/container')
+				return `
 export { ContainerBase as Container } from "${container}";
 export { getContainer, getRandom } from "${container}";
-`;
-      }
-    },
-  };
+`
+			}
+		},
+	}
 }

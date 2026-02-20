@@ -1,13 +1,13 @@
-export { Counter } from "./counter";
-export { ErrorBridge } from "./error-bridge";
-export { SqlNotes } from "./notes";
-export { MyWorkflow } from "./workflow";
-export { MyContainer } from "./container";
-export { Sandbox } from "./sandbox";
+export { MyContainer } from './container'
+export { Counter } from './counter'
+export { ErrorBridge } from './error-bridge'
+export { SqlNotes } from './notes'
+export { Sandbox } from './sandbox'
+export { MyWorkflow } from './workflow'
 
 function html(body: string): Response {
-  return new Response(
-    `<!DOCTYPE html>
+	return new Response(
+		`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bunflare Playground</title>
 <style>
@@ -75,12 +75,12 @@ async function api(method, path, body) {
 function formVal(id) { return document.getElementById(id).value; }
 </script>
 </body></html>`,
-    { headers: { "Content-Type": "text/html; charset=utf-8" } },
-  );
+		{ headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+	)
 }
 
 function indexPage(): Response {
-  return html(`
+	return html(`
 <h1>Bunflare Playground</h1>
 <p class="subtitle">Local Cloudflare Worker runtime — test all bindings below</p>
 
@@ -235,7 +235,7 @@ for (let i = 0; i < 8; i++) console.log(\`  fib(\${i}) = \${fib(i)}\`);</textare
   <div class="links" style="margin-top:0.5rem">
     <a href="#" onclick="api('POST','/sandbox/exec',{command:'uname -a'});return false">uname -a</a>
     <a href="#" onclick="api('POST','/sandbox/exec',{command:'ls -la /workspace'});return false">ls /workspace</a>
-    <a href="#" onclick="api('POST','/sandbox/exec',{command:'node -e \"console.log(JSON.stringify({node: process.version, arch: process.arch}))\"'});return false">Node version</a>
+    <a href="#" onclick="api('POST','/sandbox/exec',{command:'node -e "console.log(JSON.stringify({node: process.version, arch: process.arch}))"'});return false">Node version</a>
   </div>
 </div>
 
@@ -283,115 +283,114 @@ for (let i = 0; i < 8; i++) console.log(\`  fib(\${i}) = \${fib(i)}\`);</textare
     <button type="submit" class="secondary">Get status</button>
   </form>
 </div>
-  `);
+  `)
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    const method = request.method;
+	async fetch(request: Request, env: Env): Promise<Response> {
+		const url = new URL(request.url)
+		const path = url.pathname
+		const method = request.method
 
-    // ── Index ──
-    if (path === "/" && method === "GET") {
-      return indexPage();
-    }
+		// ── Index ──
+		if (path === '/' && method === 'GET') {
+			return indexPage()
+		}
 
-    // ── KV ──
-    if (path === "/kv" && method === "GET") {
-      const list = await env.KV.list();
-      return Response.json(list);
-    }
-    const kvMatch = path.match(/^\/kv\/(.+)$/);
-    if (kvMatch) {
-      const key = decodeURIComponent(kvMatch[1]!);
-      if (method === "GET") {
-        const value = await env.KV.get(key);
-        if (value === null) return new Response("Not found", { status: 404 });
-        return new Response(value);
-      }
-      if (method === "PUT") {
-        const body = await request.text();
-        await env.KV.put(key, body);
-        return new Response("OK", { status: 201 });
-      }
-      if (method === "DELETE") {
-        await env.KV.delete(key);
-        return new Response("Deleted", { status: 200 });
-      }
-    }
+		// ── KV ──
+		if (path === '/kv' && method === 'GET') {
+			const list = await env.KV.list()
+			return Response.json(list)
+		}
+		const kvMatch = path.match(/^\/kv\/(.+)$/)
+		if (kvMatch) {
+			const key = decodeURIComponent(kvMatch[1]!)
+			if (method === 'GET') {
+				const value = await env.KV.get(key)
+				if (value === null) return new Response('Not found', { status: 404 })
+				return new Response(value)
+			}
+			if (method === 'PUT') {
+				const body = await request.text()
+				await env.KV.put(key, body)
+				return new Response('OK', { status: 201 })
+			}
+			if (method === 'DELETE') {
+				await env.KV.delete(key)
+				return new Response('Deleted', { status: 200 })
+			}
+		}
 
-    // ── R2 ──
-    if (path === "/r2" && method === "GET") {
-      const list = await env.R2.list();
-      return Response.json({
-        objects: list.objects.map((o) => ({
-          key: o.key,
-          size: o.size,
-          uploaded: o.uploaded,
-        })),
-        truncated: list.truncated,
-      });
-    }
-    const r2Match = path.match(/^\/r2\/(.+)$/);
-    if (r2Match) {
-      const key = decodeURIComponent(r2Match[1]!);
-      if (method === "GET") {
-        const object = await env.R2.get(key);
-        if (!object) return new Response("Not found", { status: 404 });
-        return new Response(object.body, {
-          headers: {
-            "Content-Type":
-              object.httpMetadata?.contentType ??
-              "application/octet-stream",
-            "ETag": object.etag,
-          },
-        });
-      }
-      if (method === "PUT") {
-        const body = await request.arrayBuffer();
-        const ct = request.headers.get("content-type");
-        await env.R2.put(key, body, {
-          httpMetadata: ct ? { contentType: ct } : undefined,
-        });
-        return new Response("OK", { status: 201 });
-      }
-      if (method === "DELETE") {
-        await env.R2.delete(key);
-        return new Response("Deleted", { status: 200 });
-      }
-    }
+		// ── R2 ──
+		if (path === '/r2' && method === 'GET') {
+			const list = await env.R2.list()
+			return Response.json({
+				objects: list.objects.map((o) => ({
+					key: o.key,
+					size: o.size,
+					uploaded: o.uploaded,
+				})),
+				truncated: list.truncated,
+			})
+		}
+		const r2Match = path.match(/^\/r2\/(.+)$/)
+		if (r2Match) {
+			const key = decodeURIComponent(r2Match[1]!)
+			if (method === 'GET') {
+				const object = await env.R2.get(key)
+				if (!object) return new Response('Not found', { status: 404 })
+				return new Response(object.body, {
+					headers: {
+						'Content-Type': object.httpMetadata?.contentType
+							?? 'application/octet-stream',
+						'ETag': object.etag,
+					},
+				})
+			}
+			if (method === 'PUT') {
+				const body = await request.arrayBuffer()
+				const ct = request.headers.get('content-type')
+				await env.R2.put(key, body, {
+					httpMetadata: ct ? { contentType: ct } : undefined,
+				})
+				return new Response('OK', { status: 201 })
+			}
+			if (method === 'DELETE') {
+				await env.R2.delete(key)
+				return new Response('Deleted', { status: 200 })
+			}
+		}
 
-    // ── D1 ──
-    if (path === "/d1/tables" && method === "GET") {
-      const result = await env.DB.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'"
-      ).all();
-      return Response.json(result);
-    }
-    if (path === "/d1/query" && method === "GET") {
-      const sql = url.searchParams.get("sql");
-      if (!sql) return new Response("Missing sql param", { status: 400 });
-      const result = await env.DB.prepare(sql).all();
-      return Response.json(result);
-    }
-    if (path === "/d1/query" && method === "POST") {
-      const body = (await request.json()) as { sql: string; params?: unknown[] };
-      const stmt = body.params?.length
-        ? env.DB.prepare(body.sql).bind(...body.params)
-        : env.DB.prepare(body.sql);
-      const result = await stmt.all();
-      return Response.json(result);
-    }
-    if (path === "/d1/exec" && method === "POST") {
-      const body = (await request.json()) as { sql: string };
-      const result = await env.DB.exec(body.sql);
-      return Response.json(result);
-    }
+		// ── D1 ──
+		if (path === '/d1/tables' && method === 'GET') {
+			const result = await env.DB.prepare(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+			).all()
+			return Response.json(result)
+		}
+		if (path === '/d1/query' && method === 'GET') {
+			const sql = url.searchParams.get('sql')
+			if (!sql) return new Response('Missing sql param', { status: 400 })
+			const result = await env.DB.prepare(sql).all()
+			return Response.json(result)
+		}
+		if (path === '/d1/query' && method === 'POST') {
+			const body = (await request.json()) as { sql: string; params?: unknown[] }
+			const stmt = body.params?.length
+				? env.DB.prepare(body.sql).bind(...body.params)
+				: env.DB.prepare(body.sql)
+			const result = await stmt.all()
+			return Response.json(result)
+		}
+		if (path === '/d1/exec' && method === 'POST') {
+			const body = (await request.json()) as { sql: string }
+			const result = await env.DB.exec(body.sql)
+			return Response.json(result)
+		}
 
-    // ── D1 Seed ──
-    if (path === "/d1/seed" && method === "POST") {
-      await env.DB.exec(`
+		// ── D1 Seed ──
+		if (path === '/d1/seed' && method === 'POST') {
+			await env.DB.exec(`
         CREATE TABLE IF NOT EXISTS categories (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
@@ -529,246 +528,246 @@ export default {
           (9, 6, 1, 42.00),
           (10, 10, 1, 129.00),
           (10, 5, 1, 35.49);
-      `);
-      return Response.json({ ok: true, message: "Seeded 7 tables with sample data" });
-    }
+      `)
+			return Response.json({ ok: true, message: 'Seeded 7 tables with sample data' })
+		}
 
-    // ── Counter DO ──
-    const counterMatch = path.match(/^\/counter\/([^/]+)(\/(.+))?$/);
-    if (counterMatch) {
-      const name = decodeURIComponent(counterMatch[1]!);
-      const action = counterMatch[3];
-      const id = env.COUNTER.idFromName(name);
-      const stub = env.COUNTER.get(id);
+		// ── Counter DO ──
+		const counterMatch = path.match(/^\/counter\/([^/]+)(\/(.+))?$/)
+		if (counterMatch) {
+			const name = decodeURIComponent(counterMatch[1]!)
+			const action = counterMatch[3]
+			const id = env.COUNTER.idFromName(name)
+			const stub = env.COUNTER.get(id)
 
-      if (!action && method === "GET") {
-        const count = await stub.getCount();
-        return Response.json({ name, count });
-      }
-      if (action === "increment" && method === "POST") {
-        const count = await stub.increment();
-        return Response.json({ name, count });
-      }
-      if (action === "decrement" && method === "POST") {
-        const count = await stub.decrement();
-        return Response.json({ name, count });
-      }
-      if (action === "reset" && method === "POST") {
-        await stub.reset();
-        return Response.json({ name, count: 0 });
-      }
-    }
+			if (!action && method === 'GET') {
+				const count = await stub.getCount()
+				return Response.json({ name, count })
+			}
+			if (action === 'increment' && method === 'POST') {
+				const count = await stub.increment()
+				return Response.json({ name, count })
+			}
+			if (action === 'decrement' && method === 'POST') {
+				const count = await stub.decrement()
+				return Response.json({ name, count })
+			}
+			if (action === 'reset' && method === 'POST') {
+				await stub.reset()
+				return Response.json({ name, count: 0 })
+			}
+		}
 
-    // ── Container ──
-    if (path.startsWith("/container")) {
-      const id = env.MY_CONTAINER.idFromName("singleton");
-      const stub = env.MY_CONTAINER.get(id);
+		// ── Container ──
+		if (path.startsWith('/container')) {
+			const id = env.MY_CONTAINER.idFromName('singleton')
+			const stub = env.MY_CONTAINER.get(id)
 
-      if (path === "/container/status" && method === "GET") {
-        const state = await stub.getState();
-        return Response.json(state);
-      }
-      if (path === "/container/start" && method === "POST") {
-        stub.start();
-        return Response.json({ success: true });
-      }
-      if (path === "/container/stop" && method === "POST") {
-        await stub.stop();
-        return Response.json({ success: true });
-      }
-      if (path === "/container/fetch" && method === "POST") {
-        const targetPath = await request.text() || "/";
-        const res = await stub.fetch(new Request(`http://container${targetPath}`));
-        return new Response(await res.text(), {
-          status: res.status,
-          headers: res.headers,
-        });
-      }
-    }
+			if (path === '/container/status' && method === 'GET') {
+				const state = await stub.getState()
+				return Response.json(state)
+			}
+			if (path === '/container/start' && method === 'POST') {
+				stub.start()
+				return Response.json({ success: true })
+			}
+			if (path === '/container/stop' && method === 'POST') {
+				await stub.stop()
+				return Response.json({ success: true })
+			}
+			if (path === '/container/fetch' && method === 'POST') {
+				const targetPath = await request.text() || '/'
+				const res = await stub.fetch(new Request(`http://container${targetPath}`))
+				return new Response(await res.text(), {
+					status: res.status,
+					headers: res.headers,
+				})
+			}
+		}
 
-    // ── SQL Notes DO ──
-    const notesMatch = path.match(/^\/notes\/([^/]+)(\/(\d+))?$/);
-    if (notesMatch) {
-      const name = decodeURIComponent(notesMatch[1]!);
-      const noteId = notesMatch[3] ? parseInt(notesMatch[3]) : null;
-      const id = env.SQL_NOTES.idFromName(name);
-      const stub = env.SQL_NOTES.get(id);
+		// ── SQL Notes DO ──
+		const notesMatch = path.match(/^\/notes\/([^/]+)(\/(\d+))?$/)
+		if (notesMatch) {
+			const name = decodeURIComponent(notesMatch[1]!)
+			const noteId = notesMatch[3] ? parseInt(notesMatch[3]) : null
+			const id = env.SQL_NOTES.idFromName(name)
+			const stub = env.SQL_NOTES.get(id)
 
-      if (!noteId && method === "GET") {
-        const notes = await stub.list();
-        return Response.json({ notebook: name, notes });
-      }
-      if (!noteId && method === "POST") {
-        const body = (await request.json()) as { title: string; body?: string };
-        const note = await stub.create(body.title, body.body ?? "");
-        return Response.json(note, { status: 201 });
-      }
-      if (noteId && method === "GET") {
-        const note = await stub.get(noteId);
-        return Response.json(note);
-      }
-      if (noteId && method === "DELETE") {
-        await stub.remove(noteId);
-        return Response.json({ deleted: noteId });
-      }
-    }
+			if (!noteId && method === 'GET') {
+				const notes = await stub.list()
+				return Response.json({ notebook: name, notes })
+			}
+			if (!noteId && method === 'POST') {
+				const body = (await request.json()) as { title: string; body?: string }
+				const note = await stub.create(body.title, body.body ?? '')
+				return Response.json(note, { status: 201 })
+			}
+			if (noteId && method === 'GET') {
+				const note = await stub.get(noteId)
+				return Response.json(note)
+			}
+			if (noteId && method === 'DELETE') {
+				await stub.remove(noteId)
+				return Response.json({ deleted: noteId })
+			}
+		}
 
-    // ── Analytics Engine ──
-    if (path === "/analytics/track" && method === "POST") {
-      const body = (await request.json()) as { index?: string; doubles?: number[]; blobs?: string[] };
-      env.ANALYTICS.writeDataPoint({
-        indexes: body.index ? [body.index] : undefined,
-        doubles: body.doubles,
-        blobs: body.blobs,
-      });
-      return Response.json({ success: true }, { status: 201 });
-    }
+		// ── Analytics Engine ──
+		if (path === '/analytics/track' && method === 'POST') {
+			const body = (await request.json()) as { index?: string; doubles?: number[]; blobs?: string[] }
+			env.ANALYTICS.writeDataPoint({
+				indexes: body.index ? [body.index] : undefined,
+				doubles: body.doubles,
+				blobs: body.blobs,
+			})
+			return Response.json({ success: true }, { status: 201 })
+		}
 
-    // ── Queue ──
-    if (path === "/queue/send" && method === "POST") {
-      const body = await request.json();
-      await env.MY_QUEUE.send(body);
-      return Response.json({ success: true }, { status: 201 });
-    }
-    if (path === "/queue/send-batch" && method === "POST") {
-      const messages = (await request.json()) as { body: unknown }[];
-      await env.MY_QUEUE.sendBatch(messages);
-      return Response.json(
-        { success: true, count: messages.length },
-        { status: 201 },
-      );
-    }
+		// ── Queue ──
+		if (path === '/queue/send' && method === 'POST') {
+			const body = await request.json()
+			await env.MY_QUEUE.send(body)
+			return Response.json({ success: true }, { status: 201 })
+		}
+		if (path === '/queue/send-batch' && method === 'POST') {
+			const messages = (await request.json()) as { body: unknown }[]
+			await env.MY_QUEUE.sendBatch(messages)
+			return Response.json(
+				{ success: true, count: messages.length },
+				{ status: 201 },
+			)
+		}
 
-    // ── Workflow ──
-    if (path === "/workflow" && method === "POST") {
-      const body = (await request.json()) as { input: string };
-      const instance = await env.MY_WORKFLOW.create({
-        params: { input: body.input },
-      });
-      return Response.json({ id: instance.id });
-    }
-    const wfMatch = path.match(/^\/workflow\/([^/]+)$/);
-    if (wfMatch && method === "GET") {
-      const instance = await env.MY_WORKFLOW.get(wfMatch[1]!);
-      const status = await instance.status();
-      return Response.json({ id: instance.id, status });
-    }
+		// ── Workflow ──
+		if (path === '/workflow' && method === 'POST') {
+			const body = (await request.json()) as { input: string }
+			const instance = await env.MY_WORKFLOW.create({
+				params: { input: body.input },
+			})
+			return Response.json({ id: instance.id })
+		}
+		const wfMatch = path.match(/^\/workflow\/([^/]+)$/)
+		if (wfMatch && method === 'GET') {
+			const instance = await env.MY_WORKFLOW.get(wfMatch[1]!)
+			const status = await instance.status()
+			return Response.json({ id: instance.id, status })
+		}
 
-    // ── Sandbox ──
-    if (path === "/sandbox/exec" && method === "POST") {
-      const { getSandbox } = await import("@cloudflare/sandbox");
-      const sandbox = getSandbox(env.SANDBOX, "dev");
-      const body = (await request.json()) as { command: string };
-      const result = await sandbox.exec(body.command);
-      return Response.json({
-        success: result.success,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        command: result.command,
-        duration: result.duration,
-      });
-    }
-    if (path === "/sandbox/write-and-run" && method === "POST") {
-      const { getSandbox } = await import("@cloudflare/sandbox");
-      const sandbox = getSandbox(env.SANDBOX, "dev");
-      const body = (await request.json()) as { filename: string; code: string };
-      await sandbox.writeFile(`/workspace/${body.filename}`, body.code);
-      const ext = body.filename.split(".").pop();
-      const runner = ext === "py" ? "python3" : ext === "js" ? "node" : ext === "ts" ? "npx tsx" : "bash";
-      const result = await sandbox.exec(`${runner} /workspace/${body.filename}`);
-      return Response.json({
-        success: result.success,
-        exitCode: result.exitCode,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        command: result.command,
-        duration: result.duration,
-      });
-    }
+		// ── Sandbox ──
+		if (path === '/sandbox/exec' && method === 'POST') {
+			const { getSandbox } = await import('@cloudflare/sandbox')
+			const sandbox = getSandbox(env.SANDBOX, 'dev')
+			const body = (await request.json()) as { command: string }
+			const result = await sandbox.exec(body.command)
+			return Response.json({
+				success: result.success,
+				exitCode: result.exitCode,
+				stdout: result.stdout,
+				stderr: result.stderr,
+				command: result.command,
+				duration: result.duration,
+			})
+		}
+		if (path === '/sandbox/write-and-run' && method === 'POST') {
+			const { getSandbox } = await import('@cloudflare/sandbox')
+			const sandbox = getSandbox(env.SANDBOX, 'dev')
+			const body = (await request.json()) as { filename: string; code: string }
+			await sandbox.writeFile(`/workspace/${body.filename}`, body.code)
+			const ext = body.filename.split('.').pop()
+			const runner = ext === 'py' ? 'python3' : ext === 'js' ? 'node' : ext === 'ts' ? 'npx tsx' : 'bash'
+			const result = await sandbox.exec(`${runner} /workspace/${body.filename}`)
+			return Response.json({
+				success: result.success,
+				exitCode: result.exitCode,
+				stdout: result.stdout,
+				stderr: result.stderr,
+				command: result.command,
+				duration: result.duration,
+			})
+		}
 
-    // ── Error Bridge DO → service binding → failing-worker ──
-    const ebFetchMatch = path.match(/^\/error-bridge\/fetch\/(.+)$/);
-    if (ebFetchMatch && method === "GET") {
-      const id = env.ERROR_BRIDGE.idFromName("singleton");
-      const stub = env.ERROR_BRIDGE.get(id);
-      const text = await stub.callFetch("/" + ebFetchMatch[1]!);
-      return new Response(text);
-    }
-    const ebRpcMatch = path.match(/^\/error-bridge\/rpc\/(.+)$/);
-    if (ebRpcMatch && method === "GET") {
-      const id = env.ERROR_BRIDGE.idFromName("singleton");
-      const stub = env.ERROR_BRIDGE.get(id);
-      const result = await stub.callRpc(ebRpcMatch[1]!);
-      return Response.json({ result });
-    }
-    if (path === "/error-bridge/do-throw" && method === "GET") {
-      const id = env.ERROR_BRIDGE.idFromName("singleton");
-      const stub = env.ERROR_BRIDGE.get(id);
-      await stub.doThrow();
-      return new Response("unreachable");
-    }
+		// ── Error Bridge DO → service binding → failing-worker ──
+		const ebFetchMatch = path.match(/^\/error-bridge\/fetch\/(.+)$/)
+		if (ebFetchMatch && method === 'GET') {
+			const id = env.ERROR_BRIDGE.idFromName('singleton')
+			const stub = env.ERROR_BRIDGE.get(id)
+			const text = await stub.callFetch('/' + ebFetchMatch[1]!)
+			return new Response(text)
+		}
+		const ebRpcMatch = path.match(/^\/error-bridge\/rpc\/(.+)$/)
+		if (ebRpcMatch && method === 'GET') {
+			const id = env.ERROR_BRIDGE.idFromName('singleton')
+			const stub = env.ERROR_BRIDGE.get(id)
+			const result = await stub.callRpc(ebRpcMatch[1]!)
+			return Response.json({ result })
+		}
+		if (path === '/error-bridge/do-throw' && method === 'GET') {
+			const id = env.ERROR_BRIDGE.idFromName('singleton')
+			const stub = env.ERROR_BRIDGE.get(id)
+			await stub.doThrow()
+			return new Response('unreachable')
+		}
 
-    // ── Echo service binding ──
-    if (path === "/echo" && method === "GET") {
-      const res = await env.ECHO.fetch(new Request("http://echo/ping"));
-      return new Response(await res.text());
-    }
-    if (path === "/echo/fetch" && method === "POST") {
-      const res = await env.ECHO.fetch(new Request("http://echo/echo", { method: "POST", body: await request.text() }));
-      return res;
-    }
-    if (path === "/echo/greet" && method === "GET") {
-      const name = url.searchParams.get("name") ?? "world";
-      const greeting = await (env.ECHO as any).greet(name);
-      return Response.json({ greeting });
-    }
-    if (path === "/echo/info" && method === "GET") {
-      const info = await (env.ECHO as any).info();
-      return Response.json(info);
-    }
+		// ── Echo service binding ──
+		if (path === '/echo' && method === 'GET') {
+			const res = await env.ECHO.fetch(new Request('http://echo/ping'))
+			return new Response(await res.text())
+		}
+		if (path === '/echo/fetch' && method === 'POST') {
+			const res = await env.ECHO.fetch(new Request('http://echo/echo', { method: 'POST', body: await request.text() }))
+			return res
+		}
+		if (path === '/echo/greet' && method === 'GET') {
+			const name = url.searchParams.get('name') ?? 'world'
+			const greeting = await (env.ECHO as any).greet(name)
+			return Response.json({ greeting })
+		}
+		if (path === '/echo/info' && method === 'GET') {
+			const info = await (env.ECHO as any).info()
+			return Response.json(info)
+		}
 
-    return new Response("Not found", { status: 404 });
-  },
+		return new Response('Not found', { status: 404 })
+	},
 
-  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log(`[scheduled] Cron fired: ${controller.cron} at ${new Date(controller.scheduledTime).toISOString()}`);
-  },
+	async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+		console.log(`[scheduled] Cron fired: ${controller.cron} at ${new Date(controller.scheduledTime).toISOString()}`)
+	},
 
-  async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
-    console.log(`[email] Received from: ${message.from}, to: ${message.to}, size: ${message.rawSize}`);
-    const subject = message.headers.get("subject") ?? "(no subject)";
-    console.log(`[email] Subject: ${subject}`);
+	async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
+		console.log(`[email] Received from: ${message.from}, to: ${message.to}, size: ${message.rawSize}`)
+		const subject = message.headers.get('subject') ?? '(no subject)'
+		console.log(`[email] Subject: ${subject}`)
 
-    // Example: forward emails addressed to forward@
-    if (message.to.startsWith("forward@")) {
-      await message.forward("admin@example.com");
-      console.log("[email] Forwarded to admin@example.com");
-      return;
-    }
+		// Example: forward emails addressed to forward@
+		if (message.to.startsWith('forward@')) {
+			await message.forward('admin@example.com')
+			console.log('[email] Forwarded to admin@example.com')
+			return
+		}
 
-    // Example: reject emails addressed to reject@
-    if (message.to.startsWith("reject@")) {
-      message.setReject("Address not accepted");
-      console.log("[email] Rejected");
-      return;
-    }
+		// Example: reject emails addressed to reject@
+		if (message.to.startsWith('reject@')) {
+			message.setReject('Address not accepted')
+			console.log('[email] Rejected')
+			return
+		}
 
-    // Example: send a reply using the MAILER binding
-    const { EmailMessage } = await import("cloudflare:email");
-    const replyRaw = `From: ${message.to}\r\nTo: ${message.from}\r\nSubject: Re: ${subject}\r\n\r\nThanks for your email!`;
-    const reply = new EmailMessage(message.to, message.from, replyRaw);
-    await env.MAILER.send(reply);
-    console.log("[email] Auto-reply sent");
-  },
+		// Example: send a reply using the MAILER binding
+		const { EmailMessage } = await import('cloudflare:email')
+		const replyRaw = `From: ${message.to}\r\nTo: ${message.from}\r\nSubject: Re: ${subject}\r\n\r\nThanks for your email!`
+		const reply = new EmailMessage(message.to, message.from, replyRaw)
+		await env.MAILER.send(reply)
+		console.log('[email] Auto-reply sent')
+	},
 
-  async queue(batch: MessageBatch, env: Env): Promise<void> {
-    for (const msg of batch.messages) {
-      console.log(
-        `[queue:${batch.queue}] Processing message ${msg.id}:`,
-        msg.body,
-      );
-      msg.ack();
-    }
-  },
-} satisfies ExportedHandler<Env>;
+	async queue(batch: MessageBatch, env: Env): Promise<void> {
+		for (const msg of batch.messages) {
+			console.log(
+				`[queue:${batch.queue}] Processing message ${msg.id}:`,
+				msg.body,
+			)
+			msg.ack()
+		}
+	},
+} satisfies ExportedHandler<Env>

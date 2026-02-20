@@ -1,5 +1,5 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.3.13/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.4.3/schema.json",
 	"assist": {
 		"actions": {
 			"source": {
@@ -34,7 +34,7 @@
 				"noUnusedVariables": "off",
 				"noEmptyPattern": "off",
 				"useParseIntRadix": "off",
-				"useExhaustiveDependencies": "on",
+				"useExhaustiveDependencies": "off",
 				"useHookAtTopLevel": "on",
 				"noVoidTypeReturn": "off"
 			},
@@ -56,7 +56,8 @@
 				"noArrayIndexKey": "off",
 				"noAssignInExpressions": "off",
 				"useIterableCallbackReturn": "off",
-				"noConsole": { "level": "error", "options": { "allow": ["info", "warn", "error", "debug", "log"] } }
+				"noConsole": { "level": "error", "options": { "allow": ["info", "warn", "error", "debug", "log"] } },
+				"noThenProperty": "off"
 			},
 			"a11y": "off"
 		}

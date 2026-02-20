@@ -1,4 +1,3 @@
-
 ## Project: Bunflare
 
 Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local binding implementations (no workerd, no miniflare).

@@ -1,55 +1,61 @@
-import { useState } from "preact/hooks";
-import { formatTime } from "../lib";
-import { useQuery, useMutation } from "../rpc/hooks";
-import { EmptyState, Table, PageHeader, PillButton, DeleteButton, StatusBadge, ServiceInfo, RefreshButton } from "../components";
+import { useState } from 'preact/hooks'
+import { DeleteButton, EmptyState, PageHeader, PillButton, RefreshButton, ServiceInfo, StatusBadge, Table } from '../components'
+import { formatTime } from '../lib'
+import { useMutation, useQuery } from '../rpc/hooks'
 
 const EMAIL_STATUS_COLORS: Record<string, string> = {
-	sent: "bg-blue-100 text-blue-700",
-	received: "bg-emerald-100 text-emerald-700",
-	forwarded: "bg-purple-100 text-purple-700",
-	rejected: "bg-red-100 text-red-700",
-};
+	sent: 'bg-blue-100 text-blue-700',
+	received: 'bg-emerald-100 text-emerald-700',
+	forwarded: 'bg-purple-100 text-purple-700',
+	rejected: 'bg-red-100 text-red-700',
+}
 
 function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+	if (bytes < 1024) return `${bytes} B`
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export function EmailView({ route }: { route: string }) {
-	const parts = route.split("/").filter(Boolean);
-	if (parts.length >= 2) return <EmailDetail id={parts[1]!} />;
-	return <EmailList />;
+	const parts = route.split('/').filter(Boolean)
+	if (parts.length >= 2) return <EmailDetail id={parts[1]!} />
+	return <EmailList />
 }
 
 function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: () => void; onSent: () => void }) {
-	const [from, setFrom] = useState("sender@example.com");
-	const [to, setTo] = useState("recipient@example.com");
-	const [subject, setSubject] = useState("");
-	const [body, setBody] = useState("");
-	const [error, setError] = useState("");
-	const trigger = useMutation("email.trigger");
+	const [from, setFrom] = useState('sender@example.com')
+	const [to, setTo] = useState('recipient@example.com')
+	const [subject, setSubject] = useState('')
+	const [body, setBody] = useState('')
+	const [error, setError] = useState('')
+	const trigger = useMutation('email.trigger')
 
 	const handleSubmit = async () => {
-		setError("");
-		const result = await trigger.mutate({ from, to, subject, body });
+		setError('')
+		const result = await trigger.mutate({ from, to, subject, body })
 		if (result) {
-			setSubject("");
-			setBody("");
-			onToggle();
-			onSent();
+			setSubject('')
+			setBody('')
+			onToggle()
+			onSent()
 		} else if (trigger.error) {
-			setError(trigger.error.message);
+			setError(trigger.error.message)
 		}
-	};
+	}
 
-	if (!open) return null;
+	if (!open) return null
 
 	return (
 		<div class="bg-panel border border-border rounded-lg p-4 mb-4">
 			<div class="flex items-center justify-between mb-3">
 				<div class="text-sm font-semibold text-ink">Send test email</div>
-				<button onClick={() => { onToggle(); setError(""); }} class="text-text-muted hover:text-text-data text-xs font-medium">
+				<button
+					onClick={() => {
+						onToggle()
+						setError('')
+					}}
+					class="text-text-muted hover:text-text-data text-xs font-medium"
+				>
 					Cancel
 				</button>
 			</div>
@@ -97,26 +103,26 @@ function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: ()
 					disabled={trigger.isLoading || !from.trim() || !to.trim()}
 					class="rounded-md px-4 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
 				>
-					{trigger.isLoading ? "Sending..." : "Send"}
+					{trigger.isLoading ? 'Sending...' : 'Send'}
 				</button>
 			</div>
 		</div>
-	);
+	)
 }
 
 function EmailList() {
-	const [filter, setFilter] = useState("");
-	const [formOpen, setFormOpen] = useState(false);
-	const { data: emails, refetch } = useQuery("email.list", { status: filter || undefined });
-	const { data: stats } = useQuery("email.stats");
-	const { data: configGroups } = useQuery("config.forService", { type: "email" });
-	const deleteEmail = useMutation("email.delete");
+	const [filter, setFilter] = useState('')
+	const [formOpen, setFormOpen] = useState(false)
+	const { data: emails, refetch } = useQuery('email.list', { status: filter || undefined })
+	const { data: stats } = useQuery('email.stats')
+	const { data: configGroups } = useQuery('config.forService', { type: 'email' })
+	const deleteEmail = useMutation('email.delete')
 
 	const handleDelete = async (id: string) => {
-		if (!confirm("Delete this email?")) return;
-		await deleteEmail.mutate({ id });
-		refetch();
-	};
+		if (!confirm('Delete this email?')) return
+		await deleteEmail.mutate({ id })
+		refetch()
+	}
 
 	return (
 		<div class="p-8 max-w-6xl">
@@ -126,9 +132,9 @@ function EmailList() {
 					<SendEmailForm open={formOpen} onToggle={() => setFormOpen(!formOpen)} onSent={refetch} />
 					<div class="mb-6 flex gap-2 items-center justify-between">
 						<div class="flex gap-2">
-							{["", "received", "sent", "forwarded", "rejected"].map(s => (
+							{['', 'received', 'sent', 'forwarded', 'rejected'].map(s => (
 								<PillButton key={s} onClick={() => setFilter(s)} active={filter === s}>
-									{s || "All"}
+									{s || 'All'}
 								</PillButton>
 							))}
 						</div>
@@ -141,17 +147,17 @@ function EmailList() {
 							</button>
 						)}
 					</div>
-					{!emails?.length ? (
-						<EmptyState message="No emails found" />
-					) : (
+					{!emails?.length ? <EmptyState message="No emails found" /> : (
 						<Table
-							headers={["From", "To", "Status", "Size", "Binding", "Time", ""]}
+							headers={['From', 'To', 'Status', 'Size', 'Binding', 'Time', '']}
 							rows={emails.map(e => [
 								<a href={`#/email/${e.id}`} class="font-mono text-xs text-blue-600 hover:underline">{e.from_addr}</a>,
 								<span class="font-mono text-xs">{e.to_addr}</span>,
 								<StatusBadge status={e.status} colorMap={EMAIL_STATUS_COLORS} />,
 								<span class="text-xs text-text-muted tabular-nums">{formatBytes(e.raw_size)}</span>,
-								<span class="text-xs text-text-muted font-mono">{e.binding === "_incoming" ? "incoming" : e.binding === "_forward" ? "forward" : e.binding === "_reply" ? "reply" : e.binding}</span>,
+								<span class="text-xs text-text-muted font-mono">
+									{e.binding === '_incoming' ? 'incoming' : e.binding === '_forward' ? 'forward' : e.binding === '_reply' ? 'reply' : e.binding}
+								</span>,
 								<span class="text-xs text-text-muted">{formatTime(e.created_at)}</span>,
 								<DeleteButton onClick={() => handleDelete(e.id)} />,
 							])}
@@ -161,22 +167,22 @@ function EmailList() {
 				<ServiceInfo
 					description="Email handler for processing incoming emails and send_email bindings for sending."
 					stats={[
-						{ label: "Total", value: stats?.total ?? 0 },
+						{ label: 'Total', value: stats?.total ?? 0 },
 						...(stats?.byStatus ? Object.entries(stats.byStatus).map(([k, v]) => ({ label: k, value: v })) : []),
 					]}
 					configGroups={configGroups}
 					links={[
-						{ label: "Email Workers", href: "https://developers.cloudflare.com/email-routing/email-workers/" },
-						{ label: "Send Email", href: "https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/" },
+						{ label: 'Email Workers', href: 'https://developers.cloudflare.com/email-routing/email-workers/' },
+						{ label: 'Send Email', href: 'https://developers.cloudflare.com/email-routing/email-workers/send-email-workers/' },
 					]}
 				/>
 			</div>
 		</div>
-	);
+	)
 }
 
 function EmailDetail({ id }: { id: string }) {
-	const { data } = useQuery("email.get", { id });
+	const { data } = useQuery('email.get', { id })
 
 	if (!data) {
 		return (
@@ -184,10 +190,10 @@ function EmailDetail({ id }: { id: string }) {
 				<a href="#/email" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to emails</a>
 				<EmptyState message="Email not found" />
 			</div>
-		);
+		)
 	}
 
-	const { record, raw } = data;
+	const { record, raw } = data
 
 	return (
 		<div class="p-8 max-w-4xl">
@@ -199,29 +205,23 @@ function EmailDetail({ id }: { id: string }) {
 				</div>
 				<div class="grid grid-cols-2 gap-4 mb-4 text-sm">
 					<div>
-						<span class="text-text-muted">From:</span>{" "}
-						<span class="font-mono">{record.from_addr}</span>
+						<span class="text-text-muted">From:</span> <span class="font-mono">{record.from_addr}</span>
 					</div>
 					<div>
-						<span class="text-text-muted">To:</span>{" "}
-						<span class="font-mono">{record.to_addr}</span>
+						<span class="text-text-muted">To:</span> <span class="font-mono">{record.to_addr}</span>
 					</div>
 					<div>
-						<span class="text-text-muted">Binding:</span>{" "}
-						<span class="font-mono">{record.binding}</span>
+						<span class="text-text-muted">Binding:</span> <span class="font-mono">{record.binding}</span>
 					</div>
 					<div>
-						<span class="text-text-muted">Size:</span>{" "}
-						<span class="tabular-nums">{formatBytes(record.raw_size)}</span>
+						<span class="text-text-muted">Size:</span> <span class="tabular-nums">{formatBytes(record.raw_size)}</span>
 					</div>
 					<div>
-						<span class="text-text-muted">Time:</span>{" "}
-						{formatTime(record.created_at)}
+						<span class="text-text-muted">Time:</span> {formatTime(record.created_at)}
 					</div>
 					{record.reject_reason && (
 						<div>
-							<span class="text-text-muted">Reject reason:</span>{" "}
-							<span class="text-red-600">{record.reject_reason}</span>
+							<span class="text-text-muted">Reject reason:</span> <span class="text-red-600">{record.reject_reason}</span>
 						</div>
 					)}
 				</div>
@@ -231,5 +231,5 @@ function EmailDetail({ id }: { id: string }) {
 				</div>
 			</div>
 		</div>
-	);
+	)
 }

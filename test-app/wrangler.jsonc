@@ -1,9 +1,9 @@
 {
-  "name": "test-app",
-  "main": "./workers/app.ts",
-  "compatibility_date": "2025-12-02",
-  "compatibility_flags": ["nodejs_compat"],
-  "kv_namespaces": [
-    { "binding": "KV", "id": "test-kv" }
-  ]
+	"name": "test-app",
+	"main": "./workers/app.ts",
+	"compatibility_date": "2025-12-02",
+	"compatibility_flags": ["nodejs_compat"],
+	"kv_namespaces": [
+		{ "binding": "KV", "id": "test-kv" }
+	]
 }
