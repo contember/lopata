@@ -552,9 +552,12 @@ export class SqliteWorkflowInstance {
 	}
 
 	async resume(): Promise<void> {
+		// If workflow was waiting for an event before pause, restore 'waiting' status
+		const waiters = eventWaiters.get(this.instanceId)
+		const newStatus = (waiters && waiters.size > 0) ? 'waiting' : 'running'
 		this.db
-			.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ? AND status = 'paused'")
-			.run(Date.now(), this.instanceId)
+			.query("UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ? AND status = 'paused'")
+			.run(newStatus, Date.now(), this.instanceId)
 	}
 
 	async terminate(): Promise<void> {

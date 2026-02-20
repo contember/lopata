@@ -444,6 +444,72 @@ describe('pause-aware step execution', () => {
 		expect(s.status).toBe('complete')
 		expect(s.output).toBe('done')
 	})
+
+	test('pause and resume during waitForEvent restores waiting status', async () => {
+		const binding = new SqliteWorkflowBinding(db, 'pause-event-wf', 'EventWorkflow')
+		binding._setClass(EventWorkflow, {})
+		const instance = await binding.create()
+
+		// Wait for workflow to reach waitForEvent
+		await new Promise((r) => setTimeout(r, 100))
+		let s = await instance.status()
+		expect(s.status).toBe('waiting')
+
+		// Pause while waiting for event
+		await instance.pause()
+		s = await instance.status()
+		expect(s.status).toBe('paused')
+
+		// Resume should restore 'waiting' status, not 'running'
+		await instance.resume()
+		s = await instance.status()
+		expect(s.status).toBe('waiting')
+
+		// Send the event — workflow should complete
+		await instance.sendEvent({ type: 'approval', payload: { approved: true } })
+		await new Promise((r) => setTimeout(r, 200))
+		s = await instance.status()
+		expect(s.status).toBe('complete')
+		expect(s.output).toEqual({ approved: true })
+	})
+
+	test('pause and resume during sleep keeps running status', async () => {
+		class LongSleepWorkflow extends WorkflowEntrypointBase {
+			override async run(
+				_event: unknown,
+				step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T>; sleep: (name: string, duration: string) => Promise<void> },
+			): Promise<unknown> {
+				await step.do('before-sleep', async () => 'ready')
+				await step.sleep('long-wait', '10 seconds')
+				return 'done'
+			}
+		}
+		const binding = new SqliteWorkflowBinding(db, 'pause-sleep-wf', 'LongSleepWorkflow')
+		binding._setClass(LongSleepWorkflow, {})
+		const instance = await binding.create()
+
+		// Wait for workflow to reach sleep
+		await new Promise((r) => setTimeout(r, 100))
+		let s = await instance.status()
+		expect(s.status).toBe('running')
+
+		// Pause during sleep
+		await instance.pause()
+		s = await instance.status()
+		expect(s.status).toBe('paused')
+
+		// Resume should restore 'running' (not waiting — no event waiters)
+		await instance.resume()
+		s = await instance.status()
+		expect(s.status).toBe('running')
+
+		// Skip the sleep so the workflow can finish
+		await instance.skipSleep()
+		await new Promise((r) => setTimeout(r, 200))
+		s = await instance.status()
+		expect(s.status).toBe('complete')
+		expect(s.output).toBe('done')
+	})
 })
 
 describe('step retry config', () => {
