@@ -1,5 +1,5 @@
-import { join } from 'node:path'
 import { existsSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 
 let dashboardAssets: Map<string, { content: Uint8Array; contentType: string }> | null = null
 let dashboardHtmlContent: string | null = null
@@ -16,8 +16,8 @@ if (existsSync(join(distDir, 'index.html'))) {
 		const contentType = entry.endsWith('.css')
 			? 'text/css'
 			: entry.endsWith('.js')
-				? 'application/javascript'
-				: 'application/octet-stream'
+			? 'application/javascript'
+			: 'application/octet-stream'
 		dashboardAssets.set(entry, { content, contentType })
 	}
 } else {
@@ -48,8 +48,8 @@ if (existsSync(join(distDir, 'index.html'))) {
 			const contentType = name.endsWith('.css')
 				? 'text/css'
 				: name.endsWith('.js')
-					? 'application/javascript'
-					: 'application/octet-stream'
+				? 'application/javascript'
+				: 'application/octet-stream'
 			assets.set(name, { content, contentType })
 		}
 	}

@@ -3,9 +3,9 @@
  * Pre-build dashboard and error-page assets for npm publishing.
  * Output goes to dist/dashboard/ and dist/error-page.html.
  */
-import { join } from 'node:path'
-import { readdirSync, rmSync } from 'node:fs'
 import tailwindPlugin from 'bun-plugin-tailwind'
+import { readdirSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 
 const rootDir = join(import.meta.dir, '..')
 const distDir = join(rootDir, 'dist')
@@ -75,8 +75,8 @@ for (const output of errorResult.outputs) {
 		const contentType = name.endsWith('.css')
 			? 'text/css'
 			: name.endsWith('.js')
-				? 'application/javascript'
-				: 'application/octet-stream'
+			? 'application/javascript'
+			: 'application/octet-stream'
 		assets.set(name, { content, contentType })
 	}
 }

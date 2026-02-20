@@ -1,5 +1,5 @@
-import { join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { enrichFrameWithSourceAsync, parseStackFrames, type StackFrame } from '../tracing/frames'
@@ -79,8 +79,8 @@ if (existsSync(distFile)) {
 			const contentType = name.endsWith('.css')
 				? 'text/css'
 				: name.endsWith('.js')
-					? 'application/javascript'
-					: 'application/octet-stream'
+				? 'application/javascript'
+				: 'application/octet-stream'
 			assets.set(name, { content, contentType })
 		}
 	}

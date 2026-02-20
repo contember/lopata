@@ -124,5 +124,9 @@ export type BindingIconType = keyof typeof ICONS
 export function BindingIcon({ type, class: className }: { type: BindingIconType; class?: string }) {
 	const Icon = ICONS[type]
 	if (!Icon) return null
-	return <span class={className}><Icon /></span>
+	return (
+		<span class={className}>
+			<Icon />
+		</span>
+	)
 }

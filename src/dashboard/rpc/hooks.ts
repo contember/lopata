@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import { rpc } from './client'
 import type { Procedures } from '../../api/dispatch'
+import { rpc } from './client'
 import type { Paginated } from './types'
 
 type EmptyObject = Record<string, never>

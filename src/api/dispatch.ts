@@ -1,3 +1,4 @@
+import { withCors } from './cors'
 import { handlers as ai } from './handlers/ai'
 import { handlers as analyticsEngine } from './handlers/analytics-engine'
 import { handlers as cache } from './handlers/cache'
@@ -16,7 +17,6 @@ import { handlers as scheduled } from './handlers/scheduled'
 import { handlers as traces } from './handlers/traces'
 import { handlers as workers } from './handlers/workers'
 import { handlers as workflows } from './handlers/workflows'
-import { withCors } from './cors'
 import type { HandlerContext } from './types'
 
 const allHandlers = {

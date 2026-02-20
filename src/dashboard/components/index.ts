@@ -1,6 +1,6 @@
+export { SqlBrowser } from '../sql-browser/index'
 export { BindingIcon } from './binding-icon'
 export type { BindingIconType } from './binding-icon'
-export { SqlBrowser } from '../sql-browser/index'
 export { Breadcrumb } from './breadcrumb'
 export { DeleteButton, LoadMoreButton } from './buttons'
 export { CodeBlock } from './code-block'
