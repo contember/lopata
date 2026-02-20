@@ -1,8 +1,7 @@
 import { Breadcrumb, DeleteButton, EmptyState, PageHeader, RefreshButton, ServiceInfo, SqlBrowser, Table, TableLink } from '../components'
-import { formatTime, parseHashRoute } from '../lib'
+import { formatTime, parseBrowserRoute, parseHashRoute } from '../lib'
 import { rpc } from '../rpc/client'
 import { useMutation, useQuery } from '../rpc/hooks'
-import type { Tab } from '../sql-browser/index'
 
 export function DoView({ route }: { route: string }) {
 	const { segments, query } = parseHashRoute(route)
@@ -11,11 +10,9 @@ export function DoView({ route }: { route: string }) {
 	if (segments.length >= 3) {
 		const ns = decodeURIComponent(segments[1]!)
 		const id = decodeURIComponent(segments[2]!)
-		const rawTab = segments[3] as Tab | undefined
-		const tab: Tab = rawTab === 'schema' || rawTab === 'sql' ? rawTab : 'data'
-		const tableName = segments[4] ? decodeURIComponent(segments[4]) : null
+		const { tab, table } = parseBrowserRoute(segments, 3)
 		const basePath = `/do/${encodeURIComponent(ns)}/${encodeURIComponent(id)}`
-		return <DoInstanceDetail ns={ns} id={id} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />
+		return <DoInstanceDetail ns={ns} id={id} basePath={basePath} routeTab={tab} routeTable={table} routeQuery={query} />
 	}
 	return null
 }

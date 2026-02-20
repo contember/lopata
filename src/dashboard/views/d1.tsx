@@ -1,18 +1,15 @@
 import { Breadcrumb, EmptyState, PageHeader, RefreshButton, ServiceInfo, SqlBrowser, Table, TableLink } from '../components'
-import { parseHashRoute } from '../lib'
+import { parseBrowserRoute, parseHashRoute } from '../lib'
 import { rpc } from '../rpc/client'
 import { useQuery } from '../rpc/hooks'
-import type { Tab } from '../sql-browser/index'
 
 export function D1View({ route }: { route: string }) {
 	const { segments, query } = parseHashRoute(route)
 	if (segments.length <= 1) return <D1DatabaseList />
 	const dbName = decodeURIComponent(segments[1]!)
-	const rawTab = segments[2] as Tab | undefined
-	const tab: Tab = rawTab === 'schema' || rawTab === 'sql' ? rawTab : 'data'
-	const tableName = segments[3] ? decodeURIComponent(segments[3]) : null
+	const { tab, table } = parseBrowserRoute(segments, 2)
 	const basePath = `/d1/${encodeURIComponent(dbName)}`
-	return <D1DatabaseDetail dbName={dbName} basePath={basePath} routeTab={tab} routeTable={tableName} routeQuery={query} />
+	return <D1DatabaseDetail dbName={dbName} basePath={basePath} routeTab={tab} routeTable={table} routeQuery={query} />
 }
 
 function D1DatabaseList() {

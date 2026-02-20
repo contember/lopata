@@ -29,6 +29,13 @@ export function parseHashRoute(hash: string): { segments: string[]; query: URLSe
 	return { segments, query: new URLSearchParams(queryStr) }
 }
 
+export function parseBrowserRoute(segments: string[], baseLen: number): { tab: 'data' | 'schema' | 'sql'; table: string | null } {
+	const rawTab = segments[baseLen]
+	const tab = rawTab === 'schema' || rawTab === 'sql' ? rawTab : 'data' as const
+	const table = segments[baseLen + 1] ? decodeURIComponent(segments[baseLen + 1]) : null
+	return { tab, table }
+}
+
 export function formatBytes(bytes: number): string {
 	if (bytes === 0) return '0 B'
 	const units = ['B', 'KB', 'MB', 'GB']
