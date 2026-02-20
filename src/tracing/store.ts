@@ -195,8 +195,22 @@ export class TraceStore {
 		}
 	}
 
-	getRecentTraces(since: number, limit: number): TraceSummary[] {
-		const rows = this.db.prepare<Record<string, unknown>, [number, number]>(`
+	getRecentTraces(since: number, limit: number, filter?: { path?: string; status?: string }): TraceSummary[] {
+		const conditions = ['s.parent_span_id IS NULL', 's.start_time >= ?']
+		const params: unknown[] = [since]
+
+		if (filter?.status && filter.status !== 'all') {
+			conditions.push('s.status = ?')
+			params.push(filter.status)
+		}
+		if (filter?.path) {
+			conditions.push('s.name GLOB ?')
+			params.push(filter.path)
+		}
+
+		params.push(limit)
+
+		const rows = this.db.prepare<Record<string, unknown>, unknown[]>(`
       SELECT
         s.trace_id,
         s.name as root_span_name,
@@ -209,11 +223,11 @@ export class TraceStore {
         SUM(CASE WHEN c.status = 'error' THEN 1 ELSE 0 END) as error_count
       FROM spans s
       LEFT JOIN spans c ON c.trace_id = s.trace_id
-      WHERE s.parent_span_id IS NULL AND s.start_time >= ?
+      WHERE ${conditions.join(' AND ')}
       GROUP BY s.trace_id
       ORDER BY s.start_time DESC
       LIMIT ?
-    `).all(since, limit)
+    `).all(...params)
 
 		return rows.map(r => ({
 			traceId: r.trace_id as string,

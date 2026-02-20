@@ -354,7 +354,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 					let sinceMs = 15 * 60 * 1000
 					const since = Date.now() - sinceMs
-					const recent = store.getRecentTraces(since, 200)
+					const recent = store.getRecentTraces(since, 200, filter)
 					ws.send(JSON.stringify({ type: 'initial', traces: recent }))
 
 					ws.on('message', (data: any) => {
@@ -366,7 +366,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 								allowedTraces.clear()
 								excludedTraces.clear()
 								const freshSince = sinceMs > 0 ? Date.now() - sinceMs : 0
-								const freshTraces = store.getRecentTraces(freshSince, 200)
+								const freshTraces = store.getRecentTraces(freshSince, 200, filter)
 								ws.send(JSON.stringify({ type: 'initial', traces: freshTraces }))
 							}
 						} catch {}

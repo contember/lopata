@@ -305,7 +305,7 @@ export async function run(ctx: CliContext) {
 
 					let sinceMs = 15 * 60 * 1000 // default 15 minutes
 					const since = Date.now() - sinceMs
-					const recent = store.getRecentTraces(since, 200)
+					const recent = store.getRecentTraces(since, 200, filter)
 					ws.send(JSON.stringify({ type: 'initial', traces: recent })) // Store cleanup handles on ws.data
 					;(data as any)._traceCleanup = { unsubscribe, interval }
 					;(data as any)._setFilter = (f: typeof filter & { sinceMs?: number }) => {
@@ -316,7 +316,7 @@ export async function run(ctx: CliContext) {
 						excludedTraces.clear()
 						// Re-send filtered initial traces so the client replaces stale data
 						const freshSince = sinceMs > 0 ? Date.now() - sinceMs : 0
-						const freshTraces = store.getRecentTraces(freshSince, 200)
+						const freshTraces = store.getRecentTraces(freshSince, 200, filter)
 						ws.send(JSON.stringify({ type: 'initial', traces: freshTraces }))
 					}
 					return
