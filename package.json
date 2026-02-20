@@ -1,25 +1,22 @@
 {
 	"name": "lopata",
 	"version": "0.0.1",
-	"module": "index.ts",
 	"type": "module",
 	"bin": {
-		"lopata": "runtime/cli.ts"
+		"lopata": "src/cli.ts"
 	},
 	"exports": {
-		"./vite-plugin": "./runtime/vite-plugin/index.ts"
+		"./vite-plugin": "./src/vite-plugin/index.ts"
 	},
 	"files": [
-		"runtime/",
-		"!runtime/tests/",
-		"index.ts"
+		"src/",
+		"!src/dashboard/",
+		"!src/error-page/"
 	],
 	"scripts": {
-		"wrangler:dev": "wrangler dev",
-		"deploy": "wrangler deploy",
-		"types": "wrangler types",
-		"cli": "bun runtime/cli.ts",
-		"dev": "bun runtime/cli.ts dev",
+		"dev": "cd examples/playground && bun ../../src/cli.ts dev",
+		"cli": "bun src/cli.ts",
+		"test": "bun test tests/",
 		"lint": "biome lint .",
 		"lint:fix": "biome lint . --write",
 		"format": "dprint fmt",

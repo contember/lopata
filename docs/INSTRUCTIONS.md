@@ -31,7 +31,7 @@ Instrukce pro AI agenta implementujícího bunflare runtime.
 ### 3. Ověř implementaci
 
 ```
-1. Spusť testy: bun test runtime/tests/
+1. Spusť testy: bun test tests/
 2. Spusť type check: bunx tsc --noEmit
 3. Ověř že stávající funkcionalita stále funguje (všechny testy prochází)
 ```
@@ -121,7 +121,7 @@ Stejný vzor platí pro všechny bindingy — `QueueLimits`, `R2Limits`, `CacheL
 ### Struktura
 
 ```
-runtime/
+src/
   dev.ts                      # Main entrypoint
   config.ts                   # Parse wrangler.jsonc
   plugin.ts                   # Bun plugin shimming cloudflare:workers
@@ -142,13 +142,13 @@ runtime/
 
 ### Testování
 
-Ke každému issue **napiš integrační testy** do `runtime/tests/`. Testy ověřují binding implementace přímo (bez HTTP serveru):
+Ke každému issue **napiš integrační testy** do `tests/`. Testy ověřují binding implementace přímo (bez HTTP serveru):
 
 ```ts
-// runtime/tests/kv.test.ts
+// tests/kv.test.ts
 import { Database } from 'bun:sqlite'
 import { beforeEach, expect, test } from 'bun:test'
-import { SqliteKVNamespace } from '../bindings/kv'
+import { SqliteKVNamespace } from '../src/bindings/kv'
 
 let kv: SqliteKVNamespace
 
@@ -177,19 +177,19 @@ test('delete removes key', async () => {
 Pravidla:
 
 - Při migraci existujícího bindingu (issues 14-17) VŽDY aktualizuj odpovídající test soubor — import, constructor, beforeEach setup
-- Když přidáváš nový binding, přidej jeho config fields do `WranglerConfig` v `runtime/config.ts`
-- Každý binding má vlastní test soubor: `runtime/tests/<binding>.test.ts`
+- Když přidáváš nový binding, přidej jeho config fields do `WranglerConfig` v `src/config.ts`
+- Každý binding má vlastní test soubor: `tests/<binding>.test.ts`
 - Testuj přímo třídu bindingu, ne přes HTTP
 - Používej in-memory SQLite (`:memory:`) v testech pro izolaci
 - Testuj edge cases: neexistující klíče, expiraci, list s prefixem, prázdné výsledky
-- Spouštěj testy: `bun test runtime/tests/`
+- Spouštěj testy: `bun test tests/`
 - Type check: `bunx tsc --noEmit`
 
 ## Quick Reference
 
 ```bash
 # Run tests
-bun test runtime/tests/
+bun test tests/
 
 # Type check
 bunx tsc --noEmit

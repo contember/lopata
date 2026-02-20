@@ -27,4 +27,4 @@ jobs:
         run: bunx tsc --noEmit
 
       - name: Test
-        run: bun test runtime/tests/
+        run: bun test tests/

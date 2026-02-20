@@ -2,24 +2,23 @@
 
 Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local binding implementations (no workerd, no miniflare).
 
-- Worker source: `src/` (Cloudflare Worker code)
-- Runtime: `runtime/` (local Bun-based shim for Cloudflare APIs)
-- Tests: `runtime/tests/` (integration tests for each binding)
+- Source: `src/` (runtime, bindings, CLI, vite-plugin, dashboard)
+- Tests: `tests/` (integration tests for each binding)
 - Issues: `docs/issues/` (implementation tasks)
 - Status: `docs/STATUS.md` (progress tracking)
 
 ### Commands
 
 - `bunflare dev` — start the local dev server (port 8787)
-- `bun test runtime/tests/` — run integration tests
+- `bun test tests/` — run integration tests
 - `bunx tsc --noEmit` — type check
 
 ### Key patterns
 
-- `runtime/plugin.ts` uses `Bun.plugin()` with `build.module()` to shim `cloudflare:workers` and `cloudflare:workflows`
+- `src/plugin.ts` uses `Bun.plugin()` with `build.module()` to shim `cloudflare:workers` and `cloudflare:workflows`
 - All bindings persist to SQLite (`.bunflare/data.sqlite`) or files (`.bunflare/r2/`), NOT in-memory
-- `runtime/env.ts` builds the `env` object and wires DO/Workflow classes after worker module import
-- Each binding has its own test file in `runtime/tests/`
+- `src/env.ts` builds the `env` object and wires DO/Workflow classes after worker module import
+- Each binding has its own test file in `tests/`
 
 ---
 
