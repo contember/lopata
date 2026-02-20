@@ -269,7 +269,7 @@
 - ✅ `controller.type` — "scheduled"
 - ✅ Special cron aliases: @daily, @hourly, @weekly, @monthly, @yearly
 - ✅ Day/month names: MON-SUN, JAN-DEC
-- ✅ Manual trigger: `GET /__scheduled?cron=<expr>`
+- ✅ Manual trigger: `GET /cdn-cgi/handler/scheduled?cron=<expr>`
 
 ### 1.16 Tail Handler
 
@@ -1073,7 +1073,7 @@
 
 ### 11.6 Testing
 
-- ✅ `/__scheduled?cron=...` endpoint in dev server
+- ✅ `/cdn-cgi/handler/scheduled?cron=...` endpoint in dev server
 - ❌ createScheduledController in vitest — not provided
 
 ---

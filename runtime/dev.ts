@@ -176,8 +176,8 @@ const server = Bun.serve({
       return handleDashboardRequest(request);
     }
 
-    // Queue pull consumer endpoints: POST /__queues/<name>/messages/pull and /ack
-    const queuePullMatch = url.pathname.match(/^\/__queues\/([^/]+)\/messages\/(pull|ack)$/);
+    // Queue pull consumer endpoints: POST /cdn-cgi/handler/queues/<name>/messages/pull and /ack
+    const queuePullMatch = url.pathname.match(/^\/cdn-cgi\/handler\/queues\/([^/]+)\/messages\/(pull|ack)$/);
     if (queuePullMatch && request.method === "POST") {
       const queueName = decodeURIComponent(queuePullMatch[1]!);
       const action = queuePullMatch[2]!;
@@ -208,8 +208,8 @@ const server = Bun.serve({
       return gen.callEmail(new Uint8Array(raw), from, to);
     }
 
-    // Manual trigger: GET /__scheduled?cron=<expression>
-    if (url.pathname === "/__scheduled") {
+    // Manual trigger: GET /cdn-cgi/handler/scheduled?cron=<expression>
+    if (url.pathname === "/cdn-cgi/handler/scheduled") {
       const gen = manager.active;
       if (!gen) return new Response("No active generation", { status: 503 });
       const cronExpr = url.searchParams.get("cron") ?? "* * * * *";

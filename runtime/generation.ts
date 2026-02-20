@@ -190,7 +190,7 @@ export class Generation {
     }
   }
 
-  /** Handle manual /__scheduled trigger */
+  /** Handle manual /cdn-cgi/handler/scheduled trigger */
   async callScheduled(cronExpr: string): Promise<Response> {
     return startSpan({
       name: "scheduled",
