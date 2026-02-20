@@ -253,20 +253,21 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							name: `${request.method} ${parsedUrl.pathname}`,
 							kind: 'server',
 							attributes: { 'http.method': request.method, 'http.url': request.url },
-						}, () => runWithExecutionContext(ctx, async () => {
-							try {
-								const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
-								;(setSpanAttribute as Function)('http.status_code', resp.status)
-								ctx._awaitAll().catch(() => {})
-								return resp
-							} catch (err) {
-								if (err instanceof Error) {
-									stitchAsyncStack(err, callerStack)
+						}, () =>
+							runWithExecutionContext(ctx, async () => {
+								try {
+									const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
+									;(setSpanAttribute as Function)('http.status_code', resp.status)
+									ctx._awaitAll().catch(() => {})
+									return resp
+								} catch (err) {
+									if (err instanceof Error) {
+										stitchAsyncStack(err, callerStack)
+									}
+									console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+									return (renderErrorPage as Function)(err, request, env, config)
 								}
-								console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-								return (renderErrorPage as Function)(err, request, env, config)
-							}
-						})) as Response
+							})) as Response
 
 						writeResponse(response, res)
 					} catch (err) {
