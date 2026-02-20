@@ -97,7 +97,7 @@
 - ❌ `cf.cacheTags` — cache tags for purge
 - ❌ `cf.cacheTtl` — override edge cache TTL
 - ❌ `cf.cacheTtlByStatus` — per-status TTL overrides
-- ❌ `cf.image` — Image Resizing options
+- ✅ `cf.image` — Image Resizing options (transforms response via Sharp)
 - ❌ `cf.polish` — "lossy" | "lossless" | "off"
 - ❌ `cf.resolveOverride` — override DNS resolution
 - ❌ `cf.scrapeShield` — enable Scrape Shield

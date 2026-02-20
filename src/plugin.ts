@@ -7,6 +7,7 @@ import { patchGlobalCrypto } from './bindings/crypto-extras'
 import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/durable-object'
 import { EmailMessage } from './bindings/email'
 import { HTMLRewriter } from './bindings/html-rewriter'
+import type { ImageTransformOptions, OutputOptions } from './bindings/images'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
 import { getDatabase } from './db'
@@ -201,14 +202,66 @@ async function readBodyLimited(r: Request | Response): Promise<string | null> {
 	}
 }
 
+/** Apply cf.image transform to a fetch response */
+async function applyCfImageTransform(response: Response, imageOpts: Record<string, unknown>): Promise<Response> {
+	const ct = response.headers.get('content-type') ?? ''
+	if (!ct.startsWith('image/') || !response.body) return response
+
+	const { ImagesBinding } = await import('./bindings/images')
+	const images = new ImagesBinding()
+
+	// Split cf.image options into transform options and output options
+	const { format: rawFormat, quality, compression, metadata, ...transformRest } = imageOpts
+	const transformer = images.input(response.body).transform(transformRest as ImageTransformOptions)
+
+	// Determine output format
+	let outputFormat: OutputOptions['format'] = ct as OutputOptions['format']
+	if (rawFormat && rawFormat !== 'auto') {
+		const shortToMime: Record<string, OutputOptions['format']> = {
+			avif: 'image/avif',
+			webp: 'image/webp',
+			jpeg: 'image/jpeg',
+			png: 'image/png',
+			gif: 'image/gif',
+		}
+		outputFormat = shortToMime[rawFormat as string] ?? outputFormat
+	}
+	// Fallback to a valid format if the source CT isn't in our supported set
+	if (!['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'image/gif'].includes(outputFormat)) {
+		outputFormat = 'image/webp'
+	}
+
+	const outputOpts: OutputOptions = { format: outputFormat }
+	if (rawFormat === 'auto') {
+		// Pass format through transform-level auto detection
+		;(transformRest as ImageTransformOptions).format = 'auto'
+	}
+	if (quality !== undefined) outputOpts.quality = quality as OutputOptions['quality']
+	if (compression !== undefined) outputOpts.compression = compression as OutputOptions['compression']
+	if (metadata !== undefined) outputOpts.metadata = metadata as OutputOptions['metadata']
+
+	const result = await transformer.output(outputOpts)
+	const headers = new Headers(response.headers)
+	headers.set('content-type', result.contentType())
+	headers.delete('content-length') // size changed after transform
+	return new Response(result.image(), { status: response.status, statusText: response.statusText, headers })
+}
+
 const _originalFetch = globalThis.fetch
 globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 	const ctx = getActiveContext()
 	if (ctx) {
 		ctx.fetchStack.current = new Error()
 	}
-	// Outside a trace context, just pass through
-	if (!ctx) return _originalFetch(input, init)
+
+	// Extract cf.image options before creating request (Request constructor drops cf)
+	const cfImageOpts = init?.cf?.image as Record<string, unknown> | undefined
+
+	// Outside a trace context, handle cf.image without tracing
+	if (!ctx) {
+		const p = _originalFetch(input, init)
+		return cfImageOpts ? p.then(r => applyCfImageTransform(r, cfImageOpts)) : p
+	}
 
 	const request = new Request(input, init)
 	const fetchRequest = request.clone()
@@ -234,7 +287,12 @@ globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 		const reqBody = await readBodyLimited(request)
 		if (reqBody) setSpanAttribute('http.request.body', reqBody)
 
-		const response = await _originalFetch(fetchRequest as globalThis.Request)
+		let response = await _originalFetch(fetchRequest as globalThis.Request)
+
+		// Apply cf.image transform if present
+		if (cfImageOpts) {
+			response = await applyCfImageTransform(response, cfImageOpts)
+		}
 
 		setSpanAttribute('http.status_code', response.status)
 		setSpanAttribute('http.response.headers', headersToRecord(response.headers))
