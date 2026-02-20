@@ -40,10 +40,10 @@ export function SchemaBrowserTab({ tables }: { tables?: D1Table[] | null }) {
 											{schema.primaryKeys.includes(col.name) && (
 												<span class="ml-1.5 text-[10px] font-semibold bg-panel-hover text-text-secondary px-1 py-0.5 rounded">PK</span>
 											)}
-											{col.autoIncrement && <span class="ml-1.5 text-[10px] font-semibold bg-amber-50 text-amber-600 px-1 py-0.5 rounded">AI</span>}
+											{col.autoIncrement && <span class="ml-1.5 text-[10px] font-semibold bg-amber-500/15 text-amber-500 px-1 py-0.5 rounded">AI</span>}
 											{col.foreignKey && (
 												<span
-													class="ml-1.5 text-[10px] font-semibold bg-blue-50 text-link px-1 py-0.5 rounded"
+													class="ml-1.5 text-[10px] font-semibold bg-blue-500/15 text-link px-1 py-0.5 rounded"
 													title={`${col.foreignKey.targetTable}(${col.foreignKey.targetColumn})`}
 												>
 													FK &rarr; {col.foreignKey.targetTable}

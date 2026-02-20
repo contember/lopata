@@ -3,13 +3,13 @@ import { Breadcrumb, CodeBlock, DetailField, EmptyState, PageHeader, RefreshButt
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const CONTAINER_STATE_COLORS: Record<string, string> = {
-	running: 'bg-emerald-100 text-emerald-700',
-	healthy: 'bg-emerald-100 text-emerald-700',
+	running: 'bg-emerald-500/15 text-emerald-500',
+	healthy: 'bg-emerald-500/15 text-emerald-500',
 	exited: 'bg-panel-active text-text-data',
 	stopped: 'bg-panel-active text-text-data',
-	created: 'bg-accent-blue text-ink',
-	paused: 'bg-yellow-100 text-yellow-700',
-	dead: 'bg-red-100 text-red-700',
+	created: 'bg-blue-500/15 text-blue-400',
+	paused: 'bg-yellow-500/15 text-yellow-500',
+	dead: 'bg-red-500/15 text-red-500',
 }
 
 export function ContainersView({ route }: { route: string }) {
@@ -143,7 +143,7 @@ function ContainerDetailView({ className, id }: { className: string; id: string 
 					<button
 						onClick={handleStop}
 						disabled={stopMutation.isLoading}
-						class="px-3 py-1.5 text-sm rounded-md bg-yellow-100 text-yellow-800 hover:bg-yellow-200 border border-yellow-300 disabled:opacity-50"
+						class="px-3 py-1.5 text-sm rounded-md bg-yellow-500/15 text-yellow-500 hover:bg-yellow-500/25 border border-yellow-500/30 disabled:opacity-50"
 					>
 						{stopMutation.isLoading ? 'Stopping...' : 'Stop'}
 					</button>
@@ -151,7 +151,7 @@ function ContainerDetailView({ className, id }: { className: string; id: string 
 				<button
 					onClick={handleDestroy}
 					disabled={destroyMutation.isLoading}
-					class="px-3 py-1.5 text-sm rounded-md bg-red-100 text-red-800 hover:bg-red-200 border border-red-300 disabled:opacity-50"
+					class="px-3 py-1.5 text-sm rounded-md bg-red-500/15 text-red-500 hover:bg-red-500/25 border border-red-500/30 disabled:opacity-50"
 				>
 					{destroyMutation.isLoading ? 'Removing...' : 'Force Remove'}
 				</button>

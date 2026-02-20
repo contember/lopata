@@ -4,8 +4,8 @@ import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const AI_STATUS_COLORS: Record<string, string> = {
-	ok: 'bg-emerald-100 text-emerald-700',
-	error: 'bg-red-100 text-red-700',
+	ok: 'bg-emerald-500/15 text-emerald-500',
+	error: 'bg-red-500/15 text-red-500',
 }
 
 export function AiView({ route }: { route: string }) {

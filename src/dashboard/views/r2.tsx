@@ -189,7 +189,7 @@ function R2ObjectList({ bucket }: { bucket: string }) {
 							<div class="flex gap-1">
 								<a
 									href={`/__api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(o.key)}`}
-									class="text-link hover:text-accent-lime text-xs font-medium rounded-md px-2 py-1 hover:bg-blue-50 transition-all"
+									class="text-link hover:text-accent-lime text-xs font-medium rounded-md px-2 py-1 hover:bg-blue-500/10 transition-all"
 								>
 									Download
 								</a>

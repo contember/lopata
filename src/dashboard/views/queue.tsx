@@ -16,9 +16,9 @@ import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const QUEUE_STATUS_COLORS: Record<string, string> = {
-	pending: 'bg-amber-100 text-amber-700',
-	acked: 'bg-emerald-100 text-emerald-700',
-	failed: 'bg-red-100 text-red-700',
+	pending: 'bg-amber-500/15 text-amber-500',
+	acked: 'bg-emerald-500/15 text-emerald-500',
+	failed: 'bg-red-500/15 text-red-500',
 }
 
 export function QueueView({ route }: { route: string }) {
@@ -129,7 +129,7 @@ function PublishModal({ queue, onClose, onPublished }: { queue: string; onClose:
 
 function RequeueButton({ onClick }: { onClick: () => void }) {
 	return (
-		<button onClick={onClick} class="text-amber-500 hover:text-amber-700 text-xs font-medium rounded-md px-2 py-1 hover:bg-amber-50 transition-all">
+		<button onClick={onClick} class="text-amber-500 hover:text-amber-400 text-xs font-medium rounded-md px-2 py-1 hover:bg-amber-500/10 transition-all">
 			Requeue
 		</button>
 	)

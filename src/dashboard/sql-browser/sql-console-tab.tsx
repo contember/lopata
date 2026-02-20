@@ -81,11 +81,11 @@ export function SqlConsoleTab({ execQuery, initialSql, history }: {
 				/>
 			)}
 
-			{error ? <div class="bg-red-50 text-red-600 p-4 rounded-lg text-sm font-medium">{error}</div> : result
+			{error ? <div class="bg-red-500/10 text-red-400 p-4 rounded-lg text-sm font-medium">{error}</div> : result
 				? (
 					<div>
 						{result.message
-							? <div class="bg-emerald-50 text-emerald-700 p-4 rounded-lg text-sm font-medium">{result.message}</div>
+							? <div class="bg-emerald-500/10 text-emerald-500 p-4 rounded-lg text-sm font-medium">{result.message}</div>
 							: result.columns.length > 0
 							? (
 								<div>

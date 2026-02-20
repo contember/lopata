@@ -324,7 +324,7 @@ export function TableDataView(
 					{hasActiveState && (
 						<button
 							onClick={handleReset}
-							class="rounded-md px-3 py-1.5 text-sm font-medium text-red-400 bg-panel border border-border hover:text-red-600 hover:bg-red-50 transition-all"
+							class="rounded-md px-3 py-1.5 text-sm font-medium text-red-400 bg-panel border border-border hover:text-red-300 hover:bg-red-500/10 transition-all"
 							title="Clear all filters and sorting"
 						>
 							Reset
@@ -426,7 +426,7 @@ export function TableDataView(
 
 			{/* Error banner */}
 			{error && (
-				<div class="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-medium mb-4 flex items-center justify-between">
+				<div class="bg-red-500/10 text-red-400 p-3 rounded-lg text-sm font-medium mb-4 flex items-center justify-between">
 					<span>{error}</span>
 					<button onClick={() => setError(null)} class="text-red-400 hover:text-red-600 ml-3 text-xs">dismiss</button>
 				</div>
@@ -535,7 +535,7 @@ export function TableDataView(
 											</button>
 											<button
 												onClick={() => handleDelete(row)}
-												class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-50 transition-all"
+												class="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-300 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-500/10 transition-all"
 											>
 												Delete
 											</button>

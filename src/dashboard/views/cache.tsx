@@ -2,10 +2,10 @@ import { Breadcrumb, DeleteButton, EmptyState, PageHeader, RefreshButton, Servic
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const HTTP_STATUS_COLORS: Record<string, string> = {
-	'2xx': 'bg-emerald-100 text-emerald-700',
-	'3xx': 'bg-amber-100 text-amber-700',
-	'4xx': 'bg-red-100 text-red-700',
-	'5xx': 'bg-red-100 text-red-700',
+	'2xx': 'bg-emerald-500/15 text-emerald-500',
+	'3xx': 'bg-amber-500/15 text-amber-500',
+	'4xx': 'bg-red-500/15 text-red-500',
+	'5xx': 'bg-red-500/15 text-red-500',
 }
 
 function httpStatusColor(status: number): string {

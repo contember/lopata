@@ -4,13 +4,13 @@ import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const WORKFLOW_STATUS_COLORS: Record<string, string> = {
-	running: 'bg-accent-blue text-ink',
-	complete: 'bg-emerald-100 text-emerald-700',
-	errored: 'bg-red-100 text-red-700',
+	running: 'bg-blue-500/15 text-blue-400',
+	complete: 'bg-emerald-500/15 text-emerald-500',
+	errored: 'bg-red-500/15 text-red-500',
 	terminated: 'bg-panel-active text-text-data',
-	waiting: 'bg-blue-100 text-blue-700',
-	paused: 'bg-amber-100 text-amber-700',
-	queued: 'bg-purple-100 text-purple-700',
+	waiting: 'bg-blue-500/15 text-blue-400',
+	paused: 'bg-amber-500/15 text-amber-500',
+	queued: 'bg-purple-500/15 text-purple-400',
 }
 
 export function WorkflowsView({ route }: { route: string }) {
@@ -138,10 +138,10 @@ function ActionButton(
 	},
 ) {
 	const colors = {
-		blue: 'text-blue-500 hover:text-blue-700 hover:bg-blue-50',
-		red: 'text-red-400 hover:text-red-600 hover:bg-red-50',
-		amber: 'text-amber-500 hover:text-amber-700 hover:bg-amber-50',
-		emerald: 'text-emerald-500 hover:text-emerald-700 hover:bg-emerald-50',
+		blue: 'text-blue-400 hover:text-blue-300 hover:bg-blue-500/10',
+		red: 'text-red-400 hover:text-red-300 hover:bg-red-500/10',
+		amber: 'text-amber-500 hover:text-amber-400 hover:bg-amber-500/10',
+		emerald: 'text-emerald-500 hover:text-emerald-400 hover:bg-emerald-500/10',
 	}
 	return (
 		<button
@@ -287,10 +287,10 @@ function SkipSleepBanner(
 	}
 
 	return (
-		<div class="mb-6 bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center justify-between">
+		<div class="mb-6 bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-center justify-between">
 			<div>
-				<span class="text-sm font-semibold text-amber-800">Sleeping</span>
-				<span class="text-sm text-amber-700 ml-2">
+				<span class="text-sm font-semibold text-amber-500">Sleeping</span>
+				<span class="text-sm text-amber-400 ml-2">
 					step "{label}" — {formatRemaining(remaining)} remaining
 				</span>
 			</div>
@@ -329,8 +329,8 @@ function SendEventForm({ name, id, waitingForEvents, refetch }: { name: string; 
 	}
 
 	return (
-		<div class="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
-			<div class="text-sm font-semibold text-blue-800 mb-3">
+		<div class="mb-6 bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
+			<div class="text-sm font-semibold text-blue-400 mb-3">
 				Waiting for event{waitingForEvents.length > 0 && (
 					<span class="font-normal text-link">
 						{' '}— type: {waitingForEvents.map(t => `"${t}"`).join(', ')}
@@ -423,7 +423,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 			{data.error && (
 				<div class="mb-6 bg-panel rounded-lg border border-border p-5">
 					<h3 class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-3">Error</h3>
-					<pre class="bg-red-50 rounded-lg p-4 text-xs text-red-600 overflow-x-auto font-mono">{data.error}</pre>
+					<pre class="bg-red-500/10 rounded-lg p-4 text-xs text-red-400 overflow-x-auto font-mono">{data.error}</pre>
 				</div>
 			)}
 

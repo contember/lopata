@@ -11,7 +11,7 @@ export function LoadMoreButton({ onClick }: { onClick: () => void }) {
 
 export function DeleteButton({ onClick }: { onClick: () => void }) {
 	return (
-		<button onClick={onClick} class="text-red-400 hover:text-red-600 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-50 transition-all">
+		<button onClick={onClick} class="text-red-400 hover:text-red-300 text-xs font-medium rounded-md px-2 py-1 hover:bg-red-500/10 transition-all">
 			Delete
 		</button>
 	)

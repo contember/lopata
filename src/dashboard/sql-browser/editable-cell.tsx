@@ -66,7 +66,7 @@ export function EditableCell({ value, onSave, foreignKey, onNavigateFK, onInspec
 					}}
 					title={isNull ? 'Set to value' : 'Set to NULL'}
 					class={`flex-shrink-0 rounded px-1.5 py-1 text-xs font-bold transition-colors ${
-						isNull ? 'bg-amber-100 text-amber-700' : 'bg-panel-hover text-text-muted hover:bg-panel-active'
+						isNull ? 'bg-amber-500/15 text-amber-500' : 'bg-panel-hover text-text-muted hover:bg-panel-active'
 					}`}
 				>
 					N

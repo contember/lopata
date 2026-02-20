@@ -33,8 +33,8 @@ function ScheduledList() {
 				<div
 					class={`mb-6 px-4 py-3 rounded-lg text-sm font-medium ${
 						lastResult.ok
-							? 'bg-emerald-50 text-emerald-700'
-							: 'bg-red-50 text-red-600'
+							? 'bg-emerald-500/10 text-emerald-500'
+							: 'bg-red-500/10 text-red-500'
 					}`}
 				>
 					{lastResult.ok

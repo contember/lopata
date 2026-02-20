@@ -4,10 +4,10 @@ import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
 const EMAIL_STATUS_COLORS: Record<string, string> = {
-	sent: 'bg-blue-100 text-blue-700',
-	received: 'bg-emerald-100 text-emerald-700',
-	forwarded: 'bg-purple-100 text-purple-700',
-	rejected: 'bg-red-100 text-red-700',
+	sent: 'bg-blue-500/15 text-blue-500',
+	received: 'bg-emerald-500/15 text-emerald-500',
+	forwarded: 'bg-purple-500/15 text-purple-500',
+	rejected: 'bg-red-500/15 text-red-500',
 }
 
 function formatBytes(bytes: number): string {

@@ -2,14 +2,14 @@ import { EmptyState, PageHeader, StatusBadge, Table, TableLink } from '../compon
 import { useQuery } from '../rpc/hooks'
 
 const TYPE_COLORS: Record<string, string> = {
-	kv: 'bg-emerald-100 text-emerald-700',
-	r2: 'bg-blue-100 text-blue-700',
-	d1: 'bg-violet-100 text-violet-700',
-	do: 'bg-amber-100 text-amber-700',
-	queue: 'bg-rose-100 text-rose-700',
-	workflow: 'bg-cyan-100 text-cyan-700',
+	kv: 'bg-emerald-500/15 text-emerald-500',
+	r2: 'bg-blue-500/15 text-blue-400',
+	d1: 'bg-violet-500/15 text-violet-400',
+	do: 'bg-amber-500/15 text-amber-500',
+	queue: 'bg-rose-500/15 text-rose-400',
+	workflow: 'bg-cyan-500/15 text-cyan-400',
 	service: 'bg-panel-active text-text-data',
-	images: 'bg-pink-100 text-pink-700',
+	images: 'bg-pink-500/15 text-pink-400',
 }
 
 export function WorkersView() {

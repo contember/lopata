@@ -33,7 +33,7 @@ export function InsertRowForm({ schema, displayCols, onSave, onCancel, hasCheckb
 	}
 
 	return (
-		<tr class="border-b border-emerald-100 bg-emerald-50/30">
+		<tr class="border-b border-emerald-500/20 bg-emerald-500/5">
 			{hasCheckboxCol && <td class="w-10 px-3 py-2"></td>}
 			{displayCols.map(col => {
 				const colInfo = schema.columns.find(c => c.name === col)
@@ -60,7 +60,7 @@ export function InsertRowForm({ schema, displayCols, onSave, onCancel, hasCheckb
 								onClick={() => setNulls(n => ({ ...n, [col]: !n[col] }))}
 								title={isNullVal ? 'Set to value' : 'Set to NULL'}
 								class={`flex-shrink-0 rounded px-1.5 py-1 text-xs font-bold transition-colors ${
-									isNullVal ? 'bg-amber-100 text-amber-700' : 'bg-panel-hover text-text-muted hover:bg-panel-active'
+									isNullVal ? 'bg-amber-500/15 text-amber-500' : 'bg-panel-hover text-text-muted hover:bg-panel-active'
 								}`}
 							>
 								N
