@@ -161,6 +161,42 @@ function ThemeSwitcher() {
 	)
 }
 
+function WarningsBanner() {
+	const { data: warnings } = useQuery('warnings.get')
+	const [dismissed, setDismissed] = useState<Set<string>>(() => {
+		try {
+			const saved = JSON.parse(localStorage.getItem('lopata-dismissed-warnings') ?? '[]')
+			return new Set(saved)
+		} catch {
+			return new Set()
+		}
+	})
+
+	if (!warnings?.length) return null
+	const visible = warnings.filter(w => !dismissed.has(w.id))
+	if (!visible.length) return null
+
+	const dismiss = (id: string) => {
+		const next = new Set(dismissed)
+		next.add(id)
+		setDismissed(next)
+		localStorage.setItem('lopata-dismissed-warnings', JSON.stringify([...next]))
+	}
+
+	return (
+		<div class="border-b border-amber-500/20 bg-amber-500/5">
+			{visible.map(w => (
+				<div key={w.id} class="flex items-center gap-3 px-4 py-2 text-sm font-mono">
+					<span class="text-amber-400 shrink-0">!</span>
+					<span class="flex-1 text-text-secondary">{w.message}</span>
+					<code class="text-xs text-amber-400/80 bg-amber-500/10 px-2 py-0.5 rounded hidden sm:block">{w.install}</code>
+					<button onClick={() => dismiss(w.id)} class="text-text-muted hover:text-ink transition-colors shrink-0 text-lg leading-none" title="Dismiss">&times;</button>
+				</div>
+			))}
+		</div>
+	)
+}
+
 function App() {
 	const route = useRoute()
 	const activeSection = '/' + (route.split('/')[1] || '')
@@ -287,6 +323,7 @@ function App() {
 					</a>
 				</div>
 
+				<WarningsBanner />
 				<main class="flex-1 overflow-y-auto scrollbar-thin bg-surface">
 					{renderView()}
 				</main>

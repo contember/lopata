@@ -1,4 +1,22 @@
-import { type DocumentHandlers, type ElementHandlers, HTMLRewriter as RawHTMLRewriter } from 'html-rewriter-wasm'
+import type { DocumentHandlers, ElementHandlers } from 'html-rewriter-wasm'
+import { addWarning } from '../warnings'
+
+type RawHTMLRewriterType = new (sink: (chunk: Uint8Array) => void) => {
+	on(selector: string, handler: ElementHandlers): void
+	onDocument(handler: DocumentHandlers): void
+	write(chunk: Uint8Array): Promise<void>
+	end(): Promise<void>
+	free(): void
+}
+
+let RawHTMLRewriter: RawHTMLRewriterType | null = null
+try {
+	;({ HTMLRewriter: RawHTMLRewriter } = await import('html-rewriter-wasm'))
+} catch {
+	addWarning({ id: 'html-rewriter-wasm', message: 'HTMLRewriter is a passthrough — html-rewriter-wasm is not installed', install: 'bun add html-rewriter-wasm' })
+}
+
+let _warned = false
 
 /**
  * Cloudflare-compatible HTMLRewriter that wraps html-rewriter-wasm.
@@ -26,6 +44,14 @@ export class HTMLRewriter {
 				statusText: response.statusText,
 				headers: new Headers(response.headers),
 			})
+		}
+
+		if (!RawHTMLRewriter) {
+			if (!_warned) {
+				console.warn('[lopata] html-rewriter-wasm is not installed — HTMLRewriter is a passthrough. Install it: bun add html-rewriter-wasm')
+				_warned = true
+			}
+			return response
 		}
 
 		const elementHandlers = this.elementHandlers

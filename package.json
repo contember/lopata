@@ -32,25 +32,21 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.13",
-		"@types/bun": "latest",
-		"dprint": "^0.51.1",
-		"bun-plugin-tailwind": "^0.1.2",
-		"vite": "^7.3.1",
-		"wrangler": "^4.65.0"
-	},
-	"peerDependencies": {
-		"typescript": "^5"
-	},
-	"optionalDependencies": {
-		"puppeteer": "*",
-		"puppeteer-core": "*"
-	},
-	"dependencies": {
 		"@cloudflare/sandbox": "^0.7.4",
+		"@types/bun": "latest",
+		"bun-plugin-tailwind": "^0.1.2",
+		"dprint": "^0.51.1",
 		"html-rewriter-wasm": "^0.4.1",
 		"preact": "^10.28.3",
+		"puppeteer": "*",
+		"puppeteer-core": "*",
 		"sharp": "^0.34.5",
-		"smol-toml": "^1.6.0",
-		"tailwindcss": "^4.1.18"
+		"tailwindcss": "^4.1.18",
+		"typescript": "^5",
+		"vite": "^7.3.1",
+		"wrangler": "^4.67.0"
+	},
+	"dependencies": {
+		"smol-toml": "^1.6.0"
 	}
 }

@@ -1,7 +1,8 @@
 // Images binding — Sharp-based implementation for local dev
 // Supports resize, rotate, format conversion, quality, draw overlays, and AVIF dimensions.
 
-import sharp from 'sharp'
+import type SharpNs from 'sharp'
+import { addWarning } from '../warnings'
 
 type ImageFormat = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/avif' | 'image/svg+xml'
 
@@ -53,6 +54,48 @@ export interface OutputOptions {
 export interface ImageOutputResult {
 	image(): ReadableStream<Uint8Array>
 	contentType(): string
+}
+
+// --- Lazy sharp loading ---
+
+let _sharpResolved = false
+let _sharp: typeof SharpNs | null = null
+let _sharpWarned = false
+
+async function getSharp(): Promise<typeof SharpNs | null> {
+	if (!_sharpResolved) {
+		try {
+			_sharp = (await import('sharp')).default
+		} catch {
+			_sharp = null
+			addWarning({ id: 'sharp', message: 'Image transformations will pass through unchanged — sharp is not installed', install: 'bun add sharp' })
+		}
+		_sharpResolved = true
+	}
+	return _sharp
+}
+
+function warnSharpMissing() {
+	if (!_sharpWarned) {
+		console.warn('[lopata] sharp is not installed — image transformations will pass through unchanged. Install it: bun add sharp')
+		_sharpWarned = true
+	}
+}
+
+function passthroughResult(buf: Uint8Array, format: string): ImageOutputResult {
+	return {
+		image(): ReadableStream<Uint8Array> {
+			return new ReadableStream({
+				start(controller) {
+					controller.enqueue(buf)
+					controller.close()
+				},
+			})
+		},
+		contentType(): string {
+			return format
+		},
+	}
 }
 
 // --- PNG header parsing ---
@@ -298,6 +341,12 @@ class LazyImageTransformer {
 	}
 
 	async output(options: OutputOptions): Promise<ImageOutputResult> {
+		const sharp = await getSharp()
+		if (!sharp) {
+			warnSharpMissing()
+			return passthroughResult(await this.streamPromise, options.format)
+		}
+
 		let currentBuf = Buffer.from(await this.streamPromise)
 		let transformFormat: string | undefined
 
@@ -326,7 +375,7 @@ class LazyImageTransformer {
 			}
 			if (effectiveWidth !== undefined || effectiveHeight !== undefined) {
 				const fitVal = t.fit ? CF_FIT_TO_SHARP[t.fit] ?? 'cover' : 'cover'
-				const resizeOpts: sharp.ResizeOptions = { fit: fitVal }
+				const resizeOpts: SharpNs.ResizeOptions = { fit: fitVal }
 				if (t.background) resizeOpts.background = t.background
 				// Map gravity for resize positioning
 				if (t.gravity) {
@@ -384,7 +433,7 @@ class LazyImageTransformer {
 		// Apply draw overlays
 		if (this.overlays.length > 0) {
 			const baseMeta = await sharp(currentBuf).metadata()
-			const composites: sharp.OverlayOptions[] = []
+			const composites: SharpNs.OverlayOptions[] = []
 			for (const overlay of this.overlays) {
 				let overlayBuf = Buffer.from(await overlay.streamPromise)
 
@@ -405,7 +454,7 @@ class LazyImageTransformer {
 						.toBuffer()
 				}
 
-				const opts: sharp.OverlayOptions = { input: overlayBuf }
+				const opts: SharpNs.OverlayOptions = { input: overlayBuf }
 
 				// Compute position — handle bottom/right by converting to top/left
 				const hasTop = overlay.options?.top !== undefined
@@ -516,14 +565,16 @@ export class ImagesBinding {
 		// Try our fast header parsers first, fall back to Sharp for AVIF
 		let dims = parseDimensions(buf, format)
 		if (!dims && format === 'image/avif') {
-			// Fallback: use Sharp metadata for AVIF
-			try {
-				const meta = await sharp(Buffer.from(buf)).metadata()
-				if (meta.width && meta.height) {
-					dims = { width: meta.width, height: meta.height }
+			const sharp = await getSharp()
+			if (sharp) {
+				try {
+					const meta = await sharp(Buffer.from(buf)).metadata()
+					if (meta.width && meta.height) {
+						dims = { width: meta.width, height: meta.height }
+					}
+				} catch {
+					// ignore — return 0,0
 				}
-			} catch {
-				// ignore — return 0,0
 			}
 		}
 		return {

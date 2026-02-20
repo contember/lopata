@@ -15,6 +15,7 @@ import { handlers as queue } from './handlers/queue'
 import { handlers as r2 } from './handlers/r2'
 import { handlers as scheduled } from './handlers/scheduled'
 import { handlers as traces } from './handlers/traces'
+import { handlers as warnings } from './handlers/warnings'
 import { handlers as workers } from './handlers/workers'
 import { handlers as workflows } from './handlers/workflows'
 import type { HandlerContext } from './types'
@@ -38,6 +39,7 @@ const allHandlers = {
 	...email,
 	...ai,
 	...analyticsEngine,
+	...warnings,
 }
 
 export type Procedures = {
