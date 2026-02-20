@@ -36,7 +36,7 @@ Instrukce pro AI agenta implementujícího bunflare runtime.
 3. Ověř že stávající funkcionalita stále funguje (všechny testy prochází)
 ```
 
-**DŮLEŽITÉ:** Nespouštěj `bun runtime/dev.ts` pro testování — používej integrační testy. Pokud přeci jen spustíš server, vždy ho ukonči (kill) aby neblokoval port 8787.
+**DŮLEŽITÉ:** Nespouštěj `bunflare dev` pro testování — používej integrační testy. Pokud přeci jen spustíš server, vždy ho ukonči (kill) aby neblokoval port 8787.
 
 ### 4. Commitni změny
 
@@ -194,7 +194,7 @@ bun test runtime/tests/
 bunx tsc --noEmit
 
 # Start dev server
-bun runtime/dev.ts
+bunflare dev
 ```
 
 ## Ukončení

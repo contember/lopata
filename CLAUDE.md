@@ -11,7 +11,7 @@ Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local bindi
 
 ### Commands
 
-- `bun runtime/dev.ts` — start the local dev server (port 8787)
+- `bunflare dev` — start the local dev server (port 8787)
 - `bun test runtime/tests/` — run integration tests
 - `bunx tsc --noEmit` — type check
 
