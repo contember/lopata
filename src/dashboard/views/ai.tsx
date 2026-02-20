@@ -62,7 +62,7 @@ function AiList() {
 						<Table
 							headers={['Model', 'Status', 'Duration', 'Stream', 'Time', '']}
 							rows={requests.map(r => [
-								<a href={`#/ai/${r.id}`} class="font-mono text-xs text-blue-600 hover:underline max-w-[200px] truncate block">{r.model}</a>,
+								<a href={`#/ai/${r.id}`} class="font-mono text-xs text-link hover:underline max-w-[200px] truncate block">{r.model}</a>,
 								<StatusBadge status={r.status} colorMap={AI_STATUS_COLORS} />,
 								<span class="text-xs text-text-muted tabular-nums">{r.duration_ms}ms</span>,
 								r.is_streaming ? <span class="text-xs text-purple-500">yes</span> : <span class="text-xs text-text-dim">no</span>,
@@ -96,7 +96,7 @@ function AiDetail({ id }: { id: string }) {
 	if (!data) {
 		return (
 			<div class="p-8">
-				<a href="#/ai" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to AI requests</a>
+				<a href="#/ai" class="text-sm text-link hover:underline mb-4 inline-block">Back to AI requests</a>
 				<EmptyState message="Request not found" />
 			</div>
 		)
@@ -104,7 +104,7 @@ function AiDetail({ id }: { id: string }) {
 
 	return (
 		<div class="p-8 max-w-4xl">
-			<a href="#/ai" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to AI requests</a>
+			<a href="#/ai" class="text-sm text-link hover:underline mb-4 inline-block">Back to AI requests</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-lg font-semibold text-ink">AI Request Detail</h2>

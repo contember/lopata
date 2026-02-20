@@ -47,7 +47,7 @@ function DataPointList() {
 						<Table
 							headers={['Dataset', 'Index', 'Doubles', 'Blobs', 'Time', '']}
 							rows={points.map(p => [
-								<a href={`#/analytics/${p.id}`} class="font-mono text-xs text-blue-600 hover:underline">{p.dataset}</a>,
+								<a href={`#/analytics/${p.id}`} class="font-mono text-xs text-link hover:underline">{p.dataset}</a>,
 								<span class="font-mono text-xs text-text-muted">{p.index1 ?? '-'}</span>,
 								<span class="text-xs text-text-muted tabular-nums">{formatDoubles(p)}</span>,
 								<span class="text-xs text-text-muted truncate max-w-[150px] block">{formatBlobs(p)}</span>,
@@ -80,7 +80,7 @@ function DataPointDetail({ id }: { id: string }) {
 	if (!data) {
 		return (
 			<div class="p-8">
-				<a href="#/analytics" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to data points</a>
+				<a href="#/analytics" class="text-sm text-link hover:underline mb-4 inline-block">Back to data points</a>
 				<EmptyState message="Data point not found" />
 			</div>
 		)
@@ -98,7 +98,7 @@ function DataPointDetail({ id }: { id: string }) {
 
 	return (
 		<div class="p-8 max-w-4xl">
-			<a href="#/analytics" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to data points</a>
+			<a href="#/analytics" class="text-sm text-link hover:underline mb-4 inline-block">Back to data points</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<h2 class="text-lg font-semibold text-ink mb-4">Data Point Detail</h2>
 				<div class="grid grid-cols-2 gap-4 mb-4 text-sm">

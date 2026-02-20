@@ -5,6 +5,7 @@ import {
 	EmptyState,
 	FilterInput,
 	LoadMoreButton,
+	Modal,
 	PageHeader,
 	RefreshButton,
 	ServiceInfo,
@@ -62,8 +63,7 @@ function R2BucketList() {
 	)
 }
 
-function UploadForm({ bucket, onUploaded }: { bucket: string; onUploaded: () => void }) {
-	const [open, setOpen] = useState(false)
+function UploadModal({ bucket, onClose, onUploaded }: { bucket: string; onClose: () => void; onUploaded: () => void }) {
 	const [key, setKey] = useState('')
 	const [file, setFile] = useState<File | null>(null)
 	const [error, setError] = useState('')
@@ -89,10 +89,7 @@ function UploadForm({ bucket, onUploaded }: { bucket: string; onUploaded: () => 
 			const res = await fetch('/__api/r2/upload', { method: 'POST', body: formData })
 			const data = await res.json() as { error?: string }
 			if (!res.ok) throw new Error(data.error ?? 'Upload failed')
-			setKey('')
-			setFile(null)
-			if (fileInputRef.current) fileInputRef.current.value = ''
-			setOpen(false)
+			onClose()
 			onUploaded()
 		} catch (err) {
 			setError(err instanceof Error ? err.message : String(err))
@@ -101,32 +98,9 @@ function UploadForm({ bucket, onUploaded }: { bucket: string; onUploaded: () => 
 		}
 	}
 
-	if (!open) {
-		return (
-			<button
-				onClick={() => setOpen(true)}
-				class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-			>
-				Upload object
-			</button>
-		)
-	}
-
 	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-6">
-			<div class="flex items-center justify-between mb-3">
-				<div class="text-sm font-semibold text-ink">Upload object</div>
-				<button
-					onClick={() => {
-						setOpen(false)
-						setError('')
-					}}
-					class="text-text-muted hover:text-text-data text-xs font-medium"
-				>
-					Cancel
-				</button>
-			</div>
-			<div class="space-y-3">
+		<Modal title="Upload object" onClose={onClose}>
+			<div class="p-5 space-y-3">
 				<input
 					ref={fileInputRef}
 					type="file"
@@ -140,9 +114,15 @@ function UploadForm({ bucket, onUploaded }: { bucket: string; onUploaded: () => 
 					placeholder="Object key (defaults to filename)"
 					class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
 				/>
+				{error && <div class="text-red-500 text-xs">{error}</div>}
 			</div>
-			{error && <div class="text-red-500 text-xs mt-2">{error}</div>}
-			<div class="flex justify-end mt-3">
+			<div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+				<button
+					onClick={onClose}
+					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover transition-all"
+				>
+					Cancel
+				</button>
 				<button
 					onClick={handleSubmit}
 					disabled={uploading || !file || !key.trim()}
@@ -151,12 +131,13 @@ function UploadForm({ bucket, onUploaded }: { bucket: string; onUploaded: () => 
 					{uploading ? 'Uploading...' : 'Upload'}
 				</button>
 			</div>
-		</div>
+		</Modal>
 	)
 }
 
 function R2ObjectList({ bucket }: { bucket: string }) {
 	const [prefix, setPrefix] = useState('')
+	const [showUpload, setShowUpload] = useState(false)
 	const { items: objects, hasMore, loadMore, refetch } = usePaginatedQuery('r2.listObjects', { bucket, prefix })
 	const deleteObject = useMutation('r2.deleteObject')
 	const renameObject = useMutation('r2.renameObject')
@@ -181,9 +162,21 @@ function R2ObjectList({ bucket }: { bucket: string }) {
 				<FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
 				<div class="flex gap-2 items-center">
 					<RefreshButton onClick={refetch} />
-					<UploadForm bucket={bucket} onUploaded={refetch} />
+					<button
+						onClick={() => setShowUpload(true)}
+						class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+					>
+						Upload object
+					</button>
 				</div>
 			</div>
+			{showUpload && (
+				<UploadModal
+					bucket={bucket}
+					onClose={() => setShowUpload(false)}
+					onUploaded={refetch}
+				/>
+			)}
 			{objects.length === 0 ? <EmptyState message="No objects found" /> : (
 				<>
 					<Table
@@ -196,7 +189,7 @@ function R2ObjectList({ bucket }: { bucket: string }) {
 							<div class="flex gap-1">
 								<a
 									href={`/__api/r2/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(o.key)}`}
-									class="text-blue-500 hover:text-blue-700 text-xs font-medium rounded-md px-2 py-1 hover:bg-blue-50 transition-all"
+									class="text-link hover:text-accent-lime text-xs font-medium rounded-md px-2 py-1 hover:bg-blue-50 transition-all"
 								>
 									Download
 								</a>

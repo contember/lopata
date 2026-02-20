@@ -1,5 +1,6 @@
 // Re-export all shared UI components from the components/ directory
 export {
+	BindingIcon,
 	Breadcrumb,
 	CodeBlock,
 	DeleteButton,

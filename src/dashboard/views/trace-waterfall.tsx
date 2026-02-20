@@ -318,7 +318,7 @@ function CollapsibleBlock({ content, lines }: { content: string; lines: number }
 						e.stopPropagation()
 						setExpanded(!expanded)
 					}}
-					class={`text-[10px] text-blue-500 hover:text-blue-700 font-medium mt-0.5 ${
+					class={`text-[10px] text-link hover:text-accent-lime font-medium mt-0.5 ${
 						!expanded ? 'absolute bottom-0 left-0 right-0 pt-6 pb-1 text-center bg-gradient-to-t from-panel via-panel/90 to-transparent rounded-b-md' : ''
 					}`}
 				>
@@ -346,7 +346,7 @@ export function AttributeValue({ value }: { value: unknown }) {
 	}
 	const str = String(value)
 	if (URL_REGEX.test(str)) {
-		return <a href={str} target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline break-all">{str}</a>
+		return <a href={str} target="_blank" rel="noopener noreferrer" class="text-link hover:underline break-all">{str}</a>
 	}
 	// Try JSON
 	if ((str.startsWith('{') || str.startsWith('[')) && str.length > 2) {

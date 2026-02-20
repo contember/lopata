@@ -84,7 +84,7 @@ export function BrowserHistoryPanel({ entries, currentTable, onSelect, onClear }
 							class="w-full text-left px-4 py-2.5 hover:bg-panel-hover transition-colors group"
 						>
 							<div class="flex items-center gap-2 mb-1">
-								<span class={`font-mono text-xs font-semibold ${isSameTable ? 'text-ink' : 'text-accent-olive'}`}>{entry.table}</span>
+								<span class={`font-mono text-xs font-semibold ${isSameTable ? 'text-ink' : 'text-accent-lime'}`}>{entry.table}</span>
 								<span class="text-[10px] text-text-dim tabular-nums">{formatTime(entry.ts)}</span>
 							</div>
 							<div class="flex flex-wrap gap-x-3 gap-y-0.5">

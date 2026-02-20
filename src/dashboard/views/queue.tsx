@@ -3,6 +3,7 @@ import {
 	Breadcrumb,
 	DeleteButton,
 	EmptyState,
+	Modal,
 	PageHeader,
 	PillButton,
 	RefreshButton,
@@ -71,8 +72,7 @@ function QueueList() {
 	)
 }
 
-function PublishForm({ queue, onPublished }: { queue: string; onPublished: () => void }) {
-	const [open, setOpen] = useState(false)
+function PublishModal({ queue, onClose, onPublished }: { queue: string; onClose: () => void; onPublished: () => void }) {
 	const [body, setBody] = useState('')
 	const [contentType, setContentType] = useState('json')
 	const [error, setError] = useState('')
@@ -82,55 +82,39 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
 		setError('')
 		const result = await publish.mutate({ queue, body, contentType })
 		if (result) {
-			setBody('')
-			setOpen(false)
+			onClose()
 			onPublished()
 		} else if (publish.error) {
 			setError(publish.error.message)
 		}
 	}
 
-	if (!open) {
-		return (
-			<button
-				onClick={() => setOpen(true)}
-				class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-			>
-				Publish message
-			</button>
-		)
-	}
-
 	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-6">
-			<div class="flex items-center justify-between mb-3">
-				<div class="text-sm font-semibold text-ink">Publish message</div>
+		<Modal title="Publish message" onClose={onClose}>
+			<div class="p-5 space-y-3">
+				<div class="flex gap-2">
+					{['json', 'text'].map(ct => (
+						<PillButton key={ct} onClick={() => setContentType(ct)} active={contentType === ct}>
+							{ct.toUpperCase()}
+						</PillButton>
+					))}
+				</div>
+				<textarea
+					value={body}
+					onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
+					placeholder={contentType === 'json' ? '{"key": "value"}' : 'Message body...'}
+					class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
+					rows={3}
+				/>
+				{error && <div class="text-red-500 text-xs">{error}</div>}
+			</div>
+			<div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
 				<button
-					onClick={() => {
-						setOpen(false)
-						setError('')
-					}}
-					class="text-text-muted hover:text-text-data text-xs font-medium"
+					onClick={onClose}
+					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover transition-all"
 				>
 					Cancel
 				</button>
-			</div>
-			<div class="flex gap-2 mb-3">
-				{['json', 'text'].map(ct => (
-					<PillButton key={ct} onClick={() => setContentType(ct)} active={contentType === ct}>
-						{ct.toUpperCase()}
-					</PillButton>
-				))}
-			</div>
-			<textarea
-				value={body}
-				onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
-				placeholder={contentType === 'json' ? '{"key": "value"}' : 'Message body...'}
-				class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
-				rows={3}
-			/>
-			{error && <div class="text-red-500 text-xs mt-1">{error}</div>}
-			<div class="flex justify-end mt-3">
 				<button
 					onClick={handleSubmit}
 					disabled={publish.isLoading || !body.trim()}
@@ -139,7 +123,7 @@ function PublishForm({ queue, onPublished }: { queue: string; onPublished: () =>
 					{publish.isLoading ? 'Publishing...' : 'Publish'}
 				</button>
 			</div>
-		</div>
+		</Modal>
 	)
 }
 
@@ -153,6 +137,7 @@ function RequeueButton({ onClick }: { onClick: () => void }) {
 
 function QueueMessages({ name }: { name: string }) {
 	const [filter, setFilter] = useState('')
+	const [showPublish, setShowPublish] = useState(false)
 	const { data: messages, refetch } = useQuery('queue.listMessages', { queue: name, status: filter || undefined })
 	const deleteMsg = useMutation('queue.deleteMessage')
 	const requeueMsg = useMutation('queue.requeueMessage')
@@ -181,9 +166,21 @@ function QueueMessages({ name }: { name: string }) {
 				</div>
 				<div class="flex gap-2 items-center">
 					<RefreshButton onClick={refetch} />
-					<PublishForm queue={name} onPublished={refetch} />
+					<button
+						onClick={() => setShowPublish(true)}
+						class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+					>
+						Publish message
+					</button>
 				</div>
 			</div>
+			{showPublish && (
+				<PublishModal
+					queue={name}
+					onClose={() => setShowPublish(false)}
+					onPublished={refetch}
+				/>
+			)}
 			{!messages?.length ? <EmptyState message="No messages found" /> : (
 				<Table
 					headers={['ID', 'Body', 'Status', 'Attempts', 'Created', 'Completed', '']}

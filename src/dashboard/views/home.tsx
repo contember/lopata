@@ -1,22 +1,23 @@
-import { StatusBadge } from '../components'
+import { BindingIcon, StatusBadge } from '../components'
+import type { BindingIconType } from '../components/binding-icon'
 import { useQuery } from '../rpc/hooks'
 import type { OverviewData, WorkerInfo } from '../rpc/types'
 
 /* ── Inventory items ── */
 
-const INVENTORY = [
-	{ key: 'kv', label: 'KV', path: '/kv', icon: '⬡', color: 'text-blue-400' },
-	{ key: 'r2', label: 'R2', path: '/r2', icon: '◧', color: 'text-violet-400' },
-	{ key: 'd1', label: 'D1', path: '/d1', icon: '⊞', color: 'text-cyan-400' },
-	{ key: 'cache', label: 'Cache', path: '/cache', icon: '◎', color: 'text-teal-400' },
-	{ key: 'do', label: 'DO', path: '/do', icon: '⬢', color: 'text-emerald-400' },
-	{ key: 'workflows', label: 'Workflows', path: '/workflows', icon: '⇶', color: 'text-amber-400' },
-	{ key: 'containers', label: 'Containers', path: '/containers', icon: '▣', color: 'text-indigo-400' },
-	{ key: 'scheduled', label: 'Scheduled', path: '/scheduled', icon: '⏱\uFE0E', color: 'text-orange-400' },
-	{ key: 'queue', label: 'Queues', path: '/queue', icon: '☰', color: 'text-yellow-400' },
-	{ key: 'email', label: 'Email', path: '/email', icon: '✉\uFE0E', color: 'text-pink-400' },
-	{ key: 'ai', label: 'AI', path: '/ai', icon: '⚡', color: 'text-purple-400' },
-] as const
+const INVENTORY: readonly { key: string; label: string; path: string; icon: BindingIconType }[] = [
+	{ key: 'kv', label: 'KV', path: '/kv', icon: 'kv' },
+	{ key: 'r2', label: 'R2', path: '/r2', icon: 'r2' },
+	{ key: 'd1', label: 'D1', path: '/d1', icon: 'd1' },
+	{ key: 'cache', label: 'Cache', path: '/cache', icon: 'cache' },
+	{ key: 'do', label: 'DO', path: '/do', icon: 'do' },
+	{ key: 'workflows', label: 'Workflows', path: '/workflows', icon: 'workflows' },
+	{ key: 'containers', label: 'Containers', path: '/containers', icon: 'containers' },
+	{ key: 'scheduled', label: 'Scheduled', path: '/scheduled', icon: 'scheduled' },
+	{ key: 'queue', label: 'Queues', path: '/queue', icon: 'queue' },
+	{ key: 'email', label: 'Email', path: '/email', icon: 'email' },
+	{ key: 'ai', label: 'AI', path: '/ai', icon: 'ai' },
+]
 
 const BINDING_COLORS: Record<string, string> = {
 	kv: 'bg-blue-500/15 text-blue-400',
@@ -147,20 +148,20 @@ export function HomeView() {
 					{hasErrors && (
 						<a
 							href="#/errors"
-							class="flex items-center gap-5 bg-panel rounded-xl border border-red-500/30 border-l-[3px] border-l-red-500 px-6 py-5 no-underline hover:border-red-500/50 transition-colors"
+							class="flex items-center gap-5 bg-panel rounded-lg border border-red-500/30 border-l-[3px] border-l-accent-lime px-6 py-5 no-underline hover:border-red-500/50 transition-colors"
 						>
 							<span class="text-3xl">⚠︎</span>
 							<div class="flex-1">
-								<div class="text-3xl font-bold text-red-400 tabular-nums">{data.errors}</div>
+								<div class="text-3xl font-bold font-mono text-red-400 tabular-nums">{data.errors}</div>
 								<div class="text-sm text-text-muted mt-0.5">Unresolved errors</div>
 							</div>
-							<span class="text-sm text-text-muted">View all &rarr;</span>
+							<span class="text-sm font-mono text-text-muted">View all &rarr;</span>
 						</a>
 					)}
 
-					{/* ── Inventory ── */}
+					{/* ── Binding rail ── */}
 					<Section title="Bindings">
-						<div class="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+						<div class="flex flex-wrap gap-2">
 							{INVENTORY.map(item => {
 								const count = data[item.key as keyof OverviewData] as number
 								const active = count > 0
@@ -168,17 +169,15 @@ export function HomeView() {
 									<a
 										key={item.key}
 										href={`#${item.path}`}
-										class={`bg-panel rounded-lg border px-4 py-3 no-underline transition-all hover:shadow-card-hover ${
+										class={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border no-underline transition-all font-mono text-sm ${
 											active
-												? 'border-border hover:border-text-dim'
+												? 'border-border text-accent-lime hover:border-text-dim'
 												: 'border-border-subtle opacity-40 hover:opacity-65'
 										}`}
 									>
-										<div class="flex items-center gap-2.5">
-											<span class={`text-lg leading-none ${active ? item.color : 'text-text-dim'}`}>{item.icon}</span>
-											<span class={`text-xl font-bold tabular-nums leading-none ${active ? 'text-ink' : 'text-text-dim'}`}>{count}</span>
-										</div>
-										<div class="text-xs text-text-muted mt-1.5">{item.label}</div>
+										<BindingIcon type={item.icon} class={`flex items-center ${active ? 'text-accent-lime' : 'text-text-dim'}`} />
+										<span class={`font-bold tabular-nums ${active ? 'text-ink' : 'text-text-dim'}`}>{count}</span>
+										<span class="text-text-muted text-xs">{item.label}</span>
 									</a>
 								)
 							})}
@@ -197,7 +196,7 @@ export function HomeView() {
 											<a
 												key={w.name}
 												href="#/workers"
-												class={`group bg-panel rounded-xl border px-5 py-4 no-underline transition-colors ${
+												class={`group bg-panel rounded-lg border px-5 py-4 no-underline transition-colors ${
 													hasWorkerErrors
 														? 'border-red-500/20 hover:border-red-500/40'
 														: 'border-border hover:border-text-dim'
@@ -205,8 +204,8 @@ export function HomeView() {
 											>
 												<div class="flex items-center gap-2.5 mb-2">
 													<span class={`w-2.5 h-2.5 rounded-full shrink-0 ${hasWorkerErrors ? 'bg-red-500' : 'bg-emerald-500'}`} />
-													<span class="text-sm font-semibold text-ink">{w.name}</span>
-													{w.isMain && <span class="px-2 py-0.5 rounded text-[11px] font-medium bg-ink text-surface leading-none">main</span>}
+													<span class="text-sm font-mono font-semibold text-ink">{w.name}</span>
+													{w.isMain && <span class="px-2 py-0.5 rounded text-[11px] font-mono font-medium bg-accent-lime text-surface leading-none">main</span>}
 													{hasWorkerErrors && (
 														<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-red-500/15 text-red-400 leading-none">
 															{errCount} err
@@ -231,7 +230,7 @@ export function HomeView() {
 								</div>
 							)
 							: (
-								<div class="bg-panel rounded-xl border border-border-subtle px-5 py-8 text-center text-sm text-text-muted">
+								<div class="bg-panel rounded-lg border border-border-subtle px-5 py-8 text-center text-sm text-text-muted">
 									No workers configured
 								</div>
 							)}
@@ -240,7 +239,7 @@ export function HomeView() {
 
 				{/* ── Right: System sidebar ── */}
 				<div class="flex flex-col gap-5">
-					<div class="bg-panel rounded-xl border border-border p-5">
+					<div class="bg-panel rounded-lg border border-border p-5">
 						<div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Resources</div>
 						<div class="flex flex-col gap-2">
 							<Kv k="RSS" v={fmtBytes(rt.memory.rss)} />
@@ -253,7 +252,7 @@ export function HomeView() {
 						</div>
 					</div>
 
-					<div class="bg-panel rounded-xl border border-border p-5">
+					<div class="bg-panel rounded-lg border border-border p-5">
 						<div class="text-xs font-semibold uppercase tracking-wider text-text-muted mb-4">Runtime</div>
 						<div class="flex flex-col gap-2">
 							<Kv k="Bun" v={rt.bunVersion} />
@@ -266,7 +265,7 @@ export function HomeView() {
 					</div>
 
 					{envEntries.length > 0 && (
-						<details class="bg-panel rounded-xl border border-border overflow-hidden">
+						<details class="bg-panel rounded-lg border border-border overflow-hidden">
 							<summary class="p-5 cursor-pointer select-none text-xs font-semibold uppercase tracking-wider text-text-muted hover:text-text-secondary transition-colors">
 								Environment ({envEntries.length})
 							</summary>

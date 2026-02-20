@@ -4,7 +4,7 @@ export function Table({ headers, rows }: { headers: string[]; rows: unknown[][] 
 			<table class="w-full text-sm">
 				<thead>
 					<tr class="border-b border-border-subtle">
-						{headers.map(h => <th key={h} class="text-left px-4 py-3 font-medium text-xs text-text-muted uppercase tracking-wider">{h}</th>)}
+						{headers.map(h => <th key={h} class="text-left px-4 py-3 font-mono font-medium text-xs text-text-muted uppercase tracking-wider">{h}</th>)}
 					</tr>
 				</thead>
 				<tbody>

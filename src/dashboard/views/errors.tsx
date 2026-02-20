@@ -81,14 +81,14 @@ function ErrorList() {
 							<table class="w-full text-sm">
 								<thead>
 									<tr class="border-b border-border-subtle">
-										<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Source</th>
-										<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Error</th>
-										<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Message</th>
-										<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Context</th>
-										<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Worker</th>
-										<th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Trace</th>
-										<th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
-										<th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium w-10"></th>
+										<th class="text-left px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Source</th>
+										<th class="text-left px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Error</th>
+										<th class="text-left px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Message</th>
+										<th class="text-left px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Context</th>
+										<th class="text-left px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Worker</th>
+										<th class="text-right px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Trace</th>
+										<th class="text-right px-4 py-2.5 text-xs font-mono text-text-muted font-medium">Time</th>
+										<th class="text-right px-4 py-2.5 text-xs font-mono text-text-muted font-medium w-10"></th>
 									</tr>
 								</thead>
 								<tbody>
@@ -125,7 +125,7 @@ function ErrorList() {
 														<a
 															href={`#/traces?trace=${err.traceId}`}
 															onClick={(e) => e.stopPropagation()}
-															class="text-blue-500 hover:text-blue-700 text-xs font-mono"
+															class="text-link hover:text-accent-lime text-xs font-mono"
 														>
 															{err.traceId.slice(0, 8)}...
 														</a>

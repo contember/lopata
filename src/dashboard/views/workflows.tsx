@@ -332,7 +332,7 @@ function SendEventForm({ name, id, waitingForEvents, refetch }: { name: string; 
 		<div class="mb-6 bg-blue-50 border border-blue-200 rounded-lg p-4">
 			<div class="text-sm font-semibold text-blue-800 mb-3">
 				Waiting for event{waitingForEvents.length > 0 && (
-					<span class="font-normal text-blue-600">
+					<span class="font-normal text-link">
 						{' '}— type: {waitingForEvents.map(t => `"${t}"`).join(', ')}
 					</span>
 				)}

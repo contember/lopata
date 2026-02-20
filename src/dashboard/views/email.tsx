@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks'
-import { DeleteButton, EmptyState, PageHeader, PillButton, RefreshButton, ServiceInfo, StatusBadge, Table } from '../components'
+import { DeleteButton, EmptyState, Modal, PageHeader, PillButton, RefreshButton, ServiceInfo, StatusBadge, Table } from '../components'
 import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
 
@@ -22,7 +22,7 @@ export function EmailView({ route }: { route: string }) {
 	return <EmailList />
 }
 
-function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: () => void; onSent: () => void }) {
+function SendEmailModal({ onClose, onSent }: { onClose: () => void; onSent: () => void }) {
 	const [from, setFrom] = useState('sender@example.com')
 	const [to, setTo] = useState('recipient@example.com')
 	const [subject, setSubject] = useState('')
@@ -34,70 +34,62 @@ function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: ()
 		setError('')
 		const result = await trigger.mutate({ from, to, subject, body })
 		if (result) {
-			setSubject('')
-			setBody('')
-			onToggle()
+			onClose()
 			onSent()
 		} else if (trigger.error) {
 			setError(trigger.error.message)
 		}
 	}
 
-	if (!open) return null
-
 	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-4">
-			<div class="flex items-center justify-between mb-3">
-				<div class="text-sm font-semibold text-ink">Send test email</div>
+		<Modal title="Send test email" onClose={onClose}>
+			<div class="p-5 space-y-3">
+				<div class="grid grid-cols-2 gap-3">
+					<div>
+						<label class="block text-xs text-text-muted mb-1">From</label>
+						<input
+							value={from}
+							onInput={e => setFrom((e.target as HTMLInputElement).value)}
+							class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
+						/>
+					</div>
+					<div>
+						<label class="block text-xs text-text-muted mb-1">To</label>
+						<input
+							value={to}
+							onInput={e => setTo((e.target as HTMLInputElement).value)}
+							class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
+						/>
+					</div>
+				</div>
+				<div>
+					<label class="block text-xs text-text-muted mb-1">Subject</label>
+					<input
+						value={subject}
+						onInput={e => setSubject((e.target as HTMLInputElement).value)}
+						placeholder="Test email"
+						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
+					/>
+				</div>
+				<div>
+					<label class="block text-xs text-text-muted mb-1">Body</label>
+					<textarea
+						value={body}
+						onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
+						placeholder="Email body..."
+						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
+						rows={3}
+					/>
+				</div>
+				{error && <div class="text-red-500 text-xs">{error}</div>}
+			</div>
+			<div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
 				<button
-					onClick={() => {
-						onToggle()
-						setError('')
-					}}
-					class="text-text-muted hover:text-text-data text-xs font-medium"
+					onClick={onClose}
+					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover transition-all"
 				>
 					Cancel
 				</button>
-			</div>
-			<div class="grid grid-cols-2 gap-3 mb-3">
-				<div>
-					<label class="block text-xs text-text-muted mb-1">From</label>
-					<input
-						value={from}
-						onInput={e => setFrom((e.target as HTMLInputElement).value)}
-						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
-					/>
-				</div>
-				<div>
-					<label class="block text-xs text-text-muted mb-1">To</label>
-					<input
-						value={to}
-						onInput={e => setTo((e.target as HTMLInputElement).value)}
-						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
-					/>
-				</div>
-			</div>
-			<div class="mb-3">
-				<label class="block text-xs text-text-muted mb-1">Subject</label>
-				<input
-					value={subject}
-					onInput={e => setSubject((e.target as HTMLInputElement).value)}
-					placeholder="Test email"
-					class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all"
-				/>
-			</div>
-			<div class="mb-3">
-				<label class="block text-xs text-text-muted mb-1">Body</label>
-				<textarea
-					value={body}
-					onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
-					placeholder="Email body..."
-					class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[80px]"
-					rows={3}
-				/>
-			</div>
-			{error && <div class="text-red-500 text-xs mt-1">{error}</div>}
-			<div class="flex justify-end mt-3">
 				<button
 					onClick={handleSubmit}
 					disabled={trigger.isLoading || !from.trim() || !to.trim()}
@@ -106,7 +98,7 @@ function SendEmailForm({ open, onToggle, onSent }: { open: boolean; onToggle: ()
 					{trigger.isLoading ? 'Sending...' : 'Send'}
 				</button>
 			</div>
-		</div>
+		</Modal>
 	)
 }
 
@@ -125,11 +117,10 @@ function EmailList() {
 	}
 
 	return (
-		<div class="p-8 max-w-6xl">
+		<div class="p-8">
 			<PageHeader title="Email" subtitle={`${stats?.total ?? 0} email(s)`} actions={<RefreshButton onClick={refetch} />} />
 			<div class="flex gap-6 items-start">
 				<div class="flex-1 min-w-0">
-					<SendEmailForm open={formOpen} onToggle={() => setFormOpen(!formOpen)} onSent={refetch} />
 					<div class="mb-6 flex gap-2 items-center justify-between">
 						<div class="flex gap-2">
 							{['', 'received', 'sent', 'forwarded', 'rejected'].map(s => (
@@ -138,20 +129,19 @@ function EmailList() {
 								</PillButton>
 							))}
 						</div>
-						{!formOpen && (
-							<button
-								onClick={() => setFormOpen(true)}
-								class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-							>
-								Send test email
-							</button>
-						)}
+						<button
+							onClick={() => setFormOpen(true)}
+							class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+						>
+							Send test email
+						</button>
 					</div>
+					{formOpen && <SendEmailModal onClose={() => setFormOpen(false)} onSent={refetch} />}
 					{!emails?.length ? <EmptyState message="No emails found" /> : (
 						<Table
 							headers={['From', 'To', 'Status', 'Size', 'Binding', 'Time', '']}
 							rows={emails.map(e => [
-								<a href={`#/email/${e.id}`} class="font-mono text-xs text-blue-600 hover:underline">{e.from_addr}</a>,
+								<a href={`#/email/${e.id}`} class="font-mono text-xs text-link hover:underline">{e.from_addr}</a>,
 								<span class="font-mono text-xs">{e.to_addr}</span>,
 								<StatusBadge status={e.status} colorMap={EMAIL_STATUS_COLORS} />,
 								<span class="text-xs text-text-muted tabular-nums">{formatBytes(e.raw_size)}</span>,
@@ -187,7 +177,7 @@ function EmailDetail({ id }: { id: string }) {
 	if (!data) {
 		return (
 			<div class="p-8">
-				<a href="#/email" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to emails</a>
+				<a href="#/email" class="text-sm text-link hover:underline mb-4 inline-block">Back to emails</a>
 				<EmptyState message="Email not found" />
 			</div>
 		)
@@ -197,7 +187,7 @@ function EmailDetail({ id }: { id: string }) {
 
 	return (
 		<div class="p-8 max-w-4xl">
-			<a href="#/email" class="text-sm text-blue-600 hover:underline mb-4 inline-block">Back to emails</a>
+			<a href="#/email" class="text-sm text-link hover:underline mb-4 inline-block">Back to emails</a>
 			<div class="bg-panel border border-border rounded-lg p-6">
 				<div class="flex items-center justify-between mb-4">
 					<h2 class="text-lg font-semibold text-ink">Email Detail</h2>

@@ -313,7 +313,7 @@ export function TracesView() {
 									onClick={() => handleTimeRangeChange(opt.ms)}
 									class={`px-2.5 py-2 text-xs font-medium transition-colors ${
 										timeRangeMs === opt.ms
-											? 'bg-gray-900 text-white'
+											? 'bg-accent-lime text-surface'
 											: 'text-text-secondary hover:bg-panel-hover hover:text-ink'
 									}`}
 								>
@@ -501,7 +501,7 @@ function SpansListTab() {
 										<td class="px-4 py-2.5 text-right">
 											<button
 												onClick={() => setSelectedTraceId(span.traceId)}
-												class="text-blue-500 hover:text-blue-700 text-xs font-mono"
+												class="text-link hover:text-accent-lime text-xs font-mono"
 											>
 												{span.traceId.slice(0, 8)}...
 											</button>

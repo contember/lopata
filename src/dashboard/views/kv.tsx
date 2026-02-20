@@ -7,6 +7,7 @@ import {
 	EmptyState,
 	FilterInput,
 	LoadMoreButton,
+	Modal,
 	PageHeader,
 	PillButton,
 	RefreshButton,
@@ -111,15 +112,8 @@ function KvPutForm({ ns, initial, onSaved, onCancel }: KvPutFormProps) {
 	}
 
 	return (
-		<div class="bg-panel border border-border rounded-lg p-4 mb-6">
-			<div class="flex items-center justify-between mb-3">
-				<div class="text-sm font-semibold text-ink">{isEdit ? 'Edit key' : 'Add key'}</div>
-				<button onClick={onCancel} class="text-text-muted hover:text-text-data text-xs font-medium">
-					Cancel
-				</button>
-			</div>
-
-			<div class="space-y-3">
+		<Modal title={isEdit ? 'Edit key' : 'Add key'} onClose={onCancel}>
+			<div class="p-5 space-y-3">
 				<div>
 					<label class="block text-xs font-medium text-text-secondary mb-1">Key</label>
 					<input
@@ -165,10 +159,16 @@ function KvPutForm({ ns, initial, onSaved, onCancel }: KvPutFormProps) {
 						/>
 					</div>
 				</div>
-			</div>
 
-			{error && <div class="text-red-500 text-xs mt-2">{error}</div>}
-			<div class="flex justify-end mt-3">
+				{error && <div class="text-red-500 text-xs">{error}</div>}
+			</div>
+			<div class="flex justify-end gap-2 px-5 py-4 border-t border-border-subtle">
+				<button
+					onClick={onCancel}
+					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary hover:bg-panel-hover transition-all"
+				>
+					Cancel
+				</button>
 				<button
 					onClick={handleSubmit}
 					disabled={putKey.isLoading || !key.trim()}
@@ -177,7 +177,7 @@ function KvPutForm({ ns, initial, onSaved, onCancel }: KvPutFormProps) {
 					{putKey.isLoading ? 'Saving...' : isEdit ? 'Save' : 'Add key'}
 				</button>
 			</div>
-		</div>
+		</Modal>
 	)
 }
 
@@ -202,14 +202,12 @@ function KvKeyList({ ns }: { ns: string }) {
 				<FilterInput value={prefix} onInput={setPrefix} placeholder="Filter by prefix..." />
 				<div class="flex gap-2 items-center">
 					<RefreshButton onClick={refetch} />
-					{!showAdd && (
-						<button
-							onClick={() => setShowAdd(true)}
-							class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
-						>
-							Add key
-						</button>
-					)}
+					<button
+						onClick={() => setShowAdd(true)}
+						class="rounded-md px-3 py-1.5 text-sm font-medium bg-ink text-surface hover:opacity-80 transition-all"
+					>
+						Add key
+					</button>
 				</div>
 			</div>
 			{showAdd && (
@@ -251,45 +249,42 @@ function KvKeyDetail({ ns, keyName }: { ns: string; keyName: string }) {
 	return (
 		<div class="p-8">
 			<Breadcrumb items={[{ label: 'KV', href: '#/kv' }, { label: ns, href: `#/kv/${encodeURIComponent(ns)}` }, { label: keyName }]} />
-			{editing
-				? (
-					<KvPutForm
-						ns={ns}
-						initial={{
-							key: data.key,
-							value: data.value,
-							metadata: data.metadata ? JSON.stringify(data.metadata, null, 2) : '',
-							expiration: data.expiration,
-						}}
-						onSaved={() => {
-							setEditing(false)
-							refetch()
-						}}
-						onCancel={() => setEditing(false)}
-					/>
-				)
-				: (
-					<div class="space-y-5">
-						<div class="flex justify-end">
-							<button
-								onClick={() => setEditing(true)}
-								class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-data hover:bg-panel-hover transition-all"
-							>
-								Edit
-							</button>
-						</div>
-						<DetailField label="Key" value={data.key} />
-						<DetailField label="Value">
-							<CodeBlock class="max-h-96">{data.value}</CodeBlock>
-						</DetailField>
-						{data.metadata && (
-							<DetailField label="Metadata">
-								<CodeBlock>{JSON.stringify(data.metadata, null, 2)}</CodeBlock>
-							</DetailField>
-						)}
-						{data.expiration && <DetailField label="Expiration" value={new Date(data.expiration * 1000).toLocaleString()} />}
-					</div>
+			{editing && (
+				<KvPutForm
+					ns={ns}
+					initial={{
+						key: data.key,
+						value: data.value,
+						metadata: data.metadata ? JSON.stringify(data.metadata, null, 2) : '',
+						expiration: data.expiration,
+					}}
+					onSaved={() => {
+						setEditing(false)
+						refetch()
+					}}
+					onCancel={() => setEditing(false)}
+				/>
+			)}
+			<div class="space-y-5">
+				<div class="flex justify-end">
+					<button
+						onClick={() => setEditing(true)}
+						class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-data hover:bg-panel-hover transition-all"
+					>
+						Edit
+					</button>
+				</div>
+				<DetailField label="Key" value={data.key} />
+				<DetailField label="Value">
+					<CodeBlock class="max-h-96">{data.value}</CodeBlock>
+				</DetailField>
+				{data.metadata && (
+					<DetailField label="Metadata">
+						<CodeBlock>{JSON.stringify(data.metadata, null, 2)}</CodeBlock>
+					</DetailField>
 				)}
+				{data.expiration && <DetailField label="Expiration" value={new Date(data.expiration * 1000).toLocaleString()} />}
+			</div>
 		</div>
 	)
 }

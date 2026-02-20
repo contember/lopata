@@ -1,6 +1,8 @@
 import { render } from 'preact'
 import { useEffect, useState } from 'preact/hooks'
 
+import { BindingIcon } from './components/binding-icon'
+import type { BindingIconType } from './components/binding-icon'
 import { useRoute } from './lib'
 import { useQuery } from './rpc/hooks'
 import { AiView } from './views/ai'
@@ -23,7 +25,7 @@ import { WorkflowsView } from './views/workflows'
 interface NavItem {
 	path: string
 	label: string
-	icon: string
+	icon: BindingIconType
 	badge?: (counts: Record<string, number>) => number | null
 	badgeColor?: string
 }
@@ -34,7 +36,7 @@ interface NavGroup {
 }
 
 const NAV_TOP: NavItem[] = [
-	{ path: '/', label: 'Overview', icon: '◉' },
+	{ path: '/', label: 'Overview', icon: 'overview' },
 ]
 
 const NAV_GROUPS: NavGroup[] = [
@@ -44,44 +46,44 @@ const NAV_GROUPS: NavGroup[] = [
 			{
 				path: '/errors',
 				label: 'Errors',
-				icon: '⚠\uFE0E',
+				icon: 'errors',
 				badge: c => c.errors || null,
 				badgeColor: 'bg-red-500',
 			},
-			{ path: '/traces', label: 'Traces', icon: '⟡' },
-			{ path: '/analytics', label: 'Analytics Engine', icon: '⊘' },
+			{ path: '/traces', label: 'Traces', icon: 'traces' },
+			{ path: '/analytics', label: 'Analytics Engine', icon: 'analytics' },
 		],
 	},
 	{
 		label: 'Compute',
 		items: [
-			{ path: '/workers', label: 'Workers', icon: '⊡' },
-			{ path: '/do', label: 'Durable Objects', icon: '⬢' },
-			{ path: '/containers', label: 'Containers', icon: '▣' },
-			{ path: '/workflows', label: 'Workflows', icon: '⇶' },
-			{ path: '/scheduled', label: 'Scheduled', icon: '⏱\uFE0E' },
+			{ path: '/workers', label: 'Workers', icon: 'workers' },
+			{ path: '/do', label: 'Durable Objects', icon: 'do' },
+			{ path: '/containers', label: 'Containers', icon: 'containers' },
+			{ path: '/workflows', label: 'Workflows', icon: 'workflows' },
+			{ path: '/scheduled', label: 'Scheduled', icon: 'scheduled' },
 		],
 	},
 	{
 		label: 'Storage',
 		items: [
-			{ path: '/kv', label: 'KV', icon: '⬡' },
-			{ path: '/r2', label: 'R2', icon: '◧' },
-			{ path: '/d1', label: 'D1', icon: '⊞' },
-			{ path: '/cache', label: 'Cache', icon: '◎' },
+			{ path: '/kv', label: 'KV', icon: 'kv' },
+			{ path: '/r2', label: 'R2', icon: 'r2' },
+			{ path: '/d1', label: 'D1', icon: 'd1' },
+			{ path: '/cache', label: 'Cache', icon: 'cache' },
 		],
 	},
 	{
 		label: 'Messaging',
 		items: [
-			{ path: '/queue', label: 'Queues', icon: '☰' },
-			{ path: '/email', label: 'Email', icon: '✉\uFE0E' },
+			{ path: '/queue', label: 'Queues', icon: 'queue' },
+			{ path: '/email', label: 'Email', icon: 'email' },
 		],
 	},
 	{
 		label: 'AI',
 		items: [
-			{ path: '/ai', label: 'AI', icon: '⚡' },
+			{ path: '/ai', label: 'AI', icon: 'ai' },
 		],
 	},
 ]
@@ -91,13 +93,13 @@ function NavLink({ item, active, counts }: { item: NavItem; active: boolean; cou
 	return (
 		<a
 			href={`#${item.path}`}
-			class={`flex items-center gap-2.5 px-3 py-1.5 text-sm no-underline rounded-md transition-colors ${
+			class={`flex items-center gap-2.5 px-3 py-1 text-sm font-mono no-underline transition-colors ${
 				active
-					? 'bg-panel-hover text-ink font-medium'
-					: 'text-text-secondary hover:bg-panel-hover hover:text-ink'
+					? 'border-l-2 border-l-accent-lime text-ink font-medium'
+					: 'border-l-2 border-l-transparent text-text-secondary hover:text-ink'
 			}`}
 		>
-			<span class="w-4 text-center text-sm opacity-60">{item.icon}</span>
+			<BindingIcon type={item.icon} class="w-4 text-center opacity-60 flex items-center justify-center" />
 			<span class="flex-1">{item.label}</span>
 			{badgeValue !== null && (
 				<span
@@ -115,7 +117,7 @@ function NavLink({ item, active, counts }: { item: NavItem; active: boolean; cou
 function SidebarGroup({ group, activeSection, counts }: { group: NavGroup; activeSection: string; counts: Record<string, number> }) {
 	return (
 		<div class="mb-1">
-			<div class="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
+			<div class="px-3 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-wider text-text-muted">
 				{group.label}
 			</div>
 			<div class="mt-0.5 ml-1">
@@ -150,7 +152,7 @@ function ThemeSwitcher() {
 	return (
 		<button
 			onClick={() => setTheme(THEME_CYCLE[theme])}
-			class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-text-muted hover:text-ink hover:bg-panel-hover rounded-md transition-colors"
+			class="flex items-center gap-2 w-full px-3 py-1.5 text-xs font-mono text-text-muted hover:text-ink hover:bg-panel-hover rounded-md transition-colors"
 			title={`Theme: ${THEME_LABELS[theme]}`}
 		>
 			<span class="w-4 text-center text-sm">{THEME_ICONS[theme]}</span>
@@ -203,13 +205,13 @@ function App() {
 
 	return (
 		<div class="flex h-full">
-			<nav class="w-52 flex-shrink-0 border-r border-border bg-panel flex flex-col">
+			<nav class="w-56 flex-shrink-0 border-r border-border bg-panel flex flex-col">
 				<div class="p-4 pb-3">
 					<a href="#/" class="flex items-center gap-2.5 no-underline">
-						<span class="w-7 h-7 rounded-lg bg-ink flex items-center justify-center text-xs font-bold text-surface">B</span>
+						<span class="w-7 h-7 rounded-lg bg-accent-lime flex items-center justify-center text-xs font-bold text-surface">B</span>
 						<div>
-							<div class="text-sm font-semibold text-ink leading-tight">Bunflare</div>
-							<div class="text-[10px] text-text-muted">Dev Dashboard</div>
+							<div class="text-sm font-mono font-semibold text-ink leading-tight">Bunflare</div>
+							<div class="text-[10px] text-text-muted font-mono">Dev Console</div>
 						</div>
 					</a>
 				</div>
