@@ -344,13 +344,13 @@ function SendEventForm({ name, id, waitingForEvents, refetch }: { name: string; 
 						value={eventType}
 						onInput={e => setEventType((e.target as HTMLInputElement).value)}
 						placeholder="Event type"
-						class="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-300 transition-all mb-2"
+						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all mb-2"
 					/>
 					<textarea
 						value={payload}
 						onInput={e => setPayload((e.target as HTMLTextAreaElement).value)}
 						placeholder='{"key": "value"}'
-						class="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-300 transition-all resize-y min-h-[60px]"
+						class="w-full bg-panel-secondary border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-border focus:ring-1 focus:ring-border transition-all resize-y min-h-[60px]"
 						rows={2}
 					/>
 					{error && <div class="text-red-500 text-xs mt-1">{error}</div>}

@@ -10,7 +10,14 @@ export class MyWorkflow extends WorkflowEntrypoint<Env, Params> {
 			return { processed: event.payload.input.toUpperCase() }
 		})
 
-		await step.sleep('wait a bit', '10 minutes')
+		const approval = await step.waitForEvent<{ approved: boolean }>('wait for approval', {
+			type: 'approval',
+			timeout: '1 hour',
+		})
+
+		if (!approval.payload.approved) {
+			return { status: 'rejected', input: result.processed }
+		}
 
 		await step.do('step 2: finalize', async () => {
 			return { final: result.processed, done: true }

@@ -652,6 +652,13 @@ export default {
 			const status = await instance.status()
 			return Response.json({ id: instance.id, status })
 		}
+		const wfEventMatch = path.match(/^\/workflow\/([^/]+)\/event$/)
+		if (wfEventMatch && method === 'POST') {
+			const instance = await env.MY_WORKFLOW.get(wfEventMatch[1]!)
+			const body = (await request.json()) as { type: string; payload?: unknown }
+			await instance.sendEvent({ type: body.type, payload: body.payload })
+			return Response.json({ sent: true })
+		}
 
 		// ── Sandbox ──
 		if (path === '/sandbox/exec' && method === 'POST') {
