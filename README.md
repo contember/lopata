@@ -1,4 +1,4 @@
-# Lopata
+# Lopata 🪏
 
 > **This is a local development tool only.** Lopata is not intended for production use and never will be. Always deploy to Cloudflare Workers for production workloads.
 
