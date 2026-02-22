@@ -4,7 +4,8 @@
 		"lib": ["ESNext", "DOM"],
 		"jsx": "react-jsx",
 		"jsxImportSource": "preact",
-		"composite": true
+		"composite": true,
+		"outDir": "../../.tsc-out/error-page"
 	},
 	"include": ["."]
 }

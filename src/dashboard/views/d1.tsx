@@ -1,4 +1,5 @@
 import { Breadcrumb, EmptyState, PageHeader, RefreshButton, ServiceInfo, SqlBrowser, Table, TableLink } from '../components'
+import type { Tab } from '../sql-browser/types'
 import { parseBrowserRoute, parseHashRoute } from '../lib'
 import { rpc } from '../rpc/client'
 import { useQuery } from '../rpc/hooks'

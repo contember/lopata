@@ -210,7 +210,7 @@ export class TraceStore {
 
 		params.push(limit)
 
-		const rows = this.db.prepare<Record<string, unknown>, unknown[]>(`
+		const rows = this.db.prepare<Record<string, unknown>, any>(`
       SELECT
         s.trace_id,
         s.name as root_span_name,

@@ -298,7 +298,7 @@ globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 		setSpanAttribute('http.response.headers', headersToRecord(response.headers))
 
 		// Capture response body from a clone (caller keeps the original stream)
-		const resBody = await readBodyLimited(response.clone())
+		const resBody = await readBodyLimited(response.clone() as Response)
 		if (resBody) setSpanAttribute('http.response.body', resBody)
 
 		return response

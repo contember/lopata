@@ -467,7 +467,6 @@ function nodeReqToRequest(req: IncomingMessage): Request {
 		method,
 		headers,
 		body: hasBody ? nodeStreamToReadable(req) : undefined,
-		// @ts-expect-error duplex is needed for streaming request bodies
 		duplex: hasBody ? 'half' : undefined,
 	})
 }

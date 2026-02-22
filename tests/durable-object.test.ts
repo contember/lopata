@@ -1004,7 +1004,7 @@ describe('DO Gaps - Issue #27', () => {
 		test('stub.fetch calls DO fetch handler with Request', async () => {
 			const ns = new DurableObjectNamespaceImpl(db, 'FetchDO', undefined, { evictionTimeoutMs: 0 })
 			ns._setClass(FetchDO, {})
-			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
+			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> }
 
 			const resp = await stub.fetch(new Request('http://fake-host/echo', { method: 'POST', body: 'hello' }))
 			expect(resp.status).toBe(200)
@@ -1014,7 +1014,7 @@ describe('DO Gaps - Issue #27', () => {
 		test('stub.fetch with string URL and init', async () => {
 			const ns = new DurableObjectNamespaceImpl(db, 'FetchDO2', undefined, { evictionTimeoutMs: 0 })
 			ns._setClass(FetchDO, {})
-			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> }
+			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> }
 
 			const resp = await stub.fetch('http://fake-host/echo', { method: 'POST', body: 'world' })
 			expect(await resp.text()).toBe('Echo: world')
@@ -1028,7 +1028,7 @@ describe('DO Gaps - Issue #27', () => {
 			}
 			const ns = new DurableObjectNamespaceImpl(db, 'NoFetchDO', undefined, { evictionTimeoutMs: 0 })
 			ns._setClass(NoFetchDO, {})
-			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> }
+			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: Request | string | URL): Promise<Response> }
 
 			expect(stub.fetch('http://fake-host/')).rejects.toThrow('does not implement fetch')
 		})
@@ -1036,7 +1036,7 @@ describe('DO Gaps - Issue #27', () => {
 		test('stub.fetch returns 404 for unknown path', async () => {
 			const ns = new DurableObjectNamespaceImpl(db, 'FetchDO3', undefined, { evictionTimeoutMs: 0 })
 			ns._setClass(FetchDO, {})
-			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: RequestInfo | URL): Promise<Response> }
+			const stub = ns.get(ns.idFromName('test')) as unknown as { fetch(input: Request | string | URL): Promise<Response> }
 
 			const resp = await stub.fetch('http://fake-host/unknown')
 			expect(resp.status).toBe(404)

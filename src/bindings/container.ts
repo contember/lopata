@@ -24,7 +24,7 @@ export interface ContainerConfig {
 }
 
 interface TcpPort {
-	fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
+	fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>
 	connect(): never
 }
 
@@ -215,7 +215,7 @@ export class ContainerRuntime {
 	/**
 	 * Forward an HTTP request to the container.
 	 */
-	async fetch(input: RequestInfo | URL, init?: RequestInit, port?: number): Promise<Response> {
+	async fetch(input: Request | string | URL, init?: RequestInit, port?: number): Promise<Response> {
 		const targetPort = port ?? this.defaultPort
 		const hostPort = this._hostPorts.get(targetPort)
 		if (!hostPort) {
@@ -429,7 +429,7 @@ export class ContainerContext {
 	getTcpPort(port: number): TcpPort {
 		const runtime = this._runtime
 		return {
-			fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+			fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
 				return runtime.fetch(input, init, port)
 			},
 			connect(): never {
@@ -521,7 +521,7 @@ export class ContainerBase extends DurableObjectBase {
 		requestOrUrl: Request | string | URL,
 		portOrInit?: number | RequestInit,
 		portParam?: number,
-	): { input: RequestInfo | URL; init?: RequestInit; port?: number } {
+	): { input: Request | string | URL; init?: RequestInit; port?: number } {
 		if (requestOrUrl instanceof Request) {
 			// containerFetch(request, port?)
 			const port = typeof portOrInit === 'number' ? portOrInit : portParam

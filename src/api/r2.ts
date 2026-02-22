@@ -53,7 +53,7 @@ export function handleR2Download(url: URL): Response {
 	}
 
 	const filename = key.split('/').pop() ?? key
-	const response = new Response(file as unknown as BodyInit, {
+	const response = new Response(file as unknown as Bun.BodyInit, {
 		headers: {
 			'Content-Disposition': `attachment; filename="${filename}"`,
 			'Content-Type': file.type || 'application/octet-stream',

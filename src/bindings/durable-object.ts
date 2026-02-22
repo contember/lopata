@@ -997,7 +997,7 @@ export class DurableObjectNamespaceImpl {
 
 				// stub.fetch() — calls the DO's fetch() handler
 				if (prop === 'fetch') {
-					return async (input: RequestInfo | URL, init?: RequestInit) => {
+					return async (input: Request | string | URL, init?: RequestInit) => {
 						const executor = self._getOrCreateExecutor(idStr, id)!
 						self._lastActivity.set(idStr, Date.now())
 						const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)

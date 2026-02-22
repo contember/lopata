@@ -26,7 +26,7 @@ export function cfTimingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuff
 export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
 	readonly digest: Promise<ArrayBuffer>
 
-	constructor(algorithm: AlgorithmIdentifier) {
+	constructor(algorithm: string | { name: string }) {
 		const algo = typeof algorithm === 'string' ? algorithm : algorithm.name
 
 		// Map CF algorithm names to Bun.CryptoHasher names

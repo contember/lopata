@@ -42,7 +42,7 @@ export const handlers = {
 		return rows.map(row => {
 			let bodyStr: string
 			try {
-				bodyStr = new TextDecoder().decode(row.body as BufferSource)
+				bodyStr = new TextDecoder().decode(row.body as Uint8Array)
 			} catch {
 				bodyStr = `<binary>`
 			}

@@ -12,7 +12,7 @@ Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local bindi
 - `bun test tests/kv.test.ts` — run a single test file
 - `bun run lint` — lint (`bun run lint:fix` to autofix)
 - `bun run format` — format (`bun run format:check` to verify)
-- `bun run typecheck` — type check (uses `tsc --build --noEmit`)
+- `bun run typecheck` — type check (uses `tsc --build`)
 - `bun run dev` — start dev server via playground example
 
 ## Code Style

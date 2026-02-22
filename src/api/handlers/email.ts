@@ -27,7 +27,7 @@ export const handlers = {
 
 		let rawStr: string
 		try {
-			rawStr = new TextDecoder().decode(row.raw as BufferSource)
+			rawStr = new TextDecoder().decode(row.raw as Uint8Array)
 		} catch {
 			rawStr = '<binary content>'
 		}

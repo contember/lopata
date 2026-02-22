@@ -449,7 +449,7 @@ class LazyImageTransformer {
 							raw: { width: w, height: h, channels: 4 },
 							blend: 'dest-in' as any,
 						}])
-						.toBuffer()
+						.toBuffer() as Buffer<ArrayBuffer>
 				}
 
 				const opts: SharpNs.OverlayOptions = { input: overlayBuf }

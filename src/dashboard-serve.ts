@@ -77,7 +77,7 @@ export function handleDashboardRequest(request: Request): Response {
 	if (assetMatch && dashboardAssets) {
 		const asset = dashboardAssets.get(assetMatch[1]!)
 		if (asset) {
-			return new Response(asset.content as unknown as BodyInit, {
+			return new Response(asset.content as unknown as Bun.BodyInit, {
 				headers: {
 					'Content-Type': asset.contentType,
 					'Cache-Control': 'public, max-age=31536000, immutable',

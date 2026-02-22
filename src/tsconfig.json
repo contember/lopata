@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"allowJs": true,
 		"composite": true,
+		"outDir": "../.tsc-out/src",
 
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,

@@ -5,10 +5,12 @@
 		"jsx": "react-jsx",
 		"jsxImportSource": "preact",
 		"composite": true,
+		"outDir": "../../.tsc-out/dashboard",
 
 		"noUnusedLocals": false,
 		"noUnusedParameters": false,
 		"noPropertyAccessFromIndexSignature": false
 	},
-	"include": ["."]
+	"include": ["."],
+	"references": [{ "path": ".." }]
 }

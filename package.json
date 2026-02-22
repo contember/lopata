@@ -28,7 +28,7 @@
 		"format": "dprint fmt",
 		"format:check": "dprint check",
 		"build:assets": "bun scripts/build-assets.ts",
-		"typecheck": "bunx --bun tsc --build --noEmit",
+		"typecheck": "bunx --bun tsc --build",
 		"prepublishOnly": "bun scripts/build-assets.ts"
 	},
 	"devDependencies": {

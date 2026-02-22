@@ -95,7 +95,7 @@ export class SqliteCache {
 
 		const headers = new Headers(JSON.parse(row.headers))
 		headers.set('cf-cache-status', 'HIT')
-		return new Response(row.body as unknown as BodyInit, { status: row.status, headers })
+		return new Response(row.body as unknown as Bun.BodyInit, { status: row.status, headers })
 	}
 
 	async put(request: Request | string, response: Response): Promise<void> {

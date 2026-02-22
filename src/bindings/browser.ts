@@ -26,12 +26,10 @@ export class BrowserBinding {
 	/** Launch a new browser and return a puppeteer Browser instance. */
 	async launch(opts?: { keep_alive?: number }): Promise<any> {
 		if (this.config.wsEndpoint) {
-			// @ts-expect-error — puppeteer-core is an optional dependency
 			const puppeteer = await import('puppeteer-core')
 			this._browser = await puppeteer.default.connect({ browserWSEndpoint: this.config.wsEndpoint })
 			return this._browser
 		}
-		// @ts-expect-error — puppeteer is an optional dependency
 		const puppeteer = await import('puppeteer')
 		this._browser = await puppeteer.default.launch({
 			headless: this.config.headless ?? true,
@@ -43,7 +41,6 @@ export class BrowserBinding {
 	/** Connect to an existing browser session by sessionId. */
 	async connect(sessionId: string): Promise<any> {
 		if (this.config.wsEndpoint) {
-			// @ts-expect-error — puppeteer-core is an optional dependency
 			const puppeteer = await import('puppeteer-core')
 			return puppeteer.default.connect({ browserWSEndpoint: this.config.wsEndpoint })
 		}
