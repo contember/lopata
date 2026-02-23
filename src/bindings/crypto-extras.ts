@@ -77,8 +77,8 @@ function isPkcs1RsaKey(data: Uint8Array): boolean {
 	if (data.length < 10 || data[0] !== 0x30) return false
 	let offset = 1
 	// Skip outer SEQUENCE length
-	if (data[offset] & 0x80) {
-		offset += 1 + (data[offset] & 0x7f)
+	if (data[offset]! & 0x80) {
+		offset += 1 + (data[offset]! & 0x7f)
 	} else {
 		offset += 1
 	}
@@ -138,7 +138,7 @@ function wrapPkcs1InPkcs8(pkcs1Key: Uint8Array): Uint8Array {
 	return derWrap(0x30, inner)
 }
 
-function toUint8Array(data: BufferSource): Uint8Array {
+function toUint8Array(data: ArrayBuffer | ArrayBufferView): Uint8Array {
 	if (data instanceof Uint8Array) return data
 	if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
 	return new Uint8Array(data)
@@ -166,19 +166,13 @@ export function patchGlobalCrypto(): void {
 	// Patch importKey to accept PKCS#1 RSA keys with "pkcs8" format (matching workerd behavior).
 	// Workerd is lenient and auto-wraps PKCS#1 in PKCS#8; Bun/Node native crypto rejects it.
 	const origImportKey = subtle.importKey.bind(subtle)
-	subtle.importKey = function(
-		format: KeyFormat,
-		keyData: BufferSource | JsonWebKey,
-		algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams | HmacImportParams | AesKeyAlgorithm,
-		extractable: boolean,
-		keyUsages: readonly KeyUsage[],
-	): Promise<CryptoKey> {
-		if (format === 'pkcs8' && !(keyData as JsonWebKey).kty) {
-			const bytes = toUint8Array(keyData as BufferSource)
+	subtle.importKey = ((format: string, keyData: unknown, algorithm: unknown, extractable: boolean, keyUsages: readonly string[]) => {
+		if (format === 'pkcs8' && typeof keyData === 'object' && keyData !== null && !('kty' in keyData)) {
+			const bytes = toUint8Array(keyData as ArrayBuffer | ArrayBufferView)
 			if (isPkcs1RsaKey(bytes)) {
-				return origImportKey('pkcs8', wrapPkcs1InPkcs8(bytes), algorithm, extractable, keyUsages)
+				return (origImportKey as any)('pkcs8', wrapPkcs1InPkcs8(bytes), algorithm, extractable, [...keyUsages])
 			}
 		}
-		return origImportKey(format, keyData as BufferSource, algorithm, extractable, keyUsages)
-	}
+		return (origImportKey as any)(format, keyData, algorithm, extractable, [...keyUsages])
+	}) as typeof subtle.importKey
 }
