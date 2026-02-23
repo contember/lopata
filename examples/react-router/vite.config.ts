@@ -1,13 +1,13 @@
 import { reactRouter } from '@react-router/dev/vite'
-import { lopata } from 'lopata/vite-plugin'
 import { defineConfig } from 'vite'
+
+const useCf = process.env.CF === '1'
 
 export default defineConfig({
 	plugins: [
-		lopata({
-			viteEnvironment: { name: 'ssr' },
-			configPath: './wrangler.jsonc',
-		}),
+		useCf
+			? (await import('@cloudflare/vite-plugin')).cloudflare({ viteEnvironment: { name: 'ssr' } })
+			: (await import('lopata/vite-plugin')).lopata({ viteEnvironment: { name: 'ssr' }, configPath: './wrangler.jsonc' }),
 		reactRouter(),
 	],
 })

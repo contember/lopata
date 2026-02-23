@@ -3,7 +3,8 @@
 	"type": "module",
 	"private": true,
 	"scripts": {
-		"dev": "bun --bun react-router dev"
+		"dev": "bun --bun react-router dev",
+		"dev:cf": "CF=1 react-router dev"
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^4.20260217.0",
@@ -15,7 +16,7 @@
 		"typescript": "^5"
 	},
 	"dependencies": {
-		"lopata": "link:../..",
+		"lopata": "file:../..",
 		"@react-router/dev": "^7.13.0",
 		"@react-router/node": "^7.13.0",
 		"isbot": "^5.1.35",
