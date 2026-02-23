@@ -5,12 +5,20 @@ import { getActiveContext } from './tracing/context'
 import { enrichFrameWithSourceAsync, parseStackFrames, type StackFrame } from './tracing/frames'
 import { getTraceStore } from './tracing/store'
 
+interface ErrorCause {
+	name: string
+	message: string
+	stack: string
+	frames: StackFrame[]
+}
+
 interface ErrorPageData {
 	error: {
 		name: string
 		message: string
 		stack: string
 		frames: StackFrame[]
+		causes: ErrorCause[]
 	}
 	request: {
 		method: string
@@ -154,20 +162,36 @@ export async function renderErrorPage(
 	}
 
 	const err = error instanceof Error ? error : new Error(String(error))
-	const frames = parseStackFrames(err.stack ?? '')
-		// Drop native/node internal frames — they have no readable source and waste enrichment slots
-		.filter(f => !f.file.startsWith('native:') && !f.file.startsWith('node:'))
-
-	// Enrich frames with source code (limit to 20 for performance)
-	const framesToEnrich = frames.slice(0, 20)
-	await Promise.all(framesToEnrich.map(enrichFrameWithSourceAsync))
-
-	// Strip cwd prefix from paths for display
 	const cwdPrefix = process.cwd() + '/'
-	const displayFrames = framesToEnrich.filter(f => f.source).map(f => ({
-		...f,
-		file: f.file.startsWith(cwdPrefix) ? f.file.slice(cwdPrefix.length) : f.file,
-	}))
+
+	async function processError(e: Error): Promise<{ frames: StackFrame[]; stack: string }> {
+		const frames = parseStackFrames(e.stack ?? '')
+			.filter(f => !f.file.startsWith('native:') && !f.file.startsWith('node:'))
+		const framesToEnrich = frames.slice(0, 20)
+		await Promise.all(framesToEnrich.map(enrichFrameWithSourceAsync))
+		const displayFrames = framesToEnrich.filter(f => f.source).map(f => ({
+			...f,
+			file: f.file.startsWith(cwdPrefix) ? f.file.slice(cwdPrefix.length) : f.file,
+		}))
+		return { frames: displayFrames, stack: e.stack ?? String(e) }
+	}
+
+	const { frames: displayFrames, stack: mainStack } = await processError(err)
+
+	// Walk the cause chain
+	const causes: ErrorCause[] = []
+	let current: unknown = err.cause
+	for (let i = 0; i < 5 && current; i++) {
+		const causeErr = current instanceof Error ? current : new Error(String(current))
+		const { frames: causeFrames, stack: causeStack } = await processError(causeErr)
+		causes.push({
+			name: causeErr.name,
+			message: causeErr.message,
+			stack: causeStack,
+			frames: causeFrames,
+		})
+		current = causeErr.cause
+	}
 
 	const headers: Record<string, string> = {}
 	request.headers.forEach((value, key) => {
@@ -178,8 +202,9 @@ export async function renderErrorPage(
 		error: {
 			name: err.name,
 			message: err.message,
-			stack: err.stack ?? String(error),
+			stack: mainStack,
 			frames: displayFrames,
+			causes,
 		},
 		request: {
 			method: request.method,

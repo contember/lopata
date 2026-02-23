@@ -21,12 +21,20 @@ interface TraceSpan {
 	durationMs: number | null
 }
 
+interface ErrorCause {
+	name: string
+	message: string
+	stack: string
+	frames: StackFrame[]
+}
+
 interface ErrorPageData {
 	error: {
 		name: string
 		message: string
 		stack: string
 		frames: StackFrame[]
+		causes?: ErrorCause[]
 	}
 	request: {
 		method: string
@@ -323,11 +331,37 @@ function App() {
 				</Section>
 			)}
 
+			{/* Caused by chain */}
+			{error.causes?.map((cause, i) => (
+				<div key={i} class="flex flex-col gap-4">
+					<div class="bg-white rounded-lg border border-gray-200 overflow-hidden border-l-4 border-l-amber-400">
+						<div class="px-5 py-3">
+							<div class="flex items-center gap-2.5 mb-1">
+								<span class="text-xs font-semibold uppercase tracking-wider text-amber-600">Caused by: {cause.name}</span>
+							</div>
+							<ErrorMessage message={cause.message} />
+						</div>
+					</div>
+					{cause.frames.length > 0 && (
+						<Section title={`Source Code (cause ${i + 1})`} open>
+							<FrameList frames={cause.frames} />
+						</Section>
+					)}
+				</div>
+			))}
+
 			{/* Stack Trace */}
 			<Section title="Stack Trace">
 				<div class="px-4 py-3 overflow-x-auto scrollbar-thin">
 					<pre class="text-xs text-ink-muted leading-5 m-0 whitespace-pre-wrap break-words" style="font-family: 'JetBrains Mono', monospace;">
             {error.stack}
+            {error.causes?.map((cause, i) => (
+							<span key={i}>
+								{'\n\n'}
+								<span class="text-amber-600 font-semibold">[cause]: </span>
+								{cause.stack}
+							</span>
+						))}
 					</pre>
 				</div>
 			</Section>
