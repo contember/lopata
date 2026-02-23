@@ -9,12 +9,16 @@ export interface StackFrame {
 	sourceLine?: number
 }
 
-const STACK_LINE_RE = /at\s+(?:(.+?)\s+\()?(.+):(\d+):(\d+)\)?/
+// V8: `at functionName (file:line:col)` or `at file:line:col`
+const V8_STACK_RE = /at\s+(?:(.+?)\s+\()?(.+):(\d+):(\d+)\)?/
+// JSC/Bun: `functionName@file:line:col`
+const JSC_STACK_RE = /^(.+?)@(.+):(\d+):(\d+)$/
 
 export function parseStackFrames(stack: string): StackFrame[] {
 	const frames: StackFrame[] = []
 	for (const line of stack.split('\n')) {
-		const match = line.match(STACK_LINE_RE)
+		const trimmed = line.trim()
+		const match = trimmed.match(V8_STACK_RE) ?? trimmed.match(JSC_STACK_RE)
 		if (!match) continue
 		frames.push({
 			file: match[2]!,
