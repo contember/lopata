@@ -52,6 +52,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let currentModule: Record<string, unknown> | null = null
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
+	// Flag set on file change; next request will clear runner cache
+	let needsReload = false
 
 	return {
 		name: 'lopata:dev-server',
@@ -133,7 +135,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					config,
 					gracePeriodMs: 0,
 					get active() {
-						return currentModule ? { workerModule: currentModule, env } : null
+						return currentModule ? { workerModule: currentModule, env, registry } : null
 					},
 					list() {
 						return []
@@ -165,7 +167,24 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				apiMod.setWorkerRegistry(workerRegistry)
 			}
 
-			// 5. Set up WebSocket trace streaming on httpServer
+			// 5. Track SSR-relevant file changes.
+			// Vite's built-in HMR flow invalidates the module graph and sends
+			// full-reload events to the runner. However, the runner's async HMR
+			// handler can race with incoming requests. We set a flag here and
+			// clear the runner's evaluated module cache on the next request,
+			// ensuring a clean re-evaluation from the freshly-invalidated module graph.
+			server.watcher.on('change', (file) => {
+				const ssrEnv = server.environments[options.envName]
+				if (!ssrEnv) return
+				const normalizedFile = file.replace(/\\/g, '/')
+				const mods = ssrEnv.moduleGraph.getModulesByFile(normalizedFile)
+				if (mods && mods.size > 0) {
+					needsReload = true
+					currentModule = null
+				}
+			})
+
+			// 6. Set up WebSocket trace streaming on httpServer
 			setupTraceWebSocket(server)
 
 			// 6. Return middleware callback (post-middleware — runs after framework plugins)
@@ -224,6 +243,19 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 						// Wait for any in-progress reload before importing
 						if (reloadLock) await reloadLock
+
+						// Clear runner's evaluated module cache when files changed.
+						// The module graph is already invalidated by Vite's onFileChange,
+						// but the runner caches evaluated modules independently.
+						// Using .clear() (like the Cloudflare plugin) wipes all three
+						// maps (idToModuleMap, fileToModulesMap, urlToIdModuleMap),
+						// forcing a full re-evaluation from the fresh module graph.
+						if (needsReload) {
+							needsReload = false
+							const runner = (ssrEnv as { runner: { evaluatedModules: { clear(): void } } }).runner
+							runner.evaluatedModules.clear()
+							console.log('[lopata:vite] Cleared runner module cache (file change detected)')
+						}
 
 						const workerModule = await (ssrEnv as any).runner.import(entrypoint) as Record<string, unknown>
 
