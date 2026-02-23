@@ -38,7 +38,7 @@
 		{ "binding": "FAILING", "service": "failing-worker" }
 	],
 	"containers": [
-		{ "class_name": "MyContainer", "image": "nginx:alpine", "name": "MY_CONTAINER", "max_instances": 1 },
+		{ "class_name": "MyContainer", "image": "./Dockerfile.nginx", "name": "MY_CONTAINER", "max_instances": 1 },
 		{ "class_name": "Sandbox", "image": "./Dockerfile.sandbox", "max_instances": 1 }
 	],
 	"analytics_engine_datasets": [
