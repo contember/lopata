@@ -234,7 +234,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 								await reloadLock
 							} else {
 								let resolveReload!: () => void
-								reloadLock = new Promise(r => { resolveReload = r })
+								reloadLock = new Promise(r => {
+									resolveReload = r
+								})
 								try {
 									currentModule = workerModule
 									wireClassRefs(registry, workerModule, env, workerRegistry)
@@ -417,7 +419,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		})
 	}
 }
-
 
 function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (!callerError) return

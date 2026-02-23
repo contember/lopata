@@ -12,7 +12,8 @@
 			"**/*.ts",
 			"**/*.tsx",
 			"!**/node_modules",
-			"!**/dist"
+			"!**/dist",
+			"!**/.tsc-out"
 		]
 	},
 	"linter": {
