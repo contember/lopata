@@ -46,7 +46,7 @@ const __bf_instr = {
           },
         }, async () => {
           const result = await callHandler();
-          if (result.status === "error") throw result.error;
+          if (result.status === "error") { globalThis.__lopata_routeError = result.error; throw result.error; }
         });
       },
       action: async (callHandler, info) => {
@@ -62,7 +62,7 @@ const __bf_instr = {
           },
         }, async () => {
           const result = await callHandler();
-          if (result.status === "error") throw result.error;
+          if (result.status === "error") { globalThis.__lopata_routeError = result.error; throw result.error; }
         });
       },
     });

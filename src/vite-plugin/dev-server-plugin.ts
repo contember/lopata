@@ -50,6 +50,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
+	// Serializes module reload — prevents concurrent wireClassRefs calls
+	let reloadLock: Promise<void> | null = null
 
 	return {
 		name: 'lopata:dev-server',
@@ -219,27 +221,41 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						}
 
 						const entrypoint = resolve(server.config.root, config.main)
+
+						// Wait for any in-progress reload before importing
+						if (reloadLock) await reloadLock
+
 						const workerModule = await (ssrEnv as any).runner.import(entrypoint) as Record<string, unknown>
 
 						// Re-wire class refs when module changes (HMR invalidation)
 						if (workerModule !== currentModule) {
-							currentModule = workerModule
-
-							// Invalidate virtual modules in SSR environment.
-							// Framework plugins (e.g. React Router) may only invalidate
-							// virtual modules in the client module graph during HMR,
-							// leaving stale versions in the SSR environment.
-							invalidateVirtualModules(ssrEnv)
-
-							wireClassRefs(registry, workerModule, env, workerRegistry)
-							setGlobalEnv(env)
-							console.log('[lopata:vite] Worker module (re)loaded, classes wired')
+							if (reloadLock) {
+								// Another request started reloading while we were importing — wait for it
+								await reloadLock
+							} else {
+								let resolveReload!: () => void
+								reloadLock = new Promise(r => { resolveReload = r })
+								try {
+									currentModule = workerModule
+									wireClassRefs(registry, workerModule, env, workerRegistry)
+									setGlobalEnv(env)
+									console.log('[lopata:vite] Worker module (re)loaded, classes wired')
+								} catch (err) {
+									// Reset so next request retries
+									currentModule = null
+									throw err
+								} finally {
+									reloadLock = null
+									resolveReload()
+								}
+							}
 						}
 
 						const request = nodeReqToRequest(req)
 						const parsedUrl = new URL(request.url)
 
-						const handler = workerModule.default as Record<string, unknown>
+						const activeModule = currentModule ?? workerModule
+						const handler = activeModule.default as Record<string, unknown>
 						if (!handler || typeof handler.fetch !== 'function') {
 							console.error('[lopata:vite] Worker module default export has no fetch() method')
 							return next()
@@ -258,6 +274,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 								try {
 									const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
 									;(setSpanAttribute as Function)('http.status_code', resp.status)
+
+									// Intercept React Router error boundary responses with lopata error page
+									const routeError = (globalThis as any).__lopata_routeError
+									delete (globalThis as any).__lopata_routeError
+									if (routeError) {
+										if (routeError instanceof Error) {
+											stitchAsyncStack(routeError, callerStack)
+										}
+										console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
+										return (renderErrorPage as Function)(routeError, request, env, config)
+									}
+
 									ctx._awaitAll().catch(() => {})
 									return resp
 								} catch (err) {
@@ -390,35 +418,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	}
 }
 
-function invalidateVirtualModules(ssrEnv: any): void {
-	// Only invalidate Lopata's own virtual modules, NOT framework modules
-	// (e.g. React Router's virtual:react-router/server-manifest uses
-	// Math.random() for dev version — invalidating it generates a new version
-	// that mismatches the client's cached manifest, causing
-	// "manifest version mismatch during eager route discovery" errors).
-	const isLopataModule = (id: string) => id.includes('\0cloudflare:') || id.includes('\0@cloudflare/')
-
-	// Server-side: clear transformResult so fetchModule returns fresh code
-	const modGraph = ssrEnv.moduleGraph
-	if (modGraph?.idToModuleMap) {
-		for (const [id, mod] of modGraph.idToModuleMap) {
-			if (isLopataModule(id)) {
-				modGraph.invalidateModule(mod)
-			}
-		}
-	}
-
-	// Runner-side: clear evaluated state so next import re-evaluates
-	const runner = ssrEnv.runner
-	const evaluatedModules = runner?.evaluatedModules
-	if (evaluatedModules?.idToModuleMap) {
-		for (const [id, node] of evaluatedModules.idToModuleMap) {
-			if (isLopataModule(id)) {
-				evaluatedModules.invalidateModule(node)
-			}
-		}
-	}
-}
 
 function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (!callerError) return
