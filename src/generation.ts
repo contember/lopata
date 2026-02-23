@@ -55,6 +55,7 @@ export class Generation {
 	private queueConsumers: QueueConsumer[] = []
 	private cronTimer: NodeJS.Timer | ReturnType<typeof setInterval> | null = null
 	drainTimer: ReturnType<typeof setTimeout> | null = null
+	drainPollTimer: ReturnType<typeof setInterval> | null = null
 
 	constructor(
 		id: number,
@@ -350,11 +351,15 @@ export class Generation {
 		}
 	}
 
-	/** Transition to draining — stops consumers, keeps in-flight requests alive */
+	/** Transition to draining — stops consumers, clears alarm timers, keeps in-flight requests alive */
 	drain(): void {
 		if (this.state === 'stopped') return
 		this.state = 'draining'
 		this.stopConsumers()
+		// Clear alarm timers — new generation restores them from DB via _restoreAlarms()
+		for (const entry of this.registry.durableObjects) {
+			entry.namespace.clearAlarmTimers()
+		}
 	}
 
 	/** Force-stop: drain + destroy all DO namespaces + abort workflows */
@@ -365,6 +370,10 @@ export class Generation {
 		if (this.drainTimer) {
 			clearTimeout(this.drainTimer)
 			this.drainTimer = null
+		}
+		if (this.drainPollTimer) {
+			clearInterval(this.drainPollTimer)
+			this.drainPollTimer = null
 		}
 		for (const entry of this.registry.durableObjects) {
 			entry.namespace.destroy()

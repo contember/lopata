@@ -899,14 +899,19 @@ export class DurableObjectNamespaceImpl {
 		}
 	}
 
+	/** @internal Clear all in-memory alarm timers (alarms persist in DB for new generation to restore) */
+	clearAlarmTimers(): void {
+		for (const timer of this.alarmTimers.values()) clearTimeout(timer)
+		this.alarmTimers.clear()
+	}
+
 	/** @internal Destroy this namespace: clear timers, evict executors without active WebSockets */
 	destroy(): void {
 		if (this._evictionTimer) {
 			clearInterval(this._evictionTimer)
 			this._evictionTimer = null
 		}
-		for (const timer of this.alarmTimers.values()) clearTimeout(timer)
-		this.alarmTimers.clear()
+		this.clearAlarmTimers()
 		// Dispose executors without active WebSockets; keep the rest alive
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() === 0) {

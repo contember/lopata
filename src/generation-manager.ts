@@ -195,10 +195,20 @@ export class GenerationManager {
 			const oldGen = this.generations.get(oldGenId)
 			if (oldGen && oldGen.state === 'active') {
 				oldGen.drain()
-				// Schedule force-stop after grace period
-				oldGen.drainTimer = setTimeout(() => {
+				if (oldGen.isIdle()) {
+					// No in-flight work — stop immediately
 					this._stopGeneration(oldGenId)
-				}, this.gracePeriodMs)
+				} else {
+					// Poll for idle state, with grace period as hard maximum
+					oldGen.drainPollTimer = setInterval(() => {
+						if (oldGen.isIdle()) {
+							this._stopGeneration(oldGenId)
+						}
+					}, 200)
+					oldGen.drainTimer = setTimeout(() => {
+						this._stopGeneration(oldGenId)
+					}, this.gracePeriodMs)
+				}
 			}
 		}
 
