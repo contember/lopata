@@ -1,8 +1,8 @@
 import { Breadcrumb, DeleteButton, EmptyState, PageHeader, RefreshButton, ServiceInfo, SqlBrowser, Table, TableLink } from '../components'
-import type { Tab } from '../sql-browser/types'
 import { formatTime, parseBrowserRoute, parseHashRoute } from '../lib'
 import { rpc } from '../rpc/client'
 import { useMutation, useQuery } from '../rpc/hooks'
+import type { Tab } from '../sql-browser/types'
 
 export function DoView({ route }: { route: string }) {
 	const { segments, query } = parseHashRoute(route)
