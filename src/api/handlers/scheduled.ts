@@ -55,6 +55,46 @@ const SPECIAL_DESCRIPTIONS: Record<string, string> = {
 	'@annually': 'First day of every year',
 }
 
+const DOW_NAMES: Record<string, string> = {
+	'0': 'Sunday',
+	'1': 'Monday',
+	'2': 'Tuesday',
+	'3': 'Wednesday',
+	'4': 'Thursday',
+	'5': 'Friday',
+	'6': 'Saturday',
+	'7': 'Sunday',
+}
+const MONTH_NAMES: Record<string, string> = {
+	'1': 'January',
+	'2': 'February',
+	'3': 'March',
+	'4': 'April',
+	'5': 'May',
+	'6': 'June',
+	'7': 'July',
+	'8': 'August',
+	'9': 'September',
+	'10': 'October',
+	'11': 'November',
+	'12': 'December',
+}
+
+function formatTime(hour: string, minute: string): string {
+	return `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`
+}
+
+function formatDow(dow: string): string {
+	if (dow === '1-5') return 'weekdays'
+	if (dow === '0,6' || dow === '6,0') return 'weekends'
+	const names = dow.split(',').map(d => DOW_NAMES[d] ?? d)
+	return names.join(', ')
+}
+
+function formatMonth(month: string): string {
+	return month.split(',').map(m => MONTH_NAMES[m] ?? m).join(', ')
+}
+
 function cronToHuman(expression: string): string {
 	const trimmed = expression.trim()
 	const special = SPECIAL_DESCRIPTIONS[trimmed.toLowerCase()]
@@ -64,29 +104,56 @@ function cronToHuman(expression: string): string {
 	if (parts.length !== 5) return expression
 
 	const [minute, hour, dom, month, dow] = parts
-	const segments: string[] = []
 
 	if (minute === '*' && hour === '*' && dom === '*' && month === '*' && dow === '*') {
 		return 'Every minute'
 	}
 
-	// Detect common patterns
+	// Step patterns: */N
 	if (minute!.startsWith('*/')) {
-		return `Every ${minute!.slice(2)} minutes`
+		const n = minute!.slice(2)
+		return n === '1' ? 'Every minute' : `Every ${n} minutes`
 	}
 	if (hour!.startsWith('*/') && minute === '0') {
-		return `Every ${hour!.slice(2)} hours`
+		const n = hour!.slice(2)
+		return n === '1' ? 'Every hour' : `Every ${n} hours`
 	}
 
+	const allDates = dom === '*' && month === '*' && dow === '*'
+
+	// minute=0, hour=* → "Every hour"
+	if (minute === '0' && hour === '*' && allDates) {
+		return 'Every hour'
+	}
+
+	// minute=N, hour=* → "Every hour at minute N"
+	if (minute !== '*' && hour === '*' && allDates) {
+		return `Every hour at minute ${minute}`
+	}
+
+	// Build description from time + date constraints
+	const segments: string[] = []
+
+	// Time part
 	if (hour !== '*' && minute !== '*') {
-		segments.push(`At ${hour!.padStart(2, '0')}:${minute!.padStart(2, '0')}`)
-	} else if (minute !== '*') {
+		segments.push(`At ${formatTime(hour!, minute!)}`)
+	} else if (minute !== '*' && hour === '*') {
 		segments.push(`At minute ${minute}`)
+	} else if (hour !== '*' && minute === '*') {
+		segments.push(`Every minute of hour ${hour}`)
 	}
 
-	if (dow !== '*') segments.push(`on day-of-week ${dow}`)
-	if (dom !== '*') segments.push(`on day ${dom}`)
-	if (month !== '*') segments.push(`in month ${month}`)
+	// Frequency context
+	if (hour !== '*' && minute !== '*') {
+		if (dom === '*' && month === '*' && dow === '*') {
+			segments.unshift('Every day')
+		}
+	}
+
+	// Date constraints
+	if (dow !== '*') segments.push(`on ${formatDow(dow!)}`)
+	if (dom !== '*') segments.push(`on day ${dom} of the month`)
+	if (month !== '*') segments.push(`in ${formatMonth(month!)}`)
 
 	return segments.join(' ') || expression
 }
