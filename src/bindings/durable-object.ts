@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { persistError, startSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
@@ -950,6 +950,54 @@ export class DurableObjectNamespaceImpl {
 		if (existing) clearTimeout(existing)
 		this.alarmTimers.delete(idStr)
 		return this._fireAlarm(idStr, 0)
+	}
+
+	/** @internal Cancel a scheduled alarm without firing it */
+	cancelAlarm(idStr: string): void {
+		const timer = this.alarmTimers.get(idStr)
+		if (timer) clearTimeout(timer)
+		this.alarmTimers.delete(idStr)
+		this.db
+			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
+			.run(this.namespaceName, idStr)
+	}
+
+	/** @internal Delete a DO instance and all its data */
+	deleteInstance(idStr: string): void {
+		this.cancelAlarm(idStr)
+
+		const executor = this._executors.get(idStr)
+		if (executor) {
+			executor.dispose().catch(() => {})
+			this._executors.delete(idStr)
+		}
+		this._stubs.delete(idStr)
+		this._knownIds.delete(idStr)
+		this._lastActivity.delete(idStr)
+
+		this.db.run('BEGIN')
+		try {
+			this.db.query('DELETE FROM do_instances WHERE namespace = ? AND id = ?').run(this.namespaceName, idStr)
+			this.db.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?').run(this.namespaceName, idStr)
+			this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespaceName, idStr)
+			this.db.run('COMMIT')
+		} catch (e) {
+			this.db.run('ROLLBACK')
+			throw e
+		}
+
+		// Delete SQL storage database files
+		if (this.dataDir) {
+			const sqlDbPath = join(this.dataDir, 'do-sql', this.namespaceName, `${idStr}.sqlite`)
+			if (existsSync(sqlDbPath)) {
+				rmSync(sqlDbPath, { force: true })
+				// Clean up WAL/SHM files
+				for (const suffix of ['-wal', '-shm']) {
+					const walPath = sqlDbPath + suffix
+					if (existsSync(walPath)) rmSync(walPath, { force: true })
+				}
+			}
+		}
 	}
 
 	newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {

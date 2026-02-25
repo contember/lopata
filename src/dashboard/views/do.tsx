@@ -91,6 +91,8 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 	const { data, refetch } = useQuery('do.getInstance', { ns, id })
 	const deleteEntry = useMutation('do.deleteEntry')
 	const triggerAlarm = useMutation('do.triggerAlarm')
+	const cancelAlarm = useMutation('do.cancelAlarm')
+	const deleteInstance = useMutation('do.deleteInstance')
 	const { data: sqlTables } = useQuery('do.listSqlTables', { ns, id })
 
 	const handleDelete = async (key: string) => {
@@ -104,6 +106,17 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 		refetch()
 	}
 
+	const handleCancelAlarm = async () => {
+		await cancelAlarm.mutate({ ns, id })
+		refetch()
+	}
+
+	const handleDeleteInstance = async () => {
+		if (!confirm(`Delete this Durable Object instance? All storage data will be permanently removed.`)) return
+		await deleteInstance.mutate({ ns, id })
+		location.hash = `#/do/${encodeURIComponent(ns)}`
+	}
+
 	if (!data) return <div class="p-4 sm:p-8 text-text-muted font-medium">Loading...</div>
 
 	return (
@@ -115,21 +128,39 @@ function DoInstanceDetail({ ns, id, basePath, routeTab, routeTable, routeQuery }
 					{ label: id.slice(0, 16) + '...' },
 				]}
 			/>
-			<div class="mb-6 flex justify-end">
+			<div class="mb-6 flex justify-end gap-2">
+				<button
+					onClick={handleDeleteInstance}
+					disabled={deleteInstance.isLoading}
+					class="rounded-md px-3 py-1.5 text-xs font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+				>
+					{deleteInstance.isLoading ? 'Deleting...' : 'Delete instance'}
+				</button>
 				<RefreshButton onClick={refetch} />
 			</div>
 			{(data.alarm || data.hasAlarmHandler) && (
 				<div class="mb-6 px-4 py-3 bg-panel-secondary border border-border rounded-lg text-sm font-medium text-ink flex items-center justify-between">
 					<span>{data.alarm ? `Alarm set for: ${formatTime(data.alarm)}` : 'No alarm scheduled'}</span>
-					{data.hasAlarmHandler && (
-						<button
-							onClick={handleTriggerAlarm}
-							disabled={triggerAlarm.isLoading}
-							class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-						>
-							{triggerAlarm.isLoading ? 'Triggering...' : 'Trigger now'}
-						</button>
-					)}
+					<div class="flex gap-2">
+						{data.alarm && (
+							<button
+								onClick={handleCancelAlarm}
+								disabled={cancelAlarm.isLoading}
+								class="rounded-md px-3 py-1.5 text-xs font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+							>
+								{cancelAlarm.isLoading ? 'Cancelling...' : 'Cancel'}
+							</button>
+						)}
+						{data.hasAlarmHandler && (
+							<button
+								onClick={handleTriggerAlarm}
+								disabled={triggerAlarm.isLoading}
+								class="rounded-md px-3 py-1.5 text-xs font-medium bg-ink text-surface hover:opacity-80 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+							>
+								{triggerAlarm.isLoading ? 'Triggering...' : 'Trigger now'}
+							</button>
+						)}
+					</div>
 				</div>
 			)}
 			{data.entries.length === 0 ? <EmptyState message="No storage entries" /> : (

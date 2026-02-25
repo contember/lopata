@@ -94,6 +94,20 @@ export const handlers = {
 		return { ok: true }
 	},
 
+	'do.cancelAlarm'({ ns, id }: { ns: string; id: string }, ctx: HandlerContext): OkResponse {
+		const namespace = getDoNamespace(ctx, ns)
+		if (!namespace) throw new Error(`Durable Object namespace "${ns}" not found (worker not loaded?)`)
+		namespace.cancelAlarm(id)
+		return { ok: true }
+	},
+
+	'do.deleteInstance'({ ns, id }: { ns: string; id: string }, ctx: HandlerContext): OkResponse {
+		const namespace = getDoNamespace(ctx, ns)
+		if (!namespace) throw new Error(`Durable Object namespace "${ns}" not found (worker not loaded?)`)
+		namespace.deleteInstance(id)
+		return { ok: true }
+	},
+
 	async 'do.generateSql'({ ns, id, prompt }: { ns: string; id: string; prompt: string }, ctx: HandlerContext): Promise<{ sql: string }> {
 		const dbPath = join(getDataDir(), 'do-sql', ns, `${id}.sqlite`)
 		if (!existsSync(dbPath)) throw new Error('SQL database not found for this instance')
