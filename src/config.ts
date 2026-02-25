@@ -119,4 +119,3 @@ function applyEnvOverrides(config: WranglerConfig, envName?: string): WranglerCo
 	}
 	return merged
 }
-

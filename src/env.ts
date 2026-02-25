@@ -355,9 +355,6 @@ export function buildEnv(
 		}
 	}
 
-	// Store reference for cloudflare:workers env export
-	setGlobalEnv(env)
-
 	return { env, registry }
 }
 

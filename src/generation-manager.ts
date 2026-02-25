@@ -146,10 +146,7 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
-		// 1. Import fresh worker module using cache-busting query string
-		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)
-
-		// 1b. Configure executor factory with module/config paths (for isolated mode)
+		// 1. Configure executor factory with module/config paths (for isolated mode)
 		if (this.executorFactory && 'configure' in this.executorFactory) {
 			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
 		}
@@ -157,13 +154,18 @@ export class GenerationManager {
 		// 2. Build new env with fresh binding instances (same underlying DB)
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig)
 
-		// 3. Wire DO and Workflow class references
-		wireClassRefs(registry, workerModule, env, this.workerRegistry)
-
-		// 4. Update globalEnv for cloudflare:workers env export (main worker only)
+		// 3. Update globalEnv BEFORE importing the worker module so that
+		//    top-level `import { env } from "cloudflare:workers"` sees bindings
+		//    during module evaluation (main worker only).
 		if (this.isMain) {
 			setGlobalEnv(env)
 		}
+
+		// 4. Import fresh worker module using cache-busting query string
+		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)
+
+		// 5. Wire DO and Workflow class references
+		wireClassRefs(registry, workerModule, env, this.workerRegistry)
 
 		// 5. Validate default export (or service worker fetch handler)
 		const defaultExport = workerModule.default
