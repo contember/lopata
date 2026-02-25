@@ -19,7 +19,7 @@ class LopataDevEnvironment extends DevEnvironment {
 
 	get runner(): ModuleRunner {
 		if (!this._runner) {
-			this._runner = createServerModuleRunner(this)
+			this._runner = createServerModuleRunner(this, { hmr: false })
 		}
 		return this._runner
 	}

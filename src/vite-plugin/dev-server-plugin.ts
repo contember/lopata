@@ -52,8 +52,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let currentModule: Record<string, unknown> | null = null
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
-	// Flag set on file change; next request will clear runner cache
-	let needsReload = false
+	// Files changed since last request — coalesced into a single invalidation batch
+	let changedFiles: Set<string> = new Set()
 
 	return {
 		name: 'lopata:dev-server',
@@ -168,18 +168,17 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			}
 
 			// 5. Track SSR-relevant file changes.
-			// Vite's built-in HMR flow invalidates the module graph and sends
-			// full-reload events to the runner. However, the runner's async HMR
-			// handler can race with incoming requests. We set a flag here and
-			// clear the runner's evaluated module cache on the next request,
-			// ensuring a clean re-evaluation from the freshly-invalidated module graph.
+			// Collect changed file paths; the next request will invalidate only
+			// the affected modules (and their transitive importers) instead of
+			// clearing the entire runner cache.  HMR on the runner is disabled
+			// (hmr: false in config-plugin) so there's no async race.
 			server.watcher.on('change', (file) => {
 				const ssrEnv = server.environments[options.envName]
 				if (!ssrEnv) return
 				const normalizedFile = file.replace(/\\/g, '/')
 				const mods = ssrEnv.moduleGraph.getModulesByFile(normalizedFile)
 				if (mods && mods.size > 0) {
-					needsReload = true
+					changedFiles.add(normalizedFile)
 					currentModule = null
 				}
 			})
@@ -244,17 +243,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						// Wait for any in-progress reload before importing
 						if (reloadLock) await reloadLock
 
-						// Clear runner's evaluated module cache when files changed.
-						// The module graph is already invalidated by Vite's onFileChange,
-						// but the runner caches evaluated modules independently.
-						// Using .clear() (like the Cloudflare plugin) wipes all three
-						// maps (idToModuleMap, fileToModulesMap, urlToIdModuleMap),
-						// forcing a full re-evaluation from the fresh module graph.
-						if (needsReload) {
-							needsReload = false
-							const runner = (ssrEnv as { runner: { evaluatedModules: { clear(): void } } }).runner
-							runner.evaluatedModules.clear()
-							console.log('[lopata:vite] Cleared runner module cache (file change detected)')
+						// Granular invalidation: only invalidate modules for changed
+						// files and their transitive importers, instead of wiping the
+						// entire runner cache.  This preserves cached evaluations of
+						// unchanged modules for faster re-evaluation.
+						if (changedFiles.size > 0) {
+							const files = changedFiles
+							changedFiles = new Set()
+							const runner = (ssrEnv as any).runner
+							const count = invalidateChangedModules(runner.evaluatedModules, files)
+							if (count > 0) {
+								console.log(`[lopata:vite] Invalidated ${count} module(s) (${files.size} file(s) changed)`)
+							}
 						}
 
 						const workerModule = await (ssrEnv as any).runner.import(entrypoint) as Record<string, unknown>
@@ -449,6 +449,52 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			// ws not available — trace streaming disabled
 			console.log('[lopata:vite] Dashboard available (trace streaming disabled — ws package not found)')
 		})
+	}
+}
+
+/**
+ * Invalidate runner-evaluated modules for the given changed files and all
+ * their transitive importers.  Virtual modules (IDs starting with `\0`) are
+ * skipped to preserve shimmed CF modules (see commit 75b1736).
+ *
+ * Returns the number of modules invalidated.
+ */
+function invalidateChangedModules(
+	evaluatedModules: { getModulesByFile(file: string): Iterable<{ id: string; importers: Set<any> }> | undefined; invalidateModule(node: any): void },
+	changedFiles: Set<string>,
+): number {
+	const toInvalidate = new Set<{ id: string; importers: Set<any> }>()
+
+	for (const file of changedFiles) {
+		const nodes = evaluatedModules.getModulesByFile(file)
+		if (!nodes) continue
+		for (const node of nodes) {
+			collectTransitiveImporters(node, toInvalidate)
+		}
+	}
+
+	for (const node of toInvalidate) {
+		evaluatedModules.invalidateModule(node)
+	}
+
+	return toInvalidate.size
+}
+
+/**
+ * Collect `node` and all its transitive importers into `result`.
+ * Skips virtual modules (IDs starting with `\0`) — these are CF module shims
+ * that must not be invalidated or traversed further.
+ */
+function collectTransitiveImporters(
+	node: { id: string; importers: Set<any> },
+	result: Set<{ id: string; importers: Set<any> }>,
+): void {
+	if (result.has(node)) return
+	// Skip virtual modules — CF shims must stay cached
+	if (node.id.startsWith('\0')) return
+	result.add(node)
+	for (const importer of node.importers) {
+		collectTransitiveImporters(importer, result)
 	}
 }
 
