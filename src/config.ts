@@ -80,8 +80,7 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	if (path.endsWith('.toml')) {
 		config = parseTOML(raw) as unknown as WranglerConfig
 	} else {
-		// JSON or JSONC — strip single-line comments (// ...) outside strings
-		config = JSON.parse(stripJsoncComments(raw))
+		config = Bun.JSONC.parse(raw)
 	}
 	return applyEnvOverrides(config, envName)
 }
@@ -121,45 +120,3 @@ function applyEnvOverrides(config: WranglerConfig, envName?: string): WranglerCo
 	return merged
 }
 
-// ─── JSONC Comment Stripping ───────────────────────────────────────────────
-
-function stripJsoncComments(input: string): string {
-	let result = ''
-	let i = 0
-	while (i < input.length) {
-		// String literal — copy as-is
-		if (input[i] === '"') {
-			result += '"'
-			i++
-			while (i < input.length && input[i] !== '"') {
-				if (input[i] === '\\') {
-					result += input[i]! + (input[i + 1] ?? '')
-					i += 2
-				} else {
-					result += input[i]!
-					i++
-				}
-			}
-			if (i < input.length) {
-				result += '"'
-				i++
-			}
-			continue
-		}
-		// Single-line comment
-		if (input[i] === '/' && input[i + 1] === '/') {
-			while (i < input.length && input[i] !== '\n') i++
-			continue
-		}
-		// Block comment
-		if (input[i] === '/' && input[i + 1] === '*') {
-			i += 2
-			while (i < input.length && !(input[i] === '*' && input[i + 1] === '/')) i++
-			i += 2
-			continue
-		}
-		result += input[i]!
-		i++
-	}
-	return result
-}
