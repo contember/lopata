@@ -80,7 +80,7 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	if (path.endsWith('.toml')) {
 		config = parseTOML(raw) as unknown as WranglerConfig
 	} else {
-		config = Bun.JSONC.parse(raw)
+		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
 	return applyEnvOverrides(config, envName)
 }
