@@ -17,6 +17,23 @@ import { getActiveContext } from './tracing/context'
 import { instrumentBinding } from './tracing/instrument'
 import { addSpanEvent, setSpanAttribute, startSpan } from './tracing/span'
 
+// ─── Userland tracing API ────────────────────────────────────────────
+// Exposes a lightweight global that user code can call to create custom
+// spans visible in the Lopata dashboard.  In production (without Lopata)
+// the global is simply absent, so the user's thin wrapper becomes a no-op.
+
+;(globalThis as any).__lopata = {
+	trace<T>(name: string, attrsOrFn: Record<string, unknown> | (() => T | Promise<T>), maybeFn?: () => T | Promise<T>): Promise<T> {
+		const fn = typeof attrsOrFn === 'function' ? attrsOrFn : maybeFn!
+		const attributes = typeof attrsOrFn === 'function' ? undefined : attrsOrFn
+		return startSpan({ name, attributes }, fn)
+	},
+	setAttribute: setSpanAttribute,
+	addEvent(name: string, message?: string, attrs?: Record<string, unknown>): void {
+		addSpanEvent(name, 'info', message ?? '', attrs)
+	},
+}
+
 // Register global `caches` object (CacheStorage) with tracing
 const rawCacheStorage = new SqliteCacheStorage(getDatabase())
 const cacheMethods = ['match', 'put', 'delete']
