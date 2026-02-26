@@ -93,6 +93,20 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 
 	const flatSpans = flattenTree(null, 0)
 
+	// Count descendant errors for each span (bottom-up)
+	const descendantErrorCount = new Map<string, number>()
+	function countErrors(parentId: string | null): number {
+		let count = 0
+		for (const child of childMap.get(parentId) ?? []) {
+			if (child.status === 'error') count++
+			const childErrors = countErrors(child.spanId)
+			count += childErrors
+			descendantErrorCount.set(child.spanId, childErrors)
+		}
+		return count
+	}
+	countErrors(null)
+
 	// Get parent span attributes for filtering inherited attrs
 	const getParentAttributes = (span: SpanData): Record<string, unknown> => {
 		if (!span.parentSpanId) return {}
@@ -144,7 +158,12 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 										</span>
 									)}
 									{!hasChildren && <span class="inline-block w-4 flex-shrink-0" />}
-									<span class="truncate">{span.name}</span>
+									<span class={`truncate ${span.status === 'error' ? 'text-red-400' : ''}`}>{span.name}</span>
+									{(descendantErrorCount.get(span.spanId) ?? 0) > 0 && (
+										<span class="ml-1 flex-shrink-0 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-medium" style={{ background: 'var(--color-badge-red-bg)', color: 'var(--color-badge-red-text)' }}>
+											{descendantErrorCount.get(span.spanId)}
+										</span>
+									)}
 								</div>
 								{/* Bar area */}
 								<div class="flex-1 h-6 relative bg-panel-secondary rounded overflow-hidden">
