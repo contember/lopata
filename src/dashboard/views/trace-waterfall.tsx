@@ -160,7 +160,10 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 									{!hasChildren && <span class="inline-block w-4 flex-shrink-0" />}
 									<span class={`truncate ${span.status === 'error' ? 'text-red-400' : ''}`}>{span.name}</span>
 									{(descendantErrorCount.get(span.spanId) ?? 0) > 0 && (
-										<span class="ml-1 flex-shrink-0 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-medium" style={{ background: 'var(--color-badge-red-bg)', color: 'var(--color-badge-red-text)' }}>
+										<span
+											class="ml-1 flex-shrink-0 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded-full text-[10px] font-medium"
+											style={{ background: 'var(--color-badge-red-bg)', color: 'var(--color-badge-red-text)' }}
+										>
 											{descendantErrorCount.get(span.spanId)}
 										</span>
 									)}
