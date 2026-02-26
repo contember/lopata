@@ -15,7 +15,7 @@ import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
 import { getActiveContext } from './tracing/context'
 import { instrumentBinding } from './tracing/instrument'
-import { addSpanEvent, setSpanAttribute, startSpan } from './tracing/span'
+import { addSpanEvent, persistError, setSpanAttribute, startSpan } from './tracing/span'
 
 // ─── Userland tracing API ────────────────────────────────────────────
 // Exposes a lightweight global that user code can call to create custom
@@ -168,6 +168,10 @@ for (const method of consoleMethods) {
 		if (!ctx) return
 		const message = args.map(formatConsoleArg).join(' ')
 		addSpanEvent(`console.${method}`, method, message)
+		if (method === 'error') {
+			const errorArg = args.find((a) => a instanceof Error)
+			persistError(errorArg ?? new Error(message), 'console.error')
+		}
 	}
 }
 
