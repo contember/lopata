@@ -28,11 +28,20 @@ export class BridgeWebSocket extends EventTarget {
 	readonly wsId: string
 	readyState = 1 // OPEN
 	private _postMessage: (msg: WsBridgeOutbound) => void
+	private _attachment: any = null
 
 	constructor(wsId: string, postMessage: (msg: WsBridgeOutbound) => void) {
 		super()
 		this.wsId = wsId
 		this._postMessage = postMessage
+	}
+
+	serializeAttachment(attachment: any): void {
+		this._attachment = JSON.parse(JSON.stringify(attachment))
+	}
+
+	deserializeAttachment(): any | null {
+		return this._attachment
 	}
 
 	send(data: string | ArrayBuffer): void {

@@ -41,12 +41,25 @@ export class CFWebSocket extends EventTarget {
 	/** @internal */ _peer: CFWebSocket | null = null
 	/** @internal */ _accepted = false
 	/** @internal */ _eventQueue: WSEvent[] = []
+	/** @internal */ _attachment: any = null
 
 	// Callback-style handlers (standard WebSocket compat)
 	onopen: ((ev: Event) => void) | null = null
 	onmessage: ((ev: MessageEvent) => void) | null = null
 	onclose: ((ev: CloseEvent) => void) | null = null
 	onerror: ((ev: Event) => void) | null = null
+
+	/**
+	 * CF-specific: attach serializable data to this WebSocket.
+	 * Survives hibernation in production; here it's just in-memory.
+	 */
+	serializeAttachment(attachment: any): void {
+		this._attachment = JSON.parse(JSON.stringify(attachment))
+	}
+
+	deserializeAttachment(): any | null {
+		return this._attachment
+	}
 
 	/**
 	 * CF-specific: begin dispatching events.
