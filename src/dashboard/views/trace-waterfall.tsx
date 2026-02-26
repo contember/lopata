@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import type { SpanData, SpanEventData } from '../rpc/types'
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -30,28 +30,41 @@ export function TraceWaterfall({ spans, events, highlightSpanId, onAddAttributeF
 		childMap.get(key)!.push(s)
 	}
 
-	// Reset collapsed/expanded state when the set of spans changes (new spans added/removed)
+	// Auto-collapse deep/insignificant spans. Uses a ref to track already-processed
+	// spans so that incremental WebSocket updates don't reset user's expand/collapse state.
+	const processedSpanIdsRef = useRef(new Set<string>())
 	const spanIdKey = spans.map(s => s.spanId).join(',')
 	useEffect(() => {
 		if (spans.length === 0) return
-		const autoCollapsed = new Set<string>()
-		function walk(parentId: string | null, depth: number) {
-			const children = childMap.get(parentId) ?? []
-			for (const child of children) {
-				const hasChildren = (childMap.get(child.spanId) ?? []).length > 0
-				if (hasChildren) {
-					const spanDur = child.durationMs ?? 0
-					const significantDuration = spanDur > traceDuration * 0.1
-					if (depth >= 2 && !significantDuration) {
-						autoCollapsed.add(child.spanId)
+
+		const previousProcessed = processedSpanIdsRef.current
+		const currentIds = spans.map(s => s.spanId)
+		const newSpanIds = new Set(currentIds.filter(id => !previousProcessed.has(id)))
+		processedSpanIdsRef.current = new Set(currentIds)
+
+		if (newSpanIds.size === 0) return
+
+		setCollapsedSpans(prev => {
+			const next = new Set(prev)
+			function walk(parentId: string | null, depth: number) {
+				const children = childMap.get(parentId) ?? []
+				for (const child of children) {
+					if (newSpanIds.has(child.spanId)) {
+						const hasChildren = (childMap.get(child.spanId) ?? []).length > 0
+						if (hasChildren) {
+							const spanDur = child.durationMs ?? 0
+							const significantDuration = spanDur > traceDuration * 0.1
+							if (depth >= 2 && !significantDuration) {
+								next.add(child.spanId)
+							}
+						}
 					}
+					walk(child.spanId, depth + 1)
 				}
-				walk(child.spanId, depth + 1)
 			}
-		}
-		walk(null, 0)
-		setCollapsedSpans(autoCollapsed)
-		setExpandedSpan(null)
+			walk(null, 0)
+			return next
+		})
 	}, [spanIdKey])
 
 	const toggleCollapse = (spanId: string) => {
