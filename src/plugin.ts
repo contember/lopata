@@ -15,13 +15,10 @@ import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
 import { getActiveContext } from './tracing/context'
 import { instrumentBinding } from './tracing/instrument'
-import { addSpanEvent, persistError, setSpanAttribute, startSpan } from './tracing/span'
-
-// ─── Userland tracing API ────────────────────────────────────────────
-// Exposes a lightweight global that user code can call to create custom
+import { addSpanEvent, persistError, setSpanAttribute, startSpan } from './tracing/span' // ─── Userland tracing API ────────────────────────────────────────────
+ // Exposes a lightweight global that user code can call to create custom
 // spans visible in the Lopata dashboard.  In production (without Lopata)
 // the global is simply absent, so the user's thin wrapper becomes a no-op.
-
 ;(globalThis as any).__lopata = {
 	trace<T>(name: string, attrsOrFn: Record<string, unknown> | (() => T | Promise<T>), maybeFn?: () => T | Promise<T>): Promise<T> {
 		const fn = typeof attrsOrFn === 'function' ? attrsOrFn : maybeFn!
