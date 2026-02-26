@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { navigate } from '../lib'
 import { rpc } from '../rpc/client'
 import { useMutation } from '../rpc/hooks'
 import type { SpanData, SpanEventData, TraceErrorSummary, TraceEvent, TraceSummary } from '../rpc/types'
@@ -16,6 +17,15 @@ interface AttributeFilter {
 
 type ViewTab = 'traces' | 'spans' | 'logs'
 
+const SOURCE_BADGE_STYLES: Record<string, { bg: string; color: string }> = {
+	fetch: { bg: 'var(--color-badge-blue-bg)', color: 'var(--color-badge-blue-text)' },
+	scheduled: { bg: 'var(--color-badge-purple-bg)', color: 'var(--color-badge-purple-text)' },
+	queue: { bg: 'var(--color-badge-orange-bg)', color: 'var(--color-badge-orange-text)' },
+	alarm: { bg: 'var(--color-badge-yellow-bg)', color: 'var(--color-badge-yellow-text)' },
+	workflow: { bg: 'var(--color-badge-emerald-bg)', color: 'var(--color-badge-emerald-text)' },
+}
+const DEFAULT_BADGE_STYLE = { bg: 'var(--color-badge-red-bg)', color: 'var(--color-badge-red-text)' }
+
 // ─── Event bus for raw WS events (used by drawer for live updates) ───
 
 type EventListener = (events: TraceEvent[]) => void
@@ -32,6 +42,46 @@ function emitTraceEvents(events: TraceEvent[]): void {
 			fn(events)
 		} catch {}
 	}
+}
+
+// ─── Trace data hook (shared by drawer and detail page) ─────────────
+
+function useTraceData(traceId: string) {
+	const [spans, setSpans] = useState<SpanData[]>([])
+	const [events, setEvents] = useState<SpanEventData[]>([])
+	const [traceErrors, setTraceErrors] = useState<TraceErrorSummary[]>([])
+	const [isLoading, setIsLoading] = useState(true)
+
+	// Initial load
+	useEffect(() => {
+		setIsLoading(true)
+		rpc('traces.getTrace', { traceId }).then(data => {
+			setSpans(data.spans)
+			setEvents(data.events)
+			setIsLoading(false)
+		})
+		rpc('traces.errors', { traceId }).then(setTraceErrors).catch(() => {})
+	}, [traceId])
+
+	// Live updates via WS event bus
+	useEffect(() => {
+		return onTraceEvents((traceEvents) => {
+			for (const ev of traceEvents) {
+				if (ev.type === 'span.start' && ev.span.traceId === traceId) {
+					setSpans(prev => {
+						if (prev.some(s => s.spanId === ev.span.spanId)) return prev
+						return [...prev, ev.span]
+					})
+				} else if (ev.type === 'span.end' && ev.span.traceId === traceId) {
+					setSpans(prev => prev.map(s => s.spanId === ev.span.spanId ? ev.span : s))
+				} else if (ev.type === 'span.event' && ev.event.traceId === traceId) {
+					setEvents(prev => [...prev, ev.event as SpanEventData])
+				}
+			}
+		})
+	}, [traceId])
+
+	return { spans, events, traceErrors, isLoading }
 }
 
 // ─── WebSocket hook ──────────────────────────────────────────────────
@@ -173,7 +223,17 @@ const TIME_RANGE_OPTIONS = [
 	{ label: 'All', ms: 0 },
 ]
 
-export function TracesView() {
+export function TracesView({ route }: { route: string }) {
+	const traceIdFromRoute = route.startsWith('/traces/') ? route.slice('/traces/'.length) : null
+
+	if (traceIdFromRoute) {
+		return <TraceDetailPage traceId={traceIdFromRoute} />
+	}
+
+	return <TracesListView />
+}
+
+function TracesListView() {
 	const { traces, setFilter, wsStatus } = useTraceStream()
 	const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 	const [pathFilter, setPathFilter] = useState('')
@@ -252,10 +312,7 @@ export function TracesView() {
 					<ConnectionStatus status={wsStatus} />
 				</div>
 				<button
-					onClick={() => {
-						clearTraces.mutate()
-						setSelectedTraceId(null)
-					}}
+					onClick={() => clearTraces.mutate()}
 					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
 				>
 					Clear all
@@ -416,7 +473,6 @@ export function TracesView() {
 			{activeTab === 'spans' && <SpansListTab />}
 			{activeTab === 'logs' && <LogsListTab />}
 
-			{/* Trace detail drawer */}
 			{selectedTraceId && (
 				<TraceDrawer
 					traceId={selectedTraceId}
@@ -424,6 +480,94 @@ export function TracesView() {
 					onAddAttributeFilter={addAttributeFilter}
 				/>
 			)}
+		</div>
+	)
+}
+
+// ─── Trace Detail Page ───────────────────────────────────────────────
+
+function TraceDetailPage({ traceId }: { traceId: string }) {
+	const { spans, events, traceErrors, isLoading } = useTraceData(traceId)
+	const rootSpan = spans.find(s => !s.parentSpanId)
+
+	return (
+		<div class="p-4 sm:p-8 h-full flex flex-col">
+			{/* Header */}
+			<div class="flex items-center gap-3 mb-6">
+				<button
+					onClick={() => navigate('/traces')}
+					class="flex items-center gap-1.5 text-sm text-text-secondary hover:text-ink transition-colors"
+				>
+					<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+						<path
+							fill-rule="evenodd"
+							d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z"
+							clip-rule="evenodd"
+						/>
+					</svg>
+					Back to traces
+				</button>
+				<div class="h-5 w-px bg-border" />
+				<div>
+					<div class="flex items-center gap-2">
+						{rootSpan && <TraceStatusBadge status={rootSpan.status} />}
+						<h1 class="text-lg font-bold text-ink">{rootSpan?.name ?? 'Loading...'}</h1>
+					</div>
+					<div class="text-xs text-text-muted font-mono mt-0.5">
+						Trace {traceId}
+						{rootSpan?.workerName && (
+							<span class="ml-2 inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
+								{rootSpan.workerName}
+							</span>
+						)}
+						{rootSpan?.durationMs != null && <span class="ml-2 text-text-secondary">{formatDuration(rootSpan.durationMs)}</span>}
+					</div>
+				</div>
+			</div>
+
+			{/* Content */}
+			<div class="flex-1 overflow-y-auto scrollbar-thin min-h-0">
+				{isLoading ? <div class="text-text-muted text-sm py-12 text-center">Loading trace...</div> : (
+					<div>
+						{/* Linked errors */}
+						{traceErrors.length > 0 && (
+							<div class="mb-4">
+								<div class="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Errors ({traceErrors.length})</div>
+								<div class="space-y-1">
+									{traceErrors.map(err => (
+										<a
+											key={err.id}
+											href={`#/errors/${err.id}`}
+											class="flex items-center gap-2 px-3 py-2 rounded-md text-xs no-underline transition-colors"
+											style={{ background: 'var(--color-error-highlight)', borderColor: 'var(--color-error-ring)' }}
+										>
+											{err.source && (() => {
+												const s = SOURCE_BADGE_STYLES[err.source] ?? DEFAULT_BADGE_STYLE
+												return (
+													<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium" style={{ background: s.bg, color: s.color }}>
+														{err.source}
+													</span>
+												)
+											})()}
+											<span class="font-medium" style={{ color: 'var(--color-badge-red-text)' }}>{err.errorName}</span>
+											<span style={{ color: 'var(--color-badge-red-text)' }} class="truncate">{err.errorMessage}</span>
+											<span style={{ color: 'var(--color-badge-red-text)', opacity: 0.7 }} class="font-mono ml-auto flex-shrink-0">
+												{formatTimestamp(err.timestamp)}
+											</span>
+										</a>
+									))}
+								</div>
+							</div>
+						)}
+
+						<TraceWaterfall
+							spans={spans}
+							events={events}
+							onAddAttributeFilter={() => {}}
+						/>
+					</div>
+				)}
+			</div>
 		</div>
 	)
 }
@@ -503,7 +647,7 @@ function SpansListTab() {
 												onClick={() => setSelectedTraceId(span.traceId)}
 												class="text-link hover:text-accent-lime text-xs font-mono"
 											>
-												{span.traceId.slice(0, 8)}...
+												{span.traceId}
 											</button>
 										</td>
 									</tr>
@@ -524,7 +668,7 @@ function SpansListTab() {
 					</div>
 				)}
 			{isLoading && spans.length === 0 && <div class="text-text-muted text-sm text-center py-12">Loading spans...</div>}
-			{selectedTraceId && <TraceDrawer traceId={selectedTraceId} onClose={() => setSelectedTraceId(null)} onAddAttributeFilter={() => {}} />}
+			{selectedTraceId && <TraceDrawer traceId={selectedTraceId} onClose={() => setSelectedTraceId(null)} />}
 		</div>
 	)
 }
@@ -545,6 +689,7 @@ function LogsListTab() {
 	const [logs, setLogs] = useState<LogRow[]>([])
 	const [cursor, setCursor] = useState<string | null>(null)
 	const [isLoading, setIsLoading] = useState(true)
+	const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null)
 
 	const loadLogs = useCallback((cur?: string) => {
 		setIsLoading(true)
@@ -588,8 +733,13 @@ function LogsListTab() {
 										<td class="px-4 py-2.5 font-medium text-ink">{log.name}</td>
 										<td class="px-4 py-2.5 text-text-data font-mono text-xs truncate max-w-[300px]">{log.message ?? ''}</td>
 										<td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">{formatTimestamp(log.timestamp)}</td>
-										<td class="px-4 py-2.5 text-right font-mono text-xs text-text-muted">
-											{log.traceId.slice(0, 8)}...
+										<td class="px-4 py-2.5 text-right">
+											<button
+												onClick={() => setSelectedTraceId(log.traceId)}
+												class="text-link hover:text-accent-lime text-xs font-mono"
+											>
+												{log.traceId}
+											</button>
 										</td>
 									</tr>
 								))}
@@ -609,59 +759,19 @@ function LogsListTab() {
 					</div>
 				)}
 			{isLoading && logs.length === 0 && <div class="text-text-muted text-sm text-center py-12">Loading logs...</div>}
+			{selectedTraceId && <TraceDrawer traceId={selectedTraceId} onClose={() => setSelectedTraceId(null)} />}
 		</div>
 	)
 }
 
 // ─── Trace Detail Drawer ─────────────────────────────────────────────
 
-const SOURCE_BADGE_STYLES: Record<string, { bg: string; color: string }> = {
-	fetch: { bg: 'var(--color-badge-blue-bg)', color: 'var(--color-badge-blue-text)' },
-	scheduled: { bg: 'var(--color-badge-purple-bg)', color: 'var(--color-badge-purple-text)' },
-	queue: { bg: 'var(--color-badge-orange-bg)', color: 'var(--color-badge-orange-text)' },
-	alarm: { bg: 'var(--color-badge-yellow-bg)', color: 'var(--color-badge-yellow-text)' },
-	workflow: { bg: 'var(--color-badge-emerald-bg)', color: 'var(--color-badge-emerald-text)' },
-}
-const DEFAULT_BADGE_STYLE = { bg: 'var(--color-badge-red-bg)', color: 'var(--color-badge-red-text)' }
-
 function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
 	traceId: string
 	onClose: () => void
-	onAddAttributeFilter: (key: string, value: string, type: 'include' | 'exclude') => void
+	onAddAttributeFilter?: (key: string, value: string, type: 'include' | 'exclude') => void
 }) {
-	const [spans, setSpans] = useState<SpanData[]>([])
-	const [events, setEvents] = useState<SpanEventData[]>([])
-	const [traceErrors, setTraceErrors] = useState<TraceErrorSummary[]>([])
-	const [isLoading, setIsLoading] = useState(true)
-
-	// Initial load
-	useEffect(() => {
-		setIsLoading(true)
-		rpc('traces.getTrace', { traceId }).then(data => {
-			setSpans(data.spans)
-			setEvents(data.events)
-			setIsLoading(false)
-		})
-		rpc('traces.errors', { traceId }).then(setTraceErrors).catch(() => {})
-	}, [traceId])
-
-	// Live updates via WS event bus
-	useEffect(() => {
-		return onTraceEvents((traceEvents) => {
-			for (const ev of traceEvents) {
-				if (ev.type === 'span.start' && ev.span.traceId === traceId) {
-					setSpans(prev => {
-						if (prev.some(s => s.spanId === ev.span.spanId)) return prev
-						return [...prev, ev.span]
-					})
-				} else if (ev.type === 'span.end' && ev.span.traceId === traceId) {
-					setSpans(prev => prev.map(s => s.spanId === ev.span.spanId ? ev.span : s))
-				} else if (ev.type === 'span.event' && ev.event.traceId === traceId) {
-					setEvents(prev => [...prev, ev.event as SpanEventData])
-				}
-			}
-		})
-	}, [traceId])
+	const { spans, events, traceErrors, isLoading } = useTraceData(traceId)
 
 	return (
 		<>
@@ -675,17 +785,29 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
 				{/* Header */}
 				<div class="flex items-center justify-between px-5 py-3 border-b border-border">
 					<div>
-						<div class="text-xs text-text-muted font-mono">Trace {traceId.slice(0, 12)}...</div>
+						<div class="text-xs text-text-muted font-mono">Trace {traceId}</div>
 						<div class="text-sm font-medium text-ink mt-0.5">
 							{spans.find(s => !s.parentSpanId)?.name ?? 'Loading...'}
 						</div>
 					</div>
-					<button
-						onClick={onClose}
-						class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-panel-hover transition-colors text-text-muted hover:text-ink"
-					>
-						&times;
-					</button>
+					<div class="flex items-center gap-1">
+						<a
+							href={`#/traces/${traceId}`}
+							class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-panel-hover transition-colors text-text-muted hover:text-ink"
+							title="Open full page"
+						>
+							<svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+								<path d="M4.75 5.75a.75.75 0 00.75.75h4.69l-4.22 4.22a.75.75 0 001.06 1.06L11.25 7.56v4.69a.75.75 0 001.5 0v-6.5a.75.75 0 00-.75-.75h-6.5a.75.75 0 00-.75.75z" />
+								<path d="M3 13.5a1.5 1.5 0 011.5-1.5h1.25a.75.75 0 010 1.5H4.5v4h4v-1.25a.75.75 0 011.5 0v1.25a1.5 1.5 0 01-1.5 1.5h-4A1.5 1.5 0 013 17.5v-4z" />
+							</svg>
+						</a>
+						<button
+							onClick={onClose}
+							class="w-7 h-7 flex items-center justify-center rounded-md hover:bg-panel-hover transition-colors text-text-muted hover:text-ink"
+						>
+							&times;
+						</button>
+					</div>
 				</div>
 
 				{/* Content */}
@@ -726,7 +848,7 @@ function TraceDrawer({ traceId, onClose, onAddAttributeFilter }: {
 							<TraceWaterfall
 								spans={spans}
 								events={events}
-								onAddAttributeFilter={onAddAttributeFilter}
+								onAddAttributeFilter={onAddAttributeFilter ?? (() => {})}
 							/>
 						</div>
 					)}

@@ -123,11 +123,11 @@ function ErrorList() {
 												{err.traceId
 													? (
 														<a
-															href={`#/traces?trace=${err.traceId}`}
+															href={`#/traces/${err.traceId}`}
 															onClick={(e) => e.stopPropagation()}
 															class="text-link hover:text-accent-lime text-xs font-mono"
 														>
-															{err.traceId.slice(0, 8)}...
+															{err.traceId}
 														</a>
 													)
 													: <span class="text-text-dim text-xs">-</span>}
@@ -256,9 +256,15 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
 			</Section>
 
 			{/* Trace */}
-			{traceSpans && traceSpans.length > 0 && (
+			{detail.traceId && (
 				<Section title="Trace" open>
-					<SimpleTraceWaterfall spans={traceSpans} highlightSpanId={detail.spanId} />
+					<div class="px-4 py-2.5 border-b border-border-subtle flex items-center gap-2">
+						<span class="text-xs text-text-muted">Trace ID:</span>
+						<a href={`#/traces/${detail.traceId}`} class="text-link hover:text-accent-lime text-xs font-mono">
+							{detail.traceId}
+						</a>
+					</div>
+					{traceSpans && traceSpans.length > 0 && <SimpleTraceWaterfall spans={traceSpans} highlightSpanId={detail.spanId} />}
 				</Section>
 			)}
 
