@@ -99,6 +99,19 @@ class OutputReader {
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		try {
+			await fetch(url)
+			return
+		} catch {
+			await new Promise(r => setTimeout(r, 250))
+		}
+	}
+	throw new Error(`Server at ${url} did not become ready within ${timeoutMs}ms`)
+}
+
 function cleanup() {
 	try {
 		rmSync(resolve(FIXTURE_DIR, '.lopata'), { recursive: true, force: true })
@@ -190,12 +203,9 @@ describe('HMR E2E — vite', () => {
 		})
 		output = new OutputReader(proc)
 
-		// Vite prints "Local:" when ready
-		await output.waitFor('Local:', 60_000)
-		// Worker module loads lazily on first request — warm it up
-		await fetch(`http://localhost:${PORT}/version`)
-		await output.waitFor('Worker module (re)loaded', 30_000)
-	}, 120_000)
+		// Poll until Vite server is ready and worker module loads
+		await waitForServer(`http://localhost:${PORT}/version`, 60_000)
+	}, 90_000)
 
 	afterAll(() => {
 		proc?.kill()

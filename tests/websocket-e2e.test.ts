@@ -9,6 +9,19 @@ const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		try {
+			await fetch(url)
+			return
+		} catch {
+			await new Promise(r => setTimeout(r, 250))
+		}
+	}
+	throw new Error(`Server at ${url} did not become ready within ${timeoutMs}ms`)
+}
+
 interface WSClient {
 	ws: WebSocket
 	waitForMessage(timeout?: number): Promise<string | ArrayBuffer>
@@ -35,9 +48,7 @@ async function startViteServer(port: number): Promise<Subprocess> {
 		stderr: 'pipe',
 	})
 
-	await waitForOutput(proc, 'Local:', 60_000)
-	// Small delay for Vite to finish initialization
-	await new Promise(r => setTimeout(r, 500))
+	await waitForServer(`http://localhost:${port}/ws/plain`, 60_000)
 	return proc
 }
 
