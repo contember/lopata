@@ -103,6 +103,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	return {
 		name: 'lopata:dev-server',
 
+		transform(code, id) {
+			if (!config) return
+			if (this.environment?.name !== options.envName) return
+			const entrypoint = resolve(server.config.root, config.main)
+			if (id !== entrypoint) return
+			return code + '\nif (import.meta.hot) { import.meta.hot.accept() }\n'
+		},
+
 		async configureServer(viteServer: ViteDevServer) {
 			server = viteServer
 			const projectRoot = server.config.root
