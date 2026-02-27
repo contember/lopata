@@ -21,8 +21,8 @@ class OutputReader {
 	private waiters: Array<{ check: () => boolean; resolve: () => void }> = []
 
 	constructor(proc: Subprocess) {
-		this.readStream(proc.stdout!)
-		this.readStream(proc.stderr!)
+		this.readStream(proc.stdout as ReadableStream<Uint8Array>)
+		this.readStream(proc.stderr as ReadableStream<Uint8Array>)
 	}
 
 	private async readStream(stream: ReadableStream<Uint8Array>) {

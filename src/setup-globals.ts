@@ -90,7 +90,7 @@ export function setupCloudflareGlobals() {
 	globalThis.Response = class extends OriginalResponse {
 		webSocket?: InstanceType<typeof WebSocketPair>[0]
 
-		constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: InstanceType<typeof WebSocketPair>[0] }) {
+		constructor(body?: any, init?: ResponseInit & { webSocket?: InstanceType<typeof WebSocketPair>[0] }) {
 			super(body, init)
 			if (init && 'webSocket' in init) {
 				this.webSocket = init.webSocket

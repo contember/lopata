@@ -71,7 +71,7 @@ async function waitForOutput(proc: Subprocess, marker: string, timeoutMs: number
 	}
 
 	await Promise.race([
-		Promise.all([readStream(proc.stdout!), readStream(proc.stderr!)]),
+		Promise.all([readStream(proc.stdout as ReadableStream<Uint8Array>), readStream(proc.stderr as ReadableStream<Uint8Array>)]),
 		new Promise<void>((_, reject) =>
 			setTimeout(() => reject(new Error(`Server did not produce "${marker}" within ${timeoutMs}ms. Output:\n${output}`)), timeoutMs)
 		),

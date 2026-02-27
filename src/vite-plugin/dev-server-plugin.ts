@@ -489,7 +489,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				// Real WS → CF
 				ws.on('message', (data: Buffer, isBinary: boolean) => {
 					const msgData = isBinary
-						? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+						? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
 						: data.toString('utf-8')
 					const evt = { type: 'message' as const, data: msgData }
 					if (cfSocket._peer?._accepted) {
