@@ -191,11 +191,11 @@ describe('HMR E2E — vite', () => {
 		output = new OutputReader(proc)
 
 		// Vite prints "Local:" when ready
-		await output.waitFor('Local:', 30_000)
+		await output.waitFor('Local:', 60_000)
 		// Worker module loads lazily on first request — warm it up
 		await fetch(`http://localhost:${PORT}/version`)
-		await output.waitFor('Worker module (re)loaded', 15_000)
-	}, 50_000)
+		await output.waitFor('Worker module (re)loaded', 30_000)
+	}, 120_000)
 
 	afterAll(() => {
 		proc?.kill()

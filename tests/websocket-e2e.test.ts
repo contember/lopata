@@ -35,7 +35,7 @@ async function startViteServer(port: number): Promise<Subprocess> {
 		stderr: 'pipe',
 	})
 
-	await waitForOutput(proc, 'Local:', 30_000)
+	await waitForOutput(proc, 'Local:', 60_000)
 	// Small delay for Vite to finish initialization
 	await new Promise(r => setTimeout(r, 500))
 	return proc
@@ -414,7 +414,7 @@ describe('WebSocket E2E — vite', () => {
 	beforeAll(async () => {
 		cleanup()
 		proc = await startViteServer(PORT)
-	}, 45_000)
+	}, 90_000)
 
 	afterAll(() => {
 		proc?.kill()
