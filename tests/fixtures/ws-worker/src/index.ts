@@ -1,5 +1,5 @@
-export { EchoStandardDO } from './echo-do-standard'
 export { EchoHibernationDO } from './echo-do-hibernation'
+export { EchoStandardDO } from './echo-do-standard'
 
 interface Env {
 	ECHO_STANDARD: DurableObjectNamespace

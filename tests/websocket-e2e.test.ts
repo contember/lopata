@@ -1,7 +1,7 @@
 import type { Subprocess } from 'bun'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { resolve } from 'node:path'
 import { rmSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/ws-worker')
 const CLI_PATH = resolve(import.meta.dir, '../src/cli.ts')
@@ -54,9 +54,7 @@ async function waitForOutput(proc: Subprocess, marker: string, timeoutMs: number
 			while (!resolved) {
 				const result = await Promise.race([
 					reader.read(),
-					new Promise<{ done: true; value: undefined }>(r =>
-						setTimeout(() => r({ done: true, value: undefined }), Math.max(0, deadline - Date.now())),
-					),
+					new Promise<{ done: true; value: undefined }>(r => setTimeout(() => r({ done: true, value: undefined }), Math.max(0, deadline - Date.now()))),
 				])
 				if (result.done) break
 				if (result.value) {
@@ -75,7 +73,7 @@ async function waitForOutput(proc: Subprocess, marker: string, timeoutMs: number
 	await Promise.race([
 		Promise.all([readStream(proc.stdout!), readStream(proc.stderr!)]),
 		new Promise<void>((_, reject) =>
-			setTimeout(() => reject(new Error(`Server did not produce "${marker}" within ${timeoutMs}ms. Output:\n${output}`)), timeoutMs),
+			setTimeout(() => reject(new Error(`Server did not produce "${marker}" within ${timeoutMs}ms. Output:\n${output}`)), timeoutMs)
 		),
 	])
 
