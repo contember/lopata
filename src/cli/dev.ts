@@ -333,6 +333,9 @@ export async function run(ctx: CliContext) {
 					const ce = ev as CloseEvent
 					ws.close(ce.code, ce.reason)
 				})
+				// Accept the client side so events from server.send() are dispatched
+				// (in CF production the runtime handles this; here we bridge manually)
+				cfSocket.accept()
 			},
 			message(ws, message) {
 				const data = ws.data as unknown as Record<string, unknown>

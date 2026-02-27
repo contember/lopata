@@ -1,6 +1,7 @@
 import { SqliteCacheStorage } from './bindings/cache'
 import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-streams'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
+import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { getDatabase } from './db'
@@ -76,6 +77,26 @@ export function setupCloudflareGlobals() {
 		writable: false,
 		configurable: true,
 	})
+
+	// Register global `WebSocketRequestResponsePair` class (used by DO hibernation API)
+	Object.defineProperty(globalThis, 'WebSocketRequestResponsePair', {
+		value: WebSocketRequestResponsePair,
+		writable: false,
+		configurable: true,
+	})
+
+	// Patch Response to preserve CF-specific `webSocket` property from init
+	const OriginalResponse = globalThis.Response
+	globalThis.Response = class extends OriginalResponse {
+		webSocket?: InstanceType<typeof WebSocketPair>[0]
+
+		constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: InstanceType<typeof WebSocketPair>[0] }) {
+			super(body, init)
+			if (init && 'webSocket' in init) {
+				this.webSocket = init.webSocket
+			}
+		}
+	}
 
 	// Register global CF stream classes
 	Object.defineProperty(globalThis, 'IdentityTransformStream', {

@@ -42,6 +42,9 @@ export function configPlugin(envName: string): Plugin {
 		name: 'lopata:config',
 		config() {
 			return {
+				// Disable Vite's SPA fallback (history API fallback) — Lopata handles
+				// all requests via worker.fetch(), so no index.html rewriting is needed.
+				appType: 'custom',
 				server: {
 					watch: {
 						ignored: ['**/.lopata/**', '**/.wrangler/**', '**/.react-router/**'],

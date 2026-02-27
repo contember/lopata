@@ -483,19 +483,25 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						ws.close(ce.code, ce.reason)
 					} catch {}
 				})
+				// Accept the client side so events from server.send() are dispatched
+				cfSocket.accept()
 
 				// Real WS → CF
-				ws.on('message', (data: any) => {
+				ws.on('message', (data: Buffer, isBinary: boolean) => {
+					const msgData = isBinary
+						? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+						: data.toString('utf-8')
+					const evt = { type: 'message' as const, data: msgData }
 					if (cfSocket._peer?._accepted) {
-						cfSocket._peer._dispatchWSEvent({ type: 'message', data: typeof data === 'string' ? data : data.buffer })
+						cfSocket._peer._dispatchWSEvent(evt)
 					} else if (cfSocket._peer) {
-						cfSocket._peer._eventQueue.push({ type: 'message', data: typeof data === 'string' ? data : data.buffer })
+						cfSocket._peer._eventQueue.push(evt)
 					}
 				})
 
-				ws.on('close', (code: number, reason: string) => {
+				ws.on('close', (code: number, reason: Buffer) => {
 					if (cfSocket._peer && cfSocket._peer.readyState !== 3) {
-						const evt = { type: 'close' as const, code: code ?? 1000, reason: reason ?? '', wasClean: true }
+						const evt = { type: 'close' as const, code: code ?? 1000, reason: reason?.toString('utf-8') ?? '', wasClean: true }
 						if (cfSocket._peer._accepted) {
 							cfSocket._peer._dispatchWSEvent(evt)
 						} else {

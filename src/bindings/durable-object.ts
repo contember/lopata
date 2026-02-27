@@ -602,6 +602,12 @@ export class DurableObjectStateImpl {
 		if (this._acceptedWebSockets.size >= this._limits.maxConcurrentWebSockets) {
 			throw new Error(`Exceeded max concurrent WebSocket connections (${this._limits.maxConcurrentWebSockets})`)
 		}
+
+		// Implicitly accept the WebSocket (in CF production, ctx.acceptWebSocket handles this)
+		if ('accept' in ws && typeof ws.accept === 'function') {
+			;(ws as any).accept()
+		}
+
 		const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null }
 		this._acceptedWebSockets.add(entry)
 

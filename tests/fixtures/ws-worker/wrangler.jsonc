@@ -1,0 +1,14 @@
+{
+	"name": "ws-test-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ECHO_STANDARD", "class_name": "EchoStandardDO" },
+			{ "name": "ECHO_HIBERNATION", "class_name": "EchoHibernationDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_classes": ["EchoStandardDO", "EchoHibernationDO"] }
+	]
+}
