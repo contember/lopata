@@ -52,8 +52,53 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let currentModule: Record<string, unknown> | null = null
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
-	// Files changed since last request — coalesced into a single invalidation batch
-	let changedFiles: Set<string> = new Set()
+
+	/**
+	 * Import the worker module through Vite's SSR runner and re-wire
+	 * class refs when the module identity changes (HMR invalidation).
+	 * Serialized via reloadLock to prevent concurrent wireClassRefs calls.
+	 */
+	async function ensureWorkerModule(): Promise<Record<string, unknown>> {
+		const ssrEnv = server.environments[options.envName]
+		if (!ssrEnv || !('runner' in ssrEnv)) {
+			throw new Error(`SSR environment "${options.envName}" not found or has no runner`)
+		}
+
+		const entrypoint = resolve(server.config.root, config.main)
+
+		// Wait for any in-progress reload before importing
+		if (reloadLock) await reloadLock
+
+		const workerModule = await (ssrEnv as any).runner.import(entrypoint) as Record<string, unknown>
+
+		// Re-wire class refs when module changes (HMR invalidation)
+		if (workerModule !== currentModule) {
+			if (reloadLock) {
+				// Another request started reloading while we were importing — wait for it
+				await reloadLock
+			} else {
+				let resolveReload!: () => void
+				reloadLock = new Promise(r => {
+					resolveReload = r
+				})
+				try {
+					currentModule = workerModule
+					wireClassRefs(registry, workerModule, env, workerRegistry)
+					setGlobalEnv(env)
+					console.log('[lopata:vite] Worker module (re)loaded, classes wired')
+				} catch (err) {
+					// Reset so next request retries
+					currentModule = null
+					throw err
+				} finally {
+					reloadLock = null
+					resolveReload()
+				}
+			}
+		}
+
+		return currentModule ?? workerModule
+	}
 
 	return {
 		name: 'lopata:dev-server',
@@ -167,23 +212,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				apiMod.setWorkerRegistry(workerRegistry)
 			}
 
-			// 5. Track SSR-relevant file changes.
-			// Collect changed file paths; the next request will invalidate only
-			// the affected modules (and their transitive importers) instead of
-			// clearing the entire runner cache.  HMR on the runner is disabled
-			// (hmr: false in config-plugin) so there's no async race.
-			server.watcher.on('change', (file) => {
-				const ssrEnv = server.environments[options.envName]
-				if (!ssrEnv) return
-				const normalizedFile = file.replace(/\\/g, '/')
-				const mods = ssrEnv.moduleGraph.getModulesByFile(normalizedFile)
-				if (mods && mods.size > 0) {
-					changedFiles.add(normalizedFile)
-					currentModule = null
-				}
-			})
-
-			// 6. Set up WebSocket trace streaming on httpServer
+			// 5. Set up WebSocket trace streaming on httpServer
 			setupTraceWebSocket(server)
 
 			// 6. Return middleware callback (post-middleware — runs after framework plugins)
@@ -232,63 +261,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 
 					try {
-						const ssrEnv = server.environments[options.envName]
-						if (!ssrEnv || !('runner' in ssrEnv)) {
-							console.error(`[lopata:vite] SSR environment "${options.envName}" not found or has no runner`)
-							return next()
-						}
-
-						const entrypoint = resolve(server.config.root, config.main)
-
-						// Wait for any in-progress reload before importing
-						if (reloadLock) await reloadLock
-
-						// Granular invalidation: only invalidate modules for changed
-						// files and their transitive importers, instead of wiping the
-						// entire runner cache.  This preserves cached evaluations of
-						// unchanged modules for faster re-evaluation.
-						if (changedFiles.size > 0) {
-							const files = changedFiles
-							changedFiles = new Set()
-							const runner = (ssrEnv as any).runner
-							const count = invalidateChangedModules(runner.evaluatedModules, files)
-							if (count > 0) {
-								console.log(`[lopata:vite] Invalidated ${count} module(s) (${files.size} file(s) changed)`)
-							}
-						}
-
-						const workerModule = await (ssrEnv as any).runner.import(entrypoint) as Record<string, unknown>
-
-						// Re-wire class refs when module changes (HMR invalidation)
-						if (workerModule !== currentModule) {
-							if (reloadLock) {
-								// Another request started reloading while we were importing — wait for it
-								await reloadLock
-							} else {
-								let resolveReload!: () => void
-								reloadLock = new Promise(r => {
-									resolveReload = r
-								})
-								try {
-									currentModule = workerModule
-									wireClassRefs(registry, workerModule, env, workerRegistry)
-									setGlobalEnv(env)
-									console.log('[lopata:vite] Worker module (re)loaded, classes wired')
-								} catch (err) {
-									// Reset so next request retries
-									currentModule = null
-									throw err
-								} finally {
-									reloadLock = null
-									resolveReload()
-								}
-							}
-						}
+						const activeModule = await ensureWorkerModule()
 
 						const request = nodeReqToRequest(req)
 						const parsedUrl = new URL(request.url)
 
-						const activeModule = currentModule ?? workerModule
 						const handler = activeModule.default as Record<string, unknown>
 						if (!handler || typeof handler.fetch !== 'function') {
 							console.error('[lopata:vite] Worker module default export has no fetch() method')
@@ -350,98 +327,28 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 		// Dynamically import ws (available as Vite dependency)
 		import('ws').then(({ WebSocketServer }) => {
-			const wss = new WebSocketServer({ noServer: true })
+			const traceWss = new WebSocketServer({ noServer: true })
+			const workerWss = new WebSocketServer({ noServer: true })
 
 			httpServer.on('upgrade', (req: IncomingMessage, socket: any, head: Buffer) => {
 				const url = req.url ?? ''
-				if (!url.startsWith('/__api/traces/ws')) return
 
-				wss.handleUpgrade(req, socket, head, (ws: any) => {
-					const store = getTraceStore()
-					let filter: { path?: string; status?: string; attributeFilters?: Array<{ key: string; value: string; type: 'include' | 'exclude' }> } = {}
-					let buffer: any[] = []
-					const MAX_BUFFER = 1000
-					const allowedTraces = new Set<string>()
-					const excludedTraces = new Set<string>()
+				// Skip Vite HMR WebSocket — Vite uses sec-websocket-protocol
+				// "vite-hmr" / "vite-ping" to identify its connections
+				const wsProtocol = req.headers['sec-websocket-protocol']
+				if (wsProtocol === 'vite-hmr' || wsProtocol === 'vite-ping') return
 
-					function isRootSpanFiltered(span: { name: string; status: string; parentSpanId: string | null; attributes: Record<string, unknown> }): boolean {
-						if (filter.status && filter.status !== 'all') {
-							if (span.status !== 'unset' && span.status !== filter.status) return true
-						}
-						if (filter.path) {
-							if (!matchGlob(span.name, filter.path)) return true
-						}
-						if (filter.attributeFilters && filter.attributeFilters.length > 0) {
-							const attrs = span.attributes
-							for (const af of filter.attributeFilters) {
-								const val = attrs[af.key]
-								const matches = val !== undefined && String(val).toLowerCase().includes(af.value.toLowerCase())
-								if (af.type === 'include' && !matches) return true
-								if (af.type === 'exclude' && matches) return true
-							}
-						}
-						return false
-					}
-
-					const unsubscribe = store.subscribe((event: any) => {
-						const traceId = event.type === 'span.event' ? event.event.traceId : event.span.traceId
-						if ((event.type === 'span.start' || event.type === 'span.end') && event.span.parentSpanId === null) {
-							if (isRootSpanFiltered(event.span)) {
-								excludedTraces.add(traceId)
-								allowedTraces.delete(traceId)
-								return
-							}
-							excludedTraces.delete(traceId)
-							allowedTraces.add(traceId)
-						} else {
-							if (excludedTraces.has(traceId)) return
-						}
-						if (buffer.length < MAX_BUFFER) {
-							buffer.push(event)
-						}
+				if (url.startsWith('/__api/traces/ws')) {
+					traceWss.handleUpgrade(req, socket, head, (ws: any) => {
+						handleTraceWebSocket(ws, req)
 					})
+					return
+				}
 
-					const interval = setInterval(() => {
-						if (buffer.length > 0) {
-							ws.send(JSON.stringify({ type: 'batch', events: buffer }))
-							buffer = []
-						}
-					}, 500)
-
-					// Parse filter from query params
-					try {
-						const reqUrl = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
-						const statusParam = reqUrl.searchParams.get('status')
-						const pathParam = reqUrl.searchParams.get('path')
-						if (statusParam) filter.status = statusParam
-						if (pathParam) filter.path = pathParam
-					} catch {}
-
-					let sinceMs = 15 * 60 * 1000
-					const since = Date.now() - sinceMs
-					const recent = store.getRecentTraces(since, 200, filter)
-					ws.send(JSON.stringify({ type: 'initial', traces: recent }))
-
-					ws.on('message', (data: any) => {
-						try {
-							const msg = JSON.parse(typeof data === 'string' ? data : data.toString())
-							if (msg.type === 'filter') {
-								filter = { path: msg.path, status: msg.status, attributeFilters: msg.attributeFilters }
-								if (msg.sinceMs !== undefined) sinceMs = msg.sinceMs
-								allowedTraces.clear()
-								excludedTraces.clear()
-								const freshSince = sinceMs > 0 ? Date.now() - sinceMs : 0
-								const freshTraces = store.getRecentTraces(freshSince, 200, filter)
-								ws.send(JSON.stringify({ type: 'initial', traces: freshTraces }))
-							}
-						} catch {}
-					})
-
-					ws.on('close', () => {
-						unsubscribe()
-						clearInterval(interval)
-					})
-				})
+				// Worker WebSocket upgrade — bridge to CF WebSocketPair
+				if (req.headers.upgrade?.toLowerCase() === 'websocket') {
+					handleWorkerWebSocketUpgrade(workerWss, req, socket, head)
+				}
 			})
 
 			console.log('[lopata:vite] Dashboard: http://localhost:5173/__dashboard')
@@ -450,51 +357,159 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			console.log('[lopata:vite] Dashboard available (trace streaming disabled — ws package not found)')
 		})
 	}
-}
 
-/**
- * Invalidate runner-evaluated modules for the given changed files and all
- * their transitive importers.  Virtual modules (IDs starting with `\0`) are
- * skipped to preserve shimmed CF modules (see commit 75b1736).
- *
- * Returns the number of modules invalidated.
- */
-function invalidateChangedModules(
-	evaluatedModules: { getModulesByFile(file: string): Iterable<{ id: string; importers: Set<any> }> | undefined; invalidateModule(node: any): void },
-	changedFiles: Set<string>,
-): number {
-	const toInvalidate = new Set<{ id: string; importers: Set<any> }>()
+	function handleTraceWebSocket(ws: any, req: IncomingMessage) {
+		const store = getTraceStore()
+		let filter: { path?: string; status?: string; attributeFilters?: Array<{ key: string; value: string; type: 'include' | 'exclude' }> } = {}
+		let buffer: any[] = []
+		const MAX_BUFFER = 1000
+		const allowedTraces = new Set<string>()
+		const excludedTraces = new Set<string>()
 
-	for (const file of changedFiles) {
-		const nodes = evaluatedModules.getModulesByFile(file)
-		if (!nodes) continue
-		for (const node of nodes) {
-			collectTransitiveImporters(node, toInvalidate)
+		function isRootSpanFiltered(span: { name: string; status: string; parentSpanId: string | null; attributes: Record<string, unknown> }): boolean {
+			if (filter.status && filter.status !== 'all') {
+				if (span.status !== 'unset' && span.status !== filter.status) return true
+			}
+			if (filter.path) {
+				if (!matchGlob(span.name, filter.path)) return true
+			}
+			if (filter.attributeFilters && filter.attributeFilters.length > 0) {
+				const attrs = span.attributes
+				for (const af of filter.attributeFilters) {
+					const val = attrs[af.key]
+					const matches = val !== undefined && String(val).toLowerCase().includes(af.value.toLowerCase())
+					if (af.type === 'include' && !matches) return true
+					if (af.type === 'exclude' && matches) return true
+				}
+			}
+			return false
 		}
+
+		const unsubscribe = store.subscribe((event: any) => {
+			const traceId = event.type === 'span.event' ? event.event.traceId : event.span.traceId
+			if ((event.type === 'span.start' || event.type === 'span.end') && event.span.parentSpanId === null) {
+				if (isRootSpanFiltered(event.span)) {
+					excludedTraces.add(traceId)
+					allowedTraces.delete(traceId)
+					return
+				}
+				excludedTraces.delete(traceId)
+				allowedTraces.add(traceId)
+			} else {
+				if (excludedTraces.has(traceId)) return
+			}
+			if (buffer.length < MAX_BUFFER) {
+				buffer.push(event)
+			}
+		})
+
+		const interval = setInterval(() => {
+			if (buffer.length > 0) {
+				ws.send(JSON.stringify({ type: 'batch', events: buffer }))
+				buffer = []
+			}
+		}, 500)
+
+		// Parse filter from query params
+		try {
+			const reqUrl = new URL(req.url ?? '', `http://${req.headers.host ?? 'localhost'}`)
+			const statusParam = reqUrl.searchParams.get('status')
+			const pathParam = reqUrl.searchParams.get('path')
+			if (statusParam) filter.status = statusParam
+			if (pathParam) filter.path = pathParam
+		} catch {}
+
+		let sinceMs = 15 * 60 * 1000
+		const since = Date.now() - sinceMs
+		const recent = store.getRecentTraces(since, 200, filter)
+		ws.send(JSON.stringify({ type: 'initial', traces: recent }))
+
+		ws.on('message', (data: any) => {
+			try {
+				const msg = JSON.parse(typeof data === 'string' ? data : data.toString())
+				if (msg.type === 'filter') {
+					filter = { path: msg.path, status: msg.status, attributeFilters: msg.attributeFilters }
+					if (msg.sinceMs !== undefined) sinceMs = msg.sinceMs
+					allowedTraces.clear()
+					excludedTraces.clear()
+					const freshSince = sinceMs > 0 ? Date.now() - sinceMs : 0
+					const freshTraces = store.getRecentTraces(freshSince, 200, filter)
+					ws.send(JSON.stringify({ type: 'initial', traces: freshTraces }))
+				}
+			} catch {}
+		})
+
+		ws.on('close', () => {
+			unsubscribe()
+			clearInterval(interval)
+		})
 	}
 
-	for (const node of toInvalidate) {
-		evaluatedModules.invalidateModule(node)
-	}
+	async function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
+		try {
+			const { CFWebSocket } = await import('../bindings/websocket-pair.ts')
 
-	return toInvalidate.size
-}
+			const activeModule = await ensureWorkerModule()
+			const handler = activeModule.default as Record<string, unknown>
+			if (!handler || typeof handler.fetch !== 'function') {
+				socket.destroy()
+				return
+			}
 
-/**
- * Collect `node` and all its transitive importers into `result`.
- * Skips virtual modules (IDs starting with `\0`) — these are CF module shims
- * that must not be invalidated or traversed further.
- */
-function collectTransitiveImporters(
-	node: { id: string; importers: Set<any> },
-	result: Set<{ id: string; importers: Set<any> }>,
-): void {
-	if (result.has(node)) return
-	// Skip virtual modules — CF shims must stay cached
-	if (node.id.startsWith('\0')) return
-	result.add(node)
-	for (const importer of node.importers) {
-		collectTransitiveImporters(importer, result)
+			const request = nodeReqToRequest(req)
+			const ctx = new ExecutionContext()
+			const response = await runWithExecutionContext(ctx, async () => {
+				return (handler.fetch as Function).call(handler, request, env, ctx) as Response
+			})
+
+			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket
+			if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
+				socket.destroy()
+				return
+			}
+
+			// Complete the upgrade and bridge
+			wss.handleUpgrade(req, socket, head, (ws: any) => {
+				// CF → real WS
+				cfSocket.addEventListener('message', (ev: Event) => {
+					const msgData = (ev as MessageEvent).data
+					try {
+						ws.send(msgData)
+					} catch {}
+				})
+				cfSocket.addEventListener('close', (ev: Event) => {
+					const ce = ev as CloseEvent
+					try {
+						ws.close(ce.code, ce.reason)
+					} catch {}
+				})
+
+				// Real WS → CF
+				ws.on('message', (data: any) => {
+					if (cfSocket._peer?._accepted) {
+						cfSocket._peer._dispatchWSEvent({ type: 'message', data: typeof data === 'string' ? data : data.buffer })
+					} else if (cfSocket._peer) {
+						cfSocket._peer._eventQueue.push({ type: 'message', data: typeof data === 'string' ? data : data.buffer })
+					}
+				})
+
+				ws.on('close', (code: number, reason: string) => {
+					if (cfSocket._peer && cfSocket._peer.readyState !== 3) {
+						const evt = { type: 'close' as const, code: code ?? 1000, reason: reason ?? '', wasClean: true }
+						if (cfSocket._peer._accepted) {
+							cfSocket._peer._dispatchWSEvent(evt)
+						} else {
+							cfSocket._peer._eventQueue.push(evt)
+						}
+						cfSocket._peer.readyState = 3
+					}
+					cfSocket.readyState = 3
+				})
+			})
+		} catch (err) {
+			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
+			socket.destroy()
+		}
 	}
 }
 

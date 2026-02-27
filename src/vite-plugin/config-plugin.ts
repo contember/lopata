@@ -19,7 +19,7 @@ class LopataDevEnvironment extends DevEnvironment {
 
 	get runner(): ModuleRunner {
 		if (!this._runner) {
-			this._runner = createServerModuleRunner(this, { hmr: false })
+			this._runner = createServerModuleRunner(this, { hmr: {} })
 		}
 		return this._runner
 	}
@@ -44,13 +44,14 @@ export function configPlugin(envName: string): Plugin {
 			return {
 				server: {
 					watch: {
-						ignored: ['**/.lopata/**'],
+						ignored: ['**/.lopata/**', '**/.wrangler/**', '**/.react-router/**'],
 					},
 				},
 				environments: {
 					[envName]: {
 						resolve: {
 							externalConditions: ['workerd', 'worker'],
+							dedupe: ['react', 'react-dom', 'react-router', 'react-router-dom'],
 						},
 						dev: {
 							createEnvironment(name, config) {
