@@ -931,9 +931,12 @@ describe('DurableObject SQL Storage', () => {
 			expect(storage.sql).toBeInstanceOf(SqlStorage)
 		})
 
-		test('storage.sql throws without dataDir', () => {
+		test('storage.sql returns in-memory SqlStorage without dataDir', () => {
 			const storage = new SqliteDurableObjectStorage(db, 'TestDO', 'inst1')
-			expect(() => storage.sql).toThrow('dataDir not configured')
+			expect(storage.sql).toBeInstanceOf(SqlStorage)
+			storage.sql.exec('CREATE TABLE t (v TEXT)')
+			storage.sql.exec("INSERT INTO t VALUES ('ok')")
+			expect(storage.sql.exec('SELECT v FROM t').one().v).toBe('ok')
 		})
 
 		test('sql storage is isolated per DO instance', () => {
@@ -984,6 +987,16 @@ describe('DurableObject SQL Storage', () => {
 			await stub.createTable()
 			await stub.setCounter('visits', 42)
 			expect(await stub.getCounter('visits')).toBe(42)
+		})
+
+		test('sql storage works in-memory (no dataDir)', async () => {
+			const ns = new DurableObjectNamespaceImpl(db, 'SqlInMemDO', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(SqlDO, {})
+
+			const stub = ns.get(ns.idFromName('test')) as unknown as SqlDO
+			await stub.createTable()
+			await stub.setCounter('x', 10)
+			expect(await stub.getCounter('x')).toBe(10)
 		})
 	})
 })

@@ -84,20 +84,23 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 // --- SQL Storage API ---
 
 export class SqlStorage {
-	private _dbPath: string
+	private _dbPath: string | null
 	private _db: Database | null = null
 
-	constructor(dbPath: string) {
+	constructor(dbPath: string | null) {
 		this._dbPath = dbPath
 	}
 
 	private _getDb(): Database {
 		if (!this._db) {
-			// Ensure parent directory exists
-			const dir = this._dbPath.substring(0, this._dbPath.lastIndexOf('/'))
-			mkdirSync(dir, { recursive: true })
-			this._db = new Database(this._dbPath, { create: true })
-			this._db.run('PRAGMA journal_mode=WAL')
+			if (this._dbPath) {
+				const dir = this._dbPath.substring(0, this._dbPath.lastIndexOf('/'))
+				mkdirSync(dir, { recursive: true })
+				this._db = new Database(this._dbPath, { create: true })
+				this._db.run('PRAGMA journal_mode=WAL')
+			} else {
+				this._db = new Database(':memory:')
+			}
 		}
 		return this._db
 	}
@@ -123,6 +126,11 @@ export class SqlStorage {
 	}
 
 	get databaseSize(): number {
+		if (!this._dbPath) {
+			const db = this._getDb()
+			const row = db.query('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number } | null
+			return row?.size ?? 0
+		}
 		try {
 			return statSync(this._dbPath).size
 		} catch {
@@ -273,10 +281,9 @@ export class SqliteDurableObjectStorage {
 
 	get sql(): SqlStorage {
 		if (!this._sql) {
-			if (!this._dataDir) {
-				throw new Error('SQL storage not available: dataDir not configured')
-			}
-			const dbPath = join(this._dataDir, 'do-sql', this.namespace, `${this.id}.sqlite`)
+			const dbPath = this._dataDir
+				? join(this._dataDir, 'do-sql', this.namespace, `${this.id}.sqlite`)
+				: null
 			this._sql = new SqlStorage(dbPath)
 		}
 		return this._sql
