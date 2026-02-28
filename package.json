@@ -11,7 +11,9 @@
 		"lopata": "src/cli.ts"
 	},
 	"exports": {
-		"./vite-plugin": "./src/vite-plugin/index.ts"
+		"./vite-plugin": "./src/vite-plugin/index.ts",
+		"./testing": "./src/testing/index.ts",
+		"./testing/setup": "./src/testing/setup.ts"
 	},
 	"files": [
 		"src/",
@@ -22,7 +24,7 @@
 	"scripts": {
 		"dev": "cd examples/playground && bun ../../src/cli.ts dev",
 		"cli": "bun src/cli.ts",
-		"test": "bun test tests/",
+		"test": "bun test tests/ examples/playground/tests/",
 		"lint": "biome lint .",
 		"lint:fix": "biome lint . --write",
 		"format": "dprint fmt",

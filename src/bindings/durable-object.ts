@@ -951,6 +951,14 @@ export class DurableObjectNamespaceImpl {
 		return this._executors.get(idStr) ?? null
 	}
 
+	/** @internal List all instance IDs in this namespace (from DB). */
+	_listInstanceIds(): string[] {
+		const rows = this.db
+			.query('SELECT id FROM do_instances WHERE namespace = ? ORDER BY created_at ASC')
+			.all(this.namespaceName) as { id: string }[]
+		return rows.map(r => r.id)
+	}
+
 	/** Whether the DO class defines an alarm() handler */
 	hasAlarmHandler(): boolean {
 		return typeof this._class?.prototype?.alarm === 'function'

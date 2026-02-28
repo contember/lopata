@@ -36,31 +36,33 @@ export function setupCloudflareGlobals() {
 		},
 	}
 
-	// Register global `caches` object (CacheStorage) with tracing
-	const rawCacheStorage = new SqliteCacheStorage(getDatabase())
+	// Register global `caches` object (CacheStorage) with tracing.
+	// Lazy: only creates the SqliteCacheStorage (and its getDatabase() call) on first access.
+	let _cacheStorage: SqliteCacheStorage | null = null
 	const cacheMethods = ['match', 'put', 'delete']
-
-	// Instrument the default cache
-	rawCacheStorage.default = instrumentBinding(rawCacheStorage.default, {
-		type: 'cache',
-		name: 'default',
-		methods: cacheMethods,
-	}) as typeof rawCacheStorage.default
-
-	// Wrap open() to return instrumented caches
-	const originalOpen = rawCacheStorage.open.bind(rawCacheStorage)
-	rawCacheStorage.open = async (cacheName: string) => {
-		const cache = await originalOpen(cacheName)
-		return instrumentBinding(cache, {
-			type: 'cache',
-			name: cacheName,
-			methods: cacheMethods,
-		})
+	function getCacheStorage(): SqliteCacheStorage {
+		if (!_cacheStorage) {
+			_cacheStorage = new SqliteCacheStorage(getDatabase())
+			_cacheStorage.default = instrumentBinding(_cacheStorage.default, {
+				type: 'cache',
+				name: 'default',
+				methods: cacheMethods,
+			}) as typeof _cacheStorage.default
+			const originalOpen = _cacheStorage.open.bind(_cacheStorage)
+			_cacheStorage.open = async (cacheName: string) => {
+				const cache = await originalOpen(cacheName)
+				return instrumentBinding(cache, {
+					type: 'cache',
+					name: cacheName,
+					methods: cacheMethods,
+				})
+			}
+		}
+		return _cacheStorage
 	}
 
 	Object.defineProperty(globalThis, 'caches', {
-		value: rawCacheStorage,
-		writable: false,
+		get: () => getCacheStorage(),
 		configurable: true,
 	})
 

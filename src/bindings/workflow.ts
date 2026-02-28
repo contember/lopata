@@ -90,6 +90,65 @@ const abortControllers = new Map<string, AbortController>()
 
 const sleepResolvers = new Map<string, () => void>()
 
+// --- Notification hooks (per-process, for testing) ---
+
+const stepCallbacks = new Map<string, Map<string, Set<(output: unknown) => void>>>()
+const sleepCallbacks = new Map<string, Set<() => void>>()
+const eventWaitCallbacks = new Map<string, Map<string, Set<() => void>>>()
+const statusCallbacks = new Map<string, Set<(status: string) => void>>()
+
+// --- Mock registry (per-process, for testing) ---
+
+export interface StepMock {
+	type: 'result' | 'error' | 'timeout'
+	value?: unknown // result value or Error for error type
+	times?: number // how many times to apply (undefined = forever)
+	_used?: number // internal counter
+}
+
+const stepMocks = new Map<string, Map<string, StepMock>>()
+const sleepDisabledInstances = new Set<string>()
+const eventMocks = new Map<string, Map<string, { payload: unknown }>>()
+const eventTimeoutMocks = new Map<string, Set<string>>()
+
+export function registerStepMock(instanceId: string, stepName: string, mock: StepMock): void {
+	let instanceMocks = stepMocks.get(instanceId)
+	if (!instanceMocks) {
+		instanceMocks = new Map()
+		stepMocks.set(instanceId, instanceMocks)
+	}
+	instanceMocks.set(stepName, { ...mock, _used: 0 })
+}
+
+export function registerSleepDisable(instanceId: string): void {
+	sleepDisabledInstances.add(instanceId)
+}
+
+export function registerEventMock(instanceId: string, eventType: string, payload: unknown): void {
+	let instanceMocks = eventMocks.get(instanceId)
+	if (!instanceMocks) {
+		instanceMocks = new Map()
+		eventMocks.set(instanceId, instanceMocks)
+	}
+	instanceMocks.set(eventType, { payload })
+}
+
+export function registerEventTimeoutMock(instanceId: string, eventType: string): void {
+	let instanceMocks = eventTimeoutMocks.get(instanceId)
+	if (!instanceMocks) {
+		instanceMocks = new Set()
+		eventTimeoutMocks.set(instanceId, instanceMocks)
+	}
+	instanceMocks.add(eventType)
+}
+
+export function clearInstanceMocks(instanceId: string): void {
+	stepMocks.delete(instanceId)
+	sleepDisabledInstances.delete(instanceId)
+	eventMocks.delete(instanceId)
+	eventTimeoutMocks.delete(instanceId)
+}
+
 // --- Step ---
 
 class WorkflowStepImpl {
@@ -146,6 +205,7 @@ class WorkflowStepImpl {
 		this.db
 			.query('INSERT OR REPLACE INTO workflow_steps (instance_id, step_name, output, completed_at) VALUES (?, ?, ?, ?)')
 			.run(this.instanceId, name, serialized, Date.now())
+		fireStepCallbacks(this.instanceId, name, output)
 	}
 
 	async do<T>(name: string, callbackOrConfig: (() => Promise<T>) | WorkflowStepConfig, maybeCallback?: () => Promise<T>): Promise<T> {
@@ -172,6 +232,29 @@ class WorkflowStepImpl {
 		if (cached) {
 			console.log(`  [workflow] step: ${name} (cached)`)
 			return JSON.parse(cached.output!) as T
+		}
+
+		// Check step mocks
+		const instanceMocks = stepMocks.get(this.instanceId)
+		const mock = instanceMocks?.get(name)
+		if (mock) {
+			const shouldApply = mock.times === undefined || (mock._used ?? 0) < mock.times
+			if (shouldApply) {
+				mock._used = (mock._used ?? 0) + 1
+				if (mock.type === 'result') {
+					console.log(`  [workflow] step: ${name} (mocked)`)
+					this.cacheStep(name, mock.value)
+					return mock.value as T
+				}
+				if (mock.type === 'error') {
+					console.log(`  [workflow] step: ${name} (mocked error)`)
+					throw mock.value
+				}
+				if (mock.type === 'timeout') {
+					console.log(`  [workflow] step: ${name} (mocked timeout)`)
+					throw new Error(`Step "${name}" timed out (mocked)`)
+				}
+			}
 		}
 
 		console.log(`  [workflow] step: ${name}`)
@@ -249,6 +332,13 @@ class WorkflowStepImpl {
 		if (this.abortSignal.aborted) throw new Error('workflow terminated')
 		this.checkDuplicateStepName(`sleep:${name}`)
 
+		// Check if sleeps are disabled for this instance
+		if (sleepDisabledInstances.has(this.instanceId)) {
+			console.log(`  [workflow] sleep: ${name} (disabled)`)
+			this.cacheStep(`sleep:${name}`, { until: Date.now() })
+			return
+		}
+
 		console.log(`  [workflow] sleep: ${name}`)
 		return startSpan({
 			name: `sleep ${name}`,
@@ -282,6 +372,14 @@ class WorkflowStepImpl {
 		await this.checkPaused()
 		if (this.abortSignal.aborted) throw new Error('workflow terminated')
 		this.checkDuplicateStepName(`sleepUntil:${name}`)
+
+		// Check if sleeps are disabled for this instance
+		if (sleepDisabledInstances.has(this.instanceId)) {
+			console.log(`  [workflow] sleepUntil: ${name} (disabled)`)
+			const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp
+			this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() })
+			return
+		}
 
 		const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp
 
@@ -322,6 +420,23 @@ class WorkflowStepImpl {
 		// Validate event type
 		if (!EVENT_TYPE_PATTERN.test(options.type)) {
 			throw new Error(`Invalid event type "${options.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`)
+		}
+
+		// Check event timeout mocks
+		const timeoutMocks = eventTimeoutMocks.get(this.instanceId)
+		if (timeoutMocks?.has(options.type)) {
+			console.log(`  [workflow] waitForEvent: ${name} (mocked timeout)`)
+			throw new Error(`waitForEvent timed out (mocked)`)
+		}
+
+		// Check event mocks — pre-insert into DB so existing flow picks them up
+		const instanceEventMocks = eventMocks.get(this.instanceId)
+		const eventMock = instanceEventMocks?.get(options.type)
+		if (eventMock) {
+			instanceEventMocks!.delete(options.type)
+			this.db
+				.query('INSERT INTO workflow_events (instance_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)')
+				.run(this.instanceId, options.type, eventMock.payload !== undefined ? JSON.stringify(eventMock.payload) : null, Date.now())
 		}
 
 		console.log(`  [workflow] waitForEvent: ${name} (type: ${options.type})`)
@@ -400,6 +515,7 @@ class WorkflowStepImpl {
 					reject(new Error('workflow terminated'))
 				}
 				this.abortSignal.addEventListener('abort', abortHandler)
+				fireEventWaitCallbacks(this.instanceId, options.type)
 			})
 
 			// Restore running status
@@ -467,6 +583,7 @@ function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string
 			resolve()
 		})
 		abortSignal.addEventListener('abort', abortHandler)
+		fireSleepCallbacks(instanceId)
 	})
 }
 
@@ -480,6 +597,104 @@ export function getWaitingEventTypes(instanceId: string): string[] {
 /** Check if an instance is currently sleeping (has a registered sleep resolver). */
 export function isInstanceSleeping(instanceId: string): boolean {
 	return sleepResolvers.has(instanceId)
+}
+
+// --- Notification hook registration (for testing) ---
+
+function fireStepCallbacks(instanceId: string, stepName: string, output: unknown): void {
+	const instanceCbs = stepCallbacks.get(instanceId)
+	if (!instanceCbs) return
+	const cbs = instanceCbs.get(stepName)
+	if (!cbs) return
+	for (const cb of cbs) cb(output)
+}
+
+function fireSleepCallbacks(instanceId: string): void {
+	const cbs = sleepCallbacks.get(instanceId)
+	if (!cbs) return
+	for (const cb of cbs) cb()
+}
+
+function fireEventWaitCallbacks(instanceId: string, eventType: string): void {
+	const instanceCbs = eventWaitCallbacks.get(instanceId)
+	if (!instanceCbs) return
+	const cbs = instanceCbs.get(eventType)
+	if (!cbs) return
+	for (const cb of cbs) cb()
+}
+
+function fireStatusCallbacks(instanceId: string, status: string): void {
+	const cbs = statusCallbacks.get(instanceId)
+	if (!cbs) return
+	for (const cb of cbs) cb(status)
+}
+
+/** Register a callback for when a step completes. Returns an unsubscribe function. */
+export function onStepComplete(instanceId: string, stepName: string, cb: (output: unknown) => void): () => void {
+	let instanceCbs = stepCallbacks.get(instanceId)
+	if (!instanceCbs) {
+		instanceCbs = new Map()
+		stepCallbacks.set(instanceId, instanceCbs)
+	}
+	let cbs = instanceCbs.get(stepName)
+	if (!cbs) {
+		cbs = new Set()
+		instanceCbs.set(stepName, cbs)
+	}
+	cbs.add(cb)
+	return () => {
+		cbs!.delete(cb)
+		if (cbs!.size === 0) instanceCbs!.delete(stepName)
+		if (instanceCbs!.size === 0) stepCallbacks.delete(instanceId)
+	}
+}
+
+/** Register a callback for when the instance starts sleeping. Returns an unsubscribe function. */
+export function onSleepRegistered(instanceId: string, cb: () => void): () => void {
+	let cbs = sleepCallbacks.get(instanceId)
+	if (!cbs) {
+		cbs = new Set()
+		sleepCallbacks.set(instanceId, cbs)
+	}
+	cbs.add(cb)
+	return () => {
+		cbs!.delete(cb)
+		if (cbs!.size === 0) sleepCallbacks.delete(instanceId)
+	}
+}
+
+/** Register a callback for when the instance starts waiting for an event. Returns an unsubscribe function. */
+export function onEventWaitRegistered(instanceId: string, eventType: string, cb: () => void): () => void {
+	let instanceCbs = eventWaitCallbacks.get(instanceId)
+	if (!instanceCbs) {
+		instanceCbs = new Map()
+		eventWaitCallbacks.set(instanceId, instanceCbs)
+	}
+	let cbs = instanceCbs.get(eventType)
+	if (!cbs) {
+		cbs = new Set()
+		instanceCbs.set(eventType, cbs)
+	}
+	cbs.add(cb)
+	return () => {
+		cbs!.delete(cb)
+		if (cbs!.size === 0) instanceCbs!.delete(eventType)
+		if (instanceCbs!.size === 0) eventWaitCallbacks.delete(instanceId)
+	}
+}
+
+/** Register a callback for when the instance status changes. Returns an unsubscribe function. */
+export function onStatusChange(instanceId: string, cb: (status: string) => void): () => void {
+	let cbs = statusCallbacks.get(instanceId)
+	if (!cbs) {
+		cbs = new Set()
+		statusCallbacks.set(instanceId, cbs)
+	}
+	cbs.add(cb)
+	return () => {
+		cbs!.delete(cb)
+		if (cbs!.size === 0) statusCallbacks.delete(instanceId)
+	}
 }
 
 export function parseDuration(duration: string | number): number {
@@ -567,6 +782,7 @@ export class SqliteWorkflowInstance {
 		// Abort via global registry so get()-retrieved instances also work
 		const ac = abortControllers.get(this.instanceId)
 		ac?.abort()
+		fireStatusCallbacks(this.instanceId, 'terminated')
 	}
 
 	async restart(options?: { fromStep?: string }): Promise<void> {
@@ -761,6 +977,60 @@ export class SqliteWorkflowBinding {
 		return handle
 	}
 
+	/** Create a workflow instance without starting execution. Call _executeInstance() to start it. */
+	async _createPrepared(options?: { id?: string; params?: unknown }): Promise<SqliteWorkflowInstance> {
+		if (!this._class) throw new Error('Workflow class not wired yet')
+
+		this.cleanupRetentionExpired()
+
+		const id = options?.id ?? `wf-${++this.counter}-${Date.now()}`
+		if (id.length > this.limits.maxInstanceIdLength) {
+			throw new Error(`Workflow instance ID must be ${this.limits.maxInstanceIdLength} characters or fewer, got ${id.length}`)
+		}
+
+		const existing = this.db.query('SELECT id FROM workflow_instances WHERE id = ?').get(id)
+		if (existing) throw new Error(`Workflow instance with ID "${id}" already exists`)
+
+		const params = options?.params ?? {}
+		const now = Date.now()
+
+		this.db
+			.query(
+				'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+			)
+			.run(id, this.workflowName, this.className, JSON.stringify(params), 'queued', now, now)
+
+		const abortController = new AbortController()
+		abortControllers.set(id, abortController)
+
+		return new SqliteWorkflowInstance(this.db, id, this)
+	}
+
+	/** Start execution of a prepared (queued) workflow instance. */
+	_executeInstance(id: string): void {
+		if (!this._class) throw new Error('Workflow class not wired yet')
+
+		const row = this.db
+			.query('SELECT params, created_at FROM workflow_instances WHERE id = ?')
+			.get(id) as { params: string | null; created_at: number } | null
+		if (!row) throw new Error(`Workflow instance ${id} not found`)
+
+		const params = row.params !== null ? JSON.parse(row.params) : {}
+
+		this.db
+			.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+			.run(Date.now(), id)
+
+		let ac = abortControllers.get(id)
+		if (!ac) {
+			ac = new AbortController()
+			abortControllers.set(id, ac)
+		}
+
+		console.log(`[workflow] started ${id}`)
+		SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, ac, this.workflowName, this.limits, row.created_at)
+	}
+
 	async createBatch(batch: { id?: string; params?: unknown }[]): Promise<SqliteWorkflowInstance[]> {
 		if (batch.length > this.limits.maxBatchSize) {
 			throw new Error(`Batch size ${batch.length} exceeds maximum of ${this.limits.maxBatchSize}`)
@@ -879,6 +1149,7 @@ export class SqliteWorkflowBinding {
 				// Clean up step attempts on successful completion
 				db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ?').run(id)
 				console.log(`[workflow] completed ${id}:`, result)
+				fireStatusCallbacks(id, 'complete')
 			} catch (err) {
 				const errorName = err instanceof Error ? (err.name || err.constructor.name || 'Error') : 'Error'
 				const message = err instanceof Error ? err.message : String(err)
@@ -894,6 +1165,7 @@ export class SqliteWorkflowBinding {
 					.run(message, errorName, Date.now(), id)
 				console.error(`[workflow] failed ${id}:`, err)
 				persistError(err, 'workflow', workflowName, workflowTraceId)
+				fireStatusCallbacks(id, 'errored')
 			} finally {
 				eventWaiters.delete(id)
 				abortControllers.delete(id)
