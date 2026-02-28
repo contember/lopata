@@ -18,7 +18,7 @@ export type { TestDurableObjectHandle, TestDurableObjectNamespace, TestDurableOb
 export type { BindingSpec, TestEnv, TestEnvOptions, WorkerHandlers, WorkerModule } from './types'
 export type { TestWorkflowBinding, TestWorkflowInstance, TestWorkflowRun } from './workflow'
 
-export async function createTestEnv(options: TestEnvOptions = {}): Promise<TestEnv> {
+export async function createTestEnv<Env = Record<string, unknown>>(options: TestEnvOptions = {}): Promise<TestEnv<Env>> {
 	// Ensure virtual modules + globals are registered (no-op if preload already ran)
 	setupTestEnv()
 
@@ -241,14 +241,14 @@ export async function createTestEnv(options: TestEnvOptions = {}): Promise<TestE
 	}
 
 	return {
-		env,
+		env: env as Env,
 		db,
 		fetch: fetchHandler,
 		queue: queueHandler,
 		scheduled: scheduledHandler,
 		email: emailHandler,
-		workflow: workflowHelper,
-		durableObject: durableObjectHelper,
+		workflow: workflowHelper as TestEnv<Env>['workflow'],
+		durableObject: durableObjectHelper as TestEnv<Env>['durableObject'],
 		dispose,
 	}
 }

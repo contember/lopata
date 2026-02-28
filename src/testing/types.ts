@@ -36,9 +36,9 @@ export type BindingSpec =
 	| { type: 'workflow'; className: string }
 	| { type: 'service'; service: string; entrypoint?: string }
 
-export interface TestEnv {
+export interface TestEnv<Env = Record<string, unknown>> {
 	/** The built env object with all bindings */
-	env: Record<string, unknown>
+	env: Env
 	/** The shared in-memory database used by bindings */
 	db: Database
 	/** Dispatch a fetch request to the worker */
@@ -50,9 +50,9 @@ export interface TestEnv {
 	/** Dispatch an email event to the worker */
 	email(options: { from: string; to: string; raw: Uint8Array | string }): Promise<void>
 	/** Get a test-friendly workflow binding wrapper */
-	workflow(bindingName: string): TestWorkflowBinding
+	workflow(bindingName: string & keyof Env): TestWorkflowBinding
 	/** Get a test-friendly durable object namespace wrapper */
-	durableObject(bindingName: string): TestDurableObjectNamespace
+	durableObject(bindingName: string & keyof Env): TestDurableObjectNamespace
 	/** Cleanup: close DB, remove temp dirs, destroy DO namespaces */
 	dispose(): void
 }

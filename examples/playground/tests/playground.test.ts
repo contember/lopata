@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test'
 import type { TestEnv } from '../../../src/testing'
 import { createTestEnv } from '../../../src/testing'
 
-let t: TestEnv | null = null
+let t: TestEnv<Env> | null = null
 
 afterEach(() => {
 	t?.dispose()
@@ -10,7 +10,7 @@ afterEach(() => {
 })
 
 async function setup() {
-	t = await createTestEnv({
+	t = await createTestEnv<Env>({
 		worker: './examples/playground/src/index.ts',
 		wrangler: './examples/playground/wrangler.jsonc',
 	})
@@ -22,25 +22,23 @@ async function setup() {
 describe('playground bindings — KV', () => {
 	test('put, get, delete', async () => {
 		const t = await setup()
-		const kv = t.env.KV as any
 
-		await kv.put('key1', 'value1')
-		expect(await kv.get('key1')).toBe('value1')
+		await t.env.KV.put('key1', 'value1')
+		expect(await t.env.KV.get('key1')).toBe('value1')
 
-		await kv.delete('key1')
-		expect(await kv.get('key1')).toBeNull()
+		await t.env.KV.delete('key1')
+		expect(await t.env.KV.get('key1')).toBeNull()
 	})
 
 	test('list keys', async () => {
 		const t = await setup()
-		const kv = t.env.KV as any
 
-		await kv.put('a', '1')
-		await kv.put('b', '2')
-		await kv.put('c', '3')
+		await t.env.KV.put('a', '1')
+		await t.env.KV.put('b', '2')
+		await t.env.KV.put('c', '3')
 
-		const list = await kv.list()
-		const names = list.keys.map((k: any) => k.name)
+		const list = await t.env.KV.list()
+		const names = list.keys.map(k => k.name)
 		expect(names).toContain('a')
 		expect(names).toContain('b')
 		expect(names).toContain('c')
@@ -48,10 +46,9 @@ describe('playground bindings — KV', () => {
 
 	test('put with metadata', async () => {
 		const t = await setup()
-		const kv = t.env.KV as any
 
-		await kv.put('meta-key', 'val', { metadata: { tag: 'test' } })
-		const { value, metadata } = await kv.getWithMetadata('meta-key')
+		await t.env.KV.put('meta-key', 'val', { metadata: { tag: 'test' } })
+		const { value, metadata } = await t.env.KV.getWithMetadata('meta-key')
 		expect(value).toBe('val')
 		expect(metadata).toEqual({ tag: 'test' })
 	})
@@ -60,25 +57,23 @@ describe('playground bindings — KV', () => {
 describe('playground bindings — R2', () => {
 	test('put, get, delete', async () => {
 		const t = await setup()
-		const r2 = t.env.R2 as any
 
-		await r2.put('doc.txt', 'hello R2')
-		const obj = await r2.get('doc.txt')
-		expect(await obj.text()).toBe('hello R2')
+		await t.env.R2.put('doc.txt', 'hello R2')
+		const obj = await t.env.R2.get('doc.txt')
+		expect(await obj!.text()).toBe('hello R2')
 
-		await r2.delete('doc.txt')
-		expect(await r2.get('doc.txt')).toBeNull()
+		await t.env.R2.delete('doc.txt')
+		expect(await t.env.R2.get('doc.txt')).toBeNull()
 	})
 
 	test('list objects', async () => {
 		const t = await setup()
-		const r2 = t.env.R2 as any
 
-		await r2.put('f1.txt', 'a')
-		await r2.put('f2.txt', 'b')
+		await t.env.R2.put('f1.txt', 'a')
+		await t.env.R2.put('f2.txt', 'b')
 
-		const list = await r2.list()
-		const keys = list.objects.map((o: any) => o.key)
+		const list = await t.env.R2.list()
+		const keys = list.objects.map(o => o.key)
 		expect(keys).toContain('f1.txt')
 		expect(keys).toContain('f2.txt')
 	})
@@ -87,26 +82,24 @@ describe('playground bindings — R2', () => {
 describe('playground bindings — D1', () => {
 	test('exec, prepare, first', async () => {
 		const t = await setup()
-		const db = t.env.DB as any
 
-		await db.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')
-		await db.prepare('INSERT INTO items (name) VALUES (?)').bind('Widget').run()
+		await t.env.DB.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')
+		await t.env.DB.prepare('INSERT INTO items (name) VALUES (?)').bind('Widget').run()
 
-		const row = await db.prepare('SELECT name FROM items WHERE id = 1').first()
-		expect(row.name).toBe('Widget')
+		const row = await t.env.DB.prepare('SELECT name FROM items WHERE id = 1').first()
+		expect(row!.name).toBe('Widget')
 	})
 
 	test('batch queries', async () => {
 		const t = await setup()
-		const db = t.env.DB as any
 
-		await db.exec('CREATE TABLE nums (n INTEGER)')
-		const results = await db.batch([
-			db.prepare('INSERT INTO nums (n) VALUES (?)').bind(1),
-			db.prepare('INSERT INTO nums (n) VALUES (?)').bind(2),
-			db.prepare('SELECT COUNT(*) as cnt FROM nums'),
+		await t.env.DB.exec('CREATE TABLE nums (n INTEGER)')
+		const results = await t.env.DB.batch([
+			t.env.DB.prepare('INSERT INTO nums (n) VALUES (?)').bind(1),
+			t.env.DB.prepare('INSERT INTO nums (n) VALUES (?)').bind(2),
+			t.env.DB.prepare('SELECT COUNT(*) as cnt FROM nums'),
 		])
-		expect(results[2].results[0].cnt).toBe(2)
+		expect((results[2].results[0] as any).cnt).toBe(2)
 	})
 })
 
@@ -175,9 +168,8 @@ describe('playground bindings — SqlNotes DO (direct RPC)', () => {
 describe('playground bindings — Queue', () => {
 	test('send via binding, verify in DB', async () => {
 		const t = await setup()
-		const queue = t.env.MY_QUEUE as any
 
-		await queue.send({ action: 'do-something' })
+		await t.env.MY_QUEUE.send({ action: 'do-something' })
 
 		const row = t.db.query("SELECT * FROM queue_messages WHERE queue = 'MY_QUEUE'").get() as any
 		expect(row).not.toBeNull()
@@ -185,9 +177,8 @@ describe('playground bindings — Queue', () => {
 
 	test('sendBatch', async () => {
 		const t = await setup()
-		const queue = t.env.MY_QUEUE as any
 
-		await queue.sendBatch([
+		await t.env.MY_QUEUE.sendBatch([
 			{ body: { n: 1 } },
 			{ body: { n: 2 } },
 		])
