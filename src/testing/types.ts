@@ -1,5 +1,7 @@
 import type { Database } from 'bun:sqlite'
+import type { TestClock } from './clock'
 import type { TestDurableObjectNamespace } from './durable-object'
+import type { FetchMock } from './fetch-mock'
 import type { TestWorkflowBinding } from './workflow'
 
 export interface WorkerHandlers {
@@ -25,6 +27,8 @@ export interface TestEnvOptions {
 	wrangler?: string
 	/** Plain string variables to add to env */
 	vars?: Record<string, string>
+	/** Enable test clock for time control. Pass true to create a new TestClock, or pass a TestClock instance. */
+	clock?: boolean | TestClock
 }
 
 export type BindingSpec =
@@ -53,6 +57,12 @@ export interface TestEnv<Env = Record<string, unknown>> {
 	workflow(bindingName: string & keyof Env): TestWorkflowBinding
 	/** Get a test-friendly durable object namespace wrapper */
 	durableObject(bindingName: string & keyof Env): TestDurableObjectNamespace
+	/** Test clock for time control (null if not enabled) */
+	clock: TestClock | null
+	/** Fetch mock for intercepting outgoing HTTP requests */
+	fetchMock: FetchMock
+	/** Advance time and fire ready DO alarms */
+	advanceTime(ms: number): Promise<void>
 	/** Cleanup: close DB, remove temp dirs, destroy DO namespaces */
 	dispose(): void
 }

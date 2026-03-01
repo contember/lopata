@@ -11,6 +11,7 @@ import { createServiceBinding } from '../bindings/service-binding'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
+import type { Clock } from './clock'
 import type { BindingSpec } from './types'
 
 interface ServiceBindingEntry {
@@ -36,6 +37,7 @@ export interface BuiltTestEnv {
 export function buildTestEnv(
 	bindings: Record<string, BindingSpec> | undefined,
 	vars: Record<string, string> | undefined,
+	clock?: Clock,
 ): BuiltTestEnv {
 	const db = new Database(':memory:')
 	runMigrations(db)
@@ -56,7 +58,7 @@ export function buildTestEnv(
 
 	for (const [bindingName, spec] of Object.entries(bindings)) {
 		if (spec === 'kv') {
-			env[bindingName] = new SqliteKVNamespace(db, bindingName)
+			env[bindingName] = new SqliteKVNamespace(db, bindingName, undefined, clock)
 		} else if (spec === 'r2') {
 			const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-r2-'))
 			tmpDirs.push(tmpDir)
@@ -64,17 +66,17 @@ export function buildTestEnv(
 		} else if (spec === 'd1') {
 			env[bindingName] = new LocalD1Database(new Database(':memory:'))
 		} else if (spec === 'queue') {
-			env[bindingName] = new SqliteQueueProducer(db, bindingName)
+			env[bindingName] = new SqliteQueueProducer(db, bindingName, 0, undefined, clock)
 		} else if (typeof spec === 'object') {
 			if (spec.type === 'durable-object') {
 				// Lazy import to avoid pulling in the whole DO module at parse time
 				const { DurableObjectNamespaceImpl } = require('../bindings/durable-object')
-				const namespace = new DurableObjectNamespaceImpl(db, spec.className, undefined, { evictionTimeoutMs: 0 })
+				const namespace = new DurableObjectNamespaceImpl(db, spec.className, undefined, { evictionTimeoutMs: 0 }, undefined, clock)
 				env[bindingName] = namespace
 				registry.durableObjects.push({ bindingName, className: spec.className, namespace })
 			} else if (spec.type === 'workflow') {
 				const { SqliteWorkflowBinding } = require('../bindings/workflow')
-				const binding = new SqliteWorkflowBinding(db, bindingName, spec.className)
+				const binding = new SqliteWorkflowBinding(db, bindingName, spec.className, undefined, clock)
 				env[bindingName] = binding
 				registry.workflows.push({ bindingName, className: spec.className, binding })
 			} else if (spec.type === 'service') {

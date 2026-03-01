@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import type { Clock } from '../testing/clock'
+import { realClock } from '../testing/clock'
 import { getActiveContext } from '../tracing/context'
 import { addSpanEvent, persistError, startSpan } from '../tracing/span'
 
@@ -158,12 +160,14 @@ class WorkflowStepImpl {
 	private stepCount = 0
 	private knownStepNames = new Set<string>()
 	private limits: Required<WorkflowLimits>
+	private clock: Clock
 
-	constructor(abortSignal: AbortSignal, db: Database, instanceId: string, limits: Required<WorkflowLimits>) {
+	constructor(abortSignal: AbortSignal, db: Database, instanceId: string, limits: Required<WorkflowLimits>, clock?: Clock) {
 		this.abortSignal = abortSignal
 		this.db = db
 		this.instanceId = instanceId
 		this.limits = limits
+		this.clock = clock ?? realClock
 	}
 
 	private async checkPaused(): Promise<void> {
@@ -204,7 +208,7 @@ class WorkflowStepImpl {
 		}
 		this.db
 			.query('INSERT OR REPLACE INTO workflow_steps (instance_id, step_name, output, completed_at) VALUES (?, ?, ?, ?)')
-			.run(this.instanceId, name, serialized, Date.now())
+			.run(this.instanceId, name, serialized, this.clock.now())
 		fireStepCallbacks(this.instanceId, name, output)
 	}
 
@@ -315,7 +319,7 @@ class WorkflowStepImpl {
 					this.db.query(
 						'INSERT OR REPLACE INTO workflow_step_attempts (instance_id, step_name, failed_attempts, last_error, last_error_name, last_error_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
 					)
-						.run(this.instanceId, name, attempt + 1, errMsg, errName, errorId, Date.now())
+						.run(this.instanceId, name, attempt + 1, errMsg, errName, errorId, this.clock.now())
 					if (attempt < maxRetries) {
 						const d = computeDelay(delayMs, attempt, backoff)
 						console.log(`  [workflow] step "${name}" attempt ${attempt + 1} failed, retrying in ${d}ms`)
@@ -335,7 +339,7 @@ class WorkflowStepImpl {
 		// Check if sleeps are disabled for this instance
 		if (sleepDisabledInstances.has(this.instanceId)) {
 			console.log(`  [workflow] sleep: ${name} (disabled)`)
-			this.cacheStep(`sleep:${name}`, { until: Date.now() })
+			this.cacheStep(`sleep:${name}`, { until: this.clock.now() })
 			return
 		}
 
@@ -348,7 +352,7 @@ class WorkflowStepImpl {
 			const cached = this.getCachedStep(`sleep:${name}`)
 			if (cached) {
 				const { until } = JSON.parse(cached.output!) as { until: number }
-				const remaining = Math.max(0, until - Date.now())
+				const remaining = Math.max(0, until - this.clock.now())
 				if (remaining > 0) {
 					await skippableDelay(remaining, this.abortSignal, this.instanceId)
 				}
@@ -359,7 +363,7 @@ class WorkflowStepImpl {
 			if (ms > this.limits.maxSleepMs) {
 				throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
 			}
-			const until = Date.now() + ms
+			const until = this.clock.now() + ms
 			this.cacheStep(`sleep:${name}`, { until })
 
 			if (ms > 0) {
@@ -391,14 +395,14 @@ class WorkflowStepImpl {
 		}, async () => {
 			const cached = this.getCachedStep(`sleepUntil:${name}`)
 			if (cached) {
-				const remaining = Math.max(0, ts.getTime() - Date.now())
+				const remaining = Math.max(0, ts.getTime() - this.clock.now())
 				if (remaining > 0) {
 					await skippableDelay(remaining, this.abortSignal, this.instanceId)
 				}
 				return
 			}
 
-			const delay = Math.max(0, ts.getTime() - Date.now())
+			const delay = Math.max(0, ts.getTime() - this.clock.now())
 			if (delay > this.limits.maxSleepMs) {
 				throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
 			}
@@ -436,7 +440,7 @@ class WorkflowStepImpl {
 			instanceEventMocks!.delete(options.type)
 			this.db
 				.query('INSERT INTO workflow_events (instance_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)')
-				.run(this.instanceId, options.type, eventMock.payload !== undefined ? JSON.stringify(eventMock.payload) : null, Date.now())
+				.run(this.instanceId, options.type, eventMock.payload !== undefined ? JSON.stringify(eventMock.payload) : null, this.clock.now())
 		}
 
 		console.log(`  [workflow] waitForEvent: ${name} (type: ${options.type})`)
@@ -460,7 +464,7 @@ class WorkflowStepImpl {
 			// Update status to waiting
 			this.db
 				.query("UPDATE workflow_instances SET status = 'waiting', updated_at = ? WHERE id = ?")
-				.run(Date.now(), this.instanceId)
+				.run(this.clock.now(), this.instanceId)
 
 			// Check if event already exists in DB
 			const existing = this.db
@@ -473,7 +477,7 @@ class WorkflowStepImpl {
 					.run(this.instanceId, options.type)
 				this.db
 					.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-					.run(Date.now(), this.instanceId)
+					.run(this.clock.now(), this.instanceId)
 				const payload = (existing.payload !== null ? JSON.parse(existing.payload) : undefined) as T
 				const event = { payload, timestamp: new Date(existing.created_at), type: options.type }
 				this.cacheStep(`waitForEvent:${name}`, event)
@@ -521,7 +525,7 @@ class WorkflowStepImpl {
 			// Restore running status
 			this.db
 				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(Date.now(), this.instanceId)
+				.run(this.clock.now(), this.instanceId)
 
 			this.cacheStep(`waitForEvent:${name}`, result)
 			return result
@@ -875,12 +879,14 @@ export class SqliteWorkflowBinding {
 	private _env?: unknown
 	private counter = 0
 	private limits: Required<WorkflowLimits>
+	private clock: Clock
 
-	constructor(db: Database, workflowName: string, className: string, limits?: WorkflowLimits) {
+	constructor(db: Database, workflowName: string, className: string, limits?: WorkflowLimits, clock?: Clock) {
 		this.db = db
 		this.workflowName = workflowName
 		this.className = className
 		this.limits = { ...WORKFLOW_DEFAULTS, ...limits }
+		this.clock = clock ?? realClock
 	}
 
 	_setClass(cls: new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env: unknown) {
@@ -903,6 +909,9 @@ export class SqliteWorkflowBinding {
 	_getLimits() {
 		return this.limits
 	}
+	_getClock() {
+		return this.clock
+	}
 
 	/** Abort all running/queued/waiting instances for this workflow */
 	abortRunning(): void {
@@ -916,7 +925,7 @@ export class SqliteWorkflowBinding {
 
 	private cleanupRetentionExpired(): void {
 		if (this.limits.maxRetentionMs <= 0) return
-		const cutoff = Date.now() - this.limits.maxRetentionMs
+		const cutoff = this.clock.now() - this.limits.maxRetentionMs
 		// Clean up step attempts for instances being deleted
 		const expiredIds = this.db
 			.query("SELECT id FROM workflow_instances WHERE workflow_name = ? AND status IN ('complete', 'errored') AND updated_at < ?")
@@ -941,7 +950,7 @@ export class SqliteWorkflowBinding {
 
 		this.cleanupRetentionExpired()
 
-		const id = options?.id ?? `wf-${++this.counter}-${Date.now()}`
+		const id = options?.id ?? `wf-${++this.counter}-${this.clock.now()}`
 		if (id.length > this.limits.maxInstanceIdLength) {
 			throw new Error(`Workflow instance ID must be ${this.limits.maxInstanceIdLength} characters or fewer, got ${id.length}`)
 		}
@@ -951,7 +960,7 @@ export class SqliteWorkflowBinding {
 		if (existing) throw new Error(`Workflow instance with ID "${id}" already exists`)
 
 		const params = options?.params ?? {}
-		const now = Date.now()
+		const now = this.clock.now()
 
 		// Check concurrency
 		const isQueued = this.limits.maxConcurrentInstances !== Infinity && this.countRunning() >= this.limits.maxConcurrentInstances
@@ -969,7 +978,18 @@ export class SqliteWorkflowBinding {
 
 		if (!isQueued) {
 			console.log(`[workflow] started ${id}`)
-			SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, abortController, this.workflowName, this.limits, now)
+			SqliteWorkflowBinding.executeWorkflow(
+				this.db,
+				id,
+				this._class,
+				this._env,
+				params,
+				abortController,
+				this.workflowName,
+				this.limits,
+				now,
+				this.clock,
+			)
 		} else {
 			console.log(`[workflow] queued ${id} (concurrency limit: ${this.limits.maxConcurrentInstances})`)
 		}
@@ -983,7 +1003,7 @@ export class SqliteWorkflowBinding {
 
 		this.cleanupRetentionExpired()
 
-		const id = options?.id ?? `wf-${++this.counter}-${Date.now()}`
+		const id = options?.id ?? `wf-${++this.counter}-${this.clock.now()}`
 		if (id.length > this.limits.maxInstanceIdLength) {
 			throw new Error(`Workflow instance ID must be ${this.limits.maxInstanceIdLength} characters or fewer, got ${id.length}`)
 		}
@@ -992,7 +1012,7 @@ export class SqliteWorkflowBinding {
 		if (existing) throw new Error(`Workflow instance with ID "${id}" already exists`)
 
 		const params = options?.params ?? {}
-		const now = Date.now()
+		const now = this.clock.now()
 
 		this.db
 			.query(
@@ -1019,7 +1039,7 @@ export class SqliteWorkflowBinding {
 
 		this.db
 			.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-			.run(Date.now(), id)
+			.run(this.clock.now(), id)
 
 		let ac = abortControllers.get(id)
 		if (!ac) {
@@ -1028,7 +1048,7 @@ export class SqliteWorkflowBinding {
 		}
 
 		console.log(`[workflow] started ${id}`)
-		SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, ac, this.workflowName, this.limits, row.created_at)
+		SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, ac, this.workflowName, this.limits, row.created_at, this.clock)
 	}
 
 	async createBatch(batch: { id?: string; params?: unknown }[]): Promise<SqliteWorkflowInstance[]> {
@@ -1067,7 +1087,7 @@ export class SqliteWorkflowBinding {
 			// Reset to running before re-executing (waiting status needs to restart from last checkpoint)
 			this.db
 				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(Date.now(), row.id)
+				.run(this.clock.now(), row.id)
 			SqliteWorkflowBinding.executeWorkflow(
 				this.db,
 				row.id,
@@ -1078,6 +1098,7 @@ export class SqliteWorkflowBinding {
 				this.workflowName,
 				this.limits,
 				row.created_at,
+				this.clock,
 			)
 		}
 	}
@@ -1095,7 +1116,7 @@ export class SqliteWorkflowBinding {
 
 			this.db
 				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(Date.now(), queued.id)
+				.run(this.clock.now(), queued.id)
 
 			const abortController = new AbortController()
 			abortControllers.set(queued.id, abortController)
@@ -1111,6 +1132,7 @@ export class SqliteWorkflowBinding {
 				this.workflowName,
 				this.limits,
 				queued.created_at,
+				this.clock,
 			)
 		}
 	}
@@ -1125,11 +1147,13 @@ export class SqliteWorkflowBinding {
 		workflowName?: string,
 		limits?: Required<WorkflowLimits>,
 		createdAt?: number,
+		clock?: Clock,
 	): void {
 		const resolvedLimits = limits ?? WORKFLOW_DEFAULTS
+		const resolvedClock = clock ?? realClock
 		const instance = new workflowClass({}, env)
-		const step = new WorkflowStepImpl(abortController.signal, db, id, resolvedLimits)
-		const event = { payload: params, timestamp: new Date(createdAt ?? Date.now()), instanceId: id }
+		const step = new WorkflowStepImpl(abortController.signal, db, id, resolvedLimits, resolvedClock)
+		const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
 		;(async () => {
 			let workflowTraceId: string | undefined
 			try {
@@ -1145,7 +1169,7 @@ export class SqliteWorkflowBinding {
 				})
 				if (abortController.signal.aborted) return
 				db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
-					.run(JSON.stringify(result), Date.now(), id)
+					.run(JSON.stringify(result), resolvedClock.now(), id)
 				// Clean up step attempts on successful completion
 				db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ?').run(id)
 				console.log(`[workflow] completed ${id}:`, result)
@@ -1157,12 +1181,12 @@ export class SqliteWorkflowBinding {
 				if (abortController.signal.aborted) {
 					// Terminated — store error info but keep "terminated" status
 					db.query('UPDATE workflow_instances SET error = ?, error_name = ?, updated_at = ? WHERE id = ?')
-						.run(message, errorName, Date.now(), id)
+						.run(message, errorName, resolvedClock.now(), id)
 					persistError(err, 'workflow', workflowName, workflowTraceId)
 					return
 				}
 				db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
-					.run(message, errorName, Date.now(), id)
+					.run(message, errorName, resolvedClock.now(), id)
 				console.error(`[workflow] failed ${id}:`, err)
 				persistError(err, 'workflow', workflowName, workflowTraceId)
 				fireStatusCallbacks(id, 'errored')
@@ -1177,12 +1201,23 @@ export class SqliteWorkflowBinding {
 						.get(workflowName) as { id: string; params: string | null; created_at: number } | null
 					if (queued) {
 						db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-							.run(Date.now(), queued.id)
+							.run(resolvedClock.now(), queued.id)
 						const qParams = queued.params !== null ? JSON.parse(queued.params) : {}
 						const ac = new AbortController()
 						abortControllers.set(queued.id, ac)
 						console.log(`[workflow] starting queued instance ${queued.id}`)
-						SqliteWorkflowBinding.executeWorkflow(db, queued.id, workflowClass, env, qParams, ac, workflowName, resolvedLimits, queued.created_at)
+						SqliteWorkflowBinding.executeWorkflow(
+							db,
+							queued.id,
+							workflowClass,
+							env,
+							qParams,
+							ac,
+							workflowName,
+							resolvedLimits,
+							queued.created_at,
+							resolvedClock,
+						)
 					}
 				}
 			}

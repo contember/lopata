@@ -2,6 +2,8 @@ import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import crypto from 'node:crypto'
 import { ExecutionContext } from '../execution-context'
+import type { Clock } from '../testing/clock'
+import { realClock } from '../testing/clock'
 import { persistError, startSpan } from '../tracing/span'
 
 // --- Types ---
@@ -108,12 +110,14 @@ export class SqliteQueueProducer {
 	private queueName: string
 	private defaultDelay: number
 	private limits: Required<QueueLimits>
+	private clock: Clock
 
-	constructor(db: Database, queueName: string, defaultDelay: number = 0, limits?: QueueLimits) {
+	constructor(db: Database, queueName: string, defaultDelay: number = 0, limits?: QueueLimits, clock?: Clock) {
 		this.db = db
 		this.queueName = queueName
 		this.defaultDelay = defaultDelay
 		this.limits = { ...QUEUE_DEFAULTS, ...limits }
+		this.clock = clock ?? realClock
 	}
 
 	async send(message: unknown, options?: SendOptions): Promise<void> {
@@ -130,7 +134,7 @@ export class SqliteQueueProducer {
 			throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`)
 		}
 
-		const now = Date.now()
+		const now = this.clock.now()
 		const visibleAt = now + delaySeconds * 1000
 
 		this.db.run(
@@ -147,7 +151,7 @@ export class SqliteQueueProducer {
 		const stmt = this.db.prepare(
 			'INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
 		)
-		const now = Date.now()
+		const now = this.clock.now()
 
 		// Pre-encode all messages and validate total size
 		const encoded: { data: Uint8Array; contentType: string; delaySeconds: number }[] = []
@@ -199,18 +203,22 @@ export class QueueConsumer {
 	private polling = false
 	private _activeDeliveries = 0
 
+	private clock: Clock
+
 	constructor(
 		db: Database,
 		config: ConsumerConfig,
 		handler: QueueHandler,
 		env: Record<string, unknown>,
 		workerName?: string,
+		clock?: Clock,
 	) {
 		this.db = db
 		this.config = config
 		this.handler = handler
 		this.env = env
 		this.workerName = workerName
+		this.clock = clock ?? realClock
 	}
 
 	start(intervalMs: number = 1000): void {
@@ -237,7 +245,7 @@ export class QueueConsumer {
 		if (this.config.maxConcurrency && this._activeDeliveries >= this.config.maxConcurrency) return
 		this.polling = true
 		try {
-			const now = Date.now()
+			const now = this.clock.now()
 
 			// Periodically clean up completed messages beyond retention period
 			const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000
@@ -343,7 +351,7 @@ export class QueueConsumer {
 
 			if (!decision || decision.type === 'ack') {
 				// Ack (explicit or default) — mark as acked
-				this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [Date.now(), row.id])
+				this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [this.clock.now(), row.id])
 			} else {
 				// Retry
 				const delay = decision.delaySeconds ?? this.config.retryDelay ?? 0
@@ -352,17 +360,17 @@ export class QueueConsumer {
 					if (this.config.deadLetterQueue) {
 						this.db.run(
 							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending' WHERE id = ?",
-							[this.config.deadLetterQueue, Date.now(), row.id],
+							[this.config.deadLetterQueue, this.clock.now(), row.id],
 						)
 					} else {
 						console.warn(`[lopata] Queue message ${row.id} exceeded max retries (${this.config.maxRetries}), discarding`)
-						this.db.run("UPDATE queue_messages SET status = 'failed', completed_at = ? WHERE id = ?", [Date.now(), row.id])
+						this.db.run("UPDATE queue_messages SET status = 'failed', completed_at = ? WHERE id = ?", [this.clock.now(), row.id])
 					}
 				} else {
 					// Retry with delay
 					this.db.run(
 						'UPDATE queue_messages SET visible_at = ? WHERE id = ?',
-						[Date.now() + delay * 1000, row.id],
+						[this.clock.now() + delay * 1000, row.id],
 					)
 				}
 			}
@@ -400,16 +408,18 @@ const DEFAULT_PULL_BATCH_SIZE = 10
 export class QueuePullConsumer {
 	private db: Database
 	private queueName: string
+	private clock: Clock
 
-	constructor(db: Database, queueName: string) {
+	constructor(db: Database, queueName: string, clock?: Clock) {
 		this.db = db
 		this.queueName = queueName
+		this.clock = clock ?? realClock
 	}
 
 	pull(options?: PullRequest): PullResponse {
 		const batchSize = options?.batch_size ?? DEFAULT_PULL_BATCH_SIZE
 		const visibilityTimeoutMs = options?.visibility_timeout_ms ?? DEFAULT_VISIBILITY_TIMEOUT_MS
-		const now = Date.now()
+		const now = this.clock.now()
 
 		// Clean up expired leases — make messages visible again
 		this.db.run(
@@ -472,7 +482,7 @@ export class QueuePullConsumer {
 	ack(request: AckRequest): { acked: number; retried: number } {
 		let acked = 0
 		let retried = 0
-		const now = Date.now()
+		const now = this.clock.now()
 
 		const tx = this.db.transaction(() => {
 			// Process acks
@@ -487,7 +497,7 @@ export class QueuePullConsumer {
 					).get(lease_id, this.queueName, now)
 
 					if (lease) {
-						this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [Date.now(), lease.message_id])
+						this.db.run("UPDATE queue_messages SET status = 'acked', completed_at = ? WHERE id = ?", [this.clock.now(), lease.message_id])
 						this.db.run('DELETE FROM queue_leases WHERE lease_id = ?', [lease_id])
 						acked++
 					}

@@ -1,6 +1,8 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import type { Clock } from '../testing/clock'
+import { realClock } from '../testing/clock'
 import { persistError, startSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
@@ -747,14 +749,16 @@ export class DurableObjectNamespaceImpl {
 	private _containerConfig?: ContainerConfig
 	private _factoryOverride?: DOExecutorFactory
 	private _defaultFactory?: DOExecutorFactory
+	private clock: Clock
 
-	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory) {
+	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory, clock?: Clock) {
 		this.db = db
 		this.namespaceName = namespaceName
 		this.dataDir = dataDir
 		this.limits = limits
 		this._factoryOverride = factory
 		this._evictionTimeoutMs = limits?.evictionTimeoutMs ?? 120_000
+		this.clock = clock ?? realClock
 		if (this._evictionTimeoutMs > 0) {
 			this._evictionTimer = setInterval(() => this._evictIdle(), 30_000)
 		}
@@ -798,7 +802,7 @@ export class DurableObjectNamespaceImpl {
 		const existing = this.alarmTimers.get(idStr)
 		if (existing) clearTimeout(existing)
 
-		const delay = Math.max(0, scheduledTime - Date.now())
+		const delay = Math.max(0, scheduledTime - this.clock.now())
 		const timer = setTimeout(() => {
 			this.alarmTimers.delete(idStr)
 			this._fireAlarm(idStr, 0)
@@ -811,7 +815,7 @@ export class DurableObjectNamespaceImpl {
 		const executor = this._getOrCreateExecutor(idStr)
 		if (!executor) return
 
-		this._lastActivity.set(idStr, Date.now())
+		this._lastActivity.set(idStr, this.clock.now())
 
 		// Delete alarm from DB before calling handler (matching CF behavior)
 		this.db
@@ -833,7 +837,7 @@ export class DurableObjectNamespaceImpl {
 			if (retryCount < MAX_ALARM_RETRIES) {
 				// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
 				const backoffMs = Math.pow(2, retryCount) * 1000
-				const retryTime = Date.now() + backoffMs
+				const retryTime = this.clock.now() + backoffMs
 				// Re-persist alarm for retry
 				this.db
 					.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)')
@@ -883,13 +887,13 @@ export class DurableObjectNamespaceImpl {
 		})
 
 		this._executors.set(idStr, executor)
-		this._lastActivity.set(idStr, Date.now())
+		this._lastActivity.set(idStr, this.clock.now())
 		return executor
 	}
 
 	/** @internal Evict idle executors */
 	private _evictIdle() {
-		const now = Date.now()
+		const now = this.clock.now()
 		for (const [idStr, lastActivity] of this._lastActivity) {
 			const executor = this._executors.get(idStr)
 			if (!executor) continue
@@ -971,6 +975,25 @@ export class DurableObjectNamespaceImpl {
 		if (existing) clearTimeout(existing)
 		this.alarmTimers.delete(idStr)
 		return this._fireAlarm(idStr, 0)
+	}
+
+	/** @internal Fire all alarms whose scheduled time is <= clock.now(). Returns an array of promises. */
+	_fireReadyAlarms(): Promise<void>[] {
+		const now = this.clock.now()
+		const rows = this.db
+			.query('SELECT id, alarm_time FROM do_alarms WHERE namespace = ?')
+			.all(this.namespaceName) as { id: string; alarm_time: number }[]
+		const results: Promise<void>[] = []
+		for (const row of rows) {
+			if (row.alarm_time <= now) {
+				// Cancel the existing setTimeout timer
+				const existing = this.alarmTimers.get(row.id)
+				if (existing) clearTimeout(existing)
+				this.alarmTimers.delete(row.id)
+				results.push(this._fireAlarm(row.id, 0))
+			}
+		}
+		return results
 	}
 
 	/** @internal Cancel a scheduled alarm without firing it */
@@ -1073,7 +1096,7 @@ export class DurableObjectNamespaceImpl {
 				if (prop === 'fetch') {
 					return async (input: Request | string | URL, init?: RequestInit) => {
 						const executor = self._getOrCreateExecutor(idStr, id)!
-						self._lastActivity.set(idStr, Date.now())
+						self._lastActivity.set(idStr, self.clock.now())
 						const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
 						return await executor.executeFetch(request)
 					}
@@ -1082,7 +1105,7 @@ export class DurableObjectNamespaceImpl {
 				// RPC: return a callable that also acts as a thenable for property access
 				const rpcCallable = (...args: unknown[]) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
-					self._lastActivity.set(idStr, Date.now())
+					self._lastActivity.set(idStr, self.clock.now())
 					return executor.executeRpc(String(prop), args)
 				}
 
@@ -1092,7 +1115,7 @@ export class DurableObjectNamespaceImpl {
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
-					self._lastActivity.set(idStr, Date.now())
+					self._lastActivity.set(idStr, self.clock.now())
 					const promise = executor.executeRpcGet(String(prop))
 					return promise.then(onFulfilled, onRejected)
 				}

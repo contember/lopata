@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import type { Clock } from '../testing/clock'
+import { realClock } from '../testing/clock'
 
 export interface CacheLimits {
 	maxBodySize?: number // default 512 MiB (CF limit)
@@ -42,12 +44,12 @@ function parseCacheControlMaxAge(header: string | null): number | null {
  * Compute the expiration timestamp (ms since epoch) from response headers.
  * Returns null if no expiration info is present (cache indefinitely).
  */
-function computeExpiresAt(headers: Headers): number | null {
+function computeExpiresAt(headers: Headers, now: number): number | null {
 	const cacheControl = headers.get('cache-control')
 	const maxAge = parseCacheControlMaxAge(cacheControl)
 
 	if (maxAge === -1) return -1 // signal: no-store
-	if (maxAge !== null) return Date.now() + maxAge * 1000
+	if (maxAge !== null) return now + maxAge * 1000
 
 	// Fallback to Expires header
 	const expires = headers.get('expires')
@@ -63,11 +65,13 @@ export class SqliteCache {
 	private db: Database
 	private cacheName: string
 	private limits: Required<CacheLimits>
+	private clock: Clock
 
-	constructor(db: Database, cacheName: string, limits?: CacheLimits) {
+	constructor(db: Database, cacheName: string, limits?: CacheLimits, clock?: Clock) {
 		this.db = db
 		this.cacheName = cacheName
 		this.limits = { ...CACHE_DEFAULTS, ...limits }
+		this.clock = clock ?? realClock
 	}
 
 	async match(request: Request | string, options?: { ignoreMethod?: boolean }): Promise<Response | undefined> {
@@ -86,7 +90,7 @@ export class SqliteCache {
 		if (!row) return undefined
 
 		// Check expiration — lazily delete expired entries
-		if (row.expires_at !== null && row.expires_at <= Date.now()) {
+		if (row.expires_at !== null && row.expires_at <= this.clock.now()) {
 			this.db.query(
 				'DELETE FROM cache_entries WHERE cache_name = ? AND url = ?',
 			).run(this.cacheName, url)
@@ -123,7 +127,7 @@ export class SqliteCache {
 		}
 
 		// Parse expiration from Cache-Control / Expires
-		const expiresAt = computeExpiresAt(response.headers)
+		const expiresAt = computeExpiresAt(response.headers, this.clock.now())
 
 		// no-store — don't cache at all
 		if (expiresAt === -1) {
@@ -165,15 +169,17 @@ export class SqliteCache {
 export class SqliteCacheStorage {
 	private db: Database
 	private limits?: CacheLimits
+	private clock: Clock
 	public default: SqliteCache
 
-	constructor(db: Database, limits?: CacheLimits) {
+	constructor(db: Database, limits?: CacheLimits, clock?: Clock) {
 		this.db = db
 		this.limits = limits
-		this.default = new SqliteCache(db, 'default', limits)
+		this.clock = clock ?? realClock
+		this.default = new SqliteCache(db, 'default', limits, this.clock)
 	}
 
 	async open(cacheName: string): Promise<SqliteCache> {
-		return new SqliteCache(this.db, cacheName, this.limits)
+		return new SqliteCache(this.db, cacheName, this.limits, this.clock)
 	}
 }

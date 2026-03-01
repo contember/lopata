@@ -1,4 +1,6 @@
 import type { Database } from 'bun:sqlite'
+import type { Clock } from '../testing/clock'
+import { realClock } from '../testing/clock'
 
 export interface KVLimits {
 	maxKeySize?: number // default 512 (bytes)
@@ -22,11 +24,13 @@ export class SqliteKVNamespace {
 	private db: Database
 	private namespace: string
 	private limits: Required<KVLimits>
+	private clock: Clock
 
-	constructor(db: Database, namespace: string, limits?: KVLimits) {
+	constructor(db: Database, namespace: string, limits?: KVLimits, clock?: Clock) {
 		this.db = db
 		this.namespace = namespace
 		this.limits = { ...KV_DEFAULTS, ...limits }
+		this.clock = clock ?? realClock
 	}
 
 	private validateKey(key: string): void {
@@ -76,7 +80,7 @@ export class SqliteKVNamespace {
 
 		if (!row) return null
 
-		if (row.expiration && row.expiration < Date.now() / 1000) {
+		if (row.expiration && row.expiration < this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return null
 		}
@@ -101,7 +105,7 @@ export class SqliteKVNamespace {
 		if (type === 'arrayBuffer' || type === 'stream') {
 			throw new Error(`KV bulk get does not support type "${type}"`)
 		}
-		const now = Date.now() / 1000
+		const now = this.clock.now() / 1000
 
 		if (keys.length === 0) return result
 
@@ -157,7 +161,7 @@ export class SqliteKVNamespace {
 
 		if (!row) return { value: null, metadata: null, cacheStatus: null }
 
-		if (row.expiration && row.expiration < Date.now() / 1000) {
+		if (row.expiration && row.expiration < this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return { value: null, metadata: null, cacheStatus: null }
 		}
@@ -184,7 +188,7 @@ export class SqliteKVNamespace {
 		if (type === 'arrayBuffer' || type === 'stream') {
 			throw new Error(`KV bulk get does not support type "${type}"`)
 		}
-		const now = Date.now() / 1000
+		const now = this.clock.now() / 1000
 
 		if (keys.length === 0) return result
 
@@ -233,7 +237,7 @@ export class SqliteKVNamespace {
 			this.validateTtl(options.expirationTtl)
 		}
 		if (options?.expiration !== undefined) {
-			const minExpiration = Date.now() / 1000 + this.limits.minTtlSeconds
+			const minExpiration = this.clock.now() / 1000 + this.limits.minTtlSeconds
 			if (options.expiration < minExpiration) {
 				throw new Error(`KV expiration must be at least ${this.limits.minTtlSeconds} seconds in the future`)
 			}
@@ -241,7 +245,7 @@ export class SqliteKVNamespace {
 
 		let expiration: number | null = null
 		if (options?.expiration) expiration = options.expiration
-		else if (options?.expirationTtl) expiration = Date.now() / 1000 + options.expirationTtl
+		else if (options?.expirationTtl) expiration = this.clock.now() / 1000 + options.expirationTtl
 
 		let metadata: string | null = null
 		if (options?.metadata !== undefined) {
@@ -263,7 +267,7 @@ export class SqliteKVNamespace {
 		const limit = Math.min(options?.limit ?? 1000, 1000)
 		const cursor = options?.cursor ?? ''
 
-		const now = Date.now() / 1000
+		const now = this.clock.now() / 1000
 
 		// Lazily delete expired entries for this namespace
 		this.db.run(

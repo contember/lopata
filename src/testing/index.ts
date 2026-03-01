@@ -8,19 +8,36 @@ import { createScheduledController } from '../bindings/scheduled'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
 import { buildTestEnv, configToBindings } from './env-builder'
+import { FetchMock, runWithFetchMock } from './fetch-mock'
 import { setupTestEnv, testCachesRef } from './setup'
 import type { TestEnv, TestEnvOptions, WorkerHandlers, WorkerModule } from './types'
 import { TestWorkflowBinding } from './workflow'
 
-export type { TestDurableObjectHandle, TestDurableObjectNamespace, TestDurableObjectStorage } from './durable-object'
+export { TestClock } from './clock'
+export type { Clock } from './clock'
+export type { TestDurableObjectHandle, TestDurableObjectNamespace, TestDurableObjectStorage, TestWebSocket } from './durable-object'
+export { FetchMock } from './fetch-mock'
+export type { FetchCall } from './fetch-mock'
 export type { BindingSpec, TestEnv, TestEnvOptions, WorkerHandlers, WorkerModule } from './types'
 export type { TestWorkflowBinding, TestWorkflowInstance, TestWorkflowRun } from './workflow'
 
 export async function createTestEnv<Env = Record<string, unknown>>(options: TestEnvOptions = {}): Promise<TestEnv<Env>> {
 	// Ensure virtual modules + globals are registered (no-op if preload already ran)
 	setupTestEnv()
+
+	// Resolve clock
+	let clock: TestClock | null = null
+	if (options.clock === true) {
+		clock = new TestClock()
+	} else if (options.clock instanceof TestClock) {
+		clock = options.clock
+	}
+
+	// Create fetch mock (always available, defaults to passthrough)
+	const fetchMock = new FetchMock()
 
 	let mergedBindings = options.bindings
 	let mergedVars = options.vars
@@ -36,10 +53,10 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		mergedVars = { ...configVars, ...options.vars }
 	}
 
-	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars)
+	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars, clock ?? undefined)
 
 	// Wire in-memory caches for this test env
-	testCachesRef.current = new SqliteCacheStorage(db)
+	testCachesRef.current = new SqliteCacheStorage(db, undefined, clock ?? undefined)
 
 	// Resolve worker module
 	let workerModule: Record<string, unknown>
@@ -122,21 +139,22 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		}
 
 		const ctx = new ExecutionContext()
-		return runWithExecutionContext(ctx, async () => {
-			let response: Response
-			if (classBasedExport) {
-				const instance = new (defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env)
-				response = await (instance.fetch as (r: Request) => Promise<Response>)(request)
-			} else {
-				const handler = (defaultExport as Record<string, unknown>)?.fetch
-				if (typeof handler !== 'function') {
-					throw new Error('No fetch handler found')
+		return runWithExecutionContext(ctx, () =>
+			runWithFetchMock(fetchMock, async () => {
+				let response: Response
+				if (classBasedExport) {
+					const instance = new (defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env)
+					response = await (instance.fetch as (r: Request) => Promise<Response>)(request)
+				} else {
+					const handler = (defaultExport as Record<string, unknown>)?.fetch
+					if (typeof handler !== 'function') {
+						throw new Error('No fetch handler found')
+					}
+					response = await (handler as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, ctx)
 				}
-				response = await (handler as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, ctx)
-			}
-			await ctx._awaitAll()
-			return response
-		})
+				await ctx._awaitAll()
+				return response
+			}))
 	}
 
 	async function queueHandler(queueName: string, messages: { body: unknown; contentType?: string }[]): Promise<void> {
@@ -160,10 +178,11 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		}
 
 		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, async () => {
-			await handler(batch, env, ctx)
-			await ctx._awaitAll()
-		})
+		await runWithExecutionContext(ctx, () =>
+			runWithFetchMock(fetchMock, async () => {
+				await handler(batch, env, ctx)
+				await ctx._awaitAll()
+			}))
 	}
 
 	async function scheduledHandler(opts?: { cron?: string; scheduledTime?: number }): Promise<void> {
@@ -172,10 +191,11 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 		const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
 		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, async () => {
-			await handler(controller, env, ctx)
-			await ctx._awaitAll()
-		})
+		await runWithExecutionContext(ctx, () =>
+			runWithFetchMock(fetchMock, async () => {
+				await handler(controller, env, ctx)
+				await ctx._awaitAll()
+			}))
 	}
 
 	async function emailHandler(opts: { from: string; to: string; raw: Uint8Array | string }): Promise<void> {
@@ -191,10 +211,11 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 		const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
 		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, async () => {
-			await handler(message, env, ctx)
-			await ctx._awaitAll()
-		})
+		await runWithExecutionContext(ctx, () =>
+			runWithFetchMock(fetchMock, async () => {
+				await handler(message, env, ctx)
+				await ctx._awaitAll()
+			}))
 	}
 
 	// --- Test helper factories ---
@@ -220,6 +241,15 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		return td
 	}
 
+	async function advanceTime(ms: number): Promise<void> {
+		if (!clock) throw new Error('advanceTime requires clock: true in createTestEnv options')
+		clock.advance(ms)
+		// Fire ready DO alarms
+		for (const entry of registry.durableObjects) {
+			await Promise.all(entry.namespace._fireReadyAlarms())
+		}
+	}
+
 	function dispose(): void {
 		for (const tw of testWorkflows) tw.dispose()
 		for (const td of testDOs) td.dispose()
@@ -238,6 +268,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		// Clean up global state
 		setGlobalEnv({})
 		testCachesRef.current = null
+		fetchMock.reset()
 	}
 
 	return {
@@ -249,6 +280,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		email: emailHandler,
 		workflow: workflowHelper as TestEnv<Env>['workflow'],
 		durableObject: durableObjectHelper as TestEnv<Env>['durableObject'],
+		clock,
+		fetchMock,
+		advanceTime,
 		dispose,
 	}
 }

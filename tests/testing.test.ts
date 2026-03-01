@@ -1075,3 +1075,441 @@ OTHER = "from-wrangler"
 		}
 	})
 })
+
+// ============================================================
+// Fetch Mock Tests
+// ============================================================
+
+describe('fetchMock', () => {
+	test('intercepts outgoing fetch from worker handler', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					const res = await fetch('https://api.example.com/data')
+					const data = await res.text()
+					return new Response(`got: ${data}`)
+				},
+			},
+		})
+
+		t.fetchMock.on('https://api.example.com', new Response('mocked-data'))
+		const res = await t.fetch('/')
+		expect(await res.text()).toBe('got: mocked-data')
+		expect(t.fetchMock.calls.length).toBe(1)
+		expect(t.fetchMock.calls[0]!.mocked).toBe(true)
+		expect(t.fetchMock.calls[0]!.url).toBe('https://api.example.com/data')
+	})
+
+	test('regex pattern matching', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					const res = await fetch('https://api.example.com/users/123')
+					return new Response(await res.text())
+				},
+			},
+		})
+
+		t.fetchMock.on(/\/users\/\d+/, new Response('user-found'))
+		const res = await t.fetch('/')
+		expect(await res.text()).toBe('user-found')
+	})
+
+	test('function-based matching', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					const res = await fetch('https://api.example.com/data', {
+						method: 'POST',
+						body: 'test',
+					})
+					return new Response(await res.text())
+				},
+			},
+		})
+
+		t.fetchMock.on(
+			(req) => req.method === 'POST' && req.url.includes('example.com'),
+			new Response('post-intercepted'),
+		)
+		const res = await t.fetch('/')
+		expect(await res.text()).toBe('post-intercepted')
+	})
+
+	test('onGet and onPost method filters', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch(req: Request) {
+					const url = new URL(req.url)
+					if (url.pathname === '/get') {
+						const res = await fetch('https://api.example.com/data')
+						return new Response(await res.text())
+					}
+					const res = await fetch('https://api.example.com/data', { method: 'POST' })
+					return new Response(await res.text())
+				},
+			},
+		})
+
+		t.fetchMock.onGet('https://api.example.com', new Response('get-response'))
+		t.fetchMock.onPost('https://api.example.com', new Response('post-response'))
+
+		const getRes = await t.fetch('/get')
+		expect(await getRes.text()).toBe('get-response')
+
+		const postRes = await t.fetch('/post')
+		expect(await postRes.text()).toBe('post-response')
+	})
+
+	test('strict mode throws on unmatched requests', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					const res = await fetch('https://unknown.com/endpoint')
+					return new Response(await res.text())
+				},
+			},
+		})
+
+		// Add a route to enter strict mode (passthrough disabled)
+		t.fetchMock.on('https://other.com', new Response('other'))
+
+		await expect(t.fetch('/')).rejects.toThrow('FetchMock: no route matched')
+	})
+
+	test('call recording with getCalls filter', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					await fetch('https://api.example.com/a')
+					await fetch('https://api.example.com/b')
+					await fetch('https://other.com/c')
+					return new Response('ok')
+				},
+			},
+		})
+
+		t.fetchMock
+			.on('https://api.example.com', new Response('api'))
+			.on('https://other.com', new Response('other'))
+
+		await t.fetch('/')
+
+		expect(t.fetchMock.calls.length).toBe(3)
+		const apiCalls = t.fetchMock.getCalls('https://api.example.com')
+		expect(apiCalls.length).toBe(2)
+		const otherCalls = t.fetchMock.getCalls(/other\.com/)
+		expect(otherCalls.length).toBe(1)
+	})
+
+	test('reset clears routes and calls', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					return new Response('ok')
+				},
+			},
+		})
+
+		t.fetchMock.on('https://api.example.com', new Response('mocked'))
+		t.fetchMock.reset()
+
+		// After reset, passthrough is re-enabled
+		expect(t.fetchMock.calls.length).toBe(0)
+	})
+
+	test('handler function receives the request', async () => {
+		t = await createTestEnv({
+			worker: {
+				async fetch() {
+					const res = await fetch('https://api.example.com/echo', {
+						method: 'POST',
+						body: 'hello',
+					})
+					return new Response(await res.text())
+				},
+			},
+		})
+
+		t.fetchMock.on('https://api.example.com', async (req) => {
+			const body = await req.text()
+			return new Response(`echoed: ${body}`)
+		})
+
+		const res = await t.fetch('/')
+		expect(await res.text()).toBe('echoed: hello')
+	})
+})
+
+// ============================================================
+// Clock / Time Control Tests
+// ============================================================
+
+describe('clock', () => {
+	test('KV expiration respects test clock', async () => {
+		t = await createTestEnv({
+			bindings: { KV: 'kv' },
+			clock: true,
+		})
+
+		const kv = t.env.KV as any
+		await kv.put('key1', 'value1', { expirationTtl: 120 })
+
+		// Before advancing: key should exist
+		expect(await kv.get('key1')).toBe('value1')
+
+		// Advance past expiration (120 seconds = 120000ms)
+		await t.advanceTime(121_000)
+
+		// After advancing: key should be expired
+		expect(await kv.get('key1')).toBeNull()
+	})
+
+	test('cache TTL respects test clock', async () => {
+		t = await createTestEnv({
+			clock: true,
+		})
+
+		const cache = caches.default
+		const url = 'http://example.com/cached'
+		const response = new Response('cached-body', {
+			headers: { 'cache-control': 'max-age=60' },
+		})
+
+		await cache.put(url, response)
+
+		// Before advancing: should hit cache
+		const hit = await cache.match(url)
+		expect(hit).toBeDefined()
+		expect(await hit!.text()).toBe('cached-body')
+
+		// Advance past TTL
+		await t.advanceTime(61_000)
+
+		// After advancing: should miss
+		const miss = await cache.match(url)
+		expect(miss).toBeUndefined()
+	})
+
+	test('DO alarm fires after advanceTime', async () => {
+		let alarmFired = false
+
+		class AlarmDO extends DurableObject {
+			async fetch() {
+				await this.ctx.storage.setAlarm(Date.now() + 5000)
+				return new Response('alarm-set')
+			}
+			async alarm() {
+				alarmFired = true
+			}
+		}
+
+		t = await createTestEnv({
+			worker: {
+				async fetch(_req: Request, env: any) {
+					const id = env.DO.idFromName('test')
+					const stub = env.DO.get(id)
+					return await stub.fetch(new Request('http://localhost/'))
+				},
+				AlarmDO,
+			},
+			bindings: {
+				DO: { type: 'durable-object', className: 'AlarmDO' },
+			},
+			clock: true,
+		})
+
+		await t.fetch('/')
+
+		// Alarm not yet fired
+		expect(alarmFired).toBe(false)
+
+		// Advance past alarm time
+		await t.advanceTime(6000)
+
+		expect(alarmFired).toBe(true)
+	})
+
+	test('clock is null when not enabled', async () => {
+		t = await createTestEnv()
+		expect(t.clock).toBeNull()
+	})
+
+	test('advanceTime throws when clock not enabled', async () => {
+		t = await createTestEnv()
+		await expect(t.advanceTime(1000)).rejects.toThrow('clock: true')
+	})
+})
+
+// ============================================================
+// DO WebSocket Testing
+// ============================================================
+
+describe('DO WebSocket', () => {
+	test('connectWebSocket and send/receive', async () => {
+		class WsDO extends DurableObject {
+			async fetch(req: Request) {
+				if (req.headers.get('upgrade') === 'websocket') {
+					const pair = new WebSocketPair()
+					const [client, server] = Object.values(pair)
+					this.ctx.acceptWebSocket(server)
+					return new Response(null, { status: 101, webSocket: client })
+				}
+				return new Response('not a ws request')
+			}
+			async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+				ws.send(`echo: ${message}`)
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { WsDO },
+			bindings: { DO: { type: 'durable-object', className: 'WsDO' } },
+		})
+
+		const ns = t.durableObject('DO')
+		const handle = ns.get('test-ws')
+		const ws = await handle.connectWebSocket()
+
+		ws.send('hello')
+		const reply = await ws.waitForMessage()
+		expect(reply).toBe('echo: hello')
+
+		ws.close()
+	})
+
+	test('multiple messages and message queue', async () => {
+		class MultiMsgDO extends DurableObject {
+			async fetch(req: Request) {
+				if (req.headers.get('upgrade') === 'websocket') {
+					const pair = new WebSocketPair()
+					const [client, server] = Object.values(pair)
+					this.ctx.acceptWebSocket(server)
+					return new Response(null, { status: 101, webSocket: client })
+				}
+				return new Response('no')
+			}
+			async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+				ws.send(`reply1: ${message}`)
+				ws.send(`reply2: ${message}`)
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { MultiMsgDO },
+			bindings: { DO: { type: 'durable-object', className: 'MultiMsgDO' } },
+		})
+
+		const handle = t.durableObject('DO').get('multi')
+		const ws = await handle.connectWebSocket()
+
+		ws.send('test')
+		const msg1 = await ws.waitForMessage()
+		const msg2 = await ws.waitForMessage()
+		expect(msg1).toBe('reply1: test')
+		expect(msg2).toBe('reply2: test')
+
+		ws.close()
+	})
+
+	test('close event propagation', async () => {
+		class CloseDO extends DurableObject {
+			async fetch(req: Request) {
+				if (req.headers.get('upgrade') === 'websocket') {
+					const pair = new WebSocketPair()
+					const [client, server] = Object.values(pair)
+					this.ctx.acceptWebSocket(server)
+					return new Response(null, { status: 101, webSocket: client })
+				}
+				return new Response('no')
+			}
+			async webSocketMessage(ws: WebSocket) {
+				ws.close(1000, 'server-close')
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { CloseDO },
+			bindings: { DO: { type: 'durable-object', className: 'CloseDO' } },
+		})
+
+		const handle = t.durableObject('DO').get('close-test')
+		const ws = await handle.connectWebSocket()
+
+		ws.send('trigger-close')
+		const closeEv = await ws.waitForClose()
+		expect(closeEv.code).toBe(1000)
+		expect(closeEv.reason).toBe('server-close')
+	})
+
+	test('serialized attachments', async () => {
+		class AttachDO extends DurableObject {
+			async fetch(req: Request) {
+				if (req.headers.get('upgrade') === 'websocket') {
+					const pair = new WebSocketPair()
+					const [client, server] = Object.values(pair)
+					server.serializeAttachment({ userId: '123' })
+					this.ctx.acceptWebSocket(server)
+					return new Response(null, { status: 101, webSocket: client })
+				}
+				return new Response('no')
+			}
+			async webSocketMessage(ws: WebSocket) {
+				const att = ws.deserializeAttachment()
+				ws.send(JSON.stringify(att))
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { AttachDO },
+			bindings: { DO: { type: 'durable-object', className: 'AttachDO' } },
+		})
+
+		const handle = t.durableObject('DO').get('attach')
+		const ws = await handle.connectWebSocket()
+
+		// Read server-side attachment from test
+		const att = ws.deserializeAttachment()
+		expect(att).toEqual({ userId: '123' })
+
+		ws.send('get-attachment')
+		const reply = await ws.waitForMessage()
+		expect(JSON.parse(reply as string)).toEqual({ userId: '123' })
+
+		ws.close()
+	})
+
+	test('getWebSockets returns accepted sockets', async () => {
+		class TagDO extends DurableObject {
+			async fetch(req: Request) {
+				if (req.headers.get('upgrade') === 'websocket') {
+					const pair = new WebSocketPair()
+					const [client, server] = Object.values(pair)
+					const tag = new URL(req.url).searchParams.get('tag') ?? 'default'
+					this.ctx.acceptWebSocket(server, [tag])
+					return new Response(null, { status: 101, webSocket: client })
+				}
+				return new Response('no')
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { TagDO },
+			bindings: { DO: { type: 'durable-object', className: 'TagDO' } },
+		})
+
+		const handle = t.durableObject('DO').get('tags')
+		await handle.connectWebSocket({ path: '/?tag=room-1' })
+		await handle.connectWebSocket({ path: '/?tag=room-2' })
+		await handle.connectWebSocket({ path: '/?tag=room-1' })
+
+		const allSockets = handle.getWebSockets()
+		expect(allSockets.length).toBe(3)
+
+		const room1Sockets = handle.getWebSockets('room-1')
+		expect(room1Sockets.length).toBe(2)
+
+		const room2Sockets = handle.getWebSockets('room-2')
+		expect(room2Sockets.length).toBe(1)
+	})
+})
