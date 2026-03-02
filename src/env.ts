@@ -321,7 +321,7 @@ export function buildEnv(
 
 	// Static assets
 	if (config.assets) {
-		const assetsDir = path.resolve(config.assets.directory)
+		const assetsDir = devVarsDir ? path.resolve(devVarsDir, config.assets.directory) : path.resolve(config.assets.directory)
 		const assets = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
 		registry.staticAssets = assets
 		if (config.assets.binding) {
