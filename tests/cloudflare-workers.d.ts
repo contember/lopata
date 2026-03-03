@@ -46,6 +46,21 @@ declare module 'cloudflare:workflows' {
 	}
 }
 
+declare class WebSocketPair {
+	0: WebSocket
+	1: WebSocket
+	[Symbol.iterator](): IterableIterator<WebSocket>
+}
+
+interface WebSocket {
+	serializeAttachment(attachment: unknown): void
+	deserializeAttachment(): unknown
+}
+
+interface ResponseInit {
+	webSocket?: WebSocket
+}
+
 declare var caches: {
 	default: {
 		match(request: Request | string): Promise<Response | undefined>

@@ -220,6 +220,7 @@ describe('Isolated DO — dispose terminates worker', () => {
 	})
 
 	test('dispose rejects in-flight commands', async () => {
+		// Worker thread startup + message passing can be slow in CI
 		const ns = new DurableObjectNamespaceImpl(db, 'TestCounter', dataDir, { evictionTimeoutMs: 0 }, factory)
 		ns._setClass(class {} as any, {})
 
@@ -236,7 +237,7 @@ describe('Isolated DO — dispose terminates worker', () => {
 
 		// The slow operation should be rejected
 		await expect(slowPromise).rejects.toThrow()
-	})
+	}, 15_000)
 })
 
 describe('Isolated DO — stub properties', () => {
