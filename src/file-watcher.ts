@@ -68,7 +68,7 @@ export class FileWatcher {
 		for (const entry of entries) {
 			if (IGNORE_DIRS.has(entry)) continue
 			const fullPath = path.join(dir, entry)
-			let stat
+			let stat: ReturnType<typeof statSync>
 			try {
 				stat = statSync(fullPath)
 			} catch {
