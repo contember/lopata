@@ -48,7 +48,7 @@ declare module 'cloudflare:workflows' {
 
 declare class WebSocketPair {
 	0: WebSocket
-	1: WebSocket
+	1: WebSocket;
 	[Symbol.iterator](): IterableIterator<WebSocket>
 }
 
