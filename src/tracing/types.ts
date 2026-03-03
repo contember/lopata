@@ -39,6 +39,7 @@ export interface TraceSummary {
 	durationMs: number | null
 	spanCount: number
 	errorCount: number
+	generationId: number | null
 }
 
 export interface TraceDetail {

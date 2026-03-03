@@ -165,7 +165,7 @@ export class GenerationManager {
 		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)
 
 		// 5. Wire DO and Workflow class references
-		wireClassRefs(registry, workerModule, env, this.workerRegistry)
+		wireClassRefs(registry, workerModule, env, this.workerRegistry, this.nextGenId)
 
 		// 5. Validate default export (or service worker fetch handler)
 		const defaultExport = workerModule.default
@@ -249,6 +249,11 @@ export class GenerationManager {
 	/** Update the grace period for future reloads */
 	setGracePeriod(ms: number): void {
 		this.gracePeriodMs = ms
+	}
+
+	/** Get a specific generation by ID */
+	get(genId: number): Generation | null {
+		return this.generations.get(genId) ?? null
 	}
 
 	/** List all generations for dashboard */

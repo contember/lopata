@@ -47,6 +47,8 @@ export function configPlugin(envName: string): Plugin {
 				appType: 'custom',
 				server: {
 					watch: {
+						usePolling: true,
+						interval: 500,
 						ignored: ['**/.lopata/**', '**/.wrangler/**', '**/.react-router/**'],
 					},
 				},

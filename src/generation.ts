@@ -36,6 +36,8 @@ export interface GenerationInfo {
 	state: GenerationState
 	createdAt: number
 	activeRequests: number
+	workerName?: string
+	durableObjects?: { namespace: string; activeInstances: number; totalWebSockets: number }[]
 }
 
 export class Generation {
@@ -220,7 +222,7 @@ export class Generation {
 			return await startSpan({
 				name: `${request.method} ${url.pathname}`,
 				kind: 'server',
-				attributes: { 'http.method': request.method, 'http.url': request.url },
+				attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': this.id },
 				workerName: this.workerName,
 			}, wrappedHandler)
 		} finally {
@@ -234,7 +236,7 @@ export class Generation {
 		return startSpan({
 			name: 'scheduled',
 			kind: 'server',
-			attributes: { cron: cronExpr },
+			attributes: { cron: cronExpr, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
 		}, () =>
 			runWithExecutionContext(ctx, async () => {
@@ -274,7 +276,7 @@ export class Generation {
 		return startSpan({
 			name: 'email',
 			kind: 'server',
-			attributes: { 'email.from': from, 'email.to': to },
+			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
 		}, () =>
 			runWithExecutionContext(ctx, async () => {
@@ -401,11 +403,21 @@ export class Generation {
 
 	/** Get info for dashboard */
 	getInfo(): GenerationInfo {
+		const durableObjects = this.registry.durableObjects.map(entry => {
+			const executors = entry.namespace._listActiveExecutors()
+			return {
+				namespace: entry.className,
+				activeInstances: executors.length,
+				totalWebSockets: executors.reduce((sum, e) => sum + e.wsCount, 0),
+			}
+		})
 		return {
 			id: this.id,
 			state: this.state,
 			createdAt: this.createdAt,
 			activeRequests: this.activeRequests,
+			workerName: this.workerName,
+			durableObjects,
 		}
 	}
 }

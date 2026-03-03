@@ -363,11 +363,12 @@ export function wireClassRefs(
 	workerModule: Record<string, unknown>,
 	env: Record<string, unknown>,
 	workerRegistry?: WorkerRegistry,
+	generationId?: number,
 ) {
 	for (const entry of registry.durableObjects) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Durable Object class "${entry.className}" not exported from worker module`)
-		entry.namespace._setClass(cls as any, env)
+		entry.namespace._setClass(cls as any, env, generationId)
 		console.log(`[lopata] Wired DO class: ${entry.className}`)
 	}
 

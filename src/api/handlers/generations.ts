@@ -1,12 +1,26 @@
-import type { GenerationInfo, GenerationsData, HandlerContext, OkResponse } from '../types'
+import type { GenerationDetail, GenerationInfo, GenerationsData, HandlerContext, OkResponse } from '../types'
 
 export const handlers = {
-	'generations.list'(_input: {}, ctx: HandlerContext): GenerationsData {
-		if (!ctx.manager) throw new Error('Generation manager not available')
+	'generations.detail'(input: { id: number; workerName?: string }, ctx: HandlerContext): GenerationDetail {
+		let manager = ctx.manager
+		if (input.workerName && ctx.registry) {
+			manager = ctx.registry.getManager(input.workerName) ?? null
+		}
+		if (!manager) throw new Error('Generation manager not available')
+		const gen = manager.get(input.id)
+		if (!gen) throw new Error(`Generation ${input.id} not found`)
+		const info = gen.getInfo()
+		const doNamespaces = gen.registry.durableObjects.map(entry => ({
+			namespace: entry.className,
+			instances: entry.namespace._listActiveExecutors(),
+		}))
+		return { ...info, doNamespaces }
+	},
 
+	'generations.list'(_input: {}, ctx: HandlerContext): GenerationsData {
 		const result: GenerationsData = {
-			generations: ctx.manager.list(),
-			gracePeriodMs: ctx.manager.gracePeriodMs,
+			generations: ctx.manager?.list() ?? [],
+			gracePeriodMs: ctx.manager?.gracePeriodMs ?? 10_000,
 		}
 
 		// Include per-worker data when registry is available (multi-worker mode)

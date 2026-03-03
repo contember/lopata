@@ -240,6 +240,20 @@ export interface GenerationsData {
 	workers?: WorkerGenerations[]
 }
 
+export interface GenerationDoInstance {
+	id: string
+	wsCount: number
+}
+
+export interface GenerationDoNamespace {
+	namespace: string
+	instances: GenerationDoInstance[]
+}
+
+export interface GenerationDetail extends GenerationInfo {
+	doNamespaces: GenerationDoNamespace[]
+}
+
 // Workers
 export interface WorkerBinding {
 	type: string

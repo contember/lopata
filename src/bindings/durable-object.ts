@@ -749,6 +749,7 @@ export class DurableObjectNamespaceImpl {
 	private _containerConfig?: ContainerConfig
 	private _factoryOverride?: DOExecutorFactory
 	private _defaultFactory?: DOExecutorFactory
+	private _generationId?: number
 	private clock: Clock
 
 	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory, clock?: Clock) {
@@ -774,9 +775,19 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** Called after worker module is loaded to wire the actual class */
-	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown) {
+	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, generationId?: number) {
+		// Dispose existing executors so next request creates new ones with the new class
+		for (const [idStr, executor] of this._executors) {
+			if (executor.activeWebSocketCount() === 0) {
+				executor.dispose().catch(() => {})
+				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
+			}
+		}
+
 		this._class = cls
 		this._env = env
+		this._generationId = generationId
 		// Restore persisted alarms on startup
 		this._restoreAlarms()
 	}
@@ -830,6 +841,7 @@ export class DurableObjectNamespaceImpl {
 					'do.namespace': this.namespaceName,
 					'do.id': idStr,
 					'do.alarm.retryCount': retryCount,
+					...(this._generationId != null ? { 'lopata.generation_id': this._generationId } : {}),
 				},
 			}, () => executor.executeAlarm(retryCount))
 		} catch (e) {
@@ -953,6 +965,15 @@ export class DurableObjectNamespaceImpl {
 	/** @internal Get the executor for a given id */
 	_getExecutor(idStr: string): DOExecutor | null {
 		return this._executors.get(idStr) ?? null
+	}
+
+	/** @internal List active executors with their WebSocket counts */
+	_listActiveExecutors(): Array<{ id: string; wsCount: number }> {
+		const result: Array<{ id: string; wsCount: number }> = []
+		for (const [id, executor] of this._executors) {
+			result.push({ id, wsCount: executor.activeWebSocketCount() })
+		}
+		return result
 	}
 
 	/** @internal List all instance IDs in this namespace (from DB). */

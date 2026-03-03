@@ -143,6 +143,7 @@ export class TraceStore {
         s.status_message,
         s.start_time,
         s.duration_ms,
+        json_extract(s.attributes, '$."lopata.generation_id"') as generation_id,
         COUNT(c.span_id) as span_count,
         SUM(CASE WHEN c.status = 'error' THEN 1 ELSE 0 END) as error_count
       FROM spans s
@@ -164,6 +165,7 @@ export class TraceStore {
 			durationMs: r.duration_ms as number | null,
 			spanCount: r.span_count as number,
 			errorCount: r.error_count as number,
+			generationId: (r.generation_id as number) ?? null,
 		}))
 
 		const last = items[items.length - 1]
@@ -219,6 +221,7 @@ export class TraceStore {
         s.status_message,
         s.start_time,
         s.duration_ms,
+        json_extract(s.attributes, '$."lopata.generation_id"') as generation_id,
         COUNT(c.span_id) as span_count,
         SUM(CASE WHEN c.status = 'error' THEN 1 ELSE 0 END) as error_count
       FROM spans s
@@ -239,6 +242,7 @@ export class TraceStore {
 			durationMs: r.duration_ms as number | null,
 			spanCount: r.span_count as number,
 			errorCount: r.error_count as number,
+			generationId: (r.generation_id as number) ?? null,
 		}))
 	}
 
@@ -253,6 +257,7 @@ export class TraceStore {
         s.status_message,
         s.start_time,
         s.duration_ms,
+        json_extract(s.attributes, '$."lopata.generation_id"') as generation_id,
         (SELECT COUNT(*) FROM spans WHERE trace_id = s.trace_id) as span_count,
         (SELECT COUNT(*) FROM spans WHERE trace_id = s.trace_id AND status = 'error') as error_count
       FROM spans s
@@ -274,6 +279,7 @@ export class TraceStore {
 				durationMs: r.duration_ms as number | null,
 				spanCount: r.span_count as number,
 				errorCount: r.error_count as number,
+				generationId: (r.generation_id as number) ?? null,
 			})),
 			cursor: null,
 		}

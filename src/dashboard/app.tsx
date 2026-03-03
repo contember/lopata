@@ -13,6 +13,7 @@ import { D1View } from './views/d1'
 import { DoView } from './views/do'
 import { EmailView } from './views/email'
 import { ErrorsView } from './views/errors'
+import { GenerationsView } from './views/generations'
 import { HomeView } from './views/home'
 import { KvView } from './views/kv'
 import { QueueView } from './views/queue'
@@ -194,6 +195,7 @@ function App() {
 		if (route.startsWith('/errors')) return <ErrorsView route={route} />
 		if (route.startsWith('/traces')) return <TracesView route={route} />
 		if (route.startsWith('/workers')) return <WorkersView />
+		if (route.startsWith('/generations')) return <GenerationsView />
 		if (route.startsWith('/kv')) return <KvView route={route} />
 		if (route.startsWith('/r2')) return <R2View route={route} />
 		if (route.startsWith('/queue')) return <QueueView route={route} />
@@ -241,6 +243,17 @@ function App() {
 				{NAV_GROUPS.map(group => <SidebarGroup key={group.label} group={group} activeSection={activeSection} counts={counts} />)}
 			</div>
 			<div class="border-t border-border px-2 py-2">
+				<a
+					href="#/generations"
+					class={`flex items-center gap-2 w-full px-3 py-1.5 text-xs font-mono rounded-md transition-colors ${
+						activeSection === '/generations' ? 'text-ink bg-panel-hover' : 'text-text-muted hover:text-ink hover:bg-panel-hover'
+					}`}
+				>
+					<span class="w-4 text-center opacity-60">
+						<BindingIcon type="workers" class="w-4 text-center opacity-60 flex items-center justify-center" />
+					</span>
+					<span>Generations</span>
+				</a>
 				<ThemeSwitcher />
 			</div>
 		</>

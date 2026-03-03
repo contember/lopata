@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
+import { FileWatcher } from '../file-watcher.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
@@ -52,6 +53,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let currentModule: Record<string, unknown> | null = null
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
+	// Generation counter — increments on each module reload for tracing
+	let currentGenerationId = 0
+	// Track generation records for dashboard visibility
+	const viteGenerations = new Map<number, { id: number; createdAt: number; state: 'active' | 'stopped' }>()
+	const genActiveRequests = new Map<number, number>()
 
 	/**
 	 * Import the worker module through Vite's SSR runner and re-wire
@@ -81,15 +87,39 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				reloadLock = new Promise(r => {
 					resolveReload = r
 				})
+				const previousModule = currentModule
+				const previousGenId = currentGenerationId
 				try {
 					currentModule = workerModule
-					wireClassRefs(registry, workerModule, env, workerRegistry)
+					// Track generation lifecycle
+					if (viteGenerations.has(previousGenId)) {
+						viteGenerations.get(previousGenId)!.state = 'stopped'
+					}
+					currentGenerationId++
+					viteGenerations.set(currentGenerationId, { id: currentGenerationId, createdAt: Date.now(), state: 'active' })
+					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId)
 					setGlobalEnv(env)
-					console.log('[lopata:vite] Worker module (re)loaded, classes wired')
+					console.log(`[lopata:vite] Worker module (re)loaded, classes wired (generation ${currentGenerationId})`)
+					// Schedule cleanup of old generation after successful reload
+					if (viteGenerations.has(previousGenId)) {
+						setTimeout(() => viteGenerations.delete(previousGenId), 60_000)
+					}
 				} catch (err) {
-					// Reset so next request retries
-					currentModule = null
-					throw err
+					// Revert generation tracking
+					viteGenerations.delete(currentGenerationId)
+					currentGenerationId = previousGenId
+					if (viteGenerations.has(previousGenId)) {
+						viteGenerations.get(previousGenId)!.state = 'active'
+					}
+					if (previousModule) {
+						// Serve old module while Vite module graph settles (e.g. DO class not yet re-exported)
+						currentModule = previousModule
+						console.warn('[lopata:vite] Module reload failed, serving previous version:', err instanceof Error ? err.message : err)
+					} else {
+						// First load — no fallback
+						currentModule = null
+						throw err
+					}
 				} finally {
 					reloadLock = null
 					resolveReload()
@@ -175,6 +205,62 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			// 3. Set up API context
 			apiMod.setDashboardConfig(config)
 
+			// 3b. Create generation tracking adapter for dashboard
+			const mainAdapter = {
+				config,
+				gracePeriodMs: 0,
+				get active() {
+					return currentModule ? { workerModule: currentModule, env, registry } : null
+				},
+				list() {
+					return Array.from(viteGenerations.values()).map(g => ({
+						id: g.id,
+						state: g.state,
+						createdAt: g.createdAt,
+						activeRequests: genActiveRequests.get(g.id) ?? 0,
+						workerName: config.name,
+						durableObjects: g.state === 'active'
+							? registry.durableObjects.map((entry: any) => {
+								const executors = entry.namespace._listActiveExecutors()
+								return {
+									namespace: entry.className,
+									activeInstances: executors.length,
+									totalWebSockets: executors.reduce((sum: number, e: any) => sum + e.wsCount, 0),
+								}
+							})
+							: undefined,
+					}))
+				},
+				get(id: number) {
+					const record = viteGenerations.get(id)
+					if (!record) return null
+					return {
+						getInfo() {
+							return {
+								id: record.id,
+								state: record.state,
+								createdAt: record.createdAt,
+								activeRequests: genActiveRequests.get(record.id) ?? 0,
+								workerName: config.name,
+							}
+						},
+						registry,
+					}
+				},
+				reload() {
+					return Promise.reject(new Error('Main worker uses Vite HMR — save a file to trigger reload'))
+				},
+				stop(id: number) {
+					const record = viteGenerations.get(id)
+					if (record) {
+						record.state = 'stopped'
+						setTimeout(() => viteGenerations.delete(id), 60_000)
+					}
+				},
+				setGracePeriod() {},
+			}
+			apiMod.setGenerationManager(mainAdapter as any)
+
 			// 4. Set up auxiliary workers (if configured)
 			if (options.auxiliaryWorkers && options.auxiliaryWorkers.length > 0) {
 				await import('../plugin.ts')
@@ -183,17 +269,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				const { GenerationManager } = await import('../generation-manager.ts')
 
 				workerRegistry = new WorkerRegistry()
-
-				const mainAdapter = {
-					config,
-					gracePeriodMs: 0,
-					get active() {
-						return currentModule ? { workerModule: currentModule, env, registry } : null
-					},
-					list() {
-						return []
-					},
-				}
 				workerRegistry.register(config.name, mainAdapter as any, true)
 
 				for (const workerDef of options.auxiliaryWorkers) {
@@ -215,6 +290,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					} catch (err) {
 						console.error(`[lopata:vite] Failed to load auxiliary worker "${auxConfig.name}":`, err)
 					}
+
+					// File watcher for aux worker reload
+					const auxSrcDir = dirname(resolve(auxBaseDir, auxConfig.main))
+					const auxWatcher = new FileWatcher(auxSrcDir, () => {
+						auxManager.reload().then(gen => {
+							console.log(`[lopata:vite] Auxiliary worker "${auxConfig.name}" reloaded → generation ${gen.id}`)
+						}).catch(err => {
+							console.error(`[lopata:vite] Reload failed for "${auxConfig.name}":`, err)
+						})
+					})
+					auxWatcher.start()
+					console.log(`[lopata:vite] Watching ${auxSrcDir} for changes (${auxConfig.name})`)
 				}
 
 				apiMod.setWorkerRegistry(workerRegistry)
@@ -270,53 +357,61 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 					try {
 						const activeModule = await ensureWorkerModule()
+						const genId = currentGenerationId
+						genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
 
-						const request = nodeReqToRequest(req)
-						const parsedUrl = new URL(request.url)
+						try {
+							const request = nodeReqToRequest(req)
+							const parsedUrl = new URL(request.url)
 
-						const handler = activeModule.default as Record<string, unknown>
-						if (!handler || typeof handler.fetch !== 'function') {
-							console.error('[lopata:vite] Worker module default export has no fetch() method')
-							return next()
-						}
+							const handler = activeModule.default as Record<string, unknown>
+							if (!handler || typeof handler.fetch !== 'function') {
+								console.error('[lopata:vite] Worker module default export has no fetch() method')
+								return next()
+							}
 
-						// Capture caller stack before entering the worker (for async stack stitching)
-						const callerStack = new Error()
+							// Capture caller stack before entering the worker (for async stack stitching)
+							const callerStack = new Error()
 
-						const ctx = new ExecutionContext()
-						const response = await (startSpan as Function)({
-							name: `${request.method} ${parsedUrl.pathname}`,
-							kind: 'server',
-							attributes: { 'http.method': request.method, 'http.url': request.url },
-						}, () =>
-							runWithExecutionContext(ctx, async () => {
-								try {
-									const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
-									;(setSpanAttribute as Function)('http.status_code', resp.status)
+							const ctx = new ExecutionContext()
+							const response = await (startSpan as Function)({
+								name: `${request.method} ${parsedUrl.pathname}`,
+								kind: 'server',
+								attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
+							}, () =>
+								runWithExecutionContext(ctx, async () => {
+									try {
+										const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
+										;(setSpanAttribute as Function)('http.status_code', resp.status)
 
-									// Intercept React Router error boundary responses with lopata error page
-									const routeError = (globalThis as any).__lopata_routeError
-									delete (globalThis as any).__lopata_routeError
-									if (routeError) {
-										if (routeError instanceof Error) {
-											stitchAsyncStack(routeError, callerStack)
+										// Intercept React Router error boundary responses with lopata error page
+										const routeError = (globalThis as any).__lopata_routeError
+										delete (globalThis as any).__lopata_routeError
+										if (routeError) {
+											if (routeError instanceof Error) {
+												stitchAsyncStack(routeError, callerStack)
+											}
+											console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
+											return (renderErrorPage as Function)(routeError, request, env, config)
 										}
-										console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
-										return (renderErrorPage as Function)(routeError, request, env, config)
-									}
 
-									ctx._awaitAll().catch(() => {})
-									return resp
-								} catch (err) {
-									if (err instanceof Error) {
-										stitchAsyncStack(err, callerStack)
+										ctx._awaitAll().catch(() => {})
+										return resp
+									} catch (err) {
+										if (err instanceof Error) {
+											stitchAsyncStack(err, callerStack)
+										}
+										console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+										return (renderErrorPage as Function)(err, request, env, config)
 									}
-									console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-									return (renderErrorPage as Function)(err, request, env, config)
-								}
-							})) as Response
+								})) as Response
 
-						writeResponse(response, res)
+							writeResponse(response, res)
+						} finally {
+							const count = genActiveRequests.get(genId) ?? 1
+							if (count <= 1) genActiveRequests.delete(genId)
+							else genActiveRequests.set(genId, count - 1)
+						}
 					} catch (err) {
 						console.error('[lopata:vite] Request error:', err)
 						if (!res.headersSent) {

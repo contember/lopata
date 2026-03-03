@@ -140,6 +140,7 @@ function useTraceStream(): TraceStreamState {
 								durationMs: s.durationMs,
 								spanCount: 1,
 								errorCount: 0,
+								generationId: typeof s.attributes['lopata.generation_id'] === 'number' ? s.attributes['lopata.generation_id'] as number : null,
 							})
 						} else if (event.type === 'span.end' && event.span.parentSpanId === null) {
 							const s = event.span
@@ -422,6 +423,7 @@ function TracesListView() {
 												<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Status</th>
 												<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Name</th>
 												<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Worker</th>
+												<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium">Gen</th>
 												<th class="text-left px-4 py-2.5 text-xs text-text-muted font-medium" style={{ minWidth: '140px' }}>Duration</th>
 												<th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Spans</th>
 												<th class="text-right px-4 py-2.5 text-xs text-text-muted font-medium">Time</th>
@@ -447,6 +449,13 @@ function TracesListView() {
 														{trace.workerName && (
 															<span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
 																{trace.workerName}
+															</span>
+														)}
+													</td>
+													<td class="px-4 py-2.5">
+														{trace.generationId != null && (
+															<span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-panel-hover text-text-secondary">
+																#{trace.generationId}
 															</span>
 														)}
 													</td>
@@ -518,6 +527,11 @@ function TraceDetailPage({ traceId }: { traceId: string }) {
 						{rootSpan?.workerName && (
 							<span class="ml-2 inline-flex px-2 py-0.5 rounded-md text-xs font-medium bg-panel-hover text-text-secondary">
 								{rootSpan.workerName}
+							</span>
+						)}
+						{typeof rootSpan?.attributes['lopata.generation_id'] === 'number' && (
+							<span class="ml-2 inline-flex px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-panel-hover text-text-secondary">
+								Gen #{rootSpan.attributes['lopata.generation_id'] as number}
 							</span>
 						)}
 						{rootSpan?.durationMs != null && <span class="ml-2 text-text-secondary">{formatDuration(rootSpan.durationMs)}</span>}

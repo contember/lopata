@@ -1,4 +1,4 @@
-import { type FSWatcher, watch } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 const WATCH_EXTENSIONS = new Set(['.ts', '.js', '.tsx', '.jsx', '.json'])
@@ -7,51 +7,78 @@ const IGNORE_DIRS = new Set(['.lopata', 'node_modules', '.git'])
 export class FileWatcher {
 	private dir: string
 	private onChange: () => void
-	private debounceMs: number
-	private watcher: FSWatcher | null = null
-	private debounceTimer: ReturnType<typeof setTimeout> | null = null
+	private pollIntervalMs: number
+	private pollTimer: ReturnType<typeof setInterval> | null = null
+	private mtimeMap = new Map<string, number>()
 
-	constructor(dir: string, onChange: () => void, debounceMs = 150) {
+	constructor(dir: string, onChange: () => void, pollIntervalMs = 500) {
 		this.dir = dir
 		this.onChange = onChange
-		this.debounceMs = debounceMs
+		this.pollIntervalMs = pollIntervalMs
 	}
 
 	start(): void {
-		if (this.watcher) return
-		this.watcher = watch(this.dir, { recursive: true }, (_event, filename) => {
-			if (!filename) return
-			if (!this.shouldWatch(filename)) return
-			this.scheduleChange()
-		})
+		if (this.pollTimer) return
+		this.scanFiles(this.dir, this.mtimeMap)
+		this.pollTimer = setInterval(() => this.poll(), this.pollIntervalMs)
 	}
 
 	stop(): void {
-		if (this.watcher) {
-			this.watcher.close()
-			this.watcher = null
-		}
-		if (this.debounceTimer) {
-			clearTimeout(this.debounceTimer)
-			this.debounceTimer = null
+		if (this.pollTimer) {
+			clearInterval(this.pollTimer)
+			this.pollTimer = null
 		}
 	}
 
-	private shouldWatch(filename: string): boolean {
-		const ext = path.extname(filename)
-		if (!WATCH_EXTENSIONS.has(ext)) return false
-		const parts = filename.split(path.sep)
-		for (const part of parts) {
-			if (IGNORE_DIRS.has(part)) return false
-		}
-		return true
-	}
+	private poll(): void {
+		const currentFiles = new Map<string, number>()
+		this.scanFiles(this.dir, currentFiles)
 
-	private scheduleChange(): void {
-		if (this.debounceTimer) clearTimeout(this.debounceTimer)
-		this.debounceTimer = setTimeout(() => {
-			this.debounceTimer = null
+		let changed = false
+		for (const [file, mtime] of currentFiles) {
+			const prev = this.mtimeMap.get(file)
+			if (prev === undefined || prev !== mtime) {
+				changed = true
+				break
+			}
+		}
+		if (!changed) {
+			for (const file of this.mtimeMap.keys()) {
+				if (!currentFiles.has(file)) {
+					changed = true
+					break
+				}
+			}
+		}
+
+		this.mtimeMap = currentFiles
+
+		if (changed) {
 			this.onChange()
-		}, this.debounceMs)
+		}
+	}
+
+	private scanFiles(dir: string, result: Map<string, number>): void {
+		let entries: string[]
+		try {
+			entries = readdirSync(dir)
+		} catch {
+			return
+		}
+		for (const entry of entries) {
+			if (IGNORE_DIRS.has(entry)) continue
+			const fullPath = path.join(dir, entry)
+			let stat
+			try {
+				stat = statSync(fullPath)
+			} catch {
+				continue
+			}
+			if (stat.isDirectory()) {
+				this.scanFiles(fullPath, result)
+			} else if (WATCH_EXTENSIONS.has(path.extname(entry))) {
+				result.set(fullPath, stat.mtimeMs)
+			}
+		}
 	}
 }
