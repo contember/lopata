@@ -223,7 +223,7 @@ describe('HMR E2E — vite', () => {
 		mutateWorkerSource("'v1'", "'v2'")
 
 		// Vite invalidates the module (lazy — reload happens on next request)
-		await output.waitForNew('page reload', 30_000)
+		await output.waitForNew('hmr update', 30_000)
 
 		// Request triggers ensureWorkerModule() → re-import
 		const res = await fetch(`http://localhost:${PORT}/version`)
@@ -237,7 +237,7 @@ describe('HMR E2E — vite', () => {
 		output.mark()
 		mutateWorkerSource("'v2'", "'v3'")
 
-		await output.waitForNew('page reload', 30_000)
+		await output.waitForNew('hmr update', 30_000)
 
 		const res = await fetch(`http://localhost:${PORT}/version`)
 		expect(await res.text()).toBe('v3')
