@@ -1151,12 +1151,12 @@ export class SqliteWorkflowBinding {
 	): void {
 		const resolvedLimits = limits ?? WORKFLOW_DEFAULTS
 		const resolvedClock = clock ?? realClock
-		const instance = new workflowClass({}, env)
-		const step = new WorkflowStepImpl(abortController.signal, db, id, resolvedLimits, resolvedClock)
-		const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
 		;(async () => {
 			let workflowTraceId: string | undefined
 			try {
+				const instance = new workflowClass({}, env)
+				const step = new WorkflowStepImpl(abortController.signal, db, id, resolvedLimits, resolvedClock)
+				const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
 				const result = await startSpan({
 					name: `workflow ${workflowName ?? 'run'}`,
 					kind: 'server',

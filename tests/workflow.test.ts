@@ -973,6 +973,43 @@ describe('resumeInterrupted', () => {
 	})
 })
 
+describe('resumeInterrupted with failing constructor', () => {
+	test('workflow with throwing constructor errors gracefully and does not crash loop', async () => {
+		class BadConstructorWorkflow extends WorkflowEntrypointBase {
+			constructor() {
+				throw new Error('constructor exploded')
+			}
+			override async run(): Promise<unknown> {
+				return 'never'
+			}
+		}
+
+		// Manually insert a "running" instance as if the process crashed
+		const now = Date.now()
+		db.query(
+			'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+		).run('crash-loop-1', 'bad-ctor-wf', 'BadConstructorWorkflow', JSON.stringify({}), 'running', now, now)
+
+		const binding = new SqliteWorkflowBinding(db, 'bad-ctor-wf', 'BadConstructorWorkflow')
+		binding._setClass(BadConstructorWorkflow, {})
+		// This should NOT throw — the error should be caught internally
+		binding.resumeInterrupted()
+
+		await new Promise((r) => setTimeout(r, 300))
+
+		const retrieved = await binding.get('crash-loop-1')
+		const s = await retrieved.status()
+		expect(s.status).toBe('errored')
+		expect(s.error!.message).toContain('constructor exploded')
+
+		// Second resume should NOT pick up the errored instance — no crash loop
+		binding.resumeInterrupted()
+		await new Promise((r) => setTimeout(r, 100))
+		const s2 = await (await binding.get('crash-loop-1')).status()
+		expect(s2.status).toBe('errored')
+	})
+})
+
 describe("sleep/sleepUntil don't count toward step limit", () => {
 	test('sleep and sleepUntil do not consume step limit', async () => {
 		// Create a workflow with many sleeps — should not hit the 1024 step limit
