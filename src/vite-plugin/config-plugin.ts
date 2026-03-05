@@ -49,7 +49,7 @@ export function configPlugin(envName: string): Plugin {
 					watch: {
 						usePolling: true,
 						interval: 500,
-						ignored: ['**/.lopata/**', '**/.wrangler/**', '**/.react-router/**'],
+						ignored: ['**/.lopata/**', '**/.wrangler/**', '**/.react-router/**', '**/*.tmp.*'],
 					},
 				},
 				environments: {
