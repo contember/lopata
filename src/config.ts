@@ -58,6 +58,7 @@ export interface WranglerConfig {
 		instance_type?: string
 		name?: string
 	}[]
+	routes?: (string | { pattern: string; zone_name?: string; custom_domain?: boolean })[]
 	analytics_engine_datasets?: { binding: string; dataset?: string }[]
 	browser?: { binding: string }
 	version_metadata?: { binding: string }
