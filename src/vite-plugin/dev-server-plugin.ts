@@ -130,6 +130,75 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		return currentModule ?? workerModule
 	}
 
+	/**
+	 * Dispatch a request through the worker's fetch() handler with tracing
+	 * and generation tracking. Throws on HMR race conditions so the caller
+	 * can retry.
+	 */
+	async function handleWorkerFetch(req: IncomingMessage, res: ServerResponse, next: Function): Promise<void> {
+		const activeModule = await ensureWorkerModule()
+		const genId = currentGenerationId
+		genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
+
+		try {
+			const request = nodeReqToRequest(req)
+			const parsedUrl = new URL(request.url)
+
+			const handler = activeModule.default as Record<string, unknown>
+			if (!handler || typeof handler.fetch !== 'function') {
+				console.error('[lopata:vite] Worker module default export has no fetch() method')
+				next()
+				return
+			}
+
+			// Capture caller stack before entering the worker (for async stack stitching)
+			const callerStack = new Error()
+
+			const ctx = new ExecutionContext()
+			const response = await (startSpan as Function)({
+				name: `${request.method} ${parsedUrl.pathname}`,
+				kind: 'server',
+				attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
+			}, () =>
+				runWithExecutionContext(ctx, async () => {
+					try {
+						const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
+						;(setSpanAttribute as Function)('http.status_code', resp.status)
+
+						// Intercept React Router error boundary responses with lopata error page
+						const routeError = (globalThis as any).__lopata_routeError
+						delete (globalThis as any).__lopata_routeError
+						if (routeError) {
+							if (routeError instanceof Error) {
+								stitchAsyncStack(routeError, callerStack)
+							}
+							console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
+							return (renderErrorPage as Function)(routeError, request, env, config)
+						}
+
+						ctx._awaitAll().catch(() => {})
+						return resp
+					} catch (err) {
+						if (isHmrRaceError(err)) {
+							currentModule = null
+							throw err
+						}
+						if (err instanceof Error) {
+							stitchAsyncStack(err, callerStack)
+						}
+						console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+						return (renderErrorPage as Function)(err, request, env, config)
+					}
+				})) as Response
+
+			writeResponse(response, res)
+		} finally {
+			const count = genActiveRequests.get(genId) ?? 1
+			if (count <= 1) genActiveRequests.delete(genId)
+			else genActiveRequests.set(genId, count - 1)
+		}
+	}
+
 	return {
 		name: 'lopata:dev-server',
 
@@ -356,67 +425,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 
 					try {
-						const activeModule = await ensureWorkerModule()
-						const genId = currentGenerationId
-						genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
-
-						try {
-							const request = nodeReqToRequest(req)
-							const parsedUrl = new URL(request.url)
-
-							const handler = activeModule.default as Record<string, unknown>
-							if (!handler || typeof handler.fetch !== 'function') {
-								console.error('[lopata:vite] Worker module default export has no fetch() method')
-								return next()
-							}
-
-							// Capture caller stack before entering the worker (for async stack stitching)
-							const callerStack = new Error()
-
-							const ctx = new ExecutionContext()
-							const response = await (startSpan as Function)({
-								name: `${request.method} ${parsedUrl.pathname}`,
-								kind: 'server',
-								attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
-							}, () =>
-								runWithExecutionContext(ctx, async () => {
-									try {
-										const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
-										;(setSpanAttribute as Function)('http.status_code', resp.status)
-
-										// Intercept React Router error boundary responses with lopata error page
-										const routeError = (globalThis as any).__lopata_routeError
-										delete (globalThis as any).__lopata_routeError
-										if (routeError) {
-											if (routeError instanceof Error) {
-												stitchAsyncStack(routeError, callerStack)
-											}
-											console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
-											return (renderErrorPage as Function)(routeError, request, env, config)
-										}
-
-										ctx._awaitAll().catch(() => {})
-										return resp
-									} catch (err) {
-										if (err instanceof Error) {
-											stitchAsyncStack(err, callerStack)
-										}
-										console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-										return (renderErrorPage as Function)(err, request, env, config)
-									}
-								})) as Response
-
-							writeResponse(response, res)
-						} finally {
-							const count = genActiveRequests.get(genId) ?? 1
-							if (count <= 1) genActiveRequests.delete(genId)
-							else genActiveRequests.set(genId, count - 1)
-						}
+						await handleWorkerFetch(req, res, next)
 					} catch (err) {
-						console.error('[lopata:vite] Request error:', err)
-						if (!res.headersSent) {
-							res.writeHead(500, { 'content-type': 'text/plain' })
-							res.end(err instanceof Error ? err.stack ?? err.message : String(err))
+						if (!isHmrRaceError(err)) {
+							writeRequestError(res, err)
+							return
+						}
+						// Retry once after a short delay — module graph may be mid-evaluation during HMR
+						await new Promise((resolve) => setTimeout(resolve, 200))
+						try {
+							await handleWorkerFetch(req, res, next)
+						} catch (retryErr) {
+							writeRequestError(res, retryErr)
 						}
 					}
 				})
@@ -619,6 +639,19 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
 			socket.destroy()
 		}
+	}
+}
+
+/** Detect transient TypeError from Vite module graph being mid-evaluation during HMR */
+function isHmrRaceError(err: unknown): boolean {
+	return err instanceof TypeError && err.message.includes('not be null or undefined')
+}
+
+function writeRequestError(res: ServerResponse, err: unknown): void {
+	console.error('[lopata:vite] Request error:', err)
+	if (!res.headersSent) {
+		res.writeHead(500, { 'content-type': 'text/plain' })
+		res.end(err instanceof Error ? err.stack ?? err.message : String(err))
 	}
 }
 
