@@ -14,9 +14,9 @@ import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
+import { RouteDispatcher } from '../route-matcher'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
-import { RouteDispatcher } from '../route-matcher'
 import { WorkerRegistry } from '../worker-registry'
 import type { CliContext } from './context'
 import { parseFlag } from './context'
@@ -125,7 +125,9 @@ export async function run(ctx: CliContext) {
 
 		// Warn if main worker has routes — they are ignored because main is the fallback
 		if (mainConfig.routes && mainConfig.routes.length > 0) {
-			console.warn('[lopata] Warning: main worker has "routes" in config — these are ignored in multi-worker mode (main worker is the fallback for unmatched requests)')
+			console.warn(
+				'[lopata] Warning: main worker has "routes" in config — these are ignored in multi-worker mode (main worker is the fallback for unmatched requests)',
+			)
 		}
 
 		// Build route dispatcher for route-based worker selection (aux workers only — main is the fallback)

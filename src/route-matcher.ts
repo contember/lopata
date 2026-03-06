@@ -119,7 +119,9 @@ export class RouteDispatcher {
 			// Skip duplicate patterns from different workers (first registered wins)
 			const existing = this.routes.find(r => r.pattern === pattern)
 			if (existing) {
-				console.warn(`[lopata] Warning: route pattern "${pattern}" is already registered by "${existing.workerName}" — skipping duplicate from "${workerName}"`)
+				console.warn(
+					`[lopata] Warning: route pattern "${pattern}" is already registered by "${existing.workerName}" — skipping duplicate from "${workerName}"`,
+				)
 				continue
 			}
 

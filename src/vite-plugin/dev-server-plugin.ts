@@ -283,14 +283,16 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				config,
 				gracePeriodMs: 0,
 				get active() {
-					return currentModule ? {
-						workerModule: currentModule,
-						env,
-						registry,
-						callFetch(_request: Request, _server: unknown) {
-							throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
-						},
-					} : null
+					return currentModule
+						? {
+							workerModule: currentModule,
+							env,
+							registry,
+							callFetch(_request: Request, _server: unknown) {
+								throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
+							},
+						}
+						: null
 				},
 				list() {
 					return Array.from(viteGenerations.values()).map(g => ({
@@ -400,7 +402,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 				// Warn if main worker has routes — they are ignored because main is the fallback
 				if (config.routes && config.routes.length > 0) {
-					console.warn('[lopata:vite] Warning: main worker has "routes" in config — these are ignored (main worker is the fallback for unmatched requests)')
+					console.warn(
+						'[lopata:vite] Warning: main worker has "routes" in config — these are ignored (main worker is the fallback for unmatched requests)',
+					)
 				}
 
 				// Build route dispatcher for aux workers with routes (main worker is the fallback)
@@ -663,7 +667,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					const response = await (startSpan as Function)({
 						name: `WS ${parsedUrl.pathname}`,
 						kind: 'server',
-						attributes: { 'http.method': 'GET', 'http.url': request.url, 'lopata.worker': (targetManager as any).config?.name ?? 'aux', 'lopata.websocket': true },
+						attributes: {
+							'http.method': 'GET',
+							'http.url': request.url,
+							'lopata.worker': (targetManager as any).config?.name ?? 'aux',
+							'lopata.websocket': true,
+						},
 					}, async () => {
 						return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
 					}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }

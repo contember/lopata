@@ -346,12 +346,16 @@ describe('RouteDispatcher', () => {
 		const dispatcher = new RouteDispatcher(fallback)
 
 		const worker = mockManager('worker')
-		dispatcher.addRoutes({
-			routes: [
-				{ pattern: 'api.example.com', custom_domain: true },
-				'/api/*',
-			],
-		} as any, worker, 'worker')
+		dispatcher.addRoutes(
+			{
+				routes: [
+					{ pattern: 'api.example.com', custom_domain: true },
+					'/api/*',
+				],
+			} as any,
+			worker,
+			'worker',
+		)
 
 		expect(dispatcher.getRegisteredRoutes()).toHaveLength(1)
 		expect(dispatcher.getRegisteredRoutes()[0]!.pattern).toBe('/api/*')
