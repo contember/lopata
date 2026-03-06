@@ -976,7 +976,8 @@ describe('resumeInterrupted', () => {
 describe('resumeInterrupted with failing constructor', () => {
 	test('workflow with throwing constructor errors gracefully and does not crash loop', async () => {
 		class BadConstructorWorkflow extends WorkflowEntrypointBase {
-			constructor() {
+			constructor(...args: ConstructorParameters<typeof WorkflowEntrypointBase>) {
+				super(...args)
 				throw new Error('constructor exploded')
 			}
 			override async run(): Promise<unknown> {
