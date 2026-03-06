@@ -2,11 +2,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
 import { FileWatcher } from '../file-watcher.ts'
+import { RouteDispatcher } from '../route-matcher.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
 	envName: string
-	auxiliaryWorkers?: { configPath: string }[]
+	auxiliaryWorkers?: { configPath: string; name?: string }[]
 }
 
 /**
@@ -48,6 +49,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let handleDashboardRequest: Function
 	let handleApiRequest: Function
 	let getTraceStore: Function
+
+	// Route dispatcher for multi-worker route-based dispatching
+	let routeDispatcher: RouteDispatcher | undefined
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
@@ -275,11 +279,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			apiMod.setDashboardConfig(config)
 
 			// 3b. Create generation tracking adapter for dashboard
-			const mainAdapter = {
+			const mainAdapter: import('../route-matcher.ts').RoutableManager & Record<string, unknown> = {
 				config,
 				gracePeriodMs: 0,
 				get active() {
-					return currentModule ? { workerModule: currentModule, env, registry } : null
+					return currentModule ? {
+						workerModule: currentModule,
+						env,
+						registry,
+						callFetch(_request: Request, _server: unknown) {
+							throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
+						},
+					} : null
 				},
 				list() {
 					return Array.from(viteGenerations.values()).map(g => ({
@@ -328,7 +339,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				},
 				setGracePeriod() {},
 			}
-			apiMod.setGenerationManager(mainAdapter as any)
+			apiMod.setGenerationManager(mainAdapter as any) // Dashboard adapter, not RoutableManager
 
 			// 4. Set up auxiliary workers (if configured)
 			if (options.auxiliaryWorkers && options.auxiliaryWorkers.length > 0) {
@@ -338,42 +349,74 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				const { GenerationManager } = await import('../generation-manager.ts')
 
 				workerRegistry = new WorkerRegistry()
-				workerRegistry.register(config.name, mainAdapter as any, true)
+				workerRegistry.register(config.name, mainAdapter as any, true) // Dashboard adapter
 
+				const auxConfigs = new Map<string, { config: any; name: string }>()
 				for (const workerDef of options.auxiliaryWorkers) {
 					const auxConfigPath = resolve(projectRoot, workerDef.configPath)
 					const auxBaseDir = dirname(auxConfigPath)
 					const auxConfig = await configMod.loadConfig(auxConfigPath)
-					console.log(`[lopata:vite] Auxiliary worker: ${auxConfig.name}`)
+					const workerName = workerDef.name ?? auxConfig.name
+					auxConfigs.set(workerDef.configPath, { config: auxConfig, name: workerName })
+					console.log(`[lopata:vite] Auxiliary worker: ${workerName}`)
 
 					const auxManager = new GenerationManager(auxConfig, auxBaseDir, {
-						workerName: auxConfig.name,
+						workerName,
 						workerRegistry,
 						isMain: false,
 					})
-					workerRegistry.register(auxConfig.name, auxManager)
+					workerRegistry.register(workerName, auxManager)
 
 					try {
 						const gen = await auxManager.reload()
-						console.log(`[lopata:vite] Auxiliary worker "${auxConfig.name}" loaded (gen ${gen.id})`)
+						console.log(`[lopata:vite] Auxiliary worker "${workerName}" loaded (gen ${gen.id})`)
 					} catch (err) {
-						console.error(`[lopata:vite] Failed to load auxiliary worker "${auxConfig.name}":`, err)
+						console.error(`[lopata:vite] Failed to load auxiliary worker "${workerName}":`, err)
 					}
 
 					// File watcher for aux worker reload
 					const auxSrcDir = dirname(resolve(auxBaseDir, auxConfig.main))
 					const auxWatcher = new FileWatcher(auxSrcDir, () => {
-						auxManager.reload().then(gen => {
-							console.log(`[lopata:vite] Auxiliary worker "${auxConfig.name}" reloaded → generation ${gen.id}`)
+						auxManager.reload().then(async gen => {
+							console.log(`[lopata:vite] Auxiliary worker "${workerName}" reloaded → generation ${gen.id}`)
+							// Re-read config and update routes in case routes changed
+							if (routeDispatcher) {
+								try {
+									const freshConfig = await configMod.loadConfig(auxConfigPath)
+									routeDispatcher.addRoutes(freshConfig, auxManager, workerName)
+								} catch (err) {
+									console.warn(`[lopata:vite] Failed to re-read config for "${workerName}" routes:`, err)
+								}
+							}
 						}).catch(err => {
-							console.error(`[lopata:vite] Reload failed for "${auxConfig.name}":`, err)
+							console.error(`[lopata:vite] Reload failed for "${workerName}":`, err)
 						})
 					})
 					auxWatcher.start()
-					console.log(`[lopata:vite] Watching ${auxSrcDir} for changes (${auxConfig.name})`)
+					console.log(`[lopata:vite] Watching ${auxSrcDir} for changes (${workerName})`)
 				}
 
 				apiMod.setWorkerRegistry(workerRegistry)
+
+				// Warn if main worker has routes — they are ignored because main is the fallback
+				if (config.routes && config.routes.length > 0) {
+					console.warn('[lopata:vite] Warning: main worker has "routes" in config — these are ignored (main worker is the fallback for unmatched requests)')
+				}
+
+				// Build route dispatcher for aux workers with routes (main worker is the fallback)
+				routeDispatcher = new RouteDispatcher(mainAdapter)
+				for (const workerDef of options.auxiliaryWorkers) {
+					const cached = auxConfigs.get(workerDef.configPath)
+					if (!cached) continue
+					const auxMgr = workerRegistry.getManager(cached.name)
+					if (auxMgr) routeDispatcher.addRoutes(cached.config, auxMgr, cached.name)
+				}
+				if (routeDispatcher.hasRoutes()) {
+					for (const r of routeDispatcher.getRegisteredRoutes()) {
+						console.log(`[lopata:vite] Route: ${r.pattern} → ${r.workerName}`)
+					}
+				}
+				apiMod.setRouteDispatcher(routeDispatcher)
 			}
 
 			// 5. Set up WebSocket trace streaming on httpServer
@@ -422,6 +465,39 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							}
 						}
 						return
+					}
+
+					// Route-based dispatch: if an aux worker matches, use its GenerationManager directly
+					if (routeDispatcher) {
+						const parsedUrl = new URL(url, 'http://localhost')
+						const targetManager = routeDispatcher.resolve(parsedUrl.pathname)
+						// If the resolved manager is not the main adapter, dispatch via aux worker
+						if (!routeDispatcher.isFallback(targetManager)) {
+							const gen = targetManager.active
+							if (!gen) {
+								if (!res.headersSent) {
+									res.writeHead(503, { 'content-type': 'text/plain' })
+									res.end('No active generation for matched route')
+								}
+								return
+							}
+							try {
+								const request = nodeReqToRequest(req)
+								const response = await (startSpan as Function)({
+									name: `${request.method} ${parsedUrl.pathname}`,
+									kind: 'server',
+									attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.worker': (targetManager as any).config?.name ?? 'aux' },
+								}, async () => {
+									const resp = await gen.callFetch(request, null) as Response
+									;(setSpanAttribute as Function)('http.status_code', resp.status)
+									return resp
+								}) as Response
+								writeResponse(response, res)
+							} catch (err) {
+								writeRequestError(res, err)
+							}
+							return
+						}
 					}
 
 					try {
@@ -572,6 +648,37 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		try {
 			const { CFWebSocket } = await import('../bindings/websocket-pair.ts')
 
+			const request = nodeReqToRequest(req)
+			const parsedUrl = new URL(request.url)
+
+			// Route-based dispatch: if an aux worker matches, delegate the WebSocket upgrade to it
+			if (routeDispatcher) {
+				const targetManager = routeDispatcher.resolve(parsedUrl.pathname)
+				if (!routeDispatcher.isFallback(targetManager)) {
+					const gen = targetManager.active
+					if (!gen) {
+						socket.destroy()
+						return
+					}
+					const response = await (startSpan as Function)({
+						name: `WS ${parsedUrl.pathname}`,
+						kind: 'server',
+						attributes: { 'http.method': 'GET', 'http.url': request.url, 'lopata.worker': (targetManager as any).config?.name ?? 'aux', 'lopata.websocket': true },
+					}, async () => {
+						return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
+					}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
+					const cfSocket = response.webSocket
+					if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
+						socket.destroy()
+						return
+					}
+					wss.handleUpgrade(req, socket, head, (ws: any) => {
+						bridgeCfWebSocket(cfSocket, ws)
+					})
+					return
+				}
+			}
+
 			const activeModule = await ensureWorkerModule()
 			const handler = activeModule.default as Record<string, unknown>
 			if (!handler || typeof handler.fetch !== 'function') {
@@ -579,7 +686,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				return
 			}
 
-			const request = nodeReqToRequest(req)
 			const ctx = new ExecutionContext()
 			const response = await runWithExecutionContext(ctx, async () => {
 				return (handler.fetch as Function).call(handler, request, env, ctx) as Response
@@ -593,47 +699,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 			// Complete the upgrade and bridge
 			wss.handleUpgrade(req, socket, head, (ws: any) => {
-				// CF → real WS
-				cfSocket.addEventListener('message', (ev: Event) => {
-					const msgData = (ev as MessageEvent).data
-					try {
-						ws.send(msgData)
-					} catch {}
-				})
-				cfSocket.addEventListener('close', (ev: Event) => {
-					const ce = ev as CloseEvent
-					try {
-						ws.close(ce.code, ce.reason)
-					} catch {}
-				})
-				// Accept the client side so events from server.send() are dispatched
-				cfSocket.accept()
-
-				// Real WS → CF
-				ws.on('message', (data: Buffer, isBinary: boolean) => {
-					const msgData = isBinary
-						? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
-						: data.toString('utf-8')
-					const evt = { type: 'message' as const, data: msgData }
-					if (cfSocket._peer?._accepted) {
-						cfSocket._peer._dispatchWSEvent(evt)
-					} else if (cfSocket._peer) {
-						cfSocket._peer._eventQueue.push(evt)
-					}
-				})
-
-				ws.on('close', (code: number, reason: Buffer) => {
-					if (cfSocket._peer && cfSocket._peer.readyState !== 3) {
-						const evt = { type: 'close' as const, code: code ?? 1000, reason: reason?.toString('utf-8') ?? '', wasClean: true }
-						if (cfSocket._peer._accepted) {
-							cfSocket._peer._dispatchWSEvent(evt)
-						} else {
-							cfSocket._peer._eventQueue.push(evt)
-						}
-						cfSocket._peer.readyState = 3
-					}
-					cfSocket.readyState = 3
-				})
+				bridgeCfWebSocket(cfSocket, ws)
 			})
 		} catch (err) {
 			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
@@ -669,6 +735,51 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')
+}
+
+/** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
+function bridgeCfWebSocket(cfSocket: any, ws: any): void {
+	// CF → real WS
+	cfSocket.addEventListener('message', (ev: Event) => {
+		const msgData = (ev as MessageEvent).data
+		try {
+			ws.send(msgData)
+		} catch {}
+	})
+	cfSocket.addEventListener('close', (ev: Event) => {
+		const ce = ev as CloseEvent
+		try {
+			ws.close(ce.code, ce.reason)
+		} catch {}
+	})
+	// Accept the client side so events from server.send() are dispatched
+	cfSocket.accept()
+
+	// Real WS → CF
+	ws.on('message', (data: Buffer, isBinary: boolean) => {
+		const msgData = isBinary
+			? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+			: data.toString('utf-8')
+		const evt = { type: 'message' as const, data: msgData }
+		if (cfSocket._peer?._accepted) {
+			cfSocket._peer._dispatchWSEvent(evt)
+		} else if (cfSocket._peer) {
+			cfSocket._peer._eventQueue.push(evt)
+		}
+	})
+
+	ws.on('close', (code: number, reason: Buffer) => {
+		if (cfSocket._peer && cfSocket._peer.readyState !== 3) {
+			const evt = { type: 'close' as const, code: code ?? 1000, reason: reason?.toString('utf-8') ?? '', wasClean: true }
+			if (cfSocket._peer._accepted) {
+				cfSocket._peer._dispatchWSEvent(evt)
+			} else {
+				cfSocket._peer._eventQueue.push(evt)
+			}
+			cfSocket._peer.readyState = 3
+		}
+		cfSocket.readyState = 3
+	})
 }
 
 function matchGlob(text: string, pattern: string): boolean {

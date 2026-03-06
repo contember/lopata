@@ -11,7 +11,7 @@ export interface LopataPluginConfig {
 	/** Vite environment name for SSR. Default: "ssr" */
 	viteEnvironment?: { name?: string }
 	/** Auxiliary workers loaded via native Bun import (not through Vite). */
-	auxiliaryWorkers?: { configPath: string }[]
+	auxiliaryWorkers?: { configPath: string; name?: string }[]
 }
 
 /**
