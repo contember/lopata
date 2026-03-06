@@ -13,6 +13,7 @@ import { handlers as kv } from './handlers/kv'
 import { handlers as overview } from './handlers/overview'
 import { handlers as queue } from './handlers/queue'
 import { handlers as r2 } from './handlers/r2'
+import { handlers as routes } from './handlers/routes'
 import { handlers as scheduled } from './handlers/scheduled'
 import { handlers as traces } from './handlers/traces'
 import { handlers as warnings } from './handlers/warnings'
@@ -40,6 +41,7 @@ const allHandlers = {
 	...ai,
 	...analyticsEngine,
 	...warnings,
+	...routes,
 }
 
 export type Procedures = {

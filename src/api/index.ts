@@ -1,13 +1,14 @@
 import type { WranglerConfig } from '../config'
 import type { GenerationManager } from '../generation-manager'
 import type { LopataConfig } from '../lopata-config'
+import type { RouteDispatcher } from '../route-matcher'
 import type { WorkerRegistry } from '../worker-registry'
 import { handlePreflight, withCors } from './cors'
 import { dispatch } from './dispatch'
 import { handleR2Download, handleR2Upload } from './r2'
 import type { HandlerContext } from './types'
 
-const ctx: HandlerContext = { config: null, manager: null, registry: null, lopataConfig: null }
+const ctx: HandlerContext = { config: null, manager: null, registry: null, lopataConfig: null, routeDispatcher: null }
 
 export function setDashboardConfig(config: WranglerConfig): void {
 	ctx.config = config
@@ -23,6 +24,10 @@ export function setWorkerRegistry(registry: WorkerRegistry): void {
 
 export function setLopataConfig(config: LopataConfig): void {
 	ctx.lopataConfig = config
+}
+
+export function setRouteDispatcher(dispatcher: RouteDispatcher): void {
+	ctx.routeDispatcher = dispatcher
 }
 
 export function handleApiRequest(request: Request): Response | Promise<Response> {

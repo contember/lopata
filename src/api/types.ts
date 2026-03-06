@@ -379,6 +379,7 @@ export type { SpanData, SpanEventData, TraceDetail, TraceEvent, TraceSummary } f
 import type { WranglerConfig } from '../config'
 import type { GenerationManager } from '../generation-manager'
 import type { LopataConfig } from '../lopata-config'
+import type { RouteDispatcher } from '../route-matcher'
 import type { WorkerRegistry } from '../worker-registry'
 
 export interface HandlerContext {
@@ -386,6 +387,13 @@ export interface HandlerContext {
 	manager: GenerationManager | null
 	registry: WorkerRegistry | null
 	lopataConfig: LopataConfig | null
+	routeDispatcher: RouteDispatcher | null
+}
+
+export interface RouteInfo {
+	pattern: string
+	workerName: string
+	isFallback: boolean
 }
 
 /** Collect configs from all workers (registry) or fall back to single config. */

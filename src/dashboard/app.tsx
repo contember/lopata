@@ -18,6 +18,7 @@ import { HomeView } from './views/home'
 import { KvView } from './views/kv'
 import { QueueView } from './views/queue'
 import { R2View } from './views/r2'
+import { RoutesView } from './views/routes'
 import { ScheduledView } from './views/scheduled'
 import { TracesView } from './views/traces'
 import { WorkersView } from './views/workers'
@@ -59,6 +60,7 @@ const NAV_GROUPS: NavGroup[] = [
 		label: 'Compute',
 		items: [
 			{ path: '/workers', label: 'Workers', icon: 'workers' },
+			{ path: '/routes', label: 'Routes', icon: 'routes' },
 			{ path: '/do', label: 'Durable Objects', icon: 'do' },
 			{ path: '/containers', label: 'Containers', icon: 'containers' },
 			{ path: '/workflows', label: 'Workflows', icon: 'workflows' },
@@ -195,6 +197,7 @@ function App() {
 		if (route.startsWith('/errors')) return <ErrorsView route={route} />
 		if (route.startsWith('/traces')) return <TracesView route={route} />
 		if (route.startsWith('/workers')) return <WorkersView />
+		if (route.startsWith('/routes')) return <RoutesView />
 		if (route.startsWith('/generations')) return <GenerationsView />
 		if (route.startsWith('/kv')) return <KvView route={route} />
 		if (route.startsWith('/r2')) return <R2View route={route} />

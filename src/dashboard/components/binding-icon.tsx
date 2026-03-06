@@ -109,6 +109,15 @@ const ICONS: Record<string, () => preact.JSX.Element> = {
 			<line x1="13" y1="8" x2="15" y2="8" />
 		</svg>
 	),
+	routes: () => (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+			<circle cx="4" cy="4" r="1.5" />
+			<circle cx="12" cy="4" r="1.5" />
+			<circle cx="12" cy="12" r="1.5" />
+			<path d="M4 5.5v2c0 1.5 1 2.5 2.5 2.5h4" />
+			<path d="M4 5.5v5c0 1 .5 1.5 1.5 1.5h5" />
+		</svg>
+	),
 	overview: () => (
 		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
 			<rect x="2" y="2" width="5" height="5" rx="1" />
