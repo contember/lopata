@@ -3,7 +3,7 @@ Error.stackTraceLimit = 50
 
 import '../plugin'
 import path from 'node:path'
-import { handleApiRequest, setDashboardConfig, setGenerationManager, setLopataConfig, setWorkerRegistry } from '../api'
+import { handleApiRequest, setDashboardConfig, setGenerationManager, setLopataConfig, setRouteDispatcher, setWorkerRegistry } from '../api'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
@@ -16,6 +16,7 @@ import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
+import { RouteDispatcher } from '../route-matcher'
 import { WorkerRegistry } from '../worker-registry'
 import type { CliContext } from './context'
 import { parseFlag } from './context'
@@ -32,6 +33,8 @@ export async function run(ctx: CliContext) {
 	const lopataConfig = await loadLopataConfig(baseDir)
 
 	let manager: GenerationManager
+	let routeDispatcher: RouteDispatcher | undefined
+	let registry: WorkerRegistry | undefined
 
 	if (lopataConfig) {
 		// ─── Multi-worker mode ─────────────────────────────────────────
@@ -48,7 +51,7 @@ export async function run(ctx: CliContext) {
 			console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}", using "dev"`)
 		}
 
-		const registry = new WorkerRegistry()
+		registry = new WorkerRegistry()
 
 		// Load main worker config
 		const mainConfig = await loadConfig(lopataConfig.main, envFlag)
@@ -67,9 +70,11 @@ export async function run(ctx: CliContext) {
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
-		// Load auxiliary workers
+		// Load auxiliary workers and collect their configs for route setup
+		const auxConfigs = new Map<string, import('../config').WranglerConfig>()
 		for (const workerDef of lopataConfig.workers ?? []) {
 			const auxConfig = await loadConfig(workerDef.config, envFlag)
+			auxConfigs.set(workerDef.name, auxConfig)
 			const auxBaseDir = path.dirname(workerDef.config)
 			console.log(`[lopata] Auxiliary worker: ${workerDef.name} (${auxConfig.name})`)
 
@@ -94,8 +99,17 @@ export async function run(ctx: CliContext) {
 			// File watcher for aux worker
 			const auxSrcDir = path.dirname(path.resolve(auxBaseDir, auxConfig.main))
 			const auxWatcher = new FileWatcher(auxSrcDir, () => {
-				auxManager.reload().then(gen => {
+				auxManager.reload().then(async gen => {
 					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id}`)
+					// Re-read config and update routes in case routes changed
+					if (routeDispatcher) {
+						try {
+							const freshConfig = await loadConfig(workerDef.config, envFlag)
+							routeDispatcher.addRoutes(freshConfig, auxManager, workerDef.name)
+						} catch (err) {
+							console.warn(`[lopata] Failed to re-read config for "${workerDef.name}" routes:`, err)
+						}
+					}
 				}).catch(err => {
 					console.error(`[lopata] Reload failed for "${workerDef.name}":`, err)
 				})
@@ -109,9 +123,28 @@ export async function run(ctx: CliContext) {
 		const firstGen = await mainManager.reload()
 		console.log(`[lopata] Main worker → generation ${firstGen.id}`)
 
+		// Warn if main worker has routes — they are ignored because main is the fallback
+		if (mainConfig.routes && mainConfig.routes.length > 0) {
+			console.warn('[lopata] Warning: main worker has "routes" in config — these are ignored in multi-worker mode (main worker is the fallback for unmatched requests)')
+		}
+
+		// Build route dispatcher for route-based worker selection (aux workers only — main is the fallback)
+		routeDispatcher = new RouteDispatcher(mainManager)
+		for (const workerDef of lopataConfig.workers ?? []) {
+			const auxConfig = auxConfigs.get(workerDef.name)
+			const auxMgr = registry.getManager(workerDef.name)
+			if (auxConfig && auxMgr) routeDispatcher.addRoutes(auxConfig, auxMgr, workerDef.name)
+		}
+		if (routeDispatcher.hasRoutes()) {
+			for (const r of routeDispatcher.getRegisteredRoutes()) {
+				console.log(`[lopata] Route: ${r.pattern} → ${r.workerName}`)
+			}
+		}
+
 		manager = mainManager
 		setGenerationManager(manager)
 		setWorkerRegistry(registry)
+		setRouteDispatcher(routeDispatcher)
 
 		// File watcher for main worker
 		const mainSrcDir = path.dirname(path.resolve(mainBaseDir, mainConfig.main))
@@ -201,9 +234,10 @@ export async function run(ctx: CliContext) {
 				}
 			}
 
-			// Email handler: POST /cdn-cgi/handler/email?from=...&to=...
+			// Email handler: POST /cdn-cgi/handler/email?from=...&to=...&worker=<name>
 			if (url.pathname === '/cdn-cgi/handler/email' && request.method === 'POST') {
-				const gen = manager.active
+				const targetManager = resolveWorkerParam(url, registry, manager)
+				const gen = targetManager.active
 				if (!gen) return new Response('No active generation', { status: 503 })
 				const from = url.searchParams.get('from') ?? ''
 				const to = url.searchParams.get('to') ?? ''
@@ -211,16 +245,18 @@ export async function run(ctx: CliContext) {
 				return gen.callEmail(new Uint8Array(raw), from, to)
 			}
 
-			// Manual trigger: GET /cdn-cgi/handler/scheduled?cron=<expression>
+			// Manual trigger: GET /cdn-cgi/handler/scheduled?cron=<expression>&worker=<name>
 			if (url.pathname === '/cdn-cgi/handler/scheduled') {
-				const gen = manager.active
+				const targetManager = resolveWorkerParam(url, registry, manager)
+				const gen = targetManager.active
 				if (!gen) return new Response('No active generation', { status: 503 })
 				const cronExpr = url.searchParams.get('cron') ?? '* * * * *'
 				return gen.callScheduled(cronExpr)
 			}
 
-			// Delegate to active generation
-			const gen = manager.active
+			// Delegate to active generation (route-based dispatch in multi-worker mode)
+			const targetManager = routeDispatcher ? routeDispatcher.resolve(url.pathname) : manager
+			const gen = targetManager.active
 			if (!gen) {
 				return new Response('No active generation', { status: 503 })
 			}
@@ -400,6 +436,18 @@ export async function run(ctx: CliContext) {
 
 	// Keep the process alive until signal
 	await new Promise(() => {})
+}
+
+/** Resolve a ?worker= query param to the target GenerationManager, falling back to the main manager. */
+function resolveWorkerParam(url: URL, registry: WorkerRegistry | undefined, fallback: GenerationManager): GenerationManager {
+	const workerName = url.searchParams.get('worker')
+	if (!workerName || !registry) return fallback
+	const target = registry.getManager(workerName)
+	if (!target) {
+		console.warn(`[lopata] Unknown worker "${workerName}" in ?worker= param, using main worker`)
+		return fallback
+	}
+	return target
 }
 
 function matchGlob(text: string, pattern: string): boolean {
