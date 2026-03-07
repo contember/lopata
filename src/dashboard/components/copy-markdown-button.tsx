@@ -35,8 +35,11 @@ function extractText(v: unknown): string {
 	if (typeof v === 'string' || typeof v === 'number') return String(v)
 	if (Array.isArray(v)) return v.map(extractText).join('')
 	if (typeof v === 'object' && 'props' in v) {
-		const props = (v as { props: Record<string, unknown> }).props
-		return extractText(props.children)
+		const vnode = v as { type: unknown; props: Record<string, unknown> }
+		if (typeof vnode.type === 'function') {
+			return extractText(vnode.type(vnode.props))
+		}
+		return extractText(vnode.props.children)
 	}
 	return String(v)
 }
