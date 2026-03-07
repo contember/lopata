@@ -1,6 +1,6 @@
 ---
 description: Prepare and publish a new release
-allowed-tools: Bash(git:*), Bash(bun run build:assets), Read, Edit
+allowed-tools: Bash(git:*), Bash(gh:*), Bash(bun run build:assets), Read, Edit
 ---
 
 ## Release Process
@@ -35,7 +35,12 @@ allowed-tools: Bash(git:*), Bash(bun run build:assets), Read, Edit
    git push origin v<new-version>
    ```
 
-8. **Report success** with link to GitHub Actions where the release is running.
+8. **Create a GitHub Release with release notes:**
+   - Generate release notes from the commit log between the previous tag and the new tag
+   - Group changes by type (features, fixes, other)
+   - Create the release using `gh release create v<new-version> --title "v<new-version>" --notes "<release-notes>"`
+
+9. **Report success** with link to GitHub Actions where the release is running.
 
 ## Notes
 
