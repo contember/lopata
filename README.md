@@ -198,6 +198,43 @@ export default {
 
 Workers can call each other via service bindings configured in their respective `wrangler.jsonc`. Both HTTP (`binding.fetch()`) and RPC (`binding.myMethod()`) modes are supported, including promise pipelining.
 
+### Route patterns
+
+In multi-worker setups, auxiliary workers can use Cloudflare-style `routes` in their `wrangler.jsonc` to handle specific URL patterns. The main worker acts as a fallback for unmatched requests.
+
+```jsonc
+// workers/api/wrangler.jsonc
+{
+	"name": "api-worker",
+	"main": "src/index.ts",
+	"routes": [
+		"example.com/api/*",
+		{ "pattern": "example.com/webhooks/*" }
+	]
+}
+```
+
+Routes support trailing `*` wildcards (`/api/*` matches `/api/foo` and `/api/foo/bar`). When multiple routes match, the most specific one wins (more path segments > fewer, exact match > wildcard). The domain portion is stripped — only the path is matched locally.
+
+### Host-based routing
+
+For routing by hostname (e.g. subdomains), use `hosts` in `lopata.config.ts`:
+
+```ts
+export default {
+	main: './wrangler.jsonc',
+	workers: [
+		{
+			name: 'api-worker',
+			config: './workers/api/wrangler.jsonc',
+			hosts: ['api.localhost', '*.api.localhost'],
+		},
+	],
+}
+```
+
+Wildcard patterns like `*.localhost` match any subdomain. Requests matching a host pattern are routed to that worker regardless of path-based routes.
+
 ## Vite plugin
 
 The Vite plugin is a drop-in replacement for `@cloudflare/vite-plugin`. It provides:

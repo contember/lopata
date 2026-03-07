@@ -61,6 +61,11 @@ export function matchRoute(pathname: string, pattern: string): boolean {
 	return pathname === pattern
 }
 
+/** Extract hostname from a Host header value, stripping the port if present. */
+export function extractHostname(hostHeader: string): string {
+	return hostHeader.split(':')[0] ?? ''
+}
+
 /** Match a hostname against a host pattern. Supports exact match and `*.domain` wildcards. */
 export function matchHost(hostname: string, pattern: string): boolean {
 	if (pattern === hostname) return true
@@ -83,6 +88,8 @@ interface RouteEntry {
 	pattern: string
 	workerName: string
 	manager: RoutableManager
+	/** When set, this route only matches requests whose hostname matches one of these patterns. */
+	hostPatterns?: string[]
 }
 
 /**
@@ -101,7 +108,7 @@ export class RouteDispatcher {
 		this.fallback = fallback
 	}
 
-	addRoutes(config: WranglerConfig, manager: RoutableManager, workerName: string): void {
+	addRoutes(config: WranglerConfig, manager: RoutableManager, workerName: string, hostPatterns?: string[]): void {
 		if (!config.routes) return
 
 		// Clear existing routes for this worker to support re-registration (e.g. config reload)
@@ -127,8 +134,8 @@ export class RouteDispatcher {
 				console.warn(`[lopata] Warning: route pattern "${pattern}" has a wildcard not at the end — Cloudflare only supports trailing wildcards`)
 			}
 
-			// Skip duplicate patterns from different workers (first registered wins)
-			const existing = this.routes.find(r => r.pattern === pattern)
+			// Skip duplicate patterns from different workers when they share the same host scope (first registered wins)
+			const existing = this.routes.find(r => r.pattern === pattern && !r.hostPatterns && !hostPatterns)
 			if (existing) {
 				console.warn(
 					`[lopata] Warning: route pattern "${pattern}" is already registered by "${existing.workerName}" — skipping duplicate from "${workerName}"`,
@@ -136,9 +143,17 @@ export class RouteDispatcher {
 				continue
 			}
 
-			this.routes.push({ pattern, workerName, manager })
+			this.routes.push({ pattern, workerName, manager, hostPatterns })
 			this.sorted = false
 		}
+	}
+
+	/** Register a worker that handles all paths for the given host patterns (no wrangler routes needed). */
+	addHostWorker(manager: RoutableManager, workerName: string, hostPatterns: string[]): void {
+		// Clear existing routes for this worker to support re-registration
+		this.routes = this.routes.filter(r => r.workerName !== workerName)
+		this.routes.push({ pattern: '/*', workerName, manager, hostPatterns })
+		this.sorted = false
 	}
 
 	removeWorkerRoutes(workerName: string): void {
@@ -166,9 +181,13 @@ export class RouteDispatcher {
 		this.sorted = true
 	}
 
-	resolve(pathname: string): RoutableManager {
+	resolve(pathname: string, hostname?: string): RoutableManager {
 		this.ensureSorted()
 		for (const entry of this.routes) {
+			// If route has host constraints, skip unless hostname matches one of them
+			if (entry.hostPatterns) {
+				if (hostname === undefined || !entry.hostPatterns.some(hp => matchHost(hostname, hp))) continue
+			}
 			if (matchRoute(pathname, entry.pattern)) {
 				return entry.manager
 			}
@@ -185,8 +204,8 @@ export class RouteDispatcher {
 		return this.routes.length > 0
 	}
 
-	getRegisteredRoutes(): Array<{ pattern: string; workerName: string }> {
+	getRegisteredRoutes(): Array<{ pattern: string; workerName: string; hostPatterns?: string[] }> {
 		this.ensureSorted()
-		return this.routes.map(r => ({ pattern: r.pattern, workerName: r.workerName }))
+		return this.routes.map(r => ({ pattern: r.pattern, workerName: r.workerName, hostPatterns: r.hostPatterns }))
 	}
 }

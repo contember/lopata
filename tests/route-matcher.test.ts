@@ -450,4 +450,65 @@ describe('RouteDispatcher', () => {
 		expect(dispatcher.resolve('/webhooks/stripe')).toBe(worker)
 		expect(dispatcher.resolve('/other')).toBe(fallback)
 	})
+
+	test('host-scoped routes only match when hostname matches', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+
+		const hostingWorker = mockManager('hosting')
+		dispatcher.addRoutes({ routes: ['*.example.com/*'] } as any, hostingWorker, 'hosting', ['*.localhost'])
+
+		// Without matching host, route should not match
+		expect(dispatcher.resolve('/anything', 'localhost')).toBe(fallback)
+		// With matching host, route should match
+		expect(dispatcher.resolve('/anything', 'site.localhost')).toBe(hostingWorker)
+	})
+
+	test('host-scoped routes do not interfere with unscoped routes', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+
+		const apiWorker = mockManager('api')
+		const hostingWorker = mockManager('hosting')
+
+		dispatcher.addRoutes({ routes: ['/api/*'] } as any, apiWorker, 'api')
+		dispatcher.addRoutes({ routes: ['*.example.com/*'] } as any, hostingWorker, 'hosting', ['*.localhost'])
+
+		// Unscoped route matches regardless of host
+		expect(dispatcher.resolve('/api/foo', 'localhost')).toBe(apiWorker)
+		expect(dispatcher.resolve('/api/foo', 'site.localhost')).toBe(apiWorker)
+		// Host-scoped route only matches with correct host
+		expect(dispatcher.resolve('/other', 'site.localhost')).toBe(hostingWorker)
+		expect(dispatcher.resolve('/other', 'localhost')).toBe(fallback)
+	})
+
+	test('host-scoped routes with path constraints are respected', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+
+		const hostingWorker = mockManager('hosting')
+		dispatcher.addRoutes({ routes: ['*.example.com/api/*'] } as any, hostingWorker, 'hosting', ['*.localhost'])
+
+		// Matching host + matching path
+		expect(dispatcher.resolve('/api/foo', 'site.localhost')).toBe(hostingWorker)
+		// Matching host + non-matching path
+		expect(dispatcher.resolve('/other', 'site.localhost')).toBe(fallback)
+		// Non-matching host + matching path
+		expect(dispatcher.resolve('/api/foo', 'localhost')).toBe(fallback)
+	})
+
+	test('same path pattern with different host scopes both register', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+
+		const workerA = mockManager('worker-a')
+		const workerB = mockManager('worker-b')
+
+		dispatcher.addRoutes({ routes: ['a.example.com/*'] } as any, workerA, 'worker-a', ['a.localhost'])
+		dispatcher.addRoutes({ routes: ['b.example.com/*'] } as any, workerB, 'worker-b', ['b.localhost'])
+
+		expect(dispatcher.resolve('/foo', 'a.localhost')).toBe(workerA)
+		expect(dispatcher.resolve('/foo', 'b.localhost')).toBe(workerB)
+		expect(dispatcher.resolve('/foo', 'other.localhost')).toBe(fallback)
+	})
 })

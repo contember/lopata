@@ -22,7 +22,7 @@ import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
-import { matchHost, RouteDispatcher } from '../route-matcher'
+import { extractHostname, RouteDispatcher } from '../route-matcher'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
 import { WorkerRegistry } from '../worker-registry'
@@ -43,7 +43,6 @@ export async function run(ctx: CliContext) {
 	let manager: GenerationManager
 	let routeDispatcher: RouteDispatcher | undefined
 	let registry: WorkerRegistry | undefined
-	const hostRoutes: Array<{ pattern: string; manager: GenerationManager; workerName: string }> = []
 
 	if (lopataConfig) {
 		// ─── Multi-worker mode ─────────────────────────────────────────
@@ -114,7 +113,7 @@ export async function run(ctx: CliContext) {
 					if (routeDispatcher) {
 						try {
 							const freshConfig = await loadConfig(workerDef.config, envFlag)
-							routeDispatcher.addRoutes(freshConfig, auxManager, workerDef.name)
+							routeDispatcher.addRoutes(freshConfig, auxManager, workerDef.name, workerDef.hosts)
 						} catch (err) {
 							console.warn(`[lopata] Failed to re-read config for "${workerDef.name}" routes:`, err)
 						}
@@ -139,32 +138,35 @@ export async function run(ctx: CliContext) {
 			)
 		}
 
-		// Build route dispatcher for route-based worker selection (aux workers only — main is the fallback)
+		// Build route dispatcher (aux workers only — main is the fallback)
 		routeDispatcher = new RouteDispatcher(mainManager)
 		for (const workerDef of lopataConfig.workers ?? []) {
-			const auxConfig = auxConfigs.get(workerDef.name)
 			const auxMgr = registry.getManager(workerDef.name)
-			if (auxConfig && auxMgr) routeDispatcher.addRoutes(auxConfig, auxMgr, workerDef.name)
+			if (!auxMgr) continue
+			const auxConfig = auxConfigs.get(workerDef.name)
+			if (auxConfig) routeDispatcher.addRoutes(auxConfig, auxMgr, workerDef.name, workerDef.hosts)
+			// Workers with hosts but no wrangler routes still need a catch-all entry
+			if (workerDef.hosts && (!auxConfig?.routes || auxConfig.routes.length === 0)) {
+				routeDispatcher.addHostWorker(auxMgr, workerDef.name, workerDef.hosts)
+			}
 		}
 		if (routeDispatcher.hasRoutes()) {
 			for (const r of routeDispatcher.getRegisteredRoutes()) {
-				console.log(`[lopata] Route: ${r.pattern} → ${r.workerName}`)
+				const hostInfo = r.hostPatterns ? ` (hosts: ${r.hostPatterns.join(', ')})` : ''
+				console.log(`[lopata] Route: ${r.pattern} → ${r.workerName}${hostInfo}`)
 			}
 		}
 
-		// Build host-based routing map
+		// Expose host routes to the dashboard API
+		const hostRoutes: Array<{ pattern: string; workerName: string }> = []
 		for (const workerDef of lopataConfig.workers ?? []) {
 			if (!workerDef.hosts) continue
-			const auxMgr = registry.getManager(workerDef.name)
-			if (!auxMgr) continue
 			for (const host of workerDef.hosts) {
-				hostRoutes.push({ pattern: host, manager: auxMgr, workerName: workerDef.name })
-				console.log(`[lopata] Host route: ${host} → ${workerDef.name}`)
+				hostRoutes.push({ pattern: host, workerName: workerDef.name })
 			}
 		}
-
 		if (hostRoutes.length > 0) {
-			setHostRoutes(hostRoutes.map(hr => ({ pattern: hr.pattern, workerName: hr.workerName })))
+			setHostRoutes(hostRoutes)
 		}
 
 		manager = mainManager
@@ -280,21 +282,9 @@ export async function run(ctx: CliContext) {
 				return gen.callScheduled(cronExpr)
 			}
 
-			// Host-based dispatch: match Host header against configured patterns
-			if (hostRoutes.length > 0) {
-				const hostHeader = request.headers.get('host') ?? ''
-				const hostname = hostHeader.split(':')[0] ?? ''
-				for (const hr of hostRoutes) {
-					if (matchHost(hostname, hr.pattern)) {
-						const gen = hr.manager.active
-						if (!gen) return new Response('No active generation', { status: 503 })
-						return (await gen.callFetch(request, server)) as Response
-					}
-				}
-			}
-
-			// Delegate to active generation (route-based dispatch in multi-worker mode)
-			const targetManager = routeDispatcher ? routeDispatcher.resolve(url.pathname) : manager
+			// Delegate to active generation (host + route dispatch in multi-worker mode)
+			const reqHostname = extractHostname(request.headers.get('host') ?? '')
+			const targetManager = routeDispatcher ? routeDispatcher.resolve(url.pathname, reqHostname) : manager
 			const gen = targetManager.active
 			if (!gen) {
 				return new Response('No active generation', { status: 503 })
