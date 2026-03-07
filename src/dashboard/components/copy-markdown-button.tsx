@@ -30,8 +30,19 @@ export function CopyMarkdownButton({ getMarkdown, title }: { getMarkdown: () => 
 	)
 }
 
+function extractText(v: unknown): string {
+	if (v == null || v === false || v === true) return ''
+	if (typeof v === 'string' || typeof v === 'number') return String(v)
+	if (Array.isArray(v)) return v.map(extractText).join('')
+	if (typeof v === 'object' && 'props' in v) {
+		const props = (v as { props: Record<string, unknown> }).props
+		return extractText(props.children)
+	}
+	return String(v)
+}
+
 export function tableToMarkdown(headers: string[], rows: unknown[][]): string {
-	const escape = (v: unknown) => String(v ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ')
+	const escape = (v: unknown) => extractText(v).replace(/\|/g, '\\|').replace(/\n/g, ' ')
 	const headerRow = `| ${headers.map(escape).join(' | ')} |`
 	const separator = `| ${headers.map(() => '---').join(' | ')} |`
 	const dataRows = rows.map(row => `| ${row.map(escape).join(' | ')} |`)
