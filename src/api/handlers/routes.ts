@@ -12,6 +12,7 @@ export const handlers = {
 
 		if (ctx.routeDispatcher) {
 			for (const r of ctx.routeDispatcher.getRegisteredRoutes()) {
+				if (r.hostPatterns) continue // already shown as host routes
 				routes.push({ pattern: r.pattern, workerName: r.workerName, isFallback: false })
 			}
 		}
