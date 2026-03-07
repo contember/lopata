@@ -68,6 +68,9 @@ export class RpcTarget {
     this[Symbol.for("lopata.RpcTarget")] = true;
   }
 }
+export function waitUntil(promise) {
+  // Shim for build — at runtime, the real cloudflare:workers module provides this.
+}
 `
 			}
 
