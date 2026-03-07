@@ -61,6 +61,17 @@ export function matchRoute(pathname: string, pattern: string): boolean {
 	return pathname === pattern
 }
 
+/** Match a hostname against a host pattern. Supports exact match and `*.domain` wildcards. */
+export function matchHost(hostname: string, pattern: string): boolean {
+	if (pattern === hostname) return true
+	if (pattern.startsWith('*.')) {
+		const suffix = pattern.slice(1) // ".localhost"
+		// Must have a subdomain — bare hostname doesn't match *.localhost
+		return hostname.endsWith(suffix) && hostname.length > suffix.length
+	}
+	return false
+}
+
 /** Count the number of path segments in a pattern (ignoring trailing wildcard). */
 function segmentCount(pattern: string): number {
 	const clean = pattern.replace(/\/?\*$/, '')

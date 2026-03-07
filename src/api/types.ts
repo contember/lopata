@@ -382,18 +382,25 @@ import type { LopataConfig } from '../lopata-config'
 import type { RouteDispatcher } from '../route-matcher'
 import type { WorkerRegistry } from '../worker-registry'
 
+export interface HostRouteInfo {
+	pattern: string
+	workerName: string
+}
+
 export interface HandlerContext {
 	config: WranglerConfig | null
 	manager: GenerationManager | null
 	registry: WorkerRegistry | null
 	lopataConfig: LopataConfig | null
 	routeDispatcher: RouteDispatcher | null
+	hostRoutes: HostRouteInfo[]
 }
 
 export interface RouteInfo {
 	pattern: string
 	workerName: string
 	isFallback: boolean
+	type?: 'path' | 'host'
 }
 
 /** Collect configs from all workers (registry) or fall back to single config. */

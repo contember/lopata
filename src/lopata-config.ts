@@ -8,6 +8,7 @@ export interface LopataConfig {
 	workers?: Array<{
 		name: string
 		config: string
+		hosts?: string[]
 	}>
 	/** Enable real cron scheduling based on wrangler triggers.crons (default: false) */
 	cron?: boolean

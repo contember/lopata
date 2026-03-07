@@ -3,7 +3,15 @@ Error.stackTraceLimit = 50
 
 import '../plugin'
 import path from 'node:path'
-import { handleApiRequest, setDashboardConfig, setGenerationManager, setLopataConfig, setRouteDispatcher, setWorkerRegistry } from '../api'
+import {
+	handleApiRequest,
+	setDashboardConfig,
+	setGenerationManager,
+	setHostRoutes,
+	setLopataConfig,
+	setRouteDispatcher,
+	setWorkerRegistry,
+} from '../api'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
@@ -14,7 +22,7 @@ import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
-import { RouteDispatcher } from '../route-matcher'
+import { matchHost, RouteDispatcher } from '../route-matcher'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
 import { WorkerRegistry } from '../worker-registry'
@@ -35,6 +43,7 @@ export async function run(ctx: CliContext) {
 	let manager: GenerationManager
 	let routeDispatcher: RouteDispatcher | undefined
 	let registry: WorkerRegistry | undefined
+	const hostRoutes: Array<{ pattern: string; manager: GenerationManager; workerName: string }> = []
 
 	if (lopataConfig) {
 		// ─── Multi-worker mode ─────────────────────────────────────────
@@ -141,6 +150,21 @@ export async function run(ctx: CliContext) {
 			for (const r of routeDispatcher.getRegisteredRoutes()) {
 				console.log(`[lopata] Route: ${r.pattern} → ${r.workerName}`)
 			}
+		}
+
+		// Build host-based routing map
+		for (const workerDef of lopataConfig.workers ?? []) {
+			if (!workerDef.hosts) continue
+			const auxMgr = registry.getManager(workerDef.name)
+			if (!auxMgr) continue
+			for (const host of workerDef.hosts) {
+				hostRoutes.push({ pattern: host, manager: auxMgr, workerName: workerDef.name })
+				console.log(`[lopata] Host route: ${host} → ${workerDef.name}`)
+			}
+		}
+
+		if (hostRoutes.length > 0) {
+			setHostRoutes(hostRoutes.map(hr => ({ pattern: hr.pattern, workerName: hr.workerName })))
 		}
 
 		manager = mainManager
@@ -254,6 +278,19 @@ export async function run(ctx: CliContext) {
 				if (!gen) return new Response('No active generation', { status: 503 })
 				const cronExpr = url.searchParams.get('cron') ?? '* * * * *'
 				return gen.callScheduled(cronExpr)
+			}
+
+			// Host-based dispatch: match Host header against configured patterns
+			if (hostRoutes.length > 0) {
+				const hostHeader = request.headers.get('host') ?? ''
+				const hostname = hostHeader.split(':')[0] ?? ''
+				for (const hr of hostRoutes) {
+					if (matchHost(hostname, hr.pattern)) {
+						const gen = hr.manager.active
+						if (!gen) return new Response('No active generation', { status: 503 })
+						return (await gen.callFetch(request, server)) as Response
+					}
+				}
 			}
 
 			// Delegate to active generation (route-based dispatch in multi-worker mode)

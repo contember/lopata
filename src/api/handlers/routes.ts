@@ -5,6 +5,11 @@ export const handlers = {
 	'routes.list'(_input: {}, ctx: HandlerContext): RouteInfo[] {
 		const routes: RouteInfo[] = []
 
+		// Show host-based routes
+		for (const hr of ctx.hostRoutes) {
+			routes.push({ pattern: hr.pattern, workerName: hr.workerName, isFallback: false, type: 'host' })
+		}
+
 		if (ctx.routeDispatcher) {
 			for (const r of ctx.routeDispatcher.getRegisteredRoutes()) {
 				routes.push({ pattern: r.pattern, workerName: r.workerName, isFallback: false })

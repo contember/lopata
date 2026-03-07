@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { extractPathPattern, matchRoute, RouteDispatcher } from '../src/route-matcher'
+import { extractPathPattern, matchHost, matchRoute, RouteDispatcher } from '../src/route-matcher'
 
 describe('extractPathPattern', () => {
 	test('strips domain from route pattern', () => {
@@ -127,6 +127,44 @@ describe('matchRoute', () => {
 		expect(matchRoute('/api/', '/api')).toBe(false)
 		expect(matchRoute('/api', '/api/')).toBe(false)
 		expect(matchRoute('/api/', '/api/')).toBe(true)
+	})
+})
+
+describe('matchHost', () => {
+	test('exact match', () => {
+		expect(matchHost('localhost', 'localhost')).toBe(true)
+		expect(matchHost('example.com', 'example.com')).toBe(true)
+	})
+
+	test('exact match fails for different hosts', () => {
+		expect(matchHost('other.com', 'example.com')).toBe(false)
+	})
+
+	test('wildcard *.localhost matches subdomains', () => {
+		expect(matchHost('site-xxx.localhost', '*.localhost')).toBe(true)
+		expect(matchHost('foo.localhost', '*.localhost')).toBe(true)
+	})
+
+	test('wildcard *.localhost does not match bare hostname', () => {
+		expect(matchHost('localhost', '*.localhost')).toBe(false)
+	})
+
+	test('wildcard *.example.com matches subdomains', () => {
+		expect(matchHost('app.example.com', '*.example.com')).toBe(true)
+		expect(matchHost('api.example.com', '*.example.com')).toBe(true)
+	})
+
+	test('wildcard *.example.com does not match bare domain', () => {
+		expect(matchHost('example.com', '*.example.com')).toBe(false)
+	})
+
+	test('wildcard does not match nested subdomains partially', () => {
+		// *.localhost should match a.b.localhost too (suffix match)
+		expect(matchHost('a.b.localhost', '*.localhost')).toBe(true)
+	})
+
+	test('non-wildcard pattern does not match subdomains', () => {
+		expect(matchHost('sub.localhost', 'localhost')).toBe(false)
 	})
 })
 

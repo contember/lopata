@@ -3,6 +3,7 @@ import { useQuery } from '../rpc/hooks'
 
 const TYPE_COLORS: Record<string, string> = {
 	route: 'bg-emerald-500/15 text-emerald-500',
+	host: 'bg-blue-500/15 text-blue-500',
 	fallback: 'bg-panel-active text-text-data',
 }
 
@@ -18,7 +19,7 @@ export function RoutesView() {
 					rows={routes.map(r => [
 						<span class="font-mono text-xs font-medium">{r.pattern}</span>,
 						<span class="text-text-secondary">{r.workerName}</span>,
-						<StatusBadge status={r.isFallback ? 'fallback' : 'route'} colorMap={TYPE_COLORS} />,
+						<StatusBadge status={r.isFallback ? 'fallback' : r.type === 'host' ? 'host' : 'route'} colorMap={TYPE_COLORS} />,
 					])}
 				/>
 			)}

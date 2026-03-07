@@ -2,12 +2,13 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
 import { FileWatcher } from '../file-watcher.ts'
-import { RouteDispatcher } from '../route-matcher.ts'
+import type { RoutableManager } from '../route-matcher.ts'
+import { matchHost, RouteDispatcher } from '../route-matcher.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
 	envName: string
-	auxiliaryWorkers?: { configPath: string; name?: string }[]
+	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
 }
 
 /**
@@ -52,6 +53,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	// Route dispatcher for multi-worker route-based dispatching
 	let routeDispatcher: RouteDispatcher | undefined
+	// Host-based routing: map host patterns to managers
+	const hostRoutes: Array<{ pattern: string; manager: RoutableManager; workerName: string }> = []
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
@@ -201,6 +204,33 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			if (count <= 1) genActiveRequests.delete(genId)
 			else genActiveRequests.set(genId, count - 1)
 		}
+	}
+
+	/**
+	 * Resolve an auxiliary worker for the given request.
+	 * Checks host-based routes first, then path-based route dispatcher.
+	 * Returns null if the request should be handled by the main worker.
+	 */
+	function resolveAuxWorker(req: IncomingMessage, url: string): { manager: RoutableManager; workerName: string } | null {
+		// Host-based dispatch
+		if (hostRoutes.length > 0) {
+			const hostHeader = req.headers.host ?? ''
+			const hostname = hostHeader.split(':')[0] ?? ''
+			for (const hr of hostRoutes) {
+				if (matchHost(hostname, hr.pattern)) {
+					return hr
+				}
+			}
+		}
+		// Path-based dispatch
+		if (routeDispatcher) {
+			const parsedUrl = new URL(url, 'http://localhost')
+			const targetManager = routeDispatcher.resolve(parsedUrl.pathname)
+			if (!routeDispatcher.isFallback(targetManager)) {
+				return { manager: targetManager, workerName: (targetManager as any).config?.name ?? 'aux' }
+			}
+		}
+		return null
 	}
 
 	return {
@@ -421,6 +451,22 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 				}
 				apiMod.setRouteDispatcher(routeDispatcher)
+
+				// Build host-based routing map
+				for (const workerDef of options.auxiliaryWorkers) {
+					if (!workerDef.hosts) continue
+					const cached = auxConfigs.get(workerDef.configPath)
+					if (!cached) continue
+					const auxMgr = workerRegistry.getManager(cached.name)
+					if (!auxMgr) continue
+					for (const host of workerDef.hosts) {
+						hostRoutes.push({ pattern: host, manager: auxMgr, workerName: cached.name })
+						console.log(`[lopata:vite] Host route: ${host} → ${cached.name}`)
+					}
+				}
+				if (hostRoutes.length > 0) {
+					apiMod.setHostRoutes(hostRoutes.map(hr => ({ pattern: hr.pattern, workerName: hr.workerName })))
+				}
 			}
 
 			// 5. Set up WebSocket trace streaming on httpServer
@@ -471,26 +517,25 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						return
 					}
 
-					// Route-based dispatch: if an aux worker matches, use its GenerationManager directly
-					if (routeDispatcher) {
-						const parsedUrl = new URL(url, 'http://localhost')
-						const targetManager = routeDispatcher.resolve(parsedUrl.pathname)
-						// If the resolved manager is not the main adapter, dispatch via aux worker
-						if (!routeDispatcher.isFallback(targetManager)) {
-							const gen = targetManager.active
+					// Aux worker dispatch: host-based first, then route-based
+					{
+						const resolved = resolveAuxWorker(req, url)
+						if (resolved) {
+							const gen = resolved.manager.active
 							if (!gen) {
 								if (!res.headersSent) {
 									res.writeHead(503, { 'content-type': 'text/plain' })
-									res.end('No active generation for matched route')
+									res.end('No active generation')
 								}
 								return
 							}
 							try {
 								const request = nodeReqToRequest(req)
+								const parsedUrl = new URL(request.url)
 								const response = await (startSpan as Function)({
 									name: `${request.method} ${parsedUrl.pathname}`,
 									kind: 'server',
-									attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.worker': (targetManager as any).config?.name ?? 'aux' },
+									attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.worker': resolved.workerName },
 								}, async () => {
 									const resp = await gen.callFetch(request, null) as Response
 									;(setSpanAttribute as Function)('http.status_code', resp.status)
@@ -655,37 +700,35 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const request = nodeReqToRequest(req)
 			const parsedUrl = new URL(request.url)
 
-			// Route-based dispatch: if an aux worker matches, delegate the WebSocket upgrade to it
-			if (routeDispatcher) {
-				const targetManager = routeDispatcher.resolve(parsedUrl.pathname)
-				if (!routeDispatcher.isFallback(targetManager)) {
-					const gen = targetManager.active
-					if (!gen) {
-						socket.destroy()
-						return
-					}
-					const response = await (startSpan as Function)({
-						name: `WS ${parsedUrl.pathname}`,
-						kind: 'server',
-						attributes: {
-							'http.method': 'GET',
-							'http.url': request.url,
-							'lopata.worker': (targetManager as any).config?.name ?? 'aux',
-							'lopata.websocket': true,
-						},
-					}, async () => {
-						return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
-					}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
-					const cfSocket = response.webSocket
-					if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
-						socket.destroy()
-						return
-					}
-					wss.handleUpgrade(req, socket, head, (ws: any) => {
-						bridgeCfWebSocket(cfSocket, ws)
-					})
+			// Aux worker dispatch for WebSocket: host-based first, then route-based
+			const resolved = resolveAuxWorker(req, req.url ?? '/')
+			if (resolved) {
+				const gen = resolved.manager.active
+				if (!gen) {
+					socket.destroy()
 					return
 				}
+				const response = await (startSpan as Function)({
+					name: `WS ${parsedUrl.pathname}`,
+					kind: 'server',
+					attributes: {
+						'http.method': 'GET',
+						'http.url': request.url,
+						'lopata.worker': resolved.workerName,
+						'lopata.websocket': true,
+					},
+				}, async () => {
+					return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
+				}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
+				const cfSocket = response.webSocket
+				if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
+					socket.destroy()
+					return
+				}
+				wss.handleUpgrade(req, socket, head, (ws: any) => {
+					bridgeCfWebSocket(cfSocket, ws)
+				})
+				return
 			}
 
 			const activeModule = await ensureWorkerModule()
