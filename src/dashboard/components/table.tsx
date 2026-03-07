@@ -1,6 +1,11 @@
+import { CopyMarkdownButton, tableToMarkdown } from './copy-markdown-button'
+
 export function Table({ headers, rows }: { headers: string[]; rows: unknown[][] }) {
 	return (
 		<div class="bg-panel rounded-lg border border-border overflow-x-auto">
+			<div class="flex justify-end px-2 pt-2">
+				<CopyMarkdownButton getMarkdown={() => tableToMarkdown(headers, rows)} />
+			</div>
 			<table class="w-full text-sm">
 				<thead>
 					<tr class="border-b border-border-subtle">

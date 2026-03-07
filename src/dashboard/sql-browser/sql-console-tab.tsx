@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
+import { CopyMarkdownButton, recordsToMarkdown } from '../components/copy-markdown-button'
 import type { QueryResult } from '../rpc/types'
 import { HistoryPanel } from './history-panels'
 import type { useHistory } from './hooks'
@@ -148,6 +149,9 @@ export function SqlConsoleTab({ execQuery, generateSql, initialSql, history }: {
 function ResultTable({ columns, rows }: { columns: string[]; rows: Record<string, unknown>[] }) {
 	return (
 		<div class="bg-panel rounded-lg border border-border overflow-x-auto">
+			<div class="flex justify-end px-2 pt-2">
+				<CopyMarkdownButton getMarkdown={() => recordsToMarkdown(columns, rows)} />
+			</div>
 			<table class="w-full text-sm">
 				<thead>
 					<tr class="border-b border-border-subtle">

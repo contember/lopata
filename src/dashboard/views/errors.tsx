@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'preact/hooks'
 import { RefreshButton } from '../components'
+import { CopyMarkdownButton, keyValueToMarkdown, tableToMarkdown } from '../components/copy-markdown-button'
 import { KeyValueTable } from '../components/key-value-table'
 import { navigate } from '../lib'
 import { rpc } from '../rpc/client'
@@ -63,12 +64,28 @@ function ErrorList() {
 				<div class="flex gap-2 items-center">
 					<RefreshButton onClick={() => loadErrors()} />
 					{errors.length > 0 && (
-						<button
-							onClick={handleClear}
-							class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
-						>
-							Clear all
-						</button>
+						<>
+							<CopyMarkdownButton
+								getMarkdown={() =>
+									tableToMarkdown(
+										['Source', 'Error', 'Message', 'Context', 'Worker', 'Time'],
+										errors.map(err => [
+											err.source ?? '-',
+											err.errorName,
+											err.errorMessage,
+											err.requestMethod && err.requestUrl ? `${err.requestMethod} ${err.requestUrl}` : '-',
+											err.workerName ?? '-',
+											formatTimestamp(err.timestamp),
+										]),
+									)}
+							/>
+							<button
+								onClick={handleClear}
+								class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
+							>
+								Clear all
+							</button>
+						</>
 					)}
 				</div>
 			</div>
@@ -214,12 +231,15 @@ function ErrorDetailPage({ errorId }: { errorId: string }) {
 					<span class="text-text-dim">/</span>
 					<span class="text-ink font-semibold">{errorId.slice(0, 12)}...</span>
 				</div>
-				<button
-					onClick={handleDelete}
-					class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
-				>
-					Delete
-				</button>
+				<div class="flex items-center gap-2">
+					<CopyMarkdownButton getMarkdown={() => errorToMarkdown(detail)} title="Copy error as Markdown for LLM" />
+					<button
+						onClick={handleDelete}
+						class="rounded-md px-3 py-1.5 text-sm font-medium bg-panel border border-border text-text-secondary btn-danger transition-all"
+					>
+						Delete
+					</button>
+				</div>
 			</div>
 
 			{/* Error header */}
@@ -567,4 +587,63 @@ function truncateUrl(url: string): string {
 	} catch {
 		return url.length > 50 ? url.slice(0, 50) + '...' : url
 	}
+}
+
+function errorToMarkdown(detail: ErrorDetail): string {
+	const { data } = detail
+	const lines: string[] = []
+
+	lines.push(`## ${data.error.name}: ${data.error.message}`)
+	if (detail.source) lines.push(`**Source:** ${detail.source}`)
+	if (data.runtime.workerName) lines.push(`**Worker:** ${data.runtime.workerName}`)
+	lines.push('')
+
+	if (data.error.stack) {
+		lines.push('### Stack Trace')
+		lines.push('```')
+		lines.push(data.error.stack)
+		lines.push('```')
+		lines.push('')
+	}
+
+	if (data.error.frames.length > 0) {
+		lines.push('### Source Code')
+		for (const frame of data.error.frames) {
+			lines.push(`#### ${frame.file}:${frame.line}:${frame.column}${frame.function ? ` in ${frame.function}` : ''}`)
+			if (frame.source && frame.source.length > 0) {
+				const startLine = frame.line - (frame.sourceLine ?? 0)
+				lines.push('```')
+				frame.source.forEach((line, i) => {
+					const lineNum = startLine + i
+					const marker = i === frame.sourceLine ? '>' : ' '
+					lines.push(`${marker} ${lineNum} | ${line}`)
+				})
+				lines.push('```')
+			}
+			lines.push('')
+		}
+	}
+
+	if (data.request.method && data.request.url) {
+		lines.push('### Request')
+		lines.push(`${data.request.method} ${data.request.url}`)
+		const headers = Object.entries(data.request.headers)
+		if (headers.length > 0) {
+			lines.push('')
+			lines.push(keyValueToMarkdown(data.request.headers))
+		}
+		lines.push('')
+	}
+
+	if (data.bindings.length > 0) {
+		lines.push('### Bindings')
+		lines.push(tableToMarkdown(['Name', 'Type'], data.bindings.map(b => [b.name, b.type])))
+		lines.push('')
+	}
+
+	lines.push('### Runtime')
+	lines.push(`- **Bun:** ${data.runtime.bunVersion}`)
+	lines.push(`- **Platform:** ${data.runtime.platform} / ${data.runtime.arch}`)
+
+	return lines.join('\n')
 }

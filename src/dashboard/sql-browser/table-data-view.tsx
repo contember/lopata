@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import { CopyMarkdownButton, recordsToMarkdown } from '../components/copy-markdown-button'
 import { replaceRoute } from '../lib'
 import type { D1Table, QueryResult } from '../rpc/types'
 import { EditableCell } from './editable-cell'
@@ -381,6 +382,7 @@ export function TableDataView(
 							</div>
 						)}
 					</div>
+					<CopyMarkdownButton getMarkdown={() => recordsToMarkdown(displayCols, rows)} />
 					<button
 						onClick={() => setShowInsert(!showInsert)}
 						class={`rounded-md px-3 py-1.5 text-sm font-medium transition-all ${
