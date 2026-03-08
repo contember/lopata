@@ -15,6 +15,7 @@ import { EmailView } from './views/email'
 import { ErrorsView } from './views/errors'
 import { GenerationsView } from './views/generations'
 import { HomeView } from './views/home'
+import { HostsView } from './views/hosts'
 import { KvView } from './views/kv'
 import { QueueView } from './views/queue'
 import { R2View } from './views/r2'
@@ -61,6 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
 		items: [
 			{ path: '/workers', label: 'Workers', icon: 'workers' },
 			{ path: '/routes', label: 'Routes', icon: 'routes' },
+			{ path: '/hosts', label: 'Hosts Check', icon: 'routes' },
 			{ path: '/do', label: 'Durable Objects', icon: 'do' },
 			{ path: '/containers', label: 'Containers', icon: 'containers' },
 			{ path: '/workflows', label: 'Workflows', icon: 'workflows' },
@@ -198,6 +200,7 @@ function App() {
 		if (route.startsWith('/traces')) return <TracesView route={route} />
 		if (route.startsWith('/workers')) return <WorkersView />
 		if (route.startsWith('/routes')) return <RoutesView />
+		if (route.startsWith('/hosts')) return <HostsView />
 		if (route.startsWith('/generations')) return <GenerationsView />
 		if (route.startsWith('/kv')) return <KvView route={route} />
 		if (route.startsWith('/r2')) return <R2View route={route} />

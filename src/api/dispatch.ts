@@ -9,6 +9,7 @@ import { handlers as durableObjects } from './handlers/do'
 import { handlers as email } from './handlers/email'
 import { handlers as errors } from './handlers/errors'
 import { handlers as generations } from './handlers/generations'
+import { handlers as hosts } from './handlers/hosts'
 import { handlers as kv } from './handlers/kv'
 import { handlers as overview } from './handlers/overview'
 import { handlers as queue } from './handlers/queue'
@@ -42,6 +43,7 @@ const allHandlers = {
 	...analyticsEngine,
 	...warnings,
 	...routes,
+	...hosts,
 }
 
 export type Procedures = {

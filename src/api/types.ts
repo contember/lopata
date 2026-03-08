@@ -2,6 +2,7 @@
 
 export type { GenerationInfo } from '../generation'
 import type { GenerationInfo } from '../generation'
+import type { HostCheckResult } from '../hosts-check'
 
 export interface Paginated<T> {
 	items: T[]
@@ -394,6 +395,12 @@ export interface HandlerContext {
 	lopataConfig: LopataConfig | null
 	routeDispatcher: RouteDispatcher | null
 	hostRoutes: HostRouteInfo[]
+}
+
+export interface HostsCheckResponse {
+	results: HostCheckResult[]
+	hostsFilePath: string
+	error?: string
 }
 
 export interface RouteInfo {

@@ -55,6 +55,11 @@ switch (command) {
 		await mod.run(ctx, commandArgs.slice(1))
 		break
 	}
+	case 'hosts': {
+		const mod = await import('./cli/hosts')
+		await mod.run(ctx, commandArgs.slice(1))
+		break
+	}
 	case 'trace': {
 		const mod = await import('./cli/traces')
 		await mod.run(ctx, commandArgs.slice(1))
@@ -91,6 +96,7 @@ Commands:
   queues message purge <queue> Purge queue messages
   cache list                  List cache names
   cache purge [--name CACHE]  Purge cache entries
+  hosts check                 Check hosts file for configured host routes
   trace list [options]        List traces (--limit, --since, --search, --cursor)
   trace get <traceId>         Get trace detail as JSON
 
