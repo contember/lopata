@@ -77,6 +77,12 @@ export function matchHost(hostname: string, pattern: string): boolean {
 	return false
 }
 
+/** Check if host patterns contain any wildcard entries (e.g. `*.localhost`). */
+function hasWildcardHost(patterns?: string[]): boolean {
+	if (!patterns) return false
+	return patterns.some(p => p.includes('*'))
+}
+
 /** Count the number of path segments in a pattern (ignoring trailing wildcard). */
 function segmentCount(pattern: string): number {
 	const clean = pattern.replace(/\/?\*$/, '')
@@ -90,6 +96,8 @@ interface RouteEntry {
 	manager: RoutableManager
 	/** When set, this route only matches requests whose hostname matches one of these patterns. */
 	hostPatterns?: string[]
+	/** Pre-computed: true if any hostPattern contains a wildcard. Used for sort ordering. */
+	hasWildcardHost: boolean
 }
 
 /**
@@ -143,7 +151,7 @@ export class RouteDispatcher {
 				continue
 			}
 
-			this.routes.push({ pattern, workerName, manager, hostPatterns })
+			this.routes.push({ pattern, workerName, manager, hostPatterns, hasWildcardHost: hasWildcardHost(hostPatterns) })
 			this.sorted = false
 		}
 	}
@@ -152,7 +160,7 @@ export class RouteDispatcher {
 	addHostWorker(manager: RoutableManager, workerName: string, hostPatterns: string[]): void {
 		// Clear existing routes for this worker to support re-registration
 		this.routes = this.routes.filter(r => r.workerName !== workerName)
-		this.routes.push({ pattern: '/*', workerName, manager, hostPatterns })
+		this.routes.push({ pattern: '/*', workerName, manager, hostPatterns, hasWildcardHost: hasWildcardHost(hostPatterns) })
 		this.sorted = false
 	}
 
@@ -175,6 +183,8 @@ export class RouteDispatcher {
 			const aSlashStar = a.pattern.endsWith('/*')
 			const bSlashStar = b.pattern.endsWith('/*')
 			if (aSlashStar !== bSlashStar) return aSlashStar ? -1 : 1
+			// Exact host patterns beat wildcard host patterns (e.g. admin.localhost before *.localhost)
+			if (a.hasWildcardHost !== b.hasWildcardHost) return a.hasWildcardHost ? 1 : -1
 			// Longer pattern string as tiebreaker
 			return b.pattern.length - a.pattern.length
 		})

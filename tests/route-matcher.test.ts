@@ -497,6 +497,28 @@ describe('RouteDispatcher', () => {
 		expect(dispatcher.resolve('/api/foo', 'localhost')).toBe(fallback)
 	})
 
+	test('exact host patterns take priority over wildcard host patterns', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+
+		const hostingWorker = mockManager('hosting')
+		const mainWorker = mockManager('main-hosts')
+
+		// Register wildcard host worker first
+		dispatcher.addHostWorker(hostingWorker, 'hosting', ['*.localhost'])
+		// Register exact host worker second
+		dispatcher.addHostWorker(mainWorker, 'main-hosts', ['admin.localhost', 'localhost'])
+
+		// Exact host match should win over wildcard
+		expect(dispatcher.resolve('/', 'admin.localhost')).toBe(mainWorker)
+		expect(dispatcher.resolve('/anything', 'admin.localhost')).toBe(mainWorker)
+		expect(dispatcher.resolve('/', 'localhost')).toBe(mainWorker)
+		// Wildcard should still match other subdomains
+		expect(dispatcher.resolve('/', 'site.localhost')).toBe(hostingWorker)
+		// No host match falls through to fallback
+		expect(dispatcher.resolve('/', 'other.com')).toBe(fallback)
+	})
+
 	test('same path pattern with different host scopes both register', () => {
 		const fallback = mockManager('main')
 		const dispatcher = new RouteDispatcher(fallback)
