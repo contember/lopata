@@ -8,6 +8,7 @@ import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
 interface DevServerPluginOptions {
 	configPath?: string
 	envName: string
+	hosts?: string[]
 	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
 }
 
@@ -425,6 +426,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 				// Build route dispatcher (aux workers only — main is the fallback)
 				routeDispatcher = new RouteDispatcher(mainAdapter)
+
+				// Register main worker host patterns so they take priority over wildcard aux hosts
+				if (options.hosts?.length) {
+					routeDispatcher.addHostWorker(mainAdapter, config.name, options.hosts)
+				}
+
 				for (const workerDef of options.auxiliaryWorkers) {
 					const cached = auxConfigs.get(workerDef.configPath)
 					if (!cached) continue
@@ -446,6 +453,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 				// Expose host routes to the dashboard API
 				const hostRoutes: Array<{ pattern: string; workerName: string }> = []
+				if (options.hosts?.length) {
+					for (const host of options.hosts) {
+						hostRoutes.push({ pattern: host, workerName: config.name })
+					}
+				}
 				for (const workerDef of options.auxiliaryWorkers) {
 					if (!workerDef.hosts) continue
 					const cached = auxConfigs.get(workerDef.configPath)

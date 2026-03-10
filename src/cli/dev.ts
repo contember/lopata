@@ -140,6 +140,12 @@ export async function run(ctx: CliContext) {
 
 		// Build route dispatcher (aux workers only — main is the fallback)
 		routeDispatcher = new RouteDispatcher(mainManager)
+
+		// Register main worker host patterns so they take priority over wildcard aux hosts
+		if (lopataConfig.hosts?.length) {
+			routeDispatcher.addHostWorker(mainManager, mainConfig.name, lopataConfig.hosts)
+		}
+
 		for (const workerDef of lopataConfig.workers ?? []) {
 			const auxMgr = registry.getManager(workerDef.name)
 			if (!auxMgr) continue
@@ -159,6 +165,11 @@ export async function run(ctx: CliContext) {
 
 		// Expose host routes to the dashboard API
 		const hostRoutes: Array<{ pattern: string; workerName: string }> = []
+		if (lopataConfig.hosts?.length) {
+			for (const host of lopataConfig.hosts) {
+				hostRoutes.push({ pattern: host, workerName: mainConfig.name })
+			}
+		}
 		for (const workerDef of lopataConfig.workers ?? []) {
 			if (!workerDef.hosts) continue
 			for (const host of workerDef.hosts) {

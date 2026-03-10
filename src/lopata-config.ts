@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path'
 export interface LopataConfig {
 	/** Path to the main worker's wrangler config (HTTP entrypoint) */
 	main: string
+	/** Host patterns that route to the main worker (takes priority over wildcard auxiliary hosts). */
+	hosts?: string[]
 	/** Auxiliary workers, each with a service name and wrangler config path */
 	workers?: Array<{
 		name: string

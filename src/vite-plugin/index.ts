@@ -10,6 +10,8 @@ export interface LopataPluginConfig {
 	configPath?: string
 	/** Vite environment name for SSR. Default: "ssr" */
 	viteEnvironment?: { name?: string }
+	/** Host patterns that route to the main worker (takes priority over wildcard auxiliary hosts). */
+	hosts?: string[]
 	/** Auxiliary workers loaded via native Bun import (not through Vite). */
 	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
 }
@@ -36,6 +38,7 @@ export function lopata(config?: LopataPluginConfig): Plugin[] {
 		devServerPlugin({
 			configPath: config?.configPath,
 			envName,
+			hosts: config?.hosts,
 			auxiliaryWorkers: config?.auxiliaryWorkers,
 		}),
 		reactRouterPlugin(),
