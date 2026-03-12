@@ -1344,11 +1344,11 @@ describe('DO Instance Eviction', () => {
 	})
 })
 
-describe('DO Request Serialization (E-order)', () => {
-	test('concurrent calls are serialized', async () => {
+describe('DO Cooperative Concurrency', () => {
+	test('concurrent async calls interleave at await points', async () => {
 		const order: number[] = []
 
-		class SerialDO extends DurableObjectBase {
+		class ConcurrentDO extends DurableObjectBase {
 			async slow(id: number): Promise<void> {
 				order.push(id)
 				await new Promise((r) => setTimeout(r, 30))
@@ -1356,8 +1356,8 @@ describe('DO Request Serialization (E-order)', () => {
 			}
 		}
 
-		const ns = new DurableObjectNamespaceImpl(db, 'SerialDO', undefined, { evictionTimeoutMs: 0 })
-		ns._setClass(SerialDO, {})
+		const ns = new DurableObjectNamespaceImpl(db, 'ConcurrentDO', undefined, { evictionTimeoutMs: 0 })
+		ns._setClass(ConcurrentDO, {})
 		const stub = ns.get(ns.idFromName('test')) as any
 
 		// Launch two concurrent calls
@@ -1365,11 +1365,60 @@ describe('DO Request Serialization (E-order)', () => {
 		const p2 = stub.slow(2)
 		await Promise.all([p1, p2])
 
-		// Should be serialized: 1, 10, 2, 20 (not interleaved)
-		expect(order).toEqual([1, 10, 2, 20])
+		// With cooperative concurrency: both start, interleave at await setTimeout
+		expect(order).toEqual([1, 2, 10, 20])
 	})
 
-	test('blockConcurrencyWhile actually blocks concurrent calls', async () => {
+	test('concurrent requests run in parallel, not serially', async () => {
+		class TimedDO extends DurableObjectBase {
+			async wait(ms: number): Promise<number> {
+				await new Promise((r) => setTimeout(r, ms))
+				return ms
+			}
+		}
+
+		const ns = new DurableObjectNamespaceImpl(db, 'TimedDO', undefined, { evictionTimeoutMs: 0 })
+		ns._setClass(TimedDO, {})
+		const stub = ns.get(ns.idFromName('test')) as any
+
+		const start = Date.now()
+		await Promise.all([stub.wait(50), stub.wait(50), stub.wait(50)])
+		const elapsed = Date.now() - start
+
+		// If serialized, would take ~150ms. If concurrent, ~50ms.
+		expect(elapsed).toBeLessThan(120)
+	})
+
+	test('concurrent transaction() calls do not corrupt data', async () => {
+		class TxnDO extends DurableObjectBase {
+			async increment(key: string, times: number): Promise<void> {
+				for (let i = 0; i < times; i++) {
+					await this.ctx.storage.transaction(async (txn) => {
+						const val = ((await txn.get<number>(key)) ?? 0)
+						await txn.put(key, val + 1)
+					})
+				}
+			}
+		}
+
+		const ns = new DurableObjectNamespaceImpl(db, 'TxnDO', undefined, { evictionTimeoutMs: 0 })
+		ns._setClass(TxnDO, {})
+		const stub = ns.get(ns.idFromName('test')) as any
+
+		// Run 3 concurrent callers each incrementing 10 times
+		await Promise.all([
+			stub.increment('counter', 10),
+			stub.increment('counter', 10),
+			stub.increment('counter', 10),
+		])
+
+		const executor = ns._getExecutor(ns.idFromName('test').toString())!
+		const state = (executor as any)._rawState as DurableObjectStateImpl
+		const val = await state.storage.get<number>('counter')
+		expect(val).toBe(30)
+	})
+
+	test('blockConcurrencyWhile blocks concurrent calls', async () => {
 		const order: string[] = []
 
 		class BlockingDO extends DurableObjectBase {

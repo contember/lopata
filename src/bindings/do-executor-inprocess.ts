@@ -45,24 +45,22 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async executeFetch(request: Request): Promise<Response> {
-		const unlock = await this._state._lock()
+		await this._state._enter()
 		try {
-			await this._state._waitForReady()
 			const fetchFn = (this._instance as unknown as Record<string, unknown>).fetch
 			if (typeof fetchFn !== 'function') {
 				throw new Error('Durable Object does not implement fetch()')
 			}
 			return await (fetchFn as (req: Request) => Promise<Response>).call(this._instance, request)
 		} finally {
-			unlock()
+			this._state._exit()
 		}
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
 		warnInvalidRpcArgs(args, method)
-		const unlock = await this._state._lock()
+		await this._state._enter()
 		try {
-			await this._state._waitForReady()
 			const val = (this._instance as unknown as Record<string, unknown>)[method]
 			if (typeof val === 'function') {
 				const result = await (val as (...a: unknown[]) => unknown).call(this._instance, ...args)
@@ -70,28 +68,26 @@ export class InProcessExecutor implements DOExecutor {
 			}
 			throw new Error(`"${method}" is not a method on the Durable Object`)
 		} finally {
-			unlock()
+			this._state._exit()
 		}
 	}
 
 	async executeRpcGet(prop: string): Promise<unknown> {
-		const unlock = await this._state._lock()
+		await this._state._enter()
 		try {
-			await this._state._waitForReady()
 			const val = (this._instance as unknown as Record<string, unknown>)[prop]
 			if (typeof val === 'function') {
 				return createRpcFunctionStub(val as Function, this._instance)
 			}
 			return wrapRpcReturnValue(val, prop)
 		} finally {
-			unlock()
+			this._state._exit()
 		}
 	}
 
 	async executeAlarm(retryCount: number): Promise<void> {
-		const unlock = await this._state._lock()
+		await this._state._enter()
 		try {
-			await this._state._waitForReady()
 			const alarmFn = (this._instance as unknown as Record<string, unknown>).alarm
 			if (typeof alarmFn === 'function') {
 				await alarmFn.call(this._instance, {
@@ -100,7 +96,7 @@ export class InProcessExecutor implements DOExecutor {
 				})
 			}
 		} finally {
-			unlock()
+			this._state._exit()
 		}
 	}
 

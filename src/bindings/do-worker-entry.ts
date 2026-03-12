@@ -94,9 +94,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	async function handleCommand(cmd: DOCommand): Promise<DOResult> {
 		switch (cmd.type) {
 			case 'fetch': {
-				const unlock = await state._lock()
+				await state._enter()
 				try {
-					await state._waitForReady()
 					const fetchFn = (instance as any).fetch
 					if (typeof fetchFn !== 'function') {
 						throw new Error('Durable Object does not implement fetch()')
@@ -118,14 +117,13 @@ async function initWorker(workerConfig: WorkerConfig) {
 						body: resBody,
 					}
 				} finally {
-					unlock()
+					state._exit()
 				}
 			}
 
 			case 'rpc-call': {
-				const unlock = await state._lock()
+				await state._enter()
 				try {
-					await state._waitForReady()
 					const val = (instance as any)[cmd.method]
 					if (typeof val !== 'function') {
 						throw new Error(`"${cmd.method}" is not a method on the Durable Object`)
@@ -133,28 +131,26 @@ async function initWorker(workerConfig: WorkerConfig) {
 					const result = await val.call(instance, ...cmd.args)
 					return { type: 'rpc-call', value: result }
 				} finally {
-					unlock()
+					state._exit()
 				}
 			}
 
 			case 'rpc-get': {
-				const unlock = await state._lock()
+				await state._enter()
 				try {
-					await state._waitForReady()
 					const val = (instance as any)[cmd.prop]
 					if (typeof val === 'function') {
 						return { type: 'rpc-get', value: '__function__' }
 					}
 					return { type: 'rpc-get', value: val }
 				} finally {
-					unlock()
+					state._exit()
 				}
 			}
 
 			case 'alarm': {
-				const unlock = await state._lock()
+				await state._enter()
 				try {
-					await state._waitForReady()
 					const alarmFn = (instance as any).alarm
 					if (typeof alarmFn === 'function') {
 						await alarmFn.call(instance, {
@@ -164,7 +160,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 					}
 					return { type: 'alarm' }
 				} finally {
-					unlock()
+					state._exit()
 				}
 			}
 

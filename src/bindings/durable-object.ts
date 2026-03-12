@@ -83,6 +83,24 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 	}
 }
 
+// --- DB-level transaction mutex ---
+// Shared across all SqliteDurableObjectStorage instances using the same Database connection.
+// Prevents overlapping BEGIN/COMMIT blocks from concurrent requests.
+const dbTxnLocks = new WeakMap<Database, Promise<void>>()
+
+async function acquireDbTxnLock(db: Database): Promise<() => void> {
+	let unlock!: () => void
+	const next = new Promise<void>((r) => {
+		unlock = r
+	})
+	const ready = dbTxnLocks.get(db) ?? Promise.resolve()
+	dbTxnLocks.set(db, next)
+	await ready
+	return () => {
+		unlock()
+	}
+}
+
 // --- SQL Storage API ---
 
 export class SqlStorage {
@@ -324,14 +342,15 @@ export class SqliteDurableObjectStorage {
 			const stmt = this.db.query(
 				'INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)',
 			)
-			this.db.run('BEGIN')
+			this.db.run('SAVEPOINT put_batch')
 			try {
 				for (const [k, v] of Object.entries(keyOrEntries)) {
 					stmt.run(this.namespace, this.id, k, JSON.stringify(v))
 				}
-				this.db.run('COMMIT')
+				this.db.run('RELEASE put_batch')
 			} catch (e) {
-				this.db.run('ROLLBACK')
+				this.db.run('ROLLBACK TO put_batch')
+				this.db.run('RELEASE put_batch')
 				throw e
 			}
 		}
@@ -415,14 +434,19 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async transaction<T>(closure: (txn: SqliteDurableObjectStorage) => Promise<T>): Promise<T> {
-		this.db.run('BEGIN')
+		const unlock = await acquireDbTxnLock(this.db)
 		try {
-			const result = await closure(this)
-			this.db.run('COMMIT')
-			return result
-		} catch (e) {
-			this.db.run('ROLLBACK')
-			throw e
+			this.db.run('BEGIN')
+			try {
+				const result = await closure(this)
+				this.db.run('COMMIT')
+				return result
+			} catch (e) {
+				this.db.run('ROLLBACK')
+				throw e
+			}
+		} finally {
+			unlock()
 		}
 	}
 
@@ -506,7 +530,6 @@ export class DurableObjectStateImpl {
 	private _hibernatableTimeout: number | null = null
 	private _limits: Required<DurableObjectLimits>
 	private _instanceResolver: (() => DurableObjectBase | null) | null = null
-	private _lockTail: Promise<void> = Promise.resolve()
 	private _activeRequests = 0
 	private _aborted = false
 	private _abortReason: string | undefined
@@ -545,27 +568,21 @@ export class DurableObjectStateImpl {
 		return this._activeRequests > 0
 	}
 
-	/** @internal Acquire the serial-execution lock. Caller awaits this, then runs work in its own async stack. */
-	async _lock(): Promise<() => void> {
+	/** @internal Enter a request — waits for blockConcurrencyWhile, checks abort, increments counter. */
+	async _enter(): Promise<void> {
 		if (this._aborted) {
 			throw new Error(this._abortReason ?? 'Durable Object has been aborted')
 		}
-		let unlockNext: () => void
-		const nextTail = new Promise<void>(r => {
-			unlockNext = r
-		})
-		const ready = this._lockTail
-		this._lockTail = nextTail
-		await ready
+		await this._waitForReady()
 		if (this._aborted) {
-			unlockNext!()
 			throw new Error(this._abortReason ?? 'Durable Object has been aborted')
 		}
 		this._activeRequests++
-		return () => {
-			this._activeRequests--
-			unlockNext!()
-		}
+	}
+
+	/** @internal Exit a request — decrements counter. */
+	_exit(): void {
+		this._activeRequests--
 	}
 
 	/**
