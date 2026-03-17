@@ -9,17 +9,15 @@
  */
 
 import { join, resolve } from 'node:path'
+import { parseFlag, rejectRemoteFlag } from './cli/context'
 import { applyMigrations } from './cli/d1'
 import { autoLoadConfig, loadConfig } from './config'
 
-// Parse CLI flags
-function parseFlag(name: string): string | undefined {
-	const idx = process.argv.indexOf(name)
-	return idx !== -1 ? process.argv[idx + 1] : undefined
-}
+const args = process.argv.slice(2)
+rejectRemoteFlag(args)
 
-const configPath = parseFlag('--config') ?? parseFlag('-c')
-const envName = parseFlag('--env') ?? parseFlag('-e')
+const configPath = parseFlag(args, '--config') ?? parseFlag(args, '-c')
+const envName = parseFlag(args, '--env') ?? parseFlag(args, '-e')
 const baseDir = process.cwd()
 
 const config = configPath
