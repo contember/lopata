@@ -1394,7 +1394,7 @@ describe('DO Cooperative Concurrency', () => {
 			async increment(key: string, times: number): Promise<void> {
 				for (let i = 0; i < times; i++) {
 					await this.ctx.storage.transaction(async (txn) => {
-						const val = ((await txn.get<number>(key)) ?? 0)
+						const val = (await txn.get<number>(key)) ?? 0
 						await txn.put(key, val + 1)
 					})
 				}
