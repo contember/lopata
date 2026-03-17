@@ -9,20 +9,23 @@
  */
 
 import { join, resolve } from 'node:path'
-import { parseFlag, rejectRemoteFlag } from './cli/context'
+import { parseArgs, rejectRemoteFlag } from './cli/context'
 import { applyMigrations } from './cli/d1'
 import { autoLoadConfig, loadConfig } from './config'
 
 const args = process.argv.slice(2)
 rejectRemoteFlag(args)
 
-const configPath = parseFlag(args, '--config') ?? parseFlag(args, '-c')
-const envName = parseFlag(args, '--env') ?? parseFlag(args, '-e')
+const { values } = parseArgs(args, {
+	config: { type: 'string', short: 'c' },
+	env: { type: 'string', short: 'e' },
+})
+
 const baseDir = process.cwd()
 
-const config = configPath
-	? await loadConfig(resolve(baseDir, configPath), envName)
-	: await autoLoadConfig(baseDir, envName)
+const config = values.config
+	? await loadConfig(resolve(baseDir, values.config), values.env)
+	: await autoLoadConfig(baseDir, values.env)
 
 const databases = config.d1_databases ?? []
 

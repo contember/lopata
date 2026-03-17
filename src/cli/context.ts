@@ -1,24 +1,46 @@
 import type { Database } from 'bun:sqlite'
 import { join, resolve } from 'node:path'
+import { parseArgs as nodeParseArgs } from 'node:util'
 import type { WranglerConfig } from '../config'
 import { autoLoadConfig, loadConfig } from '../config'
 
 export interface CliContext {
-	args: string[]
+	envName: string | undefined
 	config: () => Promise<WranglerConfig>
 	db: () => Database
 	dataDir: () => string
 }
 
-/** Parse a flag value from argv. Returns the value after the flag, or undefined. */
-export function parseFlag(args: string[], name: string): string | undefined {
-	const idx = args.indexOf(name)
-	return idx !== -1 ? args[idx + 1] : undefined
+interface ParseArgsStringOption {
+	type: 'string'
+	short?: string
 }
 
-/** Check if a boolean flag is present. */
-export function hasFlag(args: string[], name: string): boolean {
-	return args.includes(name)
+interface ParseArgsBooleanOption {
+	type: 'boolean'
+	short?: string
+}
+
+type ParseArgsOption = ParseArgsStringOption | ParseArgsBooleanOption
+
+type ParseArgsValues<T extends Record<string, ParseArgsOption>> = {
+	[K in keyof T]: T[K] extends ParseArgsBooleanOption ? boolean | undefined : string | undefined
+}
+
+/** Parse CLI args with strict validation — throws on unknown flags. */
+export function parseArgs<const T extends Record<string, ParseArgsOption>>(
+	args: string[],
+	options: T,
+): { values: ParseArgsValues<T>; positionals: string[] } {
+	try {
+		return nodeParseArgs({ args, options, strict: true, allowPositionals: true }) as unknown as {
+			values: ParseArgsValues<T>
+			positionals: string[]
+		}
+	} catch (err: unknown) {
+		console.error((err as Error).message)
+		process.exit(1)
+	}
 }
 
 /** Exit with an error if --remote is passed, suggesting the equivalent wrangler command. */
@@ -28,20 +50,6 @@ export function rejectRemoteFlag(args: string[]): void {
 		console.error(`Error: --remote is not supported by lopata. Lopata is a local-only runtime.\nDid you mean: ${wranglerCmd}`)
 		process.exit(1)
 	}
-}
-
-/** Get positional args (everything that's not a flag or flag value). */
-export function positionalArgs(args: string[], flags: string[]): string[] {
-	const result: string[] = []
-	for (let i = 0; i < args.length; i++) {
-		if (flags.includes(args[i]!)) {
-			i++ // skip flag value
-			continue
-		}
-		if (args[i]!.startsWith('-')) continue
-		result.push(args[i]!)
-	}
-	return result
 }
 
 /**
@@ -73,19 +81,14 @@ export function resolveBinding<T extends { binding?: string; bucket_name?: strin
 	return match
 }
 
-export function createContext(argv: string[]): CliContext {
-	// Strip "bun src/cli.ts" or similar prefix — find first non-file arg
-	const args = argv.slice(2)
-
-	const configPath = parseFlag(args, '--config') ?? parseFlag(args, '-c')
-	const envName = parseFlag(args, '--env') ?? parseFlag(args, '-e')
+export function createContext(configPath: string | undefined, envName: string | undefined): CliContext {
 	const baseDir = process.cwd()
 
 	let _config: WranglerConfig | null = null
 	let _db: Database | null = null
 
 	return {
-		args,
+		envName,
 		config: async () => {
 			if (_config) return _config
 			_config = configPath

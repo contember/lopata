@@ -1,27 +1,33 @@
 #!/usr/bin/env bun
 
-import { createContext, hasFlag, rejectRemoteFlag } from './cli/context'
+import { createContext, rejectRemoteFlag } from './cli/context'
 
-const ctx = createContext(process.argv)
-const args = ctx.args
+const rawArgs = process.argv.slice(2)
+rejectRemoteFlag(rawArgs)
 
-// Strip global flags to find the command
-const globalFlags = ['--config', '-c', '--env', '-e']
+// Extract global flags, pass remaining args to subcommands
+let configPath: string | undefined
+let envName: string | undefined
+let showHelp = false
 const commandArgs: string[] = []
-for (let i = 0; i < args.length; i++) {
-	if (globalFlags.includes(args[i]!)) {
-		i++ // skip flag value
-		continue
+
+for (let i = 0; i < rawArgs.length; i++) {
+	const arg = rawArgs[i]!
+	if (arg === '--config' || arg === '-c') {
+		configPath = rawArgs[++i]
+	} else if (arg === '--env' || arg === '-e') {
+		envName = rawArgs[++i]
+	} else if (arg === '--help' || arg === '-h') {
+		showHelp = true
+	} else {
+		commandArgs.push(arg)
 	}
-	commandArgs.push(args[i]!)
 }
 
+const ctx = createContext(configPath, envName)
 const command = commandArgs[0]
-const subcommand = commandArgs[1]
 
-rejectRemoteFlag(args)
-
-if (!command || hasFlag(args, '--help') || hasFlag(args, '-h')) {
+if (!command || showHelp) {
 	printHelp()
 	process.exit(0)
 }
@@ -29,7 +35,7 @@ if (!command || hasFlag(args, '--help') || hasFlag(args, '-h')) {
 switch (command) {
 	case 'dev': {
 		const mod = await import('./cli/dev')
-		await mod.run(ctx)
+		await mod.run(ctx, commandArgs.slice(1))
 		break
 	}
 	case 'd1': {

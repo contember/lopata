@@ -1,6 +1,6 @@
 import { SqliteKVNamespace } from '../bindings/kv'
 import type { CliContext } from './context'
-import { parseFlag, resolveBinding } from './context'
+import { parseArgs, resolveBinding } from './context'
 
 export async function run(ctx: CliContext, args: string[]) {
 	const sub = args[0]
@@ -11,13 +11,16 @@ export async function run(ctx: CliContext, args: string[]) {
 
 	const action = args[1]
 	const config = await ctx.config()
-	const bindingFlag = parseFlag(ctx.args, '--binding')
-	const binding = resolveBinding(config.kv_namespaces, bindingFlag, 'KV namespace')
-	const kv = new SqliteKVNamespace(ctx.db(), binding.binding)
 
 	switch (action) {
 		case 'list': {
-			const prefix = parseFlag(ctx.args, '--prefix') ?? ''
+			const { values } = parseArgs(args.slice(2), {
+				prefix: { type: 'string' },
+				binding: { type: 'string' },
+			})
+			const binding = resolveBinding(config.kv_namespaces, values.binding, 'KV namespace')
+			const kv = new SqliteKVNamespace(ctx.db(), binding.binding)
+			const prefix = values.prefix ?? ''
 			let cursor = ''
 			let total = 0
 			do {
@@ -37,11 +40,16 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'get': {
-			const key = args[2]
+			const { values, positionals } = parseArgs(args.slice(2), {
+				binding: { type: 'string' },
+			})
+			const key = positionals[0]
 			if (!key) {
 				console.error('Usage: lopata kv key get <key> [--binding NAME]')
 				process.exit(1)
 			}
+			const binding = resolveBinding(config.kv_namespaces, values.binding, 'KV namespace')
+			const kv = new SqliteKVNamespace(ctx.db(), binding.binding)
 			const value = await kv.get(key)
 			if (value === null) {
 				console.error(`Key not found: ${key}`)
@@ -57,22 +65,32 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'put': {
-			const key = args[2]
-			const value = args[3]
+			const { values, positionals } = parseArgs(args.slice(2), {
+				binding: { type: 'string' },
+			})
+			const key = positionals[0]
+			const value = positionals[1]
 			if (!key || value === undefined) {
 				console.error('Usage: lopata kv key put <key> <value> [--binding NAME]')
 				process.exit(1)
 			}
+			const binding = resolveBinding(config.kv_namespaces, values.binding, 'KV namespace')
+			const kv = new SqliteKVNamespace(ctx.db(), binding.binding)
 			await kv.put(key, value)
 			console.log(`Put ${key}`)
 			break
 		}
 		case 'delete': {
-			const key = args[2]
+			const { values, positionals } = parseArgs(args.slice(2), {
+				binding: { type: 'string' },
+			})
+			const key = positionals[0]
 			if (!key) {
 				console.error('Usage: lopata kv key delete <key> [--binding NAME]')
 				process.exit(1)
 			}
+			const binding = resolveBinding(config.kv_namespaces, values.binding, 'KV namespace')
+			const kv = new SqliteKVNamespace(ctx.db(), binding.binding)
 			await kv.delete(key)
 			console.log(`Deleted ${key}`)
 			break

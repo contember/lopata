@@ -27,12 +27,16 @@ import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
 import { WorkerRegistry } from '../worker-registry'
 import type { CliContext } from './context'
-import { parseFlag } from './context'
+import { parseArgs } from './context'
 
-export async function run(ctx: CliContext) {
-	const envFlag = parseFlag(ctx.args, '--env') ?? parseFlag(ctx.args, '-e')
-	const listenFlag = parseFlag(ctx.args, '--listen')
-	const portFlag = parseFlag(ctx.args, '--port')
+export async function run(ctx: CliContext, args: string[]) {
+	const { values } = parseArgs(args, {
+		listen: { type: 'string' },
+		port: { type: 'string' },
+	})
+	const envFlag = ctx.envName
+	const listenFlag = values.listen
+	const portFlag = values.port
 
 	const baseDir = process.cwd()
 	const watchers: FileWatcher[] = []

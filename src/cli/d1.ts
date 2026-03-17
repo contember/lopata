@@ -3,13 +3,14 @@ import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { openD1Database } from '../bindings/d1'
 import type { CliContext } from './context'
-import { parseFlag, resolveBinding } from './context'
+import { parseArgs } from './context'
 
 export async function run(ctx: CliContext, args: string[]) {
 	const action = args[0]
 
 	switch (action) {
 		case 'list': {
+			parseArgs(args.slice(1), {})
 			const config = await ctx.config()
 			const databases = config.d1_databases ?? []
 			if (databases.length === 0) {
@@ -22,7 +23,11 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'execute': {
-			const dbName = args[1]
+			const { values, positionals } = parseArgs(args.slice(1), {
+				command: { type: 'string' },
+				file: { type: 'string' },
+			})
+			const dbName = positionals[0]
 			if (!dbName) {
 				console.error("Usage: lopata d1 execute <database> --command 'SQL' | --file <path>")
 				process.exit(1)
@@ -38,14 +43,12 @@ export async function run(ctx: CliContext, args: string[]) {
 				process.exit(1)
 			}
 
-			const command = parseFlag(ctx.args, '--command')
-			const filePath = parseFlag(ctx.args, '--file')
-			if (!command && !filePath) {
+			if (!values.command && !values.file) {
 				console.error("Usage: lopata d1 execute <database> --command 'SQL' | --file <path>")
 				process.exit(1)
 			}
 
-			const sql = command ?? readFileSync(resolve(filePath!), 'utf-8')
+			const sql = values.command ?? readFileSync(resolve(values.file!), 'utf-8')
 			const d1 = openD1Database(ctx.dataDir(), dbConfig.database_name)
 			const result = await d1.exec(sql)
 			console.log(`Executed ${result.count} statement(s) in ${result.duration.toFixed(1)}ms`)
@@ -57,7 +60,8 @@ export async function run(ctx: CliContext, args: string[]) {
 				console.error('Usage: lopata d1 migrations apply [database]')
 				process.exit(1)
 			}
-			const targetDb = args[2]
+			const { positionals } = parseArgs(args.slice(2), {})
+			const targetDb = positionals[0]
 			const config = await ctx.config()
 			await applyMigrations(config.d1_databases ?? [], ctx.dataDir(), targetDb)
 			break

@@ -1,6 +1,6 @@
 import { FileR2Bucket } from '../bindings/r2'
 import type { CliContext } from './context'
-import { parseFlag } from './context'
+import { parseArgs } from './context'
 
 /**
  * Parse wrangler-compatible objectPath in the form {bucket}/{key}.
@@ -41,12 +41,15 @@ export async function run(ctx: CliContext, args: string[]) {
 	}
 
 	const action = args[1]
-	const objectPath = args[2]
 	const config = await ctx.config()
 
 	switch (action) {
 		case 'list': {
-			if (!objectPath) {
+			const { values, positionals } = parseArgs(args.slice(2), {
+				prefix: { type: 'string' },
+			})
+			const listObjectPath = positionals[0]
+			if (!listObjectPath) {
 				// No path — list all buckets if no path given
 				const buckets = config.r2_buckets ?? []
 				if (buckets.length === 0) {
@@ -58,10 +61,10 @@ export async function run(ctx: CliContext, args: string[]) {
 				}
 				return
 			}
-			const { bucketName, key: prefix } = parseObjectPath(objectPath)
+			const { bucketName, key: prefix } = parseObjectPath(listObjectPath)
 			const resolved = resolveBucket(config.r2_buckets, bucketName)
 			const bucket = new FileR2Bucket(ctx.db(), resolved, ctx.dataDir())
-			const listPrefix = parseFlag(ctx.args, '--prefix') ?? prefix
+			const listPrefix = values.prefix ?? prefix
 			let cursor = ''
 			let total = 0
 			do {
@@ -78,11 +81,13 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'get': {
-			if (!objectPath || !objectPath.includes('/')) {
+			const { positionals: getPositionals } = parseArgs(args.slice(2), {})
+			const getPath = getPositionals[0]
+			if (!getPath || !getPath.includes('/')) {
 				console.error('Usage: lopata r2 object get <bucket/key>')
 				process.exit(1)
 			}
-			const { bucketName, key } = parseObjectPath(objectPath)
+			const { bucketName, key } = parseObjectPath(getPath)
 			const resolved = resolveBucket(config.r2_buckets, bucketName)
 			const bucket = new FileR2Bucket(ctx.db(), resolved, ctx.dataDir())
 			const obj = await bucket.get(key)
@@ -97,29 +102,34 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'put': {
-			if (!objectPath || !objectPath.includes('/')) {
+			const { values: putValues, positionals: putPositionals } = parseArgs(args.slice(2), {
+				file: { type: 'string', short: 'f' },
+			})
+			const putPath = putPositionals[0]
+			if (!putPath || !putPath.includes('/')) {
 				console.error('Usage: lopata r2 object put <bucket/key> --file <path>')
 				process.exit(1)
 			}
-			const filePath = parseFlag(ctx.args, '--file') ?? parseFlag(ctx.args, '-f')
-			if (!filePath) {
+			if (!putValues.file) {
 				console.error('Usage: lopata r2 object put <bucket/key> --file <path>')
 				process.exit(1)
 			}
-			const { bucketName, key } = parseObjectPath(objectPath)
+			const { bucketName, key } = parseObjectPath(putPath)
 			const resolved = resolveBucket(config.r2_buckets, bucketName)
 			const bucket = new FileR2Bucket(ctx.db(), resolved, ctx.dataDir())
-			const data = await Bun.file(filePath).arrayBuffer()
+			const data = await Bun.file(putValues.file).arrayBuffer()
 			await bucket.put(key, data)
 			console.log(`Uploaded ${key} (${formatSize(data.byteLength)})`)
 			break
 		}
 		case 'delete': {
-			if (!objectPath || !objectPath.includes('/')) {
+			const { positionals: delPositionals } = parseArgs(args.slice(2), {})
+			const delPath = delPositionals[0]
+			if (!delPath || !delPath.includes('/')) {
 				console.error('Usage: lopata r2 object delete <bucket/key>')
 				process.exit(1)
 			}
-			const { bucketName, key } = parseObjectPath(objectPath)
+			const { bucketName, key } = parseObjectPath(delPath)
 			const resolved = resolveBucket(config.r2_buckets, bucketName)
 			const bucket = new FileR2Bucket(ctx.db(), resolved, ctx.dataDir())
 			await bucket.delete(key)

@@ -1,6 +1,7 @@
 import { checkHostPatterns, readSystemHostsFile } from '../hosts-check'
 import { loadLopataConfig } from '../lopata-config'
 import type { CliContext } from './context'
+import { parseArgs } from './context'
 
 export async function run(_ctx: CliContext, args: string[]) {
 	const action = args[0]
@@ -9,6 +10,8 @@ export async function run(_ctx: CliContext, args: string[]) {
 		console.error('Usage: lopata hosts check')
 		process.exit(1)
 	}
+
+	parseArgs(args.slice(1), {})
 
 	const baseDir = process.cwd()
 	const lopataConfig = await loadLopataConfig(baseDir)

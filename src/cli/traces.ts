@@ -2,7 +2,7 @@ import { getTracingDatabase } from '../tracing/db'
 import { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 import type { CliContext } from './context'
-import { hasFlag, parseFlag } from './context'
+import { parseArgs } from './context'
 
 const USAGE = `Usage:
   lopata trace list [options]   List traces
@@ -19,15 +19,17 @@ export async function run(ctx: CliContext, args: string[]) {
 	const action = args[0]
 	const db = getTracingDatabase()
 	const store = new TraceStore(db)
-	const json = hasFlag(ctx.args, '--json')
 
 	switch (action) {
 		case 'list': {
-			const limitStr = parseFlag(ctx.args, '--limit')
-			const limit = limitStr ? parseInt(limitStr, 10) : 50
-			const since = parseFlag(ctx.args, '--since')
-			const search = parseFlag(ctx.args, '--search')
-			const cursor = parseFlag(ctx.args, '--cursor')
+			const { values } = parseArgs(args.slice(1), {
+				json: { type: 'boolean' },
+				limit: { type: 'string' },
+				since: { type: 'string' },
+				search: { type: 'string' },
+				cursor: { type: 'string' },
+			})
+			const limit = values.limit ? parseInt(values.limit, 10) : 50
 
 			let items: Array<
 				{
@@ -44,21 +46,21 @@ export async function run(ctx: CliContext, args: string[]) {
 			>
 			let nextCursor: string | null
 
-			if (search) {
-				const result = store.searchTraces(search, limit)
+			if (values.search) {
+				const result = store.searchTraces(values.search, limit)
 				items = result.items
 				nextCursor = result.cursor
-			} else if (since) {
-				const sinceMs = Date.now() - parseDuration(since)
+			} else if (values.since) {
+				const sinceMs = Date.now() - parseDuration(values.since)
 				items = store.getRecentTraces(sinceMs, limit)
 				nextCursor = null
 			} else {
-				const result = store.listTraces({ limit, cursor })
+				const result = store.listTraces({ limit, cursor: values.cursor })
 				items = result.items
 				nextCursor = result.cursor
 			}
 
-			if (json) {
+			if (values.json) {
 				console.log(JSON.stringify({ items, cursor: nextCursor }, null, 2))
 			} else {
 				printTraceList(items, nextCursor)
@@ -66,7 +68,10 @@ export async function run(ctx: CliContext, args: string[]) {
 			break
 		}
 		case 'get': {
-			const traceId = args[1]
+			const { values, positionals } = parseArgs(args.slice(1), {
+				json: { type: 'boolean' },
+			})
+			const traceId = positionals[0]
 			if (!traceId) {
 				console.error('Usage: lopata trace get <traceId>')
 				process.exit(1)
@@ -80,7 +85,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 			const errors = store.getErrorsForTrace(traceId)
 
-			if (json) {
+			if (values.json) {
 				console.log(JSON.stringify({ traceId, spans, events, errors }, null, 2))
 			} else {
 				printTraceDetail(traceId, spans, events, errors)

@@ -1,11 +1,12 @@
 import type { CliContext } from './context'
-import { parseFlag } from './context'
+import { parseArgs } from './context'
 
 export async function run(ctx: CliContext, args: string[]) {
 	const action = args[0]
 
 	switch (action) {
 		case 'list': {
+			parseArgs(args.slice(1), {})
 			const config = await ctx.config()
 			const producers = config.queues?.producers ?? []
 			const consumers = config.queues?.consumers ?? []
@@ -35,10 +36,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 		case 'message': {
 			const sub = args[1]
-			const queueName = args[2]
 
 			switch (sub) {
 				case 'list': {
+					const { positionals } = parseArgs(args.slice(2), {})
+					const queueName = positionals[0]
 					if (!queueName) {
 						console.error('Usage: lopata queues message list <queue>')
 						process.exit(1)
@@ -67,7 +69,9 @@ export async function run(ctx: CliContext, args: string[]) {
 					break
 				}
 				case 'send': {
-					const body = args[3]
+					const { positionals: sendPositionals } = parseArgs(args.slice(2), {})
+					const queueName = sendPositionals[0]
+					const body = sendPositionals[1]
 					if (!queueName || body === undefined) {
 						console.error('Usage: lopata queues message send <queue> <body>')
 						process.exit(1)
@@ -86,6 +90,8 @@ export async function run(ctx: CliContext, args: string[]) {
 					break
 				}
 				case 'purge': {
+					const { positionals: purgePositionals } = parseArgs(args.slice(2), {})
+					const queueName = purgePositionals[0]
 					if (!queueName) {
 						console.error('Usage: lopata queues message purge <queue>')
 						process.exit(1)
