@@ -21,6 +21,15 @@ export function hasFlag(args: string[], name: string): boolean {
 	return args.includes(name)
 }
 
+/** Exit with an error if --remote is passed, suggesting the equivalent wrangler command. */
+export function rejectRemoteFlag(args: string[]): void {
+	if (args.includes('--remote')) {
+		const wranglerCmd = `wrangler ${args.join(' ')}`
+		console.error(`Error: --remote is not supported by lopata. Lopata is a local-only runtime.\nDid you mean: ${wranglerCmd}`)
+		process.exit(1)
+	}
+}
+
 /** Get positional args (everything that's not a flag or flag value). */
 export function positionalArgs(args: string[], flags: string[]): string[] {
 	const result: string[] = []

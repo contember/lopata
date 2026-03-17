@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { createContext, hasFlag } from './cli/context'
+import { createContext, hasFlag, rejectRemoteFlag } from './cli/context'
 
 const ctx = createContext(process.argv)
 const args = ctx.args
@@ -18,6 +18,8 @@ for (let i = 0; i < args.length; i++) {
 
 const command = commandArgs[0]
 const subcommand = commandArgs[1]
+
+rejectRemoteFlag(args)
 
 if (!command || hasFlag(args, '--help') || hasFlag(args, '-h')) {
 	printHelp()
