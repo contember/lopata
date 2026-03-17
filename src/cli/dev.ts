@@ -32,10 +32,10 @@ import { parseArgs } from './context'
 export async function run(ctx: CliContext, args: string[]) {
 	const { values } = parseArgs(args, {
 		listen: { type: 'string' },
+		host: { type: 'boolean' },
 		port: { type: 'string' },
 	})
 	const envFlag = ctx.envName
-	const listenFlag = values.listen
 	const portFlag = values.port
 
 	const baseDir = process.cwd()
@@ -228,7 +228,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 	// Start server — one Bun.serve(), delegates to active generation
 	const port = parseInt(portFlag ?? process.env.PORT ?? '8787', 10)
-	const hostname = listenFlag ?? process.env.HOST ?? 'localhost'
+	const hostname = values.host ? '0.0.0.0' : (values.listen ?? process.env.HOST ?? 'localhost')
 
 	const server = Bun.serve({
 		port,
