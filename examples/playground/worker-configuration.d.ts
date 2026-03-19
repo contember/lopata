@@ -21,6 +21,7 @@ declare namespace Cloudflare {
 		DB: D1Database
 		MAILER: SendEmail
 		ANALYTICS: AnalyticsEngineDataset
+		MEDIA: any
 	}
 }
 interface Env extends Cloudflare.Env {}

@@ -254,6 +254,59 @@ for (let i = 0; i < 8; i++) console.log(\`  fib(\${i}) = \${fib(i)}\`);</textare
   </form>
 </div>
 
+<h2>Media Transformations</h2>
+<div class="section">
+  <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem">Upload a video file and extract a frame, generate a spritesheet, resize, or extract audio. Requires ffmpeg installed locally.</p>
+  <form onsubmit="mediaUpload(this);return false" enctype="multipart/form-data">
+    <label>Video file <input type="file" id="media-file" accept="video/*"></label>
+    <label>Mode
+      <select id="media-mode">
+        <option value="frame">Extract frame</option>
+        <option value="spritesheet">Spritesheet</option>
+        <option value="video">Resize video</option>
+        <option value="audio">Extract audio</option>
+      </select>
+    </label>
+    <label>Width <input id="media-w" value="320" type="number" style="width:70px"></label>
+    <label>Height <input id="media-h" value="240" type="number" style="width:70px"></label>
+    <label>Offset <input id="media-offset" value="1" style="width:50px"></label>
+    <button type="submit">Transform</button>
+  </form>
+  <div id="media-result" style="margin-top:1rem"></div>
+</div>
+<script>
+async function mediaUpload(form) {
+  const file = document.getElementById('media-file').files[0];
+  if (!file) { alert('Select a video file'); return; }
+  const mode = document.getElementById('media-mode').value;
+  const w = document.getElementById('media-w').value;
+  const h = document.getElementById('media-h').value;
+  const offset = document.getElementById('media-offset').value;
+  const params = new URLSearchParams({mode});
+  if (w) params.set('width', w);
+  if (h) params.set('height', h);
+  if (offset) params.set('offset', offset);
+  const el = document.getElementById('media-result');
+  el.textContent = 'Processing...';
+  try {
+    const res = await fetch('/media?' + params, { method: 'POST', body: file });
+    if (!res.ok) { el.textContent = res.status + ': ' + await res.text(); return; }
+    const ct = res.headers.get('content-type') || '';
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    if (ct.startsWith('image/')) {
+      el.innerHTML = '<img src="'+url+'" style="max-width:100%;border-radius:4px">';
+    } else if (ct.startsWith('video/')) {
+      el.innerHTML = '<video src="'+url+'" controls style="max-width:100%;border-radius:4px"></video>';
+    } else if (ct.startsWith('audio/')) {
+      el.innerHTML = '<audio src="'+url+'" controls></audio>';
+    } else {
+      el.textContent = 'Done (' + blob.size + ' bytes, ' + ct + ')';
+    }
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
+}
+</script>
+
 <h2>Error Propagation (DO &rarr; service binding &rarr; worker)</h2>
 <div class="section">
   <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem">ErrorBridge DO calls failing-worker through a service binding. Open links directly to see the error page.</p>
@@ -691,6 +744,20 @@ export default {
 				command: result.command,
 				duration: result.duration,
 			})
+		}
+
+		// ── Media ──
+		if (path === '/media' && method === 'POST') {
+			const mode = (url.searchParams.get('mode') ?? 'frame') as 'video' | 'frame' | 'spritesheet' | 'audio'
+			const width = url.searchParams.get('width') ? parseInt(url.searchParams.get('width')!) : undefined
+			const height = url.searchParams.get('height') ? parseInt(url.searchParams.get('height')!) : undefined
+			const offset = url.searchParams.get('offset') ?? undefined
+
+			let transformer = env.MEDIA.input(request.body!)
+			if (width || height) {
+				transformer = transformer.transform({ width, height })
+			}
+			return transformer.output({ mode, offset }).response()
 		}
 
 		// ── Error Bridge DO → service binding → failing-worker ──
