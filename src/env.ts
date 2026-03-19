@@ -12,6 +12,7 @@ import { SendEmailBinding } from './bindings/email'
 import { HyperdriveBinding } from './bindings/hyperdrive'
 import { ImagesBinding } from './bindings/images'
 import { SqliteKVNamespace } from './bindings/kv'
+import { MediaBinding } from './bindings/media'
 import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
 import { FileR2Bucket } from './bindings/r2'
 import { createServiceBinding } from './bindings/service-binding'
@@ -244,6 +245,16 @@ export function buildEnv(
 			type: 'images',
 			name: config.images.binding,
 			methods: ['info'],
+		})
+	}
+
+	// Media binding
+	if (config.media) {
+		console.log(`[lopata] Media binding: ${config.media.binding}`)
+		env[config.media.binding] = instrumentBinding(new MediaBinding(), {
+			type: 'media',
+			name: config.media.binding,
+			methods: [],
 		})
 	}
 

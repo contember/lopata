@@ -51,6 +51,9 @@ export interface WranglerConfig {
 	images?: {
 		binding: string
 	}
+	media?: {
+		binding: string
+	}
 	containers?: {
 		class_name: string
 		image: string
