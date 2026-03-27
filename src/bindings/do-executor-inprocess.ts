@@ -117,6 +117,10 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async dispose(): Promise<void> {
+		// Close all accepted WebSockets so clients can reconnect to new instance
+		for (const ws of this._state.getWebSockets()) {
+			try { ws.close(1012, 'Service restart') } catch {}
+		}
 		if (this._containerRuntime) {
 			await this._containerRuntime.cleanup()
 		}

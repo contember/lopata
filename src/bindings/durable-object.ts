@@ -793,13 +793,12 @@ export class DurableObjectNamespaceImpl {
 
 	/** Called after worker module is loaded to wire the actual class */
 	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, generationId?: number) {
-		// Dispose existing executors so next request creates new ones with the new class
+		// Dispose ALL existing executors (including those with active WebSockets)
+		// so next request creates new ones with the new class and fresh env
 		for (const [idStr, executor] of this._executors) {
-			if (executor.activeWebSocketCount() === 0) {
-				executor.dispose().catch(() => {})
-				this._executors.delete(idStr)
-				this._lastActivity.delete(idStr)
-			}
+			executor.dispose().catch(() => {})
+			this._executors.delete(idStr)
+			this._lastActivity.delete(idStr)
 		}
 
 		this._class = cls
