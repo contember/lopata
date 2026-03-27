@@ -1,0 +1,13 @@
+{
+	"name": "ws-hmr-test-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "ECHO_DO", "class_name": "EchoDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_classes": ["EchoDO"] }
+	]
+}

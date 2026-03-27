@@ -801,6 +801,135 @@ describe('DurableObject WebSocket Support', () => {
 			expect(errorCalled).toBe(true)
 		})
 	})
+
+	describe('WebSocket hot-swap on reloadClass', () => {
+		test('after _setClass, existing WebSocket routes messages to new class', async () => {
+			const messagesV1: string[] = []
+			const messagesV2: string[] = []
+
+			class WsDO_V1 extends DurableObjectBase {
+				async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
+					messagesV1.push(String(message))
+				}
+			}
+
+			class WsDO_V2 extends DurableObjectBase {
+				async webSocketMessage(_ws: WebSocket, message: string | ArrayBuffer) {
+					messagesV2.push(String(message))
+				}
+			}
+
+			const ns = new DurableObjectNamespaceImpl(db, 'WsSwap1', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(WsDO_V1, {})
+
+			const id = ns.idFromName('test')
+			ns.get(id)
+			const instanceV1 = ns._getInstance(id.toString())!
+			const ws = new MockWebSocket()
+			instanceV1.ctx.acceptWebSocket(ws as unknown as WebSocket)
+
+			// Message goes to V1
+			ws._receiveMessage('before-reload')
+			await new Promise((r) => setTimeout(r, 10))
+			expect(messagesV1).toEqual(['before-reload'])
+
+			// Hot-swap to V2
+			ns._setClass(WsDO_V2, {})
+
+			// Same WebSocket now routes to V2
+			ws._receiveMessage('after-reload')
+			await new Promise((r) => setTimeout(r, 10))
+			expect(messagesV2).toEqual(['after-reload'])
+			expect(messagesV1).toEqual(['before-reload']) // V1 not called again
+		})
+
+		test('WebSocket is preserved (not closed) on reloadClass', async () => {
+			class WsDO extends DurableObjectBase {}
+
+			const ns = new DurableObjectNamespaceImpl(db, 'WsSwap2', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(WsDO, {})
+
+			const id = ns.idFromName('test')
+			ns.get(id)
+			const instance = ns._getInstance(id.toString())!
+			const ws = new MockWebSocket()
+			instance.ctx.acceptWebSocket(ws as unknown as WebSocket)
+
+			// Reload
+			ns._setClass(WsDO, {})
+
+			// WebSocket should still be open
+			expect(ws.readyState).toBe(1) // OPEN
+			expect(ws.sent).toEqual([]) // no close frame sent
+		})
+
+		test('getWebSockets still returns connections after reloadClass', async () => {
+			class WsDO extends DurableObjectBase {}
+
+			const ns = new DurableObjectNamespaceImpl(db, 'WsSwap3', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(WsDO, {})
+
+			const id = ns.idFromName('test')
+			ns.get(id)
+			const instance = ns._getInstance(id.toString())!
+			const ws1 = new MockWebSocket()
+			const ws2 = new MockWebSocket()
+			instance.ctx.acceptWebSocket(ws1 as unknown as WebSocket)
+			instance.ctx.acceptWebSocket(ws2 as unknown as WebSocket)
+
+			ns._setClass(WsDO, {})
+
+			// New instance should see the WebSockets
+			const newInstance = ns._getInstance(id.toString())!
+			expect(newInstance.ctx.getWebSockets()).toHaveLength(2)
+		})
+
+		test('executor without WebSockets is disposed on _setClass', () => {
+			class WsDO extends DurableObjectBase {}
+
+			const ns = new DurableObjectNamespaceImpl(db, 'WsSwap4', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(WsDO, {})
+
+			const id = ns.idFromName('test')
+			ns.get(id)
+
+			// No WebSockets — executor should be disposed
+			ns._setClass(WsDO, {})
+
+			// _getInstance returns null because executor was removed
+			expect(ns._getInstance(id.toString())).toBeNull()
+		})
+
+		test('webSocketClose on old connection still cleans up after reload', async () => {
+			const closedV2: { code: number; reason: string }[] = []
+
+			class WsDO_V1 extends DurableObjectBase {}
+
+			class WsDO_V2 extends DurableObjectBase {
+				async webSocketClose(_ws: WebSocket, code: number, reason: string, _wasClean: boolean) {
+					closedV2.push({ code, reason })
+				}
+			}
+
+			const ns = new DurableObjectNamespaceImpl(db, 'WsSwap5', undefined, { evictionTimeoutMs: 0 })
+			ns._setClass(WsDO_V1, {})
+
+			const id = ns.idFromName('test')
+			ns.get(id)
+			const instance = ns._getInstance(id.toString())!
+			const ws = new MockWebSocket()
+			instance.ctx.acceptWebSocket(ws as unknown as WebSocket)
+
+			// Reload to V2
+			ns._setClass(WsDO_V2, {})
+
+			// Close the WebSocket — should call V2's handler
+			ws.close(1000, 'bye')
+			await new Promise((r) => setTimeout(r, 10))
+
+			expect(closedV2).toEqual([{ code: 1000, reason: 'bye' }])
+		})
+	})
 })
 
 describe('DurableObject SQL Storage', () => {
