@@ -116,6 +116,11 @@ export class InProcessExecutor implements DOExecutor {
 		return this._state._isAborted()
 	}
 
+	reloadClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): void {
+		this._instance = new cls(this._state, env)
+		this._state._setInstanceResolver(() => this._instance)
+	}
+
 	async dispose(): Promise<void> {
 		// Close all accepted WebSockets so clients can reconnect to new instance
 		for (const ws of this._state.getWebSockets()) {

@@ -365,7 +365,7 @@ export class Generation {
 	}
 
 	/** Force-stop: drain + destroy all DO namespaces + abort workflows */
-	stop(): void {
+	stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): void {
 		if (this.state === 'stopped') return
 		this.drain()
 		this.state = 'stopped'
@@ -378,7 +378,10 @@ export class Generation {
 			this.drainPollTimer = null
 		}
 		for (const entry of this.registry.durableObjects) {
-			entry.namespace.destroy()
+			// Skip destroy for namespaces shared with the next generation
+			if (!sharedNamespaces?.has(entry.namespace)) {
+				entry.namespace.destroy()
+			}
 		}
 		for (const entry of this.registry.workflows) {
 			entry.binding.abortRunning()

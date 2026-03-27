@@ -39,6 +39,9 @@ export interface DOExecutor {
 	/** Whether the instance has been aborted */
 	isAborted(): boolean
 
+	/** Hot-swap the DO class and env without disposing (preserves WebSocket connections) */
+	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown): void
+
 	/** Kill the instance */
 	dispose(): Promise<void>
 }

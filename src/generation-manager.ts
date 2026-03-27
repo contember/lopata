@@ -70,6 +70,8 @@ export class GenerationManager {
 	private _activeGenId: number | null = null
 	private _reloading: Promise<Generation> | null = null
 	private _pendingReload = false
+	/** DO namespaces shared across generations to preserve WebSocket connections on reload */
+	private _doNamespaces = new Map<string, import('./bindings/durable-object').DurableObjectNamespaceImpl>()
 
 	gracePeriodMs = 10_000
 
@@ -152,7 +154,13 @@ export class GenerationManager {
 		}
 
 		// 2. Build new env with fresh binding instances (same underlying DB)
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig)
+		//    Reuse existing DO namespaces to preserve WebSocket connections across reloads
+		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
+
+		// Update shared namespace map
+		for (const entry of registry.durableObjects) {
+			this._doNamespaces.set(entry.className, entry.namespace)
+		}
 
 		// 3. Update globalEnv BEFORE importing the worker module so that
 		//    top-level `import { env } from "cloudflare:workers"` sees bindings
@@ -226,7 +234,7 @@ export class GenerationManager {
 	private _stopGeneration(genId: number): void {
 		const gen = this.generations.get(genId)
 		if (!gen || gen.state === 'stopped') return
-		gen.stop()
+		gen.stop(new Set(this._doNamespaces.values()))
 		// Clean up reference (keep for dashboard listing briefly)
 		// Remove after another grace period to let dashboard show it
 		setTimeout(() => {

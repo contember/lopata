@@ -86,6 +86,7 @@ export function buildEnv(
 	devVarsDir?: string,
 	executorFactory?: DOExecutorFactory,
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean },
+	existingNamespaces?: Map<string, DurableObjectNamespaceImpl>,
 ): { env: Record<string, unknown>; registry: ClassRegistry } {
 	const env: Record<string, unknown> = {}
 	const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null }
@@ -170,7 +171,8 @@ export function buildEnv(
 	// Durable Objects
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
 		console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
-		const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory)
+		const existing = existingNamespaces?.get(doBinding.class_name)
+		const namespace = existing ?? new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory)
 		env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name)
 		registry.durableObjects.push({
 			bindingName: doBinding.name,
