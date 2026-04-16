@@ -238,6 +238,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			// Deeper stacks in dev mode
 			Error.stackTraceLimit = 50
 
+			// Prevent unhandled rejections from worker code from crashing the dev server
+			process.on('unhandledRejection', (reason) => {
+				console.error('[lopata] Unhandled promise rejection:', reason)
+			})
+
 			// Lazy import runtime modules — runs through Bun's native loader
 			const configMod = await import('../config.ts')
 			const envMod = await import('../env.ts')

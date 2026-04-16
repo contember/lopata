@@ -1,6 +1,11 @@
 // Capture deeper stacks in dev mode (default is 10, async boundaries still truncate)
 Error.stackTraceLimit = 50
 
+// Prevent unhandled rejections from worker code from crashing the dev server
+process.on('unhandledRejection', (reason) => {
+	console.error('[lopata] Unhandled promise rejection:', reason)
+})
+
 import '../plugin'
 import path from 'node:path'
 import {
