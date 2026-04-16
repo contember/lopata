@@ -197,7 +197,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 				})) as Response
 
-			writeResponse(response, res)
+			writeResponse(response, res).catch(() => {})
 		} finally {
 			const count = genActiveRequests.get(genId) ?? 1
 			if (count <= 1) genActiveRequests.delete(genId)
@@ -492,7 +492,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						try {
 							const request = nodeReqToRequest(req)
 							const response = await (handleApiRequest as (r: Request) => Response | Promise<Response>)(request)
-							writeResponse(response, res)
+							await writeResponse(response, res)
 						} catch (err) {
 							console.error('[lopata:vite] API error:', err)
 							if (!res.headersSent) {
@@ -508,7 +508,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						try {
 							const request = nodeReqToRequest(req)
 							const response = await (handleDashboardRequest as (r: Request) => Response | Promise<Response>)(request)
-							writeResponse(response, res)
+							await writeResponse(response, res)
 						} catch (err) {
 							console.error('[lopata:vite] Dashboard error:', err)
 							if (!res.headersSent) {
@@ -543,7 +543,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 									;(setSpanAttribute as Function)('http.status_code', resp.status)
 									return resp
 								}) as Response
-								writeResponse(response, res)
+								await writeResponse(response, res)
 							} catch (err) {
 								writeRequestError(res, err)
 							}
@@ -906,6 +906,8 @@ async function writeResponse(response: Response, res: ServerResponse): Promise<v
 			if (done) break
 			res.write(value)
 		}
+	} catch {
+		// Upstream stream error (e.g. ECONNRESET) — just end the response
 	} finally {
 		reader.releaseLock()
 		res.end()
