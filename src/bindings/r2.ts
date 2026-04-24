@@ -239,6 +239,18 @@ function deserializeChecksums(c: Record<string, string>): R2Checksums {
 	return result
 }
 
+/**
+ * Compute the S3-compatible multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + N.
+ * Each part's stored etag is hex MD5 of the part body; we concatenate the raw (binary)
+ * digests and hash the result.
+ */
+function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
+	const buf = Buffer.concat(partRows.map((r) => Buffer.from(r.etag, 'hex')))
+	const hasher = new Bun.CryptoHasher('md5')
+	hasher.update(buf)
+	return `${hasher.digest('hex')}-${partRows.length}`
+}
+
 // --- Conditional check ---
 
 function evaluateConditional(cond: R2Conditional, etag: string, uploaded: Date): boolean {
@@ -365,12 +377,9 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket)
 		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
 
-		// Sort parts by partNumber
+		// Sort parts by partNumber and validate etags up front (cheap — just DB lookups).
 		const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber)
-
-		// Load all part data
-		const allParts: Uint8Array[] = []
-		let totalSize = 0
+		const partRows: MultipartPartRow[] = []
 		for (const p of sorted) {
 			const partRow = this.db
 				.query<MultipartPartRow, [string, number]>(
@@ -379,27 +388,31 @@ export class R2MultipartUpload {
 				.get(this.uploadId, p.partNumber)
 			if (!partRow) throw new Error(`Part ${p.partNumber} not found`)
 			if (partRow.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
-			const data = await Bun.file(partRow.file_path).arrayBuffer()
-			allParts.push(new Uint8Array(data))
-			totalSize += data.byteLength
+			partRows.push(partRow)
 		}
 
-		// Concatenate
-		const combined = new Uint8Array(totalSize)
-		let offset = 0
-		for (const part of allParts) {
-			combined.set(part, offset)
-			offset += part.length
-		}
-
-		// Write final file
+		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
 		const filePath = join(this.baseDir, this.key)
 		mkdirSync(dirname(filePath), { recursive: true })
-		await Bun.write(filePath, combined)
+		const writer = Bun.file(filePath).writer()
+		let totalSize = 0
+		try {
+			for (const row of partRows) {
+				const partStream = Bun.file(row.file_path).stream()
+				const reader = partStream.getReader()
+				while (true) {
+					const { done, value } = await reader.read()
+					if (done) break
+					writer.write(value)
+					totalSize += value.byteLength
+				}
+			}
+		} finally {
+			await writer.end()
+		}
 
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(combined)
-		const etag = hasher.digest('hex')
+		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
+		const etag = computeMultipartEtag(partRows)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 
@@ -547,32 +560,57 @@ export class FileR2Bucket {
 		return join(this.baseDir, key)
 	}
 
-	private async readValue(
+	/**
+	 * Write `value` to `filePath` while hashing it. No intermediate buffering for
+	 * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
+	 * etag and total byte count.
+	 */
+	private async writeValueToFile(
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
-	): Promise<ArrayBuffer> {
-		if (value === null) return new ArrayBuffer(0)
-		if (typeof value === 'string') return new TextEncoder().encode(value).buffer as ArrayBuffer
-		if (value instanceof ArrayBuffer) return value
+		filePath: string,
+	): Promise<{ etag: string; size: number }> {
+		mkdirSync(dirname(filePath), { recursive: true })
+		const hasher = new Bun.CryptoHasher('md5')
+
+		if (value === null) {
+			await Bun.write(filePath, '')
+			return { etag: hasher.digest('hex'), size: 0 }
+		}
+		if (typeof value === 'string') {
+			const bytes = new TextEncoder().encode(value)
+			hasher.update(bytes)
+			await Bun.write(filePath, bytes)
+			return { etag: hasher.digest('hex'), size: bytes.byteLength }
+		}
+		if (value instanceof ArrayBuffer) {
+			hasher.update(new Uint8Array(value))
+			await Bun.write(filePath, value)
+			return { etag: hasher.digest('hex'), size: value.byteLength }
+		}
 		if (ArrayBuffer.isView(value)) {
-			return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
+			const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+			hasher.update(view)
+			await Bun.write(filePath, view)
+			return { etag: hasher.digest('hex'), size: view.byteLength }
 		}
-		if (value instanceof Blob) return await value.arrayBuffer()
-		// ReadableStream
-		const chunks: Uint8Array[] = []
-		const reader = value.getReader()
-		while (true) {
-			const { done, value: chunk } = await reader.read()
-			if (done) break
-			chunks.push(chunk)
+
+		// Streaming path: Blob or ReadableStream. Pipe chunks straight to disk.
+		const stream = value instanceof Blob ? value.stream() : value
+		const writer = Bun.file(filePath).writer()
+		let size = 0
+		const reader = stream.getReader()
+		try {
+			while (true) {
+				const { done, value: chunk } = await reader.read()
+				if (done) break
+				hasher.update(chunk)
+				writer.write(chunk)
+				size += chunk.byteLength
+			}
+		} finally {
+			await writer.end()
 		}
-		const total = chunks.reduce((s, c) => s + c.length, 0)
-		const buf = new Uint8Array(total)
-		let offset = 0
-		for (const c of chunks) {
-			buf.set(c, offset)
-			offset += c.length
-		}
-		return buf.buffer as ArrayBuffer
+		return { etag: hasher.digest('hex'), size }
 	}
 
 	async put(
@@ -594,19 +632,12 @@ export class FileR2Bucket {
 			}
 		}
 
-		const data = await this.readValue(value)
-
 		const fp = this.filePath(key)
-		mkdirSync(dirname(fp), { recursive: true })
-		await Bun.write(fp, data)
-
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(new Uint8Array(data))
-		const etag = hasher.digest('hex')
+		const { etag, size } = await this.writeValueToFile(value, fp)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 
-		// Build checksums from provided hashes
+		// Build checksums. md5 is always computed; user-supplied sha* are stored as-is.
 		const checksums: R2Checksums = { md5: Buffer.from(etag, 'hex').buffer as ArrayBuffer }
 		for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
 			const provided = options?.[algo]
@@ -621,7 +652,7 @@ export class FileR2Bucket {
 			[
 				this.bucket,
 				key,
-				data.byteLength,
+				size,
 				etag,
 				version,
 				uploaded.toISOString(),
@@ -633,7 +664,7 @@ export class FileR2Bucket {
 
 		return new R2Object({
 			key,
-			size: data.byteLength,
+			size,
 			etag,
 			version,
 			uploaded,
