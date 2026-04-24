@@ -120,43 +120,59 @@ export class R2Object {
 	}
 
 	writeHttpMetadata(headers: Headers): void {
-		const m = this.httpMetadata
-		if (m.contentType) headers.set('Content-Type', m.contentType)
-		if (m.contentLanguage) headers.set('Content-Language', m.contentLanguage)
-		if (m.contentDisposition) headers.set('Content-Disposition', m.contentDisposition)
-		if (m.contentEncoding) headers.set('Content-Encoding', m.contentEncoding)
-		if (m.cacheControl) headers.set('Cache-Control', m.cacheControl)
-		if (m.cacheExpiry) headers.set('Expires', m.cacheExpiry.toUTCString())
+		for (const [header, field] of HTTP_METADATA_FIELDS) {
+			const v = this.httpMetadata[field]
+			if (!v) continue
+			headers.set(header, v instanceof Date ? v.toUTCString() : v)
+		}
 	}
 }
 
 // --- R2ObjectBody ---
 
 export class R2ObjectBody extends R2Object {
-	private data: ArrayBuffer
 	readonly bodyUsed: boolean = false
+	private filePath: string
+	private rangeOffset: number
+	private rangeLength: number
+	private totalSize: number
 
-	constructor(meta: R2ObjectMeta, data: ArrayBuffer) {
+	constructor(meta: R2ObjectMeta, filePath: string, rangeOffset: number, rangeLength: number, totalSize: number) {
 		super(meta)
-		this.data = data
+		this.filePath = filePath
+		this.rangeOffset = rangeOffset
+		this.rangeLength = rangeLength
+		this.totalSize = totalSize
 	}
 
+	private isFullFile(): boolean {
+		return this.rangeOffset === 0 && this.rangeLength === this.totalSize
+	}
+
+	/**
+	 * Full-file bodies stream directly from disk (O(chunk) memory). Range bodies
+	 * read the slice eagerly — ranges are typically small (< a few MB) so this
+	 * doesn't undermine the memory guarantees the streaming write path gives us.
+	 */
 	get body(): ReadableStream<Uint8Array> {
-		const data = this.data
+		if (this.isFullFile()) return Bun.file(this.filePath).stream()
+		const slice = Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength)
 		return new ReadableStream({
-			start(controller) {
-				controller.enqueue(new Uint8Array(data))
+			async start(controller) {
+				const buf = await slice.arrayBuffer()
+				controller.enqueue(new Uint8Array(buf))
 				controller.close()
 			},
 		})
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		return this.data
+		if (this.isFullFile()) return Bun.file(this.filePath).arrayBuffer()
+		return Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength).arrayBuffer()
 	}
 
 	async text(): Promise<string> {
-		return new TextDecoder().decode(this.data)
+		return new TextDecoder().decode(await this.arrayBuffer())
 	}
 
 	async json<T = unknown>(): Promise<T> {
@@ -164,7 +180,7 @@ export class R2ObjectBody extends R2Object {
 	}
 
 	async blob(): Promise<Blob> {
-		return new Blob([this.data])
+		return new Blob([await this.arrayBuffer()])
 	}
 }
 
@@ -194,15 +210,30 @@ function rowToMeta(row: R2Row): R2ObjectMeta {
 	}
 }
 
+/**
+ * (httpHeader, R2HTTPMetadata field). Drives serialization, deserialization,
+ * and HTTP header round-tripping — keep this list as the single source of truth.
+ * cacheExpiry is a Date; all others are strings.
+ */
+export const HTTP_METADATA_FIELDS: ReadonlyArray<
+	readonly [httpHeader: string, field: keyof R2HTTPMetadata]
+> = [
+	['content-type', 'contentType'],
+	['content-language', 'contentLanguage'],
+	['content-disposition', 'contentDisposition'],
+	['content-encoding', 'contentEncoding'],
+	['cache-control', 'cacheControl'],
+	['expires', 'cacheExpiry'],
+]
+
 function serializeHttpMetadata(m: R2HTTPMetadata | undefined): string | null {
 	if (!m) return null
 	const obj: Record<string, string> = {}
-	if (m.contentType) obj.contentType = m.contentType
-	if (m.contentLanguage) obj.contentLanguage = m.contentLanguage
-	if (m.contentDisposition) obj.contentDisposition = m.contentDisposition
-	if (m.contentEncoding) obj.contentEncoding = m.contentEncoding
-	if (m.cacheControl) obj.cacheControl = m.cacheControl
-	if (m.cacheExpiry) obj.cacheExpiry = m.cacheExpiry.toISOString()
+	for (const [, field] of HTTP_METADATA_FIELDS) {
+		const v = m[field]
+		if (!v) continue
+		obj[field] = v instanceof Date ? v.toISOString() : v
+	}
 	return Object.keys(obj).length === 0 ? null : JSON.stringify(obj)
 }
 
@@ -210,12 +241,11 @@ function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
 	if (!s) return {}
 	const obj = JSON.parse(s) as Record<string, string>
 	const result: R2HTTPMetadata = {}
-	if (obj.contentType) result.contentType = obj.contentType
-	if (obj.contentLanguage) result.contentLanguage = obj.contentLanguage
-	if (obj.contentDisposition) result.contentDisposition = obj.contentDisposition
-	if (obj.contentEncoding) result.contentEncoding = obj.contentEncoding
-	if (obj.cacheControl) result.cacheControl = obj.cacheControl
-	if (obj.cacheExpiry) result.cacheExpiry = new Date(obj.cacheExpiry)
+	for (const [, field] of HTTP_METADATA_FIELDS) {
+		const v = obj[field]
+		if (!v) continue
+		;(result[field] as string | Date) = field === 'cacheExpiry' ? new Date(v) : v
+	}
 	return result
 }
 
@@ -399,18 +429,18 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket)
 		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
 
-		// Sort parts by partNumber and validate etags up front (cheap — just DB lookups).
+		// Load all parts in one query and index by number — avoids N+1 for uploads with many parts.
+		const allRows = this.db
+			.query<MultipartPartRow, [string]>(`SELECT * FROM r2_multipart_parts WHERE upload_id = ?`)
+			.all(this.uploadId)
+		const byNumber = new Map(allRows.map((r) => [r.part_number, r]))
 		const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber)
 		const partRows: MultipartPartRow[] = []
 		for (const p of sorted) {
-			const partRow = this.db
-				.query<MultipartPartRow, [string, number]>(
-					`SELECT * FROM r2_multipart_parts WHERE upload_id = ? AND part_number = ?`,
-				)
-				.get(this.uploadId, p.partNumber)
-			if (!partRow) throw new Error(`Part ${p.partNumber} not found`)
-			if (partRow.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
-			partRows.push(partRow)
+			const row = byNumber.get(p.partNumber)
+			if (!row) throw new Error(`Part ${p.partNumber} not found`)
+			if (row.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
+			partRows.push(row)
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
@@ -441,25 +471,27 @@ export class R2MultipartUpload {
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Insert object record
-		this.db.run(
-			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				this.bucket,
-				this.key,
-				totalSize,
-				etag,
-				version,
-				uploaded.toISOString(),
-				upload.http_metadata,
-				upload.custom_metadata,
-				null,
-			],
-		)
-
-		// Clean up multipart data
-		this.cleanupMultipart()
+		// Atomically: persist the final object and remove multipart DB rows.
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					this.bucket,
+					this.key,
+					totalSize,
+					etag,
+					version,
+					uploaded.toISOString(),
+					upload.http_metadata,
+					upload.custom_metadata,
+					null,
+				],
+			)
+			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		})()
+		this.removePartFiles()
 
 		return new R2Object({
 			key: this.key,
@@ -474,7 +506,11 @@ export class R2MultipartUpload {
 	}
 
 	async abort(): Promise<void> {
-		this.cleanupMultipart()
+		this.db.transaction(() => {
+			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		})()
+		this.removePartFiles()
 	}
 
 	/** Inspect parts that have been uploaded so far (used by S3 ListParts). */
@@ -492,15 +528,9 @@ export class R2MultipartUpload {
 		}))
 	}
 
-	private cleanupMultipart(): void {
-		// Delete part files
+	private removePartFiles(): void {
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		if (existsSync(partDir)) {
-			rmSync(partDir, { recursive: true, force: true })
-		}
-		// Delete DB records
-		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-		this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		if (existsSync(partDir)) rmSync(partDir, { recursive: true, force: true })
 	}
 }
 
@@ -665,34 +695,23 @@ export class FileR2Bucket {
 			}
 		}
 
-		const fp = this.filePath(key)
-		const file = Bun.file(fp)
-		let data = await file.arrayBuffer()
-
-		// Handle range reads
+		const totalSize = row.size
+		let offset = 0
+		let length = totalSize
 		if (options?.range) {
 			const range = options.range
-			let offset: number
-			let length: number
-
-			if ('suffix' in range && range.suffix !== undefined) {
-				// suffix: last N bytes
-				offset = Math.max(0, data.byteLength - range.suffix)
-				length = data.byteLength - offset
+			if (range.suffix !== undefined) {
+				offset = Math.max(0, totalSize - range.suffix)
+				length = totalSize - offset
 			} else {
 				offset = range.offset ?? 0
-				length = range.length ?? (data.byteLength - offset)
-				// Clamp to actual data size
-				if (offset + length > data.byteLength) {
-					length = data.byteLength - offset
-				}
+				length = range.length ?? totalSize - offset
+				if (offset + length > totalSize) length = totalSize - offset
 			}
-
-			data = data.slice(offset, offset + length)
 			meta.range = { offset, length }
 		}
 
-		return new R2ObjectBody(meta, data)
+		return new R2ObjectBody(meta, this.filePath(key), offset, length, totalSize)
 	}
 
 	async head(key: string): Promise<R2Object | null> {

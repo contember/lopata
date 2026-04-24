@@ -4,7 +4,7 @@ export function escapeXML(str: string): string {
 	return str.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]!)
 }
 
-const ERROR_STATUS: Record<string, number> = {
+const ERROR_STATUS = {
 	NoSuchBucket: 404,
 	NoSuchKey: 404,
 	NoSuchUpload: 404,
@@ -17,10 +17,13 @@ const ERROR_STATUS: Record<string, number> = {
 	InvalidPart: 400,
 	MalformedXML: 400,
 	BadDigest: 400,
-}
+	InternalError: 500,
+} as const
 
-export function statusForError(code: string): number {
-	return ERROR_STATUS[code] ?? 400
+export type S3ErrorCode = keyof typeof ERROR_STATUS
+
+export function statusForError(code: S3ErrorCode): number {
+	return ERROR_STATUS[code]
 }
 
 export function xmlResponse(body: string, status: number, extra?: Headers): Response {
@@ -29,7 +32,7 @@ export function xmlResponse(body: string, status: number, extra?: Headers): Resp
 	return new Response(body, { status, headers })
 }
 
-export function xmlError(code: string, message: string, resource = '', extra?: Headers): Response {
+export function xmlError(code: S3ErrorCode, message: string, resource = '', extra?: Headers): Response {
 	const body = `<?xml version="1.0" encoding="UTF-8"?>
 <Error>
   <Code>${escapeXML(code)}</Code>
@@ -48,15 +51,15 @@ export interface ListV2Params {
 	delimiter?: string
 }
 
-export function listBucketV2Xml(
-	bucket: string,
-	params: ListV2Params,
-	items: R2Object[],
-	truncated: boolean,
-	nextContinuation: string | undefined,
-	delimitedPrefixes: string[],
-): string {
-	const contents = items
+export interface ListV1Params {
+	prefix?: string
+	marker?: string
+	maxKeys?: number
+	delimiter?: string
+}
+
+function renderContents(items: R2Object[]): string {
+	return items
 		.map(
 			(o) =>
 				`  <Contents>
@@ -68,9 +71,22 @@ export function listBucketV2Xml(
   </Contents>`,
 		)
 		.join('\n')
-	const prefixes = delimitedPrefixes
+}
+
+function renderCommonPrefixes(delimitedPrefixes: string[]): string {
+	return delimitedPrefixes
 		.map((p) => `  <CommonPrefixes><Prefix>${escapeXML(p)}</Prefix></CommonPrefixes>`)
 		.join('\n')
+}
+
+export function listBucketV2Xml(
+	bucket: string,
+	params: ListV2Params,
+	items: R2Object[],
+	truncated: boolean,
+	nextContinuation: string | undefined,
+	delimitedPrefixes: string[],
+): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>${escapeXML(bucket)}</Name>
@@ -80,16 +96,9 @@ export function listBucketV2Xml(
   <MaxKeys>${params.maxKeys ?? 1000}</MaxKeys>
   <IsTruncated>${truncated ? 'true' : 'false'}</IsTruncated>
   ${nextContinuation ? `<NextContinuationToken>${escapeXML(nextContinuation)}</NextContinuationToken>` : ''}
-${contents}
-${prefixes}
+${renderContents(items)}
+${renderCommonPrefixes(delimitedPrefixes)}
 </ListBucketResult>`
-}
-
-export interface ListV1Params {
-	prefix?: string
-	marker?: string
-	maxKeys?: number
-	delimiter?: string
 }
 
 export function listBucketV1Xml(
@@ -100,21 +109,6 @@ export function listBucketV1Xml(
 	nextMarker: string | undefined,
 	delimitedPrefixes: string[],
 ): string {
-	const contents = items
-		.map(
-			(o) =>
-				`  <Contents>
-    <Key>${escapeXML(o.key)}</Key>
-    <LastModified>${o.uploaded.toISOString()}</LastModified>
-    <ETag>"${o.etag}"</ETag>
-    <Size>${o.size}</Size>
-    <StorageClass>STANDARD</StorageClass>
-  </Contents>`,
-		)
-		.join('\n')
-	const prefixes = delimitedPrefixes
-		.map((p) => `  <CommonPrefixes><Prefix>${escapeXML(p)}</Prefix></CommonPrefixes>`)
-		.join('\n')
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
   <Name>${escapeXML(bucket)}</Name>
@@ -124,8 +118,8 @@ export function listBucketV1Xml(
   <MaxKeys>${params.maxKeys ?? 1000}</MaxKeys>
   <IsTruncated>${truncated ? 'true' : 'false'}</IsTruncated>
   ${nextMarker ? `<NextMarker>${escapeXML(nextMarker)}</NextMarker>` : ''}
-${contents}
-${prefixes}
+${renderContents(items)}
+${renderCommonPrefixes(delimitedPrefixes)}
 </ListBucketResult>`
 }
 

@@ -1,4 +1,4 @@
-import type { R2Conditional, R2HTTPMetadata, R2Object, R2Range } from '../bindings/r2'
+import { HTTP_METADATA_FIELDS, type R2HTTPMetadata, type R2Object, type R2Range } from '../bindings/r2'
 
 export function extractPutOptions(req: Request): {
 	httpMetadata: R2HTTPMetadata
@@ -6,20 +6,15 @@ export function extractPutOptions(req: Request): {
 } {
 	const h = req.headers
 	const httpMetadata: R2HTTPMetadata = {}
-	const contentType = h.get('content-type')
-	if (contentType) httpMetadata.contentType = contentType
-	const contentLanguage = h.get('content-language')
-	if (contentLanguage) httpMetadata.contentLanguage = contentLanguage
-	const contentDisposition = h.get('content-disposition')
-	if (contentDisposition) httpMetadata.contentDisposition = contentDisposition
-	const contentEncoding = h.get('content-encoding')
-	if (contentEncoding) httpMetadata.contentEncoding = contentEncoding
-	const cacheControl = h.get('cache-control')
-	if (cacheControl) httpMetadata.cacheControl = cacheControl
-	const expires = h.get('expires')
-	if (expires) {
-		const d = new Date(expires)
-		if (!Number.isNaN(d.getTime())) httpMetadata.cacheExpiry = d
+	for (const [header, field] of HTTP_METADATA_FIELDS) {
+		const v = h.get(header)
+		if (!v) continue
+		if (field === 'cacheExpiry') {
+			const d = new Date(v)
+			if (!Number.isNaN(d.getTime())) httpMetadata.cacheExpiry = d
+		} else {
+			;(httpMetadata[field] as string) = v
+		}
 	}
 
 	const customMetadata: Record<string, string> = {}
@@ -35,13 +30,7 @@ export function applyObjectHeaders(obj: R2Object, headers = new Headers()): Head
 	headers.set('ETag', `"${obj.etag}"`)
 	headers.set('Last-Modified', obj.uploaded.toUTCString())
 	headers.set('Content-Length', String(obj.size))
-	const m = obj.httpMetadata
-	if (m.contentType) headers.set('Content-Type', m.contentType)
-	if (m.contentLanguage) headers.set('Content-Language', m.contentLanguage)
-	if (m.contentDisposition) headers.set('Content-Disposition', m.contentDisposition)
-	if (m.contentEncoding) headers.set('Content-Encoding', m.contentEncoding)
-	if (m.cacheControl) headers.set('Cache-Control', m.cacheControl)
-	if (m.cacheExpiry) headers.set('Expires', m.cacheExpiry.toUTCString())
+	obj.writeHttpMetadata(headers)
 	for (const [k, v] of Object.entries(obj.customMetadata)) {
 		headers.set(`x-amz-meta-${k}`, v)
 	}
@@ -140,7 +129,3 @@ export function corsHeaders(origin: string | null): Headers {
 	h.set('Access-Control-Expose-Headers', '*')
 	return h
 }
-
-// Tell R2 it was conditionally fetched but we want R2 to return the body regardless —
-// S3 evaluates the conditions itself on top. We just use R2 as a byte store here.
-export type { R2Conditional }

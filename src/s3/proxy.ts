@@ -330,8 +330,7 @@ async function handleCopyObject(
 		customMetadata = { ...srcObj.customMetadata }
 	}
 
-	const data = await srcObj.arrayBuffer()
-	const putRes = await destR2.put(destKey, data, { httpMetadata, customMetadata })
+	const putRes = await destR2.put(destKey, srcObj.body, { httpMetadata, customMetadata })
 	if (!putRes) return xmlError('InvalidRequest', 'Copy failed', `/${destBucket}/${destKey}`, cors)
 	return xmlResponse(copyObjectResultXml(putRes.etag, putRes.uploaded), 200, cors)
 }
