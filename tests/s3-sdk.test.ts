@@ -14,6 +14,7 @@ import {
 	S3Client,
 	UploadPartCommand,
 } from '@aws-sdk/client-s3'
+import { Upload } from '@aws-sdk/lib-storage'
 import { Database } from 'bun:sqlite'
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -202,4 +203,40 @@ test('SDK: DeleteObject', async () => {
 	await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'del-single', Body: 'x' }))
 	await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: 'del-single' }))
 	expect(await r2.get('del-single')).toBeNull()
+})
+
+test('SDK: lib-storage Upload with 15 MiB stream triggers real multipart + aws-chunked', async () => {
+	// Build a 15 MiB payload of pseudo-random bytes so md5 is stable per run but
+	// distinct from a trivial fill pattern.
+	const PART_SIZE = 5 * 1024 * 1024
+	const TOTAL = 15 * 1024 * 1024
+	const totalBuf = Buffer.alloc(TOTAL)
+	for (let i = 0; i < TOTAL; i++) totalBuf[i] = (i * 7 + 13) & 0xff
+
+	// Stream it through lib-storage — this forces CreateMultipartUpload + UploadPart(s)
+	// and sets x-amz-content-sha256 to STREAMING-AWS4-HMAC-SHA256-PAYLOAD on each part,
+	// exercising the aws-chunked decoder in handleUploadPart.
+	const upload = new Upload({
+		client: s3,
+		params: { Bucket: BUCKET, Key: 'stream/big', Body: totalBuf },
+		partSize: PART_SIZE,
+		queueSize: 2,
+	})
+	await upload.done()
+
+	const head = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: 'stream/big' }))
+	expect(head.ContentLength).toBe(TOTAL)
+	// Multipart ETag format: "hex-N"
+	expect(head.ETag).toMatch(/^"[0-9a-f]+-\d+"$/)
+
+	// Verify the bytes round-tripped by pulling a middle range
+	const got = await s3.send(
+		new GetObjectCommand({ Bucket: BUCKET, Key: 'stream/big', Range: `bytes=${PART_SIZE - 3}-${PART_SIZE + 4}` }),
+	)
+	const slice = await got.Body!.transformToByteArray()
+	expect(slice.length).toBe(8)
+	for (let i = 0; i < 8; i++) {
+		const srcIdx = PART_SIZE - 3 + i
+		expect(slice[i]).toBe(totalBuf[srcIdx])
+	}
 })

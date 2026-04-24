@@ -182,6 +182,31 @@ test('ListObjectsV2 pagination with max-keys returns continuation token', async 
 	expect(xml).toMatch(/<NextContinuationToken>\d+<\/NextContinuationToken>/)
 })
 
+// --- Content-MD5 validation ---
+
+test('PUT with matching Content-MD5 succeeds', async () => {
+	const md5 = new Bun.CryptoHasher('md5')
+	md5.update('hello')
+	const b64 = Buffer.from(md5.digest('hex'), 'hex').toString('base64')
+	const res = await handleS3Request(
+		s3('PUT', '/k', { body: 'hello', headers: { 'content-md5': b64 } }),
+		BUCKET,
+		r2,
+	)
+	expect(res.status).toBe(200)
+})
+
+test('PUT with mismatched Content-MD5 returns BadDigest and does not persist', async () => {
+	const res = await handleS3Request(
+		s3('PUT', '/k', { body: 'hello', headers: { 'content-md5': 'AAAAAAAAAAAAAAAAAAAAAA==' } }),
+		BUCKET,
+		r2,
+	)
+	expect(res.status).toBe(400)
+	expect(await res.text()).toContain('<Code>BadDigest</Code>')
+	expect(await r2.get('k')).toBeNull()
+})
+
 // --- URL-encoded keys ---
 
 test('PUT/GET with URL-encoded key decodes to actual characters', async () => {

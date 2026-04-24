@@ -14,7 +14,9 @@ const ERROR_STATUS: Record<string, number> = {
 	InvalidArgument: 400,
 	InvalidRequest: 400,
 	InvalidRange: 416,
+	InvalidPart: 400,
 	MalformedXML: 400,
+	BadDigest: 400,
 }
 
 export function statusForError(code: string): number {

@@ -277,6 +277,23 @@ async function handlePutObject(
 	const { httpMetadata, customMetadata } = extractPutOptions(req)
 	const body = decodedBody(req)
 	const putRes = await r2.put(key, body, { httpMetadata, customMetadata })
+
+	// Validate Content-MD5 (base64 of md5 bytes). On mismatch, delete the just-
+	// written object and return BadDigest. S3 semantics: the request is rejected.
+	const contentMd5 = req.headers.get('content-md5')
+	if (contentMd5 && putRes) {
+		const got = Buffer.from(putRes.etag, 'hex').toString('base64')
+		if (got !== contentMd5.trim()) {
+			await r2.delete(key)
+			return xmlError(
+				'BadDigest',
+				'The Content-MD5 you specified did not match what we received.',
+				`/${bucket}/${key}`,
+				cors,
+			)
+		}
+	}
+
 	const headers = new Headers(cors)
 	if (putRes) headers.set('ETag', `"${putRes.etag}"`)
 	return new Response('', { status: 200, headers })
