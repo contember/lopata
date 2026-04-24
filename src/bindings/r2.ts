@@ -45,13 +45,22 @@ export interface R2Checksums {
 	sha512?: ArrayBuffer
 }
 
+export interface R2HTTPMetadata {
+	contentType?: string
+	contentLanguage?: string
+	contentDisposition?: string
+	contentEncoding?: string
+	cacheControl?: string
+	cacheExpiry?: Date
+}
+
 export interface R2GetOptions {
 	onlyIf?: R2Conditional
 	range?: R2Range
 }
 
 export interface R2PutOptions {
-	httpMetadata?: Record<string, string>
+	httpMetadata?: R2HTTPMetadata
 	customMetadata?: Record<string, string>
 	onlyIf?: R2Conditional
 	md5?: ArrayBuffer | string
@@ -75,7 +84,7 @@ interface R2ObjectMeta {
 	etag: string
 	version: string
 	uploaded: Date
-	httpMetadata: Record<string, string>
+	httpMetadata: R2HTTPMetadata
 	customMetadata: Record<string, string>
 	checksums: R2Checksums
 	range?: { offset: number; length: number }
@@ -90,7 +99,7 @@ export class R2Object {
 	readonly httpEtag: string
 	readonly version: string
 	readonly uploaded: Date
-	readonly httpMetadata: Record<string, string>
+	readonly httpMetadata: R2HTTPMetadata
 	readonly customMetadata: Record<string, string>
 	readonly checksums: R2Checksums
 	readonly storageClass: string
@@ -111,9 +120,13 @@ export class R2Object {
 	}
 
 	writeHttpMetadata(headers: Headers): void {
-		for (const [k, v] of Object.entries(this.httpMetadata)) {
-			headers.set(k, v)
-		}
+		const m = this.httpMetadata
+		if (m.contentType) headers.set('Content-Type', m.contentType)
+		if (m.contentLanguage) headers.set('Content-Language', m.contentLanguage)
+		if (m.contentDisposition) headers.set('Content-Disposition', m.contentDisposition)
+		if (m.contentEncoding) headers.set('Content-Encoding', m.contentEncoding)
+		if (m.cacheControl) headers.set('Cache-Control', m.cacheControl)
+		if (m.cacheExpiry) headers.set('Expires', m.cacheExpiry.toUTCString())
 	}
 }
 
@@ -175,10 +188,35 @@ function rowToMeta(row: R2Row): R2ObjectMeta {
 		etag: row.etag,
 		version: row.version ?? row.etag,
 		uploaded: new Date(row.uploaded),
-		httpMetadata: row.http_metadata ? JSON.parse(row.http_metadata) : {},
+		httpMetadata: deserializeHttpMetadata(row.http_metadata),
 		customMetadata: row.custom_metadata ? JSON.parse(row.custom_metadata) : {},
 		checksums: row.checksums ? deserializeChecksums(JSON.parse(row.checksums)) : {},
 	}
+}
+
+function serializeHttpMetadata(m: R2HTTPMetadata | undefined): string | null {
+	if (!m) return null
+	const obj: Record<string, string> = {}
+	if (m.contentType) obj.contentType = m.contentType
+	if (m.contentLanguage) obj.contentLanguage = m.contentLanguage
+	if (m.contentDisposition) obj.contentDisposition = m.contentDisposition
+	if (m.contentEncoding) obj.contentEncoding = m.contentEncoding
+	if (m.cacheControl) obj.cacheControl = m.cacheControl
+	if (m.cacheExpiry) obj.cacheExpiry = m.cacheExpiry.toISOString()
+	return Object.keys(obj).length === 0 ? null : JSON.stringify(obj)
+}
+
+function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
+	if (!s) return {}
+	const obj = JSON.parse(s) as Record<string, string>
+	const result: R2HTTPMetadata = {}
+	if (obj.contentType) result.contentType = obj.contentType
+	if (obj.contentLanguage) result.contentLanguage = obj.contentLanguage
+	if (obj.contentDisposition) result.contentDisposition = obj.contentDisposition
+	if (obj.contentEncoding) result.contentEncoding = obj.contentEncoding
+	if (obj.cacheControl) result.cacheControl = obj.cacheControl
+	if (obj.cacheExpiry) result.cacheExpiry = new Date(obj.cacheExpiry)
+	return result
 }
 
 function serializeChecksums(c: R2Checksums): Record<string, string> {
@@ -365,7 +403,7 @@ export class R2MultipartUpload {
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 
-		const httpMeta = upload.http_metadata ? JSON.parse(upload.http_metadata) : {}
+		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
 		// Insert object record
@@ -572,7 +610,7 @@ export class FileR2Bucket {
 				etag,
 				version,
 				uploaded.toISOString(),
-				options?.httpMetadata ? JSON.stringify(options.httpMetadata) : null,
+				serializeHttpMetadata(options?.httpMetadata),
 				options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
 				JSON.stringify(serializeChecksums(checksums)),
 			],
@@ -719,7 +757,7 @@ export class FileR2Bucket {
 
 	async createMultipartUpload(
 		key: string,
-		options?: { httpMetadata?: Record<string, string>; customMetadata?: Record<string, string> },
+		options?: { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> },
 	): Promise<R2MultipartUpload> {
 		this.validateKey(key)
 		this.validateCustomMetadata(options?.customMetadata)
@@ -732,7 +770,7 @@ export class FileR2Bucket {
 				uploadId,
 				this.bucket,
 				key,
-				options?.httpMetadata ? JSON.stringify(options.httpMetadata) : null,
+				serializeHttpMetadata(options?.httpMetadata),
 				options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
 				new Date().toISOString(),
 			],
