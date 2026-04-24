@@ -63,6 +63,21 @@ test('put ArrayBuffer', async () => {
 	expect(await (obj as R2ObjectBody).text()).toBe('binary')
 })
 
+test('put Uint8Array', async () => {
+	const data = new TextEncoder().encode('typed-array')
+	await r2.put('key', data)
+	const obj = await r2.get('key')
+	expect(await (obj as R2ObjectBody).text()).toBe('typed-array')
+})
+
+test('put Uint8Array that is a subview of a larger buffer', async () => {
+	const full = new TextEncoder().encode('prefix|payload|suffix')
+	const view = new Uint8Array(full.buffer, 7, 7)
+	await r2.put('key', view)
+	const obj = await r2.get('key')
+	expect(await (obj as R2ObjectBody).text()).toBe('payload')
+})
+
 test('put null creates empty object', async () => {
 	await r2.put('key', null)
 	const obj = await r2.get('key')

@@ -500,6 +500,9 @@ export class FileR2Bucket {
 		if (value === null) return new ArrayBuffer(0)
 		if (typeof value === 'string') return new TextEncoder().encode(value).buffer as ArrayBuffer
 		if (value instanceof ArrayBuffer) return value
+		if (ArrayBuffer.isView(value)) {
+			return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
+		}
 		if (value instanceof Blob) return await value.arrayBuffer()
 		// ReadableStream
 		const chunks: Uint8Array[] = []
