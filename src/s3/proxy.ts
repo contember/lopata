@@ -1,26 +1,40 @@
-import type { FileR2Bucket, R2HTTPMetadata, R2ObjectBody } from '../bindings/r2'
+import { type FileR2Bucket, HTTP_METADATA_FIELDS, type R2HTTPMetadata, type R2ObjectBody } from '../bindings/r2'
 import { decodeAwsChunked, isAwsChunked } from './chunked'
 import { applyObjectHeaders, corsHeaders, evaluateConditional, extractPutOptions, parseConditional, parseRange } from './headers'
 import {
 	completeMultipartUploadXml,
 	copyObjectResultXml,
+	copyPartResultXml,
 	type DeleteResultEntry,
 	deleteResultXml,
 	getBucketLocationXml,
+	getObjectAttributesXml,
 	initiateMultipartUploadXml,
+	listAllMyBucketsXml,
 	listBucketV1Xml,
 	listBucketV2Xml,
 	listMultipartUploadsXml,
 	listPartsXml,
 	type ListV1Params,
 	type ListV2Params,
+	type ObjectAttributes,
 	parseCompletePartsXml,
 	parseDeleteRequestXml,
+	parseTaggingXml,
+	taggingXml,
 	xmlError,
 	xmlResponse,
 } from './xml'
 
 export type ResolveBucket = (name: string) => FileR2Bucket | undefined
+export type ListAllBuckets = () => Array<{ name: string; creationDate: Date }>
+
+/**
+ * Per-bucket CORS configuration XML, set via PutBucketCors and returned by
+ * GetBucketCors. Purely observational — lopata's dev server sends a fixed
+ * permissive CORS header set regardless of what's stored here.
+ */
+const bucketCorsConfig = new Map<string, string>()
 
 /**
  * S3-compatible proxy over R2 bindings.
@@ -37,6 +51,7 @@ export async function handleS3Request(
 	bucket: string,
 	r2: FileR2Bucket | undefined,
 	resolveBucket?: ResolveBucket,
+	listAllBuckets?: ListAllBuckets,
 ): Promise<Response> {
 	const url = new URL(req.url)
 	const origin = req.headers.get('origin')
@@ -44,6 +59,11 @@ export async function handleS3Request(
 
 	if (req.method === 'OPTIONS') {
 		return new Response(null, { headers: cors })
+	}
+
+	// ListBuckets: GET at the root with no bucket.
+	if (!bucket && req.method === 'GET' && listAllBuckets) {
+		return xmlResponse(listAllMyBucketsXml(listAllBuckets()), 200, cors)
 	}
 	if (!r2) {
 		return xmlError('NoSuchBucket', 'The specified bucket does not exist.', bucket, cors)
@@ -70,6 +90,20 @@ export async function handleS3Request(
 	const uploadId = sp.get('uploadId')
 	if (uploadId) {
 		if (req.method === 'PUT' && sp.has('partNumber')) {
+			const copySource = req.headers.get('x-amz-copy-source')
+			if (copySource) {
+				return handleUploadPartCopy(
+					req,
+					bucket,
+					key,
+					r2,
+					resolveBucket,
+					uploadId,
+					Number(sp.get('partNumber')),
+					copySource,
+					cors,
+				)
+			}
 			return handleUploadPart(req, bucket, key, r2, uploadId, Number(sp.get('partNumber')), cors)
 		}
 		if (req.method === 'POST') {
@@ -81,6 +115,16 @@ export async function handleS3Request(
 		if (req.method === 'GET') {
 			return handleListParts(bucket, key, r2, uploadId, cors)
 		}
+	}
+
+	// Object sub-resource ops (distinguished by query flag)
+	if (sp.has('attributes') && req.method === 'GET') {
+		return handleGetObjectAttributes(req, bucket, key, r2, cors)
+	}
+	if (sp.has('tagging')) {
+		if (req.method === 'GET') return handleGetObjectTagging(bucket, key, r2, cors)
+		if (req.method === 'PUT') return handlePutObjectTagging(req, bucket, key, r2, cors)
+		if (req.method === 'DELETE') return handleDeleteObjectTagging(bucket, key, r2, cors)
 	}
 
 	// Regular object ops
@@ -113,6 +157,23 @@ async function handleBucketLevel(
 	if (req.method === 'GET' && sp.has('location')) {
 		return xmlResponse(getBucketLocationXml(), 200, cors)
 	}
+	if (sp.has('cors')) {
+		if (req.method === 'GET') {
+			const stored = bucketCorsConfig.get(bucket)
+			if (!stored) {
+				return xmlError('NoSuchCORSConfiguration', 'The CORS configuration does not exist', bucket, cors)
+			}
+			return xmlResponse(stored, 200, cors)
+		}
+		if (req.method === 'PUT') {
+			bucketCorsConfig.set(bucket, await req.text())
+			return new Response('', { status: 200, headers: cors })
+		}
+		if (req.method === 'DELETE') {
+			bucketCorsConfig.delete(bucket)
+			return new Response('', { status: 204, headers: cors })
+		}
+	}
 	if (req.method === 'GET' && sp.has('uploads')) {
 		const prefix = sp.get('prefix') ?? undefined
 		const uploads = r2.listMultipartUploads(prefix)
@@ -121,10 +182,80 @@ async function handleBucketLevel(
 	if (req.method === 'POST' && sp.has('delete')) {
 		return handleDeleteObjects(req, r2, cors)
 	}
+	if (req.method === 'POST' && req.headers.get('content-type')?.startsWith('multipart/form-data')) {
+		return handlePresignedPost(req, bucket, r2, cors)
+	}
 	if (req.method === 'GET') {
 		return handleListObjects(bucket, r2, sp, cors)
 	}
 	return xmlError('InvalidRequest', `Unsupported bucket operation: ${req.method}`, url.pathname, cors)
+}
+
+/**
+ * S3 presigned POST: browser HTML-form upload. The request is multipart/form-data
+ * whose last field is `file` (per S3 convention); other fields carry the object key
+ * and HTTP/custom metadata. SigV4 policy fields are present but unchecked.
+ */
+async function handlePresignedPost(
+	req: Request,
+	bucket: string,
+	r2: FileR2Bucket,
+	cors: Headers,
+): Promise<Response> {
+	const form = await req.formData()
+	// S3 field names are case-insensitive for the control fields.
+	const getField = (name: string): string | undefined => {
+		for (const [k, v] of form) {
+			if (k.toLowerCase() === name.toLowerCase() && typeof v === 'string') return v
+		}
+		return undefined
+	}
+
+	let key = getField('key')
+	const file = form.get('file')
+	if (!key) return xmlError('InvalidArgument', 'Missing required form field: key', `/${bucket}/`, cors)
+	if (!(file instanceof File)) {
+		return xmlError('InvalidArgument', 'Missing required form field: file', `/${bucket}/`, cors)
+	}
+	key = key.replace('${filename}', file.name)
+
+	const httpMetadata: R2HTTPMetadata = {}
+	for (const [header, field] of HTTP_METADATA_FIELDS) {
+		const v = getField(header)
+		if (!v) continue
+		if (field === 'cacheExpiry') {
+			const d = new Date(v)
+			if (!Number.isNaN(d.getTime())) httpMetadata.cacheExpiry = d
+		} else {
+			;(httpMetadata[field] as string) = v
+		}
+	}
+	const customMetadata: Record<string, string> = {}
+	for (const [k, v] of form) {
+		if (typeof v !== 'string') continue
+		if (k.toLowerCase().startsWith('x-amz-meta-')) {
+			customMetadata[k.slice('x-amz-meta-'.length)] = v
+		}
+	}
+
+	const putRes = await r2.put(key, file.stream(), { httpMetadata, customMetadata })
+	const etag = putRes?.etag ?? ''
+
+	const status = Number(getField('success_action_status')) || 204
+	if (status === 201) {
+		const location = `/${bucket}/${encodeURIComponent(key)}`
+		const body = `<?xml version="1.0" encoding="UTF-8"?>
+<PostResponse>
+  <Location>${location}</Location>
+  <Bucket>${bucket}</Bucket>
+  <Key>${key}</Key>
+  <ETag>"${etag}"</ETag>
+</PostResponse>`
+		return xmlResponse(body, 201, cors)
+	}
+	const headers = new Headers(cors)
+	if (etag) headers.set('ETag', `"${etag}"`)
+	return new Response('', { status: status === 200 ? 200 : 204, headers })
 }
 
 async function handleListObjects(
@@ -448,6 +579,101 @@ async function handleListParts(
 	const upload = r2.resumeMultipartUpload(key, uploadId)
 	const parts = upload.listParts()
 	return xmlResponse(listPartsXml(bucket, key, uploadId, parts), 200, cors)
+}
+
+async function handleGetObjectAttributes(
+	req: Request,
+	bucket: string,
+	key: string,
+	r2: FileR2Bucket,
+	cors: Headers,
+): Promise<Response> {
+	const obj = await r2.head(key)
+	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
+	const requested = (req.headers.get('x-amz-object-attributes') ?? '')
+		.split(',')
+		.map((s) => s.trim())
+	const attrs: ObjectAttributes = {}
+	if (requested.includes('ETag')) attrs.etag = obj.etag
+	if (requested.includes('ObjectSize')) attrs.size = obj.size
+	// S3 uses all-caps STANDARD / STANDARD_IA; the R2 binding uses title case.
+	if (requested.includes('StorageClass')) attrs.storageClass = obj.storageClass.toUpperCase()
+	return xmlResponse(getObjectAttributesXml(attrs), 200, cors)
+}
+
+async function handleGetObjectTagging(
+	bucket: string,
+	key: string,
+	r2: FileR2Bucket,
+	cors: Headers,
+): Promise<Response> {
+	const obj = await r2.head(key)
+	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
+	const tags = r2.getTags(key)
+	return xmlResponse(taggingXml(tags), 200, cors)
+}
+
+async function handlePutObjectTagging(
+	req: Request,
+	bucket: string,
+	key: string,
+	r2: FileR2Bucket,
+	cors: Headers,
+): Promise<Response> {
+	const obj = await r2.head(key)
+	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
+	const body = await req.text()
+	const tags = parseTaggingXml(body)
+	r2.setTags(key, tags)
+	return new Response('', { status: 200, headers: cors })
+}
+
+async function handleDeleteObjectTagging(
+	bucket: string,
+	key: string,
+	r2: FileR2Bucket,
+	cors: Headers,
+): Promise<Response> {
+	const obj = await r2.head(key)
+	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
+	r2.setTags(key, [])
+	return new Response('', { status: 204, headers: cors })
+}
+
+async function handleUploadPartCopy(
+	req: Request,
+	destBucket: string,
+	destKey: string,
+	destR2: FileR2Bucket,
+	resolveBucket: ResolveBucket | undefined,
+	uploadId: string,
+	partNumber: number,
+	copySource: string,
+	cors: Headers,
+): Promise<Response> {
+	if (!Number.isInteger(partNumber) || partNumber < 1) {
+		return xmlError('InvalidArgument', 'Invalid partNumber', `/${destBucket}/${destKey}`, cors)
+	}
+	const source = parseCopySource(copySource)
+	if (!source) return xmlError('InvalidArgument', 'Invalid x-amz-copy-source header', copySource, cors)
+
+	const srcR2 = source.bucket === destBucket ? destR2 : resolveBucket?.(source.bucket)
+	if (!srcR2) return xmlError('NoSuchBucket', `Source bucket not found: ${source.bucket}`, copySource, cors)
+
+	// Optional byte range: "bytes=start-end"
+	const rangeHeader = req.headers.get('x-amz-copy-source-range')
+	const range = rangeHeader ? parseRange(rangeHeader) : null
+
+	const srcObj = (await srcR2.get(source.key, range ? { range } : undefined)) as R2ObjectBody | null
+	if (!srcObj) return xmlError('NoSuchKey', 'Source object not found', copySource, cors)
+
+	const upload = destR2.resumeMultipartUpload(destKey, uploadId)
+	try {
+		const part = await upload.uploadPart(partNumber, srcObj.body)
+		return xmlResponse(copyPartResultXml(part.etag, srcObj.uploaded), 200, cors)
+	} catch (err) {
+		return xmlError('NoSuchUpload', String(err), `/${destBucket}/${destKey}`, cors)
+	}
 }
 
 // ─── Body helpers ────────────────────────────────────────────────────────────

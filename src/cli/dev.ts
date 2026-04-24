@@ -269,6 +269,23 @@ export async function run(ctx: CliContext, args: string[]) {
 				const gen = targetManager.active
 				const binding = gen?.env[s3Match.bucket] as FileR2Bucket | undefined
 				const resolveBucket = (name: string) => gen?.env[name] as FileR2Bucket | undefined
+				const listAllBuckets = () => {
+					if (!gen) return []
+					const out: Array<{ name: string; creationDate: Date }> = []
+					for (const [name, value] of Object.entries(gen.env)) {
+						// Duck-typed R2Bucket check — instrumentBinding wraps in a Proxy, so instanceof
+						// isn't reliable. R2 bindings are distinguished by having these methods.
+						if (
+							value
+							&& typeof (value as { put?: unknown }).put === 'function'
+							&& typeof (value as { head?: unknown }).head === 'function'
+							&& typeof (value as { createMultipartUpload?: unknown }).createMultipartUpload === 'function'
+						) {
+							out.push({ name, creationDate: new Date(0) })
+						}
+					}
+					return out
+				}
 				const rewritten = new URL(request.url)
 				rewritten.pathname = '/' + s3Match.keyPath
 				const virtualReq = new Request(rewritten.toString(), {
@@ -277,7 +294,7 @@ export async function run(ctx: CliContext, args: string[]) {
 					body: request.body,
 					duplex: 'half',
 				})
-				return handleS3Request(virtualReq, s3Match.bucket, binding, resolveBucket)
+				return handleS3Request(virtualReq, s3Match.bucket, binding, resolveBucket, listAllBuckets)
 			}
 
 			// Queue pull consumer endpoints: POST /cdn-cgi/handler/queues/<name>/messages/pull and /ack

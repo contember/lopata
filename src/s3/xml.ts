@@ -8,6 +8,7 @@ const ERROR_STATUS = {
 	NoSuchBucket: 404,
 	NoSuchKey: 404,
 	NoSuchUpload: 404,
+	NoSuchCORSConfiguration: 404,
 	AccessDenied: 403,
 	PreconditionFailed: 412,
 	NotModified: 304,
@@ -128,6 +129,28 @@ export function getBucketLocationXml(): string {
 <LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">auto</LocationConstraint>`
 }
 
+export function listAllMyBucketsXml(buckets: Array<{ name: string; creationDate: Date }>): string {
+	const items = buckets
+		.map(
+			(b) =>
+				`    <Bucket>
+      <Name>${escapeXML(b.name)}</Name>
+      <CreationDate>${b.creationDate.toISOString()}</CreationDate>
+    </Bucket>`,
+		)
+		.join('\n')
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Owner>
+    <ID>00000000</ID>
+    <DisplayName>lopata</DisplayName>
+  </Owner>
+  <Buckets>
+${items}
+  </Buckets>
+</ListAllMyBucketsResult>`
+}
+
 export function initiateMultipartUploadXml(bucket: string, key: string, uploadId: string): string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
 <InitiateMultipartUploadResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -153,6 +176,55 @@ export function copyObjectResultXml(etag: string, lastModified: Date): string {
   <LastModified>${lastModified.toISOString()}</LastModified>
   <ETag>"${escapeXML(etag)}"</ETag>
 </CopyObjectResult>`
+}
+
+export function copyPartResultXml(etag: string, lastModified: Date): string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<CopyPartResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <LastModified>${lastModified.toISOString()}</LastModified>
+  <ETag>"${escapeXML(etag)}"</ETag>
+</CopyPartResult>`
+}
+
+export interface ObjectAttributes {
+	etag?: string
+	size?: number
+	storageClass?: string
+}
+
+export function getObjectAttributesXml(a: ObjectAttributes): string {
+	const parts: string[] = []
+	if (a.etag !== undefined) parts.push(`  <ETag>${escapeXML(a.etag)}</ETag>`)
+	if (a.size !== undefined) parts.push(`  <ObjectSize>${a.size}</ObjectSize>`)
+	if (a.storageClass !== undefined) parts.push(`  <StorageClass>${escapeXML(a.storageClass)}</StorageClass>`)
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<GetObjectAttributesOutput xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+${parts.join('\n')}
+</GetObjectAttributesOutput>`
+}
+
+export function taggingXml(tags: Array<{ key: string; value: string }>): string {
+	const items = tags
+		.map(
+			(t) => `    <Tag><Key>${escapeXML(t.key)}</Key><Value>${escapeXML(t.value)}</Value></Tag>`,
+		)
+		.join('\n')
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <TagSet>
+${items}
+  </TagSet>
+</Tagging>`
+}
+
+export function parseTaggingXml(body: string): Array<{ key: string; value: string }> {
+	const out: Array<{ key: string; value: string }> = []
+	const re = /<Tag>\s*<Key>([^<]*)<\/Key>\s*<Value>([^<]*)<\/Value>\s*<\/Tag>/g
+	let m: RegExpExecArray | null
+	while ((m = re.exec(body)) !== null) {
+		out.push({ key: decodeXmlEntities(m[1]!), value: decodeXmlEntities(m[2]!) })
+	}
+	return out
 }
 
 export interface DeleteResultEntry {

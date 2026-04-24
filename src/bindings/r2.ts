@@ -565,6 +565,11 @@ export class FileR2Bucket {
 		} catch {
 			// Column already exists
 		}
+		try {
+			this.db.run(`ALTER TABLE r2_objects ADD COLUMN tags TEXT`)
+		} catch {
+			// Column already exists
+		}
 	}
 
 	private ensureMultipartTables(): void {
@@ -815,6 +820,27 @@ export class FileR2Bucket {
 
 	resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
 		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, key, uploadId, this.limits)
+	}
+
+	/** Read tags for a key. Returns [] if the object has no tags or doesn't exist. */
+	getTags(key: string): Array<{ key: string; value: string }> {
+		const row = this.db
+			.query<{ tags: string | null }, [string, string]>(
+				`SELECT tags FROM r2_objects WHERE bucket = ? AND key = ?`,
+			)
+			.get(this.bucket, key)
+		if (!row?.tags) return []
+		return JSON.parse(row.tags) as Array<{ key: string; value: string }>
+	}
+
+	/** Replace an object's tag set. No-op if the object does not exist. */
+	setTags(key: string, tags: Array<{ key: string; value: string }>): void {
+		const serialized = tags.length === 0 ? null : JSON.stringify(tags)
+		this.db.run(`UPDATE r2_objects SET tags = ? WHERE bucket = ? AND key = ?`, [
+			serialized,
+			this.bucket,
+			key,
+		])
 	}
 
 	/** List in-progress multipart uploads in this bucket (used by S3 ListMultipartUploads). */

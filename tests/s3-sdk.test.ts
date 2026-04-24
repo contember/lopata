@@ -3,18 +3,27 @@ import {
 	CompleteMultipartUploadCommand,
 	CopyObjectCommand,
 	CreateMultipartUploadCommand,
+	DeleteBucketCorsCommand,
 	DeleteObjectCommand,
 	DeleteObjectsCommand,
+	DeleteObjectTaggingCommand,
+	GetBucketCorsCommand,
+	GetObjectAttributesCommand,
 	GetObjectCommand,
+	GetObjectTaggingCommand,
 	HeadBucketCommand,
 	HeadObjectCommand,
+	ListBucketsCommand,
 	ListObjectsV2Command,
 	ListPartsCommand,
+	PutBucketCorsCommand,
 	PutObjectCommand,
+	PutObjectTaggingCommand,
 	S3Client,
 	UploadPartCommand,
 } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
+import { createPresignedPost } from '@aws-sdk/s3-presigned-post'
 import { Database } from 'bun:sqlite'
 import { afterAll, beforeAll, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -29,8 +38,10 @@ import { handleS3Request } from '../src/s3/proxy'
 // that the direct-call tests can't.
 
 const BUCKET = 'sdk-bucket'
+const OTHER_BUCKET = 'sdk-other'
 let db: Database
 let r2: FileR2Bucket
+let otherR2: FileR2Bucket
 let tmpDir: string
 let server: { stop(): void; url: URL }
 let s3: S3Client
@@ -40,24 +51,35 @@ beforeAll(async () => {
 	db = new Database(':memory:')
 	runMigrations(db)
 	r2 = new FileR2Bucket(db, BUCKET, tmpDir)
+	otherR2 = new FileR2Bucket(db, OTHER_BUCKET, tmpDir)
+
+	const resolveBucket = (name: string) => {
+		if (name === BUCKET) return r2
+		if (name === OTHER_BUCKET) return otherR2
+		return undefined
+	}
+	const listAllBuckets = () => [
+		{ name: BUCKET, creationDate: new Date(0) },
+		{ name: OTHER_BUCKET, creationDate: new Date(0) },
+	]
 
 	const bun = Bun.serve({
 		port: 0,
 		async fetch(req) {
 			const url = new URL(req.url)
-			// Strip /bucket prefix (path style) — the SDK appends the bucket name
-			const match = url.pathname.match(/^\/([^/]+)(\/.*)?$/)
-			if (!match) return new Response('bad', { status: 400 })
-			const [, bucketInUrl, rest] = match
+			// Strip /bucket prefix (path style); if path is '/', bucket is '' and we go to ListBuckets
+			const match = url.pathname.match(/^\/([^/]*)(\/.*)?$/)
+			const bucketInUrl = match?.[1] ?? ''
+			const rest = match?.[2] ?? '/'
 			const rewritten = new URL(req.url)
-			rewritten.pathname = rest ?? '/'
+			rewritten.pathname = rest
 			const virtual = new Request(rewritten.toString(), {
 				method: req.method,
 				headers: req.headers,
 				body: req.body,
 				duplex: 'half',
 			} as RequestInit)
-			return handleS3Request(virtual, bucketInUrl!, bucketInUrl === BUCKET ? r2 : undefined)
+			return handleS3Request(virtual, bucketInUrl, resolveBucket(bucketInUrl), resolveBucket, listAllBuckets)
 		},
 	})
 	server = { stop: () => bun.stop(true), url: bun.url }
@@ -239,4 +261,133 @@ test('SDK: lib-storage Upload with 15 MiB stream triggers real multipart + aws-c
 		const srcIdx = PART_SIZE - 3 + i
 		expect(slice[i]).toBe(totalBuf[srcIdx])
 	}
+})
+
+test('SDK: ListBuckets', async () => {
+	const out = await s3.send(new ListBucketsCommand({}))
+	const names = (out.Buckets ?? []).map((b) => b.Name).sort()
+	expect(names).toEqual([OTHER_BUCKET, BUCKET].sort())
+})
+
+test('SDK: GetObjectAttributes returns requested attributes', async () => {
+	await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'attrs/obj', Body: 'hello' }))
+	const out = await s3.send(
+		new GetObjectAttributesCommand({
+			Bucket: BUCKET,
+			Key: 'attrs/obj',
+			ObjectAttributes: ['ETag', 'ObjectSize', 'StorageClass'],
+		}),
+	)
+	expect(out.ObjectSize).toBe(5)
+	expect(out.StorageClass).toBe('STANDARD')
+	expect(out.ETag).toBeTruthy()
+})
+
+test('SDK: Object tagging round-trip', async () => {
+	await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'tag/obj', Body: 'x' }))
+	await s3.send(
+		new PutObjectTaggingCommand({
+			Bucket: BUCKET,
+			Key: 'tag/obj',
+			Tagging: { TagSet: [{ Key: 'env', Value: 'dev' }, { Key: 'owner', Value: 'nobile' }] },
+		}),
+	)
+	const get = await s3.send(new GetObjectTaggingCommand({ Bucket: BUCKET, Key: 'tag/obj' }))
+	const tags = (get.TagSet ?? []).map((t) => [t.Key, t.Value])
+	expect(tags).toContainEqual(['env', 'dev'])
+	expect(tags).toContainEqual(['owner', 'nobile'])
+
+	await s3.send(new DeleteObjectTaggingCommand({ Bucket: BUCKET, Key: 'tag/obj' }))
+	const after = await s3.send(new GetObjectTaggingCommand({ Bucket: BUCKET, Key: 'tag/obj' }))
+	expect(after.TagSet ?? []).toHaveLength(0)
+})
+
+test('SDK: Bucket CORS round-trip', async () => {
+	await s3.send(
+		new PutBucketCorsCommand({
+			Bucket: BUCKET,
+			CORSConfiguration: {
+				CORSRules: [{ AllowedMethods: ['GET', 'PUT'], AllowedOrigins: ['*'], AllowedHeaders: ['*'] }],
+			},
+		}),
+	)
+	const get = await s3.send(new GetBucketCorsCommand({ Bucket: BUCKET }))
+	const rule = get.CORSRules?.[0]
+	expect(rule?.AllowedMethods).toEqual(['GET', 'PUT'])
+	expect(rule?.AllowedOrigins).toEqual(['*'])
+
+	await s3.send(new DeleteBucketCorsCommand({ Bucket: BUCKET }))
+	await expect(s3.send(new GetBucketCorsCommand({ Bucket: BUCKET }))).rejects.toThrow()
+})
+
+test('SDK: Presigned POST uploads via form-data', async () => {
+	const post = await createPresignedPost(s3, {
+		Bucket: BUCKET,
+		Key: 'post/${filename}',
+		Conditions: [['content-length-range', 0, 1_000_000]],
+		Expires: 300,
+	})
+
+	const form = new FormData()
+	for (const [k, v] of Object.entries(post.fields)) form.append(k, v as string)
+	const file = new File(['uploaded via presigned post'], 'hello.txt', { type: 'text/plain' })
+	form.append('file', file)
+
+	const res = await fetch(post.url, { method: 'POST', body: form })
+	expect(res.status).toBeLessThan(300)
+	expect(await r2.get('post/hello.txt')).not.toBeNull()
+})
+
+test('SDK: UploadPartCopy via lib-storage large CopyObject', async () => {
+	// Seed a ~12 MiB source, then use lib-storage Upload with UploadPartCopy
+	// (lib-storage doesn't have a Copy helper that uses UploadPartCopy directly,
+	//  so do it manually via CreateMultipartUpload + UploadPartCopyCommand).
+	const { UploadPartCopyCommand } = await import('@aws-sdk/client-s3')
+	const SIZE = 12 * 1024 * 1024
+	const buf = Buffer.alloc(SIZE)
+	for (let i = 0; i < SIZE; i++) buf[i] = (i * 31 + 5) & 0xff
+	await s3.send(new PutObjectCommand({ Bucket: BUCKET, Key: 'ppcopy/src', Body: buf }))
+
+	const create = await s3.send(new CreateMultipartUploadCommand({ Bucket: BUCKET, Key: 'ppcopy/dst' }))
+	const uploadId = create.UploadId!
+
+	// Copy source in two chunks via UploadPartCopy
+	const mid = Math.floor(SIZE / 2)
+	const p1 = await s3.send(
+		new UploadPartCopyCommand({
+			Bucket: BUCKET,
+			Key: 'ppcopy/dst',
+			UploadId: uploadId,
+			PartNumber: 1,
+			CopySource: `${BUCKET}/ppcopy/src`,
+			CopySourceRange: `bytes=0-${mid - 1}`,
+		}),
+	)
+	const p2 = await s3.send(
+		new UploadPartCopyCommand({
+			Bucket: BUCKET,
+			Key: 'ppcopy/dst',
+			UploadId: uploadId,
+			PartNumber: 2,
+			CopySource: `${BUCKET}/ppcopy/src`,
+			CopySourceRange: `bytes=${mid}-${SIZE - 1}`,
+		}),
+	)
+
+	await s3.send(
+		new CompleteMultipartUploadCommand({
+			Bucket: BUCKET,
+			Key: 'ppcopy/dst',
+			UploadId: uploadId,
+			MultipartUpload: {
+				Parts: [
+					{ PartNumber: 1, ETag: p1.CopyPartResult?.ETag },
+					{ PartNumber: 2, ETag: p2.CopyPartResult?.ETag },
+				],
+			},
+		}),
+	)
+
+	const head = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: 'ppcopy/dst' }))
+	expect(head.ContentLength).toBe(SIZE)
 })
