@@ -474,3 +474,17 @@ test('multipart upload: operations on aborted upload throw', async () => {
 	await upload.abort()
 	expect(upload.uploadPart(1, 'data')).rejects.toThrow('not found')
 })
+
+test('multipart upload: uploadPart accepts ArrayBufferView subview', async () => {
+	const full = new TextEncoder().encode('xx|chunk-a|chunk-b|yy')
+	const view1 = new Uint8Array(full.buffer, 3, 7)
+	const view2 = new Uint8Array(full.buffer, 11, 7)
+
+	const upload = await r2.createMultipartUpload('view-parts')
+	const part1 = await upload.uploadPart(1, view1)
+	const part2 = await upload.uploadPart(2, view2)
+	await upload.complete([part1, part2])
+
+	const obj = await r2.get('view-parts') as R2ObjectBody
+	expect(await obj.text()).toBe('chunk-achunk-b')
+})
