@@ -63,6 +63,21 @@ test('put ArrayBuffer', async () => {
 	expect(await (obj as R2ObjectBody).text()).toBe('binary')
 })
 
+test('put Uint8Array', async () => {
+	const data = new TextEncoder().encode('typed-array')
+	await r2.put('key', data)
+	const obj = await r2.get('key')
+	expect(await (obj as R2ObjectBody).text()).toBe('typed-array')
+})
+
+test('put Uint8Array that is a subview of a larger buffer', async () => {
+	const full = new TextEncoder().encode('prefix|payload|suffix')
+	const view = new Uint8Array(full.buffer, 7, 7)
+	await r2.put('key', view)
+	const obj = await r2.get('key')
+	expect(await (obj as R2ObjectBody).text()).toBe('payload')
+})
+
 test('put null creates empty object', async () => {
 	await r2.put('key', null)
 	const obj = await r2.get('key')
@@ -458,4 +473,18 @@ test('multipart upload: operations on aborted upload throw', async () => {
 	const upload = await r2.createMultipartUpload('key')
 	await upload.abort()
 	expect(upload.uploadPart(1, 'data')).rejects.toThrow('not found')
+})
+
+test('multipart upload: uploadPart accepts ArrayBufferView subview', async () => {
+	const full = new TextEncoder().encode('xx|chunk-a|chunk-b|yy')
+	const view1 = new Uint8Array(full.buffer, 3, 7)
+	const view2 = new Uint8Array(full.buffer, 11, 7)
+
+	const upload = await r2.createMultipartUpload('view-parts')
+	const part1 = await upload.uploadPart(1, view1)
+	const part2 = await upload.uploadPart(2, view2)
+	await upload.complete([part1, part2])
+
+	const obj = await r2.get('view-parts') as R2ObjectBody
+	expect(await obj.text()).toBe('chunk-achunk-b')
 })

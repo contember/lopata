@@ -264,7 +264,7 @@ export class R2MultipartUpload {
 		this.limits = limits
 	}
 
-	async uploadPart(partNumber: number, data: ArrayBuffer | Uint8Array | string | ReadableStream): Promise<{ partNumber: number; etag: string }> {
+	async uploadPart(partNumber: number, data: ArrayBuffer | ArrayBufferView | string | ReadableStream): Promise<{ partNumber: number; etag: string }> {
 		// Verify upload exists and is not aborted/completed
 		const upload = this.db
 			.query<MultipartRow, [string, string]>(
@@ -276,10 +276,10 @@ export class R2MultipartUpload {
 		let buf: ArrayBuffer
 		if (typeof data === 'string') {
 			buf = new TextEncoder().encode(data).buffer as ArrayBuffer
-		} else if (data instanceof Uint8Array) {
-			buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
 		} else if (data instanceof ArrayBuffer) {
 			buf = data
+		} else if (ArrayBuffer.isView(data)) {
+			buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
 		} else {
 			// ReadableStream
 			const chunks: Uint8Array[] = []
@@ -495,11 +495,14 @@ export class FileR2Bucket {
 	}
 
 	private async readValue(
-		value: string | ArrayBuffer | ReadableStream | Blob | null,
+		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 	): Promise<ArrayBuffer> {
 		if (value === null) return new ArrayBuffer(0)
 		if (typeof value === 'string') return new TextEncoder().encode(value).buffer as ArrayBuffer
 		if (value instanceof ArrayBuffer) return value
+		if (ArrayBuffer.isView(value)) {
+			return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
+		}
 		if (value instanceof Blob) return await value.arrayBuffer()
 		// ReadableStream
 		const chunks: Uint8Array[] = []
@@ -521,7 +524,7 @@ export class FileR2Bucket {
 
 	async put(
 		key: string,
-		value: string | ArrayBuffer | ReadableStream | Blob | null,
+		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 		options?: R2PutOptions,
 	): Promise<R2Object | null> {
 		this.validateKey(key)
