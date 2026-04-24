@@ -251,6 +251,57 @@ function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
 	return `${hasher.digest('hex')}-${partRows.length}`
 }
 
+/**
+ * Write `value` to `filePath` while hashing it. No intermediate buffering for
+ * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
+ * etag and total byte count.
+ */
+async function writeValueToFile(
+	value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
+	filePath: string,
+): Promise<{ etag: string; size: number }> {
+	mkdirSync(dirname(filePath), { recursive: true })
+	const hasher = new Bun.CryptoHasher('md5')
+
+	if (value === null) {
+		await Bun.write(filePath, '')
+		return { etag: hasher.digest('hex'), size: 0 }
+	}
+	if (typeof value === 'string') {
+		const bytes = new TextEncoder().encode(value)
+		hasher.update(bytes)
+		await Bun.write(filePath, bytes)
+		return { etag: hasher.digest('hex'), size: bytes.byteLength }
+	}
+	if (value instanceof ArrayBuffer) {
+		hasher.update(new Uint8Array(value))
+		await Bun.write(filePath, value)
+		return { etag: hasher.digest('hex'), size: value.byteLength }
+	}
+	if (ArrayBuffer.isView(value)) {
+		const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+		hasher.update(view)
+		await Bun.write(filePath, view)
+		return { etag: hasher.digest('hex'), size: view.byteLength }
+	}
+	const stream = value instanceof Blob ? value.stream() : value
+	const writer = Bun.file(filePath).writer()
+	let size = 0
+	const reader = stream.getReader()
+	try {
+		while (true) {
+			const { done, value: chunk } = await reader.read()
+			if (done) break
+			hasher.update(chunk)
+			writer.write(chunk)
+			size += chunk.byteLength
+		}
+	} finally {
+		await writer.end()
+	}
+	return { etag: hasher.digest('hex'), size }
+}
+
 // --- Conditional check ---
 
 function evaluateConditional(cond: R2Conditional, etag: string, uploaded: Date): boolean {
@@ -314,7 +365,10 @@ export class R2MultipartUpload {
 		this.limits = limits
 	}
 
-	async uploadPart(partNumber: number, data: ArrayBuffer | ArrayBufferView | string | ReadableStream): Promise<{ partNumber: number; etag: string }> {
+	async uploadPart(
+		partNumber: number,
+		data: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob,
+	): Promise<{ partNumber: number; etag: string }> {
 		// Verify upload exists and is not aborted/completed
 		const upload = this.db
 			.query<MultipartRow, [string, string]>(
@@ -323,47 +377,15 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket)
 		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
 
-		let buf: ArrayBuffer
-		if (typeof data === 'string') {
-			buf = new TextEncoder().encode(data).buffer as ArrayBuffer
-		} else if (data instanceof ArrayBuffer) {
-			buf = data
-		} else if (ArrayBuffer.isView(data)) {
-			buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
-		} else {
-			// ReadableStream
-			const chunks: Uint8Array[] = []
-			const reader = data.getReader()
-			while (true) {
-				const { done, value } = await reader.read()
-				if (done) break
-				chunks.push(value)
-			}
-			const total = chunks.reduce((s, c) => s + c.length, 0)
-			const combined = new Uint8Array(total)
-			let offset = 0
-			for (const c of chunks) {
-				combined.set(c, offset)
-				offset += c.length
-			}
-			buf = combined.buffer as ArrayBuffer
-		}
-
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(new Uint8Array(buf))
-		const etag = hasher.digest('hex')
-
-		// Store part data to a temp file
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		mkdirSync(partDir, { recursive: true })
 		const partPath = join(partDir, `part-${partNumber}`)
-		await Bun.write(partPath, buf)
+		const { etag, size } = await writeValueToFile(data, partPath)
 
 		// Upsert part record
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path)
        VALUES (?, ?, ?, ?, ?)`,
-			[this.uploadId, partNumber, etag, buf.byteLength, partPath],
+			[this.uploadId, partNumber, etag, size, partPath],
 		)
 
 		return { partNumber, etag }
@@ -560,59 +582,6 @@ export class FileR2Bucket {
 		return join(this.baseDir, key)
 	}
 
-	/**
-	 * Write `value` to `filePath` while hashing it. No intermediate buffering for
-	 * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
-	 * etag and total byte count.
-	 */
-	private async writeValueToFile(
-		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
-		filePath: string,
-	): Promise<{ etag: string; size: number }> {
-		mkdirSync(dirname(filePath), { recursive: true })
-		const hasher = new Bun.CryptoHasher('md5')
-
-		if (value === null) {
-			await Bun.write(filePath, '')
-			return { etag: hasher.digest('hex'), size: 0 }
-		}
-		if (typeof value === 'string') {
-			const bytes = new TextEncoder().encode(value)
-			hasher.update(bytes)
-			await Bun.write(filePath, bytes)
-			return { etag: hasher.digest('hex'), size: bytes.byteLength }
-		}
-		if (value instanceof ArrayBuffer) {
-			hasher.update(new Uint8Array(value))
-			await Bun.write(filePath, value)
-			return { etag: hasher.digest('hex'), size: value.byteLength }
-		}
-		if (ArrayBuffer.isView(value)) {
-			const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-			hasher.update(view)
-			await Bun.write(filePath, view)
-			return { etag: hasher.digest('hex'), size: view.byteLength }
-		}
-
-		// Streaming path: Blob or ReadableStream. Pipe chunks straight to disk.
-		const stream = value instanceof Blob ? value.stream() : value
-		const writer = Bun.file(filePath).writer()
-		let size = 0
-		const reader = stream.getReader()
-		try {
-			while (true) {
-				const { done, value: chunk } = await reader.read()
-				if (done) break
-				hasher.update(chunk)
-				writer.write(chunk)
-				size += chunk.byteLength
-			}
-		} finally {
-			await writer.end()
-		}
-		return { etag: hasher.digest('hex'), size }
-	}
-
 	async put(
 		key: string,
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
@@ -633,7 +602,7 @@ export class FileR2Bucket {
 		}
 
 		const fp = this.filePath(key)
-		const { etag, size } = await this.writeValueToFile(value, fp)
+		const { etag, size } = await writeValueToFile(value, fp)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 

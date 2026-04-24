@@ -384,14 +384,13 @@ async function handleUploadPart(
 		return xmlError('InvalidArgument', 'Invalid partNumber', `/${bucket}/${key}`, cors)
 	}
 	const upload = r2.resumeMultipartUpload(key, uploadId)
-	// r2.uploadPart accepts ArrayBuffer | ArrayBufferView | string | ReadableStream;
-	// for aws-chunked, decode framing first then buffer.
-	const body = decodedBody(req)
-	// Buffer to ArrayBuffer — keeps behaviour simple and mirrors how FileR2Bucket
-	// persists parts to disk anyway.
-	const bytes = body ? new Uint8Array(await new Response(body).arrayBuffer()) : new Uint8Array(0)
+	const body = decodedBody(req) ?? new ReadableStream({
+		start(c) {
+			c.close()
+		},
+	})
 	try {
-		const part = await upload.uploadPart(partNumber, bytes)
+		const part = await upload.uploadPart(partNumber, body)
 		const headers = new Headers(cors)
 		headers.set('ETag', `"${part.etag}"`)
 		return new Response('', { status: 200, headers })
