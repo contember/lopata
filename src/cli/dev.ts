@@ -19,6 +19,7 @@ import {
 } from '../api'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
+import type { FileR2Bucket } from '../bindings/r2'
 import { CFWebSocket } from '../bindings/websocket-pair'
 import { autoLoadConfig, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
@@ -28,6 +29,7 @@ import { GenerationManager } from '../generation-manager'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
+import { handleS3Request, matchS3Path } from '../s3/proxy'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
 import { WorkerRegistry } from '../worker-registry'
@@ -260,6 +262,24 @@ export async function run(ctx: CliContext, args: string[]) {
 				return handleDashboardRequest(request)
 			}
 
+			// S3-compatible proxy: /__s3/{bucket}/{key...} → R2 binding on active worker
+			const s3Match = matchS3Path(url.pathname)
+			if (s3Match) {
+				const targetManager = resolveWorkerParam(url, registry, manager)
+				const gen = targetManager.active
+				const binding = gen?.env[s3Match.bucket] as FileR2Bucket | undefined
+				const resolveBucket = (name: string) => gen?.env[name] as FileR2Bucket | undefined
+				const rewritten = new URL(request.url)
+				rewritten.pathname = '/' + s3Match.keyPath
+				const virtualReq = new Request(rewritten.toString(), {
+					method: request.method,
+					headers: request.headers,
+					body: request.body,
+					duplex: 'half',
+				})
+				return handleS3Request(virtualReq, s3Match.bucket, binding, resolveBucket)
+			}
+
 			// Queue pull consumer endpoints: POST /cdn-cgi/handler/queues/<name>/messages/pull and /ack
 			const queuePullMatch = url.pathname.match(/^\/cdn-cgi\/handler\/queues\/([^/]+)\/messages\/(pull|ack)$/)
 			if (queuePullMatch && request.method === 'POST') {
@@ -470,6 +490,13 @@ export async function run(ctx: CliContext, args: string[]) {
 
 	console.log(`[lopata] Server running at http://${hostname}:${port}`)
 	console.log(`[lopata] Dashboard: http://${hostname}:${port}/__dashboard`)
+
+	if (hostname === '0.0.0.0') {
+		console.warn(
+			`[lopata] WARNING: S3 endpoint at /__s3/<bucket> is UNAUTHENTICATED and reachable from the network.`,
+		)
+		console.warn('[lopata]          Anyone on your LAN can read and write local R2 buckets.')
+	}
 
 	// Graceful shutdown
 	const shutdown = () => {

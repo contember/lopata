@@ -442,6 +442,21 @@ export class R2MultipartUpload {
 		this.cleanupMultipart()
 	}
 
+	/** Inspect parts that have been uploaded so far (used by S3 ListParts). */
+	listParts(): Array<{ partNumber: number; etag: string; size: number; lastModified: Date }> {
+		const rows = this.db
+			.query<MultipartPartRow, [string]>(
+				`SELECT * FROM r2_multipart_parts WHERE upload_id = ? ORDER BY part_number`,
+			)
+			.all(this.uploadId)
+		return rows.map((r) => ({
+			partNumber: r.part_number,
+			etag: r.etag,
+			size: r.size,
+			lastModified: new Date(),
+		}))
+	}
+
 	private cleanupMultipart(): void {
 		// Delete part files
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
@@ -781,6 +796,27 @@ export class FileR2Bucket {
 
 	resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
 		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, key, uploadId, this.limits)
+	}
+
+	/** List in-progress multipart uploads in this bucket (used by S3 ListMultipartUploads). */
+	listMultipartUploads(prefix?: string): Array<{ key: string; uploadId: string; initiated: Date }> {
+		interface Row {
+			upload_id: string
+			key: string
+			created_at: string
+		}
+		const rows = prefix
+			? this.db
+				.query<Row, [string, string]>(
+					`SELECT upload_id, key, created_at FROM r2_multipart_uploads WHERE bucket = ? AND key LIKE ? ORDER BY key`,
+				)
+				.all(this.bucket, prefix + '%')
+			: this.db
+				.query<Row, [string]>(
+					`SELECT upload_id, key, created_at FROM r2_multipart_uploads WHERE bucket = ? ORDER BY key`,
+				)
+				.all(this.bucket)
+		return rows.map((r) => ({ key: r.key, uploadId: r.upload_id, initiated: new Date(r.created_at) }))
 	}
 }
 
