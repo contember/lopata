@@ -248,12 +248,36 @@ test('R2Object has checksums with md5', async () => {
 })
 
 test('writeHttpMetadata sets headers', async () => {
-	await r2.put('key', 'data', { httpMetadata: { 'content-type': 'text/plain', 'cache-control': 'max-age=300' } })
+	await r2.put('key', 'data', { httpMetadata: { contentType: 'text/plain', cacheControl: 'max-age=300' } })
 	const obj = await r2.head('key')
 	const headers = new Headers()
 	obj!.writeHttpMetadata(headers)
 	expect(headers.get('content-type')).toBe('text/plain')
 	expect(headers.get('cache-control')).toBe('max-age=300')
+})
+
+test('writeHttpMetadata maps all struct fields to HTTP header names', async () => {
+	const expires = new Date('2030-01-01T00:00:00Z')
+	await r2.put('key', 'data', {
+		httpMetadata: {
+			contentType: 'application/json',
+			contentLanguage: 'en',
+			contentDisposition: 'attachment; filename="x.json"',
+			contentEncoding: 'gzip',
+			cacheControl: 'public, max-age=60',
+			cacheExpiry: expires,
+		},
+	})
+	const obj = await r2.head('key')
+	const headers = new Headers()
+	obj!.writeHttpMetadata(headers)
+	expect(headers.get('content-type')).toBe('application/json')
+	expect(headers.get('content-language')).toBe('en')
+	expect(headers.get('content-disposition')).toBe('attachment; filename="x.json"')
+	expect(headers.get('content-encoding')).toBe('gzip')
+	expect(headers.get('cache-control')).toBe('public, max-age=60')
+	expect(headers.get('expires')).toBe(expires.toUTCString())
+	expect(obj!.httpMetadata.cacheExpiry).toBeInstanceOf(Date)
 })
 
 test('R2ObjectBody blob() returns Blob', async () => {
@@ -401,12 +425,12 @@ test('list with delimiter returns both objects and prefixes', async () => {
 
 test('list with include filters metadata', async () => {
 	await r2.put('key', 'data', {
-		httpMetadata: { 'content-type': 'text/plain' },
+		httpMetadata: { contentType: 'text/plain' },
 		customMetadata: { tag: 'test' },
 	})
 
 	const withHttp = await r2.list({ include: ['httpMetadata'] })
-	expect(withHttp.objects[0]!.httpMetadata).toEqual({ 'content-type': 'text/plain' })
+	expect(withHttp.objects[0]!.httpMetadata).toEqual({ contentType: 'text/plain' })
 	expect(withHttp.objects[0]!.customMetadata).toEqual({})
 
 	const withCustom = await r2.list({ include: ['customMetadata'] })
@@ -414,7 +438,7 @@ test('list with include filters metadata', async () => {
 	expect(withCustom.objects[0]!.customMetadata).toEqual({ tag: 'test' })
 
 	const withBoth = await r2.list({ include: ['httpMetadata', 'customMetadata'] })
-	expect(withBoth.objects[0]!.httpMetadata).toEqual({ 'content-type': 'text/plain' })
+	expect(withBoth.objects[0]!.httpMetadata).toEqual({ contentType: 'text/plain' })
 	expect(withBoth.objects[0]!.customMetadata).toEqual({ tag: 'test' })
 })
 

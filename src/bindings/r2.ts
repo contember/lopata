@@ -45,13 +45,22 @@ export interface R2Checksums {
 	sha512?: ArrayBuffer
 }
 
+export interface R2HTTPMetadata {
+	contentType?: string
+	contentLanguage?: string
+	contentDisposition?: string
+	contentEncoding?: string
+	cacheControl?: string
+	cacheExpiry?: Date
+}
+
 export interface R2GetOptions {
 	onlyIf?: R2Conditional
 	range?: R2Range
 }
 
 export interface R2PutOptions {
-	httpMetadata?: Record<string, string>
+	httpMetadata?: R2HTTPMetadata
 	customMetadata?: Record<string, string>
 	onlyIf?: R2Conditional
 	md5?: ArrayBuffer | string
@@ -75,7 +84,7 @@ interface R2ObjectMeta {
 	etag: string
 	version: string
 	uploaded: Date
-	httpMetadata: Record<string, string>
+	httpMetadata: R2HTTPMetadata
 	customMetadata: Record<string, string>
 	checksums: R2Checksums
 	range?: { offset: number; length: number }
@@ -90,7 +99,7 @@ export class R2Object {
 	readonly httpEtag: string
 	readonly version: string
 	readonly uploaded: Date
-	readonly httpMetadata: Record<string, string>
+	readonly httpMetadata: R2HTTPMetadata
 	readonly customMetadata: Record<string, string>
 	readonly checksums: R2Checksums
 	readonly storageClass: string
@@ -111,8 +120,10 @@ export class R2Object {
 	}
 
 	writeHttpMetadata(headers: Headers): void {
-		for (const [k, v] of Object.entries(this.httpMetadata)) {
-			headers.set(k, v)
+		for (const [header, field] of HTTP_METADATA_FIELDS) {
+			const v = this.httpMetadata[field]
+			if (!v) continue
+			headers.set(header, v instanceof Date ? v.toUTCString() : v)
 		}
 	}
 }
@@ -120,30 +131,48 @@ export class R2Object {
 // --- R2ObjectBody ---
 
 export class R2ObjectBody extends R2Object {
-	private data: ArrayBuffer
 	readonly bodyUsed: boolean = false
+	private filePath: string
+	private rangeOffset: number
+	private rangeLength: number
+	private totalSize: number
 
-	constructor(meta: R2ObjectMeta, data: ArrayBuffer) {
+	constructor(meta: R2ObjectMeta, filePath: string, rangeOffset: number, rangeLength: number, totalSize: number) {
 		super(meta)
-		this.data = data
+		this.filePath = filePath
+		this.rangeOffset = rangeOffset
+		this.rangeLength = rangeLength
+		this.totalSize = totalSize
 	}
 
+	private isFullFile(): boolean {
+		return this.rangeOffset === 0 && this.rangeLength === this.totalSize
+	}
+
+	/**
+	 * Full-file bodies stream directly from disk (O(chunk) memory). Range bodies
+	 * read the slice eagerly — ranges are typically small (< a few MB) so this
+	 * doesn't undermine the memory guarantees the streaming write path gives us.
+	 */
 	get body(): ReadableStream<Uint8Array> {
-		const data = this.data
+		if (this.isFullFile()) return Bun.file(this.filePath).stream()
+		const slice = Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength)
 		return new ReadableStream({
-			start(controller) {
-				controller.enqueue(new Uint8Array(data))
+			async start(controller) {
+				const buf = await slice.arrayBuffer()
+				controller.enqueue(new Uint8Array(buf))
 				controller.close()
 			},
 		})
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		return this.data
+		if (this.isFullFile()) return Bun.file(this.filePath).arrayBuffer()
+		return Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength).arrayBuffer()
 	}
 
 	async text(): Promise<string> {
-		return new TextDecoder().decode(this.data)
+		return new TextDecoder().decode(await this.arrayBuffer())
 	}
 
 	async json<T = unknown>(): Promise<T> {
@@ -151,7 +180,7 @@ export class R2ObjectBody extends R2Object {
 	}
 
 	async blob(): Promise<Blob> {
-		return new Blob([this.data])
+		return new Blob([await this.arrayBuffer()])
 	}
 }
 
@@ -175,10 +204,49 @@ function rowToMeta(row: R2Row): R2ObjectMeta {
 		etag: row.etag,
 		version: row.version ?? row.etag,
 		uploaded: new Date(row.uploaded),
-		httpMetadata: row.http_metadata ? JSON.parse(row.http_metadata) : {},
+		httpMetadata: deserializeHttpMetadata(row.http_metadata),
 		customMetadata: row.custom_metadata ? JSON.parse(row.custom_metadata) : {},
 		checksums: row.checksums ? deserializeChecksums(JSON.parse(row.checksums)) : {},
 	}
+}
+
+/**
+ * (httpHeader, R2HTTPMetadata field). Drives serialization, deserialization,
+ * and HTTP header round-tripping — keep this list as the single source of truth.
+ * cacheExpiry is a Date; all others are strings.
+ */
+export const HTTP_METADATA_FIELDS: ReadonlyArray<
+	readonly [httpHeader: string, field: keyof R2HTTPMetadata]
+> = [
+	['content-type', 'contentType'],
+	['content-language', 'contentLanguage'],
+	['content-disposition', 'contentDisposition'],
+	['content-encoding', 'contentEncoding'],
+	['cache-control', 'cacheControl'],
+	['expires', 'cacheExpiry'],
+]
+
+function serializeHttpMetadata(m: R2HTTPMetadata | undefined): string | null {
+	if (!m) return null
+	const obj: Record<string, string> = {}
+	for (const [, field] of HTTP_METADATA_FIELDS) {
+		const v = m[field]
+		if (!v) continue
+		obj[field] = v instanceof Date ? v.toISOString() : v
+	}
+	return Object.keys(obj).length === 0 ? null : JSON.stringify(obj)
+}
+
+function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
+	if (!s) return {}
+	const obj = JSON.parse(s) as Record<string, string>
+	const result: R2HTTPMetadata = {}
+	for (const [, field] of HTTP_METADATA_FIELDS) {
+		const v = obj[field]
+		if (!v) continue
+		;(result[field] as string | Date) = field === 'cacheExpiry' ? new Date(v) : v
+	}
+	return result
 }
 
 function serializeChecksums(c: R2Checksums): Record<string, string> {
@@ -199,6 +267,69 @@ function deserializeChecksums(c: Record<string, string>): R2Checksums {
 		;(result as Record<string, ArrayBuffer>)[k] = Buffer.from(v, 'hex').buffer as ArrayBuffer
 	}
 	return result
+}
+
+/**
+ * Compute the S3-compatible multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + N.
+ * Each part's stored etag is hex MD5 of the part body; we concatenate the raw (binary)
+ * digests and hash the result.
+ */
+function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
+	const buf = Buffer.concat(partRows.map((r) => Buffer.from(r.etag, 'hex')))
+	const hasher = new Bun.CryptoHasher('md5')
+	hasher.update(buf)
+	return `${hasher.digest('hex')}-${partRows.length}`
+}
+
+/**
+ * Write `value` to `filePath` while hashing it. No intermediate buffering for
+ * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
+ * etag and total byte count.
+ */
+async function writeValueToFile(
+	value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
+	filePath: string,
+): Promise<{ etag: string; size: number }> {
+	mkdirSync(dirname(filePath), { recursive: true })
+	const hasher = new Bun.CryptoHasher('md5')
+
+	if (value === null) {
+		await Bun.write(filePath, '')
+		return { etag: hasher.digest('hex'), size: 0 }
+	}
+	if (typeof value === 'string') {
+		const bytes = new TextEncoder().encode(value)
+		hasher.update(bytes)
+		await Bun.write(filePath, bytes)
+		return { etag: hasher.digest('hex'), size: bytes.byteLength }
+	}
+	if (value instanceof ArrayBuffer) {
+		hasher.update(new Uint8Array(value))
+		await Bun.write(filePath, value)
+		return { etag: hasher.digest('hex'), size: value.byteLength }
+	}
+	if (ArrayBuffer.isView(value)) {
+		const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+		hasher.update(view)
+		await Bun.write(filePath, view)
+		return { etag: hasher.digest('hex'), size: view.byteLength }
+	}
+	const stream = value instanceof Blob ? value.stream() : value
+	const writer = Bun.file(filePath).writer()
+	let size = 0
+	const reader = stream.getReader()
+	try {
+		while (true) {
+			const { done, value: chunk } = await reader.read()
+			if (done) break
+			hasher.update(chunk)
+			writer.write(chunk)
+			size += chunk.byteLength
+		}
+	} finally {
+		await writer.end()
+	}
+	return { etag: hasher.digest('hex'), size }
 }
 
 // --- Conditional check ---
@@ -264,7 +395,10 @@ export class R2MultipartUpload {
 		this.limits = limits
 	}
 
-	async uploadPart(partNumber: number, data: ArrayBuffer | ArrayBufferView | string | ReadableStream): Promise<{ partNumber: number; etag: string }> {
+	async uploadPart(
+		partNumber: number,
+		data: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob,
+	): Promise<{ partNumber: number; etag: string }> {
 		// Verify upload exists and is not aborted/completed
 		const upload = this.db
 			.query<MultipartRow, [string, string]>(
@@ -273,47 +407,15 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket)
 		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
 
-		let buf: ArrayBuffer
-		if (typeof data === 'string') {
-			buf = new TextEncoder().encode(data).buffer as ArrayBuffer
-		} else if (data instanceof ArrayBuffer) {
-			buf = data
-		} else if (ArrayBuffer.isView(data)) {
-			buf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
-		} else {
-			// ReadableStream
-			const chunks: Uint8Array[] = []
-			const reader = data.getReader()
-			while (true) {
-				const { done, value } = await reader.read()
-				if (done) break
-				chunks.push(value)
-			}
-			const total = chunks.reduce((s, c) => s + c.length, 0)
-			const combined = new Uint8Array(total)
-			let offset = 0
-			for (const c of chunks) {
-				combined.set(c, offset)
-				offset += c.length
-			}
-			buf = combined.buffer as ArrayBuffer
-		}
-
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(new Uint8Array(buf))
-		const etag = hasher.digest('hex')
-
-		// Store part data to a temp file
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		mkdirSync(partDir, { recursive: true })
 		const partPath = join(partDir, `part-${partNumber}`)
-		await Bun.write(partPath, buf)
+		const { etag, size } = await writeValueToFile(data, partPath)
 
 		// Upsert part record
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path)
        VALUES (?, ?, ?, ?, ?)`,
-			[this.uploadId, partNumber, etag, buf.byteLength, partPath],
+			[this.uploadId, partNumber, etag, size, partPath],
 		)
 
 		return { partNumber, etag }
@@ -327,66 +429,69 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket)
 		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
 
-		// Sort parts by partNumber
+		// Load all parts in one query and index by number — avoids N+1 for uploads with many parts.
+		const allRows = this.db
+			.query<MultipartPartRow, [string]>(`SELECT * FROM r2_multipart_parts WHERE upload_id = ?`)
+			.all(this.uploadId)
+		const byNumber = new Map(allRows.map((r) => [r.part_number, r]))
 		const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber)
-
-		// Load all part data
-		const allParts: Uint8Array[] = []
-		let totalSize = 0
+		const partRows: MultipartPartRow[] = []
 		for (const p of sorted) {
-			const partRow = this.db
-				.query<MultipartPartRow, [string, number]>(
-					`SELECT * FROM r2_multipart_parts WHERE upload_id = ? AND part_number = ?`,
-				)
-				.get(this.uploadId, p.partNumber)
-			if (!partRow) throw new Error(`Part ${p.partNumber} not found`)
-			if (partRow.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
-			const data = await Bun.file(partRow.file_path).arrayBuffer()
-			allParts.push(new Uint8Array(data))
-			totalSize += data.byteLength
+			const row = byNumber.get(p.partNumber)
+			if (!row) throw new Error(`Part ${p.partNumber} not found`)
+			if (row.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
+			partRows.push(row)
 		}
 
-		// Concatenate
-		const combined = new Uint8Array(totalSize)
-		let offset = 0
-		for (const part of allParts) {
-			combined.set(part, offset)
-			offset += part.length
-		}
-
-		// Write final file
+		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
 		const filePath = join(this.baseDir, this.key)
 		mkdirSync(dirname(filePath), { recursive: true })
-		await Bun.write(filePath, combined)
+		const writer = Bun.file(filePath).writer()
+		let totalSize = 0
+		try {
+			for (const row of partRows) {
+				const partStream = Bun.file(row.file_path).stream()
+				const reader = partStream.getReader()
+				while (true) {
+					const { done, value } = await reader.read()
+					if (done) break
+					writer.write(value)
+					totalSize += value.byteLength
+				}
+			}
+		} finally {
+			await writer.end()
+		}
 
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(combined)
-		const etag = hasher.digest('hex')
+		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
+		const etag = computeMultipartEtag(partRows)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 
-		const httpMeta = upload.http_metadata ? JSON.parse(upload.http_metadata) : {}
+		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Insert object record
-		this.db.run(
-			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				this.bucket,
-				this.key,
-				totalSize,
-				etag,
-				version,
-				uploaded.toISOString(),
-				upload.http_metadata,
-				upload.custom_metadata,
-				null,
-			],
-		)
-
-		// Clean up multipart data
-		this.cleanupMultipart()
+		// Atomically: persist the final object and remove multipart DB rows.
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					this.bucket,
+					this.key,
+					totalSize,
+					etag,
+					version,
+					uploaded.toISOString(),
+					upload.http_metadata,
+					upload.custom_metadata,
+					null,
+				],
+			)
+			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		})()
+		this.removePartFiles()
 
 		return new R2Object({
 			key: this.key,
@@ -401,18 +506,31 @@ export class R2MultipartUpload {
 	}
 
 	async abort(): Promise<void> {
-		this.cleanupMultipart()
+		this.db.transaction(() => {
+			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		})()
+		this.removePartFiles()
 	}
 
-	private cleanupMultipart(): void {
-		// Delete part files
+	/** Inspect parts that have been uploaded so far (used by S3 ListParts). */
+	listParts(): Array<{ partNumber: number; etag: string; size: number; lastModified: Date }> {
+		const rows = this.db
+			.query<MultipartPartRow, [string]>(
+				`SELECT * FROM r2_multipart_parts WHERE upload_id = ? ORDER BY part_number`,
+			)
+			.all(this.uploadId)
+		return rows.map((r) => ({
+			partNumber: r.part_number,
+			etag: r.etag,
+			size: r.size,
+			lastModified: new Date(),
+		}))
+	}
+
+	private removePartFiles(): void {
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		if (existsSync(partDir)) {
-			rmSync(partDir, { recursive: true, force: true })
-		}
-		// Delete DB records
-		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-		this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		if (existsSync(partDir)) rmSync(partDir, { recursive: true, force: true })
 	}
 }
 
@@ -444,6 +562,11 @@ export class FileR2Bucket {
 		}
 		try {
 			this.db.run(`ALTER TABLE r2_objects ADD COLUMN checksums TEXT`)
+		} catch {
+			// Column already exists
+		}
+		try {
+			this.db.run(`ALTER TABLE r2_objects ADD COLUMN tags TEXT`)
 		} catch {
 			// Column already exists
 		}
@@ -494,34 +617,6 @@ export class FileR2Bucket {
 		return join(this.baseDir, key)
 	}
 
-	private async readValue(
-		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
-	): Promise<ArrayBuffer> {
-		if (value === null) return new ArrayBuffer(0)
-		if (typeof value === 'string') return new TextEncoder().encode(value).buffer as ArrayBuffer
-		if (value instanceof ArrayBuffer) return value
-		if (ArrayBuffer.isView(value)) {
-			return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer
-		}
-		if (value instanceof Blob) return await value.arrayBuffer()
-		// ReadableStream
-		const chunks: Uint8Array[] = []
-		const reader = value.getReader()
-		while (true) {
-			const { done, value: chunk } = await reader.read()
-			if (done) break
-			chunks.push(chunk)
-		}
-		const total = chunks.reduce((s, c) => s + c.length, 0)
-		const buf = new Uint8Array(total)
-		let offset = 0
-		for (const c of chunks) {
-			buf.set(c, offset)
-			offset += c.length
-		}
-		return buf.buffer as ArrayBuffer
-	}
-
 	async put(
 		key: string,
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
@@ -541,19 +636,12 @@ export class FileR2Bucket {
 			}
 		}
 
-		const data = await this.readValue(value)
-
 		const fp = this.filePath(key)
-		mkdirSync(dirname(fp), { recursive: true })
-		await Bun.write(fp, data)
-
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(new Uint8Array(data))
-		const etag = hasher.digest('hex')
+		const { etag, size } = await writeValueToFile(value, fp)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
 
-		// Build checksums from provided hashes
+		// Build checksums. md5 is always computed; user-supplied sha* are stored as-is.
 		const checksums: R2Checksums = { md5: Buffer.from(etag, 'hex').buffer as ArrayBuffer }
 		for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
 			const provided = options?.[algo]
@@ -568,11 +656,11 @@ export class FileR2Bucket {
 			[
 				this.bucket,
 				key,
-				data.byteLength,
+				size,
 				etag,
 				version,
 				uploaded.toISOString(),
-				options?.httpMetadata ? JSON.stringify(options.httpMetadata) : null,
+				serializeHttpMetadata(options?.httpMetadata),
 				options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
 				JSON.stringify(serializeChecksums(checksums)),
 			],
@@ -580,7 +668,7 @@ export class FileR2Bucket {
 
 		return new R2Object({
 			key,
-			size: data.byteLength,
+			size,
 			etag,
 			version,
 			uploaded,
@@ -612,34 +700,23 @@ export class FileR2Bucket {
 			}
 		}
 
-		const fp = this.filePath(key)
-		const file = Bun.file(fp)
-		let data = await file.arrayBuffer()
-
-		// Handle range reads
+		const totalSize = row.size
+		let offset = 0
+		let length = totalSize
 		if (options?.range) {
 			const range = options.range
-			let offset: number
-			let length: number
-
-			if ('suffix' in range && range.suffix !== undefined) {
-				// suffix: last N bytes
-				offset = Math.max(0, data.byteLength - range.suffix)
-				length = data.byteLength - offset
+			if (range.suffix !== undefined) {
+				offset = Math.max(0, totalSize - range.suffix)
+				length = totalSize - offset
 			} else {
 				offset = range.offset ?? 0
-				length = range.length ?? (data.byteLength - offset)
-				// Clamp to actual data size
-				if (offset + length > data.byteLength) {
-					length = data.byteLength - offset
-				}
+				length = range.length ?? totalSize - offset
+				if (offset + length > totalSize) length = totalSize - offset
 			}
-
-			data = data.slice(offset, offset + length)
 			meta.range = { offset, length }
 		}
 
-		return new R2ObjectBody(meta, data)
+		return new R2ObjectBody(meta, this.filePath(key), offset, length, totalSize)
 	}
 
 	async head(key: string): Promise<R2Object | null> {
@@ -719,7 +796,7 @@ export class FileR2Bucket {
 
 	async createMultipartUpload(
 		key: string,
-		options?: { httpMetadata?: Record<string, string>; customMetadata?: Record<string, string> },
+		options?: { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> },
 	): Promise<R2MultipartUpload> {
 		this.validateKey(key)
 		this.validateCustomMetadata(options?.customMetadata)
@@ -732,7 +809,7 @@ export class FileR2Bucket {
 				uploadId,
 				this.bucket,
 				key,
-				options?.httpMetadata ? JSON.stringify(options.httpMetadata) : null,
+				serializeHttpMetadata(options?.httpMetadata),
 				options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
 				new Date().toISOString(),
 			],
@@ -743,6 +820,48 @@ export class FileR2Bucket {
 
 	resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
 		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, key, uploadId, this.limits)
+	}
+
+	/** Read tags for a key. Returns [] if the object has no tags or doesn't exist. */
+	getTags(key: string): Array<{ key: string; value: string }> {
+		const row = this.db
+			.query<{ tags: string | null }, [string, string]>(
+				`SELECT tags FROM r2_objects WHERE bucket = ? AND key = ?`,
+			)
+			.get(this.bucket, key)
+		if (!row?.tags) return []
+		return JSON.parse(row.tags) as Array<{ key: string; value: string }>
+	}
+
+	/** Replace an object's tag set. No-op if the object does not exist. */
+	setTags(key: string, tags: Array<{ key: string; value: string }>): void {
+		const serialized = tags.length === 0 ? null : JSON.stringify(tags)
+		this.db.run(`UPDATE r2_objects SET tags = ? WHERE bucket = ? AND key = ?`, [
+			serialized,
+			this.bucket,
+			key,
+		])
+	}
+
+	/** List in-progress multipart uploads in this bucket (used by S3 ListMultipartUploads). */
+	listMultipartUploads(prefix?: string): Array<{ key: string; uploadId: string; initiated: Date }> {
+		interface Row {
+			upload_id: string
+			key: string
+			created_at: string
+		}
+		const rows = prefix
+			? this.db
+				.query<Row, [string, string]>(
+					`SELECT upload_id, key, created_at FROM r2_multipart_uploads WHERE bucket = ? AND key LIKE ? ORDER BY key`,
+				)
+				.all(this.bucket, prefix + '%')
+			: this.db
+				.query<Row, [string]>(
+					`SELECT upload_id, key, created_at FROM r2_multipart_uploads WHERE bucket = ? ORDER BY key`,
+				)
+				.all(this.bucket)
+		return rows.map((r) => ({ key: r.key, uploadId: r.upload_id, initiated: new Date(r.created_at) }))
 	}
 }
 
