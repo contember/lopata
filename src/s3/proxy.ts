@@ -30,6 +30,19 @@ export type ResolveBucket = (name: string) => FileR2Bucket | undefined
 export type ListAllBuckets = () => Array<{ name: string; creationDate: Date }>
 
 /**
+ * Duck-typed R2 binding check. `instrumentBinding` wraps R2 buckets in a
+ * Proxy, so `instanceof FileR2Bucket` isn't reliable — identify them by the
+ * presence of the methods we need from `handleS3Request`.
+ */
+export function isR2Binding(v: unknown): v is FileR2Bucket {
+	return !!v
+		&& typeof v === 'object'
+		&& typeof (v as { put?: unknown }).put === 'function'
+		&& typeof (v as { head?: unknown }).head === 'function'
+		&& typeof (v as { createMultipartUpload?: unknown }).createMultipartUpload === 'function'
+}
+
+/**
  * Per-bucket CORS configuration XML, set via PutBucketCors and returned by
  * GetBucketCors. Purely observational — lopata's dev server sends a fixed
  * permissive CORS header set regardless of what's stored here.
@@ -696,4 +709,41 @@ export function matchS3Path(pathname: string): { bucket: string; keyPath: string
 	const slash = rest.indexOf('/')
 	if (slash === -1) return { bucket: rest, keyPath: '' }
 	return { bucket: rest.slice(0, slash), keyPath: rest.slice(slash + 1) }
+}
+
+/**
+ * Given a matched `/__s3/{bucket}/{key...}` request and a worker `env`,
+ * rewrite the URL to `/{key}`, duck-type R2 bindings from `env`, and dispatch
+ * to `handleS3Request`. Shared by the CLI dev server and the Vite plugin.
+ *
+ * `env` may be undefined when no worker generation is active yet — the S3
+ * handler then sees an undefined bucket binding and responds NoSuchBucket.
+ */
+export function handleS3ProxyRequest(
+	req: Request,
+	match: { bucket: string; keyPath: string },
+	env: Record<string, unknown> | undefined,
+): Promise<Response> {
+	const resolveBucket: ResolveBucket = (name) => {
+		const v = env?.[name]
+		return isR2Binding(v) ? v : undefined
+	}
+	const binding = resolveBucket(match.bucket)
+	const listAllBuckets: ListAllBuckets = () => {
+		if (!env) return []
+		const out: Array<{ name: string; creationDate: Date }> = []
+		for (const [name, value] of Object.entries(env)) {
+			if (isR2Binding(value)) out.push({ name, creationDate: new Date(0) })
+		}
+		return out
+	}
+	const rewritten = new URL(req.url)
+	rewritten.pathname = '/' + match.keyPath
+	const virtualReq = new Request(rewritten.toString(), {
+		method: req.method,
+		headers: req.headers,
+		body: req.body,
+		duplex: 'half',
+	})
+	return handleS3Request(virtualReq, match.bucket, binding, resolveBucket, listAllBuckets)
 }

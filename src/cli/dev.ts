@@ -19,7 +19,6 @@ import {
 } from '../api'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
-import type { FileR2Bucket } from '../bindings/r2'
 import { CFWebSocket } from '../bindings/websocket-pair'
 import { autoLoadConfig, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
@@ -29,7 +28,7 @@ import { GenerationManager } from '../generation-manager'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
-import { handleS3Request, matchS3Path } from '../s3/proxy'
+import { handleS3ProxyRequest, matchS3Path } from '../s3/proxy'
 import { getTraceStore } from '../tracing/store'
 import type { TraceEvent } from '../tracing/types'
 import { WorkerRegistry } from '../worker-registry'
@@ -265,36 +264,8 @@ export async function run(ctx: CliContext, args: string[]) {
 			// S3-compatible proxy: /__s3/{bucket}/{key...} → R2 binding on active worker
 			const s3Match = matchS3Path(url.pathname)
 			if (s3Match) {
-				const targetManager = resolveWorkerParam(url, registry, manager)
-				const gen = targetManager.active
-				const binding = gen?.env[s3Match.bucket] as FileR2Bucket | undefined
-				const resolveBucket = (name: string) => gen?.env[name] as FileR2Bucket | undefined
-				const listAllBuckets = () => {
-					if (!gen) return []
-					const out: Array<{ name: string; creationDate: Date }> = []
-					for (const [name, value] of Object.entries(gen.env)) {
-						// Duck-typed R2Bucket check — instrumentBinding wraps in a Proxy, so instanceof
-						// isn't reliable. R2 bindings are distinguished by having these methods.
-						if (
-							value
-							&& typeof (value as { put?: unknown }).put === 'function'
-							&& typeof (value as { head?: unknown }).head === 'function'
-							&& typeof (value as { createMultipartUpload?: unknown }).createMultipartUpload === 'function'
-						) {
-							out.push({ name, creationDate: new Date(0) })
-						}
-					}
-					return out
-				}
-				const rewritten = new URL(request.url)
-				rewritten.pathname = '/' + s3Match.keyPath
-				const virtualReq = new Request(rewritten.toString(), {
-					method: request.method,
-					headers: request.headers,
-					body: request.body,
-					duplex: 'half',
-				})
-				return handleS3Request(virtualReq, s3Match.bucket, binding, resolveBucket, listAllBuckets)
+				const gen = resolveWorkerParam(url, registry, manager).active
+				return handleS3ProxyRequest(request, s3Match, gen?.env)
 			}
 
 			// Queue pull consumer endpoints: POST /cdn-cgi/handler/queues/<name>/messages/pull and /ack
