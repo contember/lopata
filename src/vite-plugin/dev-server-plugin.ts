@@ -51,6 +51,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let handleDashboardRequest: Function
 	let handleApiRequest: Function
 	let getTraceStore: Function
+	let handleS3ProxyRequest: typeof import('../s3/proxy.ts').handleS3ProxyRequest
+	let matchS3Path: typeof import('../s3/proxy.ts').matchS3Path
 
 	// Route dispatcher for multi-worker route-based dispatching
 	let routeDispatcher: RouteDispatcher | undefined
@@ -253,6 +255,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const dashboardMod = await import('../dashboard-serve.ts')
 			const apiMod = await import('../api/index.ts')
 			const traceMod = await import('../tracing/store.ts')
+			const s3Mod = await import('../s3/proxy.ts')
 
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
@@ -265,6 +268,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			handleDashboardRequest = dashboardMod.handleDashboardRequest
 			handleApiRequest = apiMod.handleApiRequest
 			getTraceStore = traceMod.getTraceStore
+			handleS3ProxyRequest = s3Mod.handleS3ProxyRequest
+			matchS3Path = s3Mod.matchS3Path
 
 			// 1. Load wrangler config
 			if (options.configPath) {
@@ -522,6 +527,28 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							}
 						}
 						return
+					}
+
+					// S3-compatible proxy: /__s3/{bucket}/{key...} → R2 binding on the main worker env.
+					// Routes straight through to lopata's S3 handler without going through the
+					// worker's fetch(), so sandbox uploaders etc. can hit R2 bindings directly
+					// with the same URL shape that `bunx lopata dev` exposes.
+					{
+						const pathOnly = url.split('?')[0] ?? url
+						const s3Match = matchS3Path(pathOnly)
+						if (s3Match) {
+							try {
+								const response = await handleS3ProxyRequest(nodeReqToRequest(req), s3Match, env)
+								await writeResponse(response, res)
+							} catch (err) {
+								console.error('[lopata:vite] S3 proxy error:', err)
+								if (!res.headersSent) {
+									res.writeHead(500, { 'content-type': 'text/plain' })
+									res.end(String(err))
+								}
+							}
+							return
+						}
 					}
 
 					// Aux worker dispatch: host-based first, then route-based
