@@ -181,7 +181,9 @@ For projects with multiple workers and service bindings, create a `lopata.config
 
 ```ts
 // lopata.config.ts
-export default {
+import { defineConfig } from 'lopata'
+
+export default defineConfig({
 	main: './wrangler.jsonc',
 	workers: [
 		{ name: 'auth-worker', config: './workers/auth/wrangler.jsonc' },
@@ -193,7 +195,11 @@ export default {
 	browser: { // Browser Rendering config
 		headless: true,
 	},
-}
+	// Extra directories outside the worker's own source tree that should also
+	// trigger a reload — handy in monorepos where the worker imports from
+	// sibling packages. Paths are resolved relative to lopata.config.ts.
+	watchExtra: ['packages/lib/src', 'packages/shared'],
+})
 ```
 
 Workers can call each other via service bindings configured in their respective `wrangler.jsonc`. Both HTTP (`binding.fetch()`) and RPC (`binding.myMethod()`) modes are supported, including promise pipelining.
