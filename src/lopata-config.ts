@@ -36,6 +36,18 @@ export interface LopataConfig {
 		/** Headless mode (default: true, only used when spawning). */
 		headless?: boolean
 	}
+	/**
+	 * Additional directories to watch for changes that should trigger a main worker reload.
+	 *
+	 * Useful in monorepos where the worker imports from sibling packages (e.g. `packages/lib`)
+	 * that live outside the worker's own source directory. Paths are resolved relative to the
+	 * directory containing `lopata.config.ts`. The standard ignore list (`node_modules`, `.git`,
+	 * `.lopata`) still applies inside each watched tree.
+	 *
+	 * Only honored when running in multi-worker mode (i.e. when `lopata.config.ts` exists).
+	 * In single-worker auto-load mode there is no `lopata.config.ts` to read this from.
+	 */
+	watchExtra?: string[]
 }
 
 export function defineConfig(config: LopataConfig): LopataConfig {
@@ -60,6 +72,9 @@ export async function loadLopataConfig(baseDir: string): Promise<LopataConfig | 
 		for (const worker of config.workers) {
 			worker.config = resolve(baseDir, worker.config)
 		}
+	}
+	if (config.watchExtra) {
+		config.watchExtra = config.watchExtra.map(p => resolve(baseDir, p))
 	}
 
 	return config

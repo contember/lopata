@@ -35,6 +35,16 @@ import { WorkerRegistry } from '../worker-registry'
 import type { CliContext } from './context'
 import { parseArgs } from './context'
 
+function makeReloadCallback(manager: GenerationManager, successLabel: string): () => void {
+	return () => {
+		manager.reload().then(gen => {
+			console.log(`[lopata] ${successLabel} → generation ${gen.id}`)
+		}).catch(err => {
+			console.error('[lopata] Reload failed:', err)
+		})
+	}
+}
+
 export async function run(ctx: CliContext, args: string[]) {
 	const { values } = parseArgs(args, {
 		listen: { type: 'string' },
@@ -197,16 +207,19 @@ export async function run(ctx: CliContext, args: string[]) {
 
 		// File watcher for main worker
 		const mainSrcDir = path.dirname(path.resolve(mainBaseDir, mainConfig.main))
-		const mainWatcher = new FileWatcher(mainSrcDir, () => {
-			mainManager.reload().then(gen => {
-				console.log(`[lopata] Main worker reloaded → generation ${gen.id}`)
-			}).catch(err => {
-				console.error('[lopata] Reload failed:', err)
-			})
-		})
+		const reloadMain = makeReloadCallback(mainManager, 'Main worker reloaded')
+		const mainWatcher = new FileWatcher(mainSrcDir, reloadMain)
 		mainWatcher.start()
 		watchers.push(mainWatcher)
 		console.log(`[lopata] Watching ${mainSrcDir} for changes (main)`)
+
+		// Extra directories that should also trigger a main reload (e.g. shared monorepo packages)
+		for (const extraDir of lopataConfig.watchExtra ?? []) {
+			const extraWatcher = new FileWatcher(extraDir, reloadMain)
+			extraWatcher.start()
+			watchers.push(extraWatcher)
+			console.log(`[lopata] Watching ${extraDir} for changes (extra)`)
+		}
 	} else {
 		// ─── Single-worker mode (current behavior) ────────────────────
 		const config = await autoLoadConfig(baseDir, envFlag)
@@ -220,13 +233,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 		// File watcher — watch the source directory
 		const srcDir = path.dirname(path.resolve(baseDir, config.main))
-		const watcher = new FileWatcher(srcDir, () => {
-			manager.reload().then(gen => {
-				console.log(`[lopata] Reloaded → generation ${gen.id}`)
-			}).catch(err => {
-				console.error('[lopata] Reload failed:', err)
-			})
-		})
+		const watcher = new FileWatcher(srcDir, makeReloadCallback(manager, 'Reloaded'))
 		watcher.start()
 		watchers.push(watcher)
 		console.log(`[lopata] Watching ${srcDir} for changes`)
