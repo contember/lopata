@@ -66,6 +66,57 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
 	}
 }
 
+/** Synchronous variant of startSpan for instrumenting non-async APIs (e.g. DO
+ *  state.storage.sql.exec is sync). Inserts the span before fn() runs and ends
+ *  it after, mirroring the async version's status/exception handling. fn is
+ *  invoked inside runWithContext so any spans it creates nest correctly. */
+export function startSyncSpan<T>(opts: SpanOptions, fn: () => T): T {
+	const store = getTraceStore()
+	const parent = opts.newTrace ? undefined : getActiveContext()
+
+	const spanId = generateId()
+	const traceId = parent?.traceId ?? generateTraceId()
+	const parentSpanId = parent?.spanId ?? null
+
+	const span: SpanData = {
+		spanId,
+		traceId,
+		parentSpanId,
+		name: opts.name,
+		kind: opts.kind ?? 'internal',
+		status: 'unset',
+		statusMessage: null,
+		startTime: Date.now(),
+		endTime: null,
+		durationMs: null,
+		attributes: opts.attributes ?? {},
+		workerName: opts.workerName ?? null,
+	}
+
+	store.insertSpan(span)
+	const fetchStack = parent?.fetchStack ?? { current: null }
+
+	try {
+		const result = runWithContext({ traceId, spanId, fetchStack }, fn)
+		const currentStatus = store.getSpanStatus(spanId)
+		store.endSpan(spanId, Date.now(), currentStatus === 'error' ? 'error' : 'ok')
+		return result
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		store.endSpan(spanId, Date.now(), 'error', message)
+		store.addEvent({
+			spanId,
+			traceId,
+			timestamp: Date.now(),
+			name: 'exception',
+			level: 'error',
+			message,
+			attributes: err instanceof Error ? { stack: err.stack } : {},
+		})
+		throw err
+	}
+}
+
 export function setSpanStatus(status: 'ok' | 'error', message?: string): void {
 	const ctx = getActiveContext()
 	if (!ctx) return

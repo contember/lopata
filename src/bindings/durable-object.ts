@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
-import { persistError, startSpan } from '../tracing/span'
+import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
@@ -106,9 +106,13 @@ async function acquireDbTxnLock(db: Database): Promise<() => void> {
 export class SqlStorage {
 	private _dbPath: string | null
 	private _db: Database | null = null
+	private _namespace: string
+	private _id: string
 
-	constructor(dbPath: string | null) {
+	constructor(dbPath: string | null, namespace: string, id: string) {
 		this._dbPath = dbPath
+		this._namespace = namespace
+		this._id = id
 	}
 
 	private _getDb(): Database {
@@ -126,23 +130,37 @@ export class SqlStorage {
 	}
 
 	exec(query: string, ...bindings: SQLQueryBindings[]): SqlStorageCursor {
-		const db = this._getDb()
-		const stmt = db.prepare(query)
+		return startSyncSpan(
+			{
+				name: 'do_sql.exec',
+				kind: 'client',
+				attributes: {
+					'binding.type': 'do_sql',
+					'binding.name': this._namespace,
+					'do.id': this._id,
+					'db.statement': query,
+				},
+			},
+			() => {
+				const db = this._getDb()
+				const stmt = db.prepare(query)
 
-		// Determine if this is a query that returns rows
-		const trimmed = query.trim().toUpperCase()
-		const isSelect = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
+				// Determine if this is a query that returns rows
+				const trimmed = query.trim().toUpperCase()
+				const isSelect = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
 
-		if (isSelect) {
-			const rows = stmt.all(...bindings) as Record<string, unknown>[]
-			const columnNames = stmt.columnNames as string[] ?? []
-			const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
-			return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, 0)
-		} else {
-			stmt.run(...bindings)
-			const changes = db.query('SELECT changes() as c').get() as { c: number }
-			return new SqlStorageCursor([], [], [], 0, changes.c)
-		}
+				if (isSelect) {
+					const rows = stmt.all(...bindings) as Record<string, unknown>[]
+					const columnNames = stmt.columnNames as string[] ?? []
+					const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
+					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, 0)
+				} else {
+					stmt.run(...bindings)
+					const changes = db.query('SELECT changes() as c').get() as { c: number }
+					return new SqlStorageCursor([], [], [], 0, changes.c)
+				}
+			},
+		)
 	}
 
 	get databaseSize(): number {
@@ -304,7 +322,7 @@ export class SqliteDurableObjectStorage {
 			const dbPath = this._dataDir
 				? join(this._dataDir, 'do-sql', this.namespace, `${this.id}.sqlite`)
 				: null
-			this._sql = new SqlStorage(dbPath)
+			this._sql = new SqlStorage(dbPath, this.namespace, this.id)
 		}
 		return this._sql
 	}

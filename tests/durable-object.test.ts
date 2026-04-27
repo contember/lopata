@@ -943,7 +943,7 @@ describe('DurableObject SQL Storage', () => {
 		let sql: SqlStorage
 
 		beforeEach(() => {
-			sql = new SqlStorage(join(dataDir, 'do-sql', 'TestDO', 'inst1.sqlite'))
+			sql = new SqlStorage(join(dataDir, 'do-sql', 'TestDO', 'inst1.sqlite'), 'TestDO', 'inst1')
 		})
 
 		test('exec creates table and inserts data', () => {
@@ -1039,7 +1039,7 @@ describe('DurableObject SQL Storage', () => {
 		})
 
 		test('databaseSize returns 0 before any exec', () => {
-			const sql2 = new SqlStorage(join(dataDir, 'do-sql', 'TestDO', 'nonexistent.sqlite'))
+			const sql2 = new SqlStorage(join(dataDir, 'do-sql', 'TestDO', 'nonexistent.sqlite'), 'TestDO', 'nonexistent')
 			expect(sql2.databaseSize).toBe(0)
 		})
 
