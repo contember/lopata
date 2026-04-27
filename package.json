@@ -1,6 +1,6 @@
 {
 	"name": "lopata",
-	"version": "0.16.0",
+	"version": "0.16.1",
 	"type": "module",
 	"license": "MIT",
 	"repository": {
@@ -11,9 +11,26 @@
 		"lopata": "src/cli.ts"
 	},
 	"exports": {
-		"./vite-plugin": "./src/vite-plugin/index.ts",
-		"./testing": "./src/testing/index.ts",
-		"./testing/setup": "./src/testing/setup.ts"
+		"./vite-plugin": {
+			"types": "./dist/types/vite-plugin/index.d.ts",
+			"default": "./src/vite-plugin/index.ts"
+		},
+		"./testing": {
+			"types": "./dist/types/testing/index.d.ts",
+			"default": "./src/testing/index.ts"
+		},
+		"./testing/setup": {
+			"types": "./dist/types/testing/setup.d.ts",
+			"default": "./src/testing/setup.ts"
+		},
+		"./bindings/r2": {
+			"types": "./dist/types/bindings/r2.d.ts",
+			"default": "./src/bindings/r2.ts"
+		},
+		"./db": {
+			"types": "./dist/types/db.d.ts",
+			"default": "./src/db.ts"
+		}
 	},
 	"files": [
 		"src/",
@@ -30,8 +47,9 @@
 		"format": "dprint fmt",
 		"format:check": "dprint check",
 		"build:assets": "bun scripts/build-assets.ts",
+		"build:types": "bunx --bun tsc --build src",
 		"typecheck": "bunx --bun tsc --build",
-		"prepublishOnly": "bun scripts/build-assets.ts"
+		"prepublishOnly": "bun scripts/build-assets.ts && bun run build:types"
 	},
 	"devDependencies": {
 		"@aws-sdk/client-s3": "^3.1036.0",
