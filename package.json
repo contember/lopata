@@ -11,6 +11,10 @@
 		"lopata": "src/cli.ts"
 	},
 	"exports": {
+		".": {
+			"types": "./dist/types/index.d.ts",
+			"default": "./src/index.ts"
+		},
 		"./vite-plugin": {
 			"types": "./dist/types/vite-plugin/index.d.ts",
 			"default": "./src/vite-plugin/index.ts"
