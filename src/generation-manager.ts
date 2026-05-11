@@ -4,6 +4,7 @@ import type { WranglerConfig } from './config'
 import { buildEnv, setGlobalEnv, wireClassRefs } from './env'
 import { ExecutionContext } from './execution-context'
 import { Generation, type GenerationInfo } from './generation'
+import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
 
 function isEntrypointClass(exp: unknown): exp is new(ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
@@ -168,6 +169,14 @@ export class GenerationManager {
 		if (this.isMain) {
 			setGlobalEnv(env)
 		}
+
+		// 3a. Invalidate every cached user-code module under baseDir. The
+		//     `?v=<ts>` cache-bust below only invalidates the entry; static
+		//     imports inside it would otherwise resolve through Bun's module
+		//     registry to the cached transitive modules — so edits to any
+		//     file other than the entry itself would silently no-op. See
+		//     `tests/hmr-e2e.test.ts` "transitive dep change" cases.
+		invalidateUserModules(this.baseDir)
 
 		// 4. Import fresh worker module using cache-busting query string
 		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)

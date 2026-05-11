@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/hmr-worker')
 const WORKER_SRC = resolve(FIXTURE_DIR, 'src/index.ts')
+const WORKER_DEP = resolve(FIXTURE_DIR, 'src/dep.ts')
 const CLI_PATH = resolve(import.meta.dir, '../src/cli.ts')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
 
@@ -125,11 +126,15 @@ function backupFile(filePath: string): () => void {
 }
 
 function mutateWorkerSource(from: string, to: string) {
-	const content = readFileSync(WORKER_SRC, 'utf-8')
+	mutateFile(WORKER_SRC, from, to)
+}
+
+function mutateFile(filePath: string, from: string, to: string) {
+	const content = readFileSync(filePath, 'utf-8')
 	if (!content.includes(from)) {
-		throw new Error(`Worker source does not contain "${from}"`)
+		throw new Error(`${filePath} does not contain "${from}"`)
 	}
-	writeFileSync(WORKER_SRC, content.replace(from, to))
+	writeFileSync(filePath, content.replace(from, to))
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────
@@ -137,12 +142,14 @@ function mutateWorkerSource(from: string, to: string) {
 describe('HMR E2E — standalone', () => {
 	let proc: Subprocess
 	let output: OutputReader
-	let restore: () => void
+	let restoreEntry: () => void
+	let restoreDep: () => void
 	const PORT = 18797
 
 	beforeAll(async () => {
 		cleanup()
-		restore = backupFile(WORKER_SRC)
+		restoreEntry = backupFile(WORKER_SRC)
+		restoreDep = backupFile(WORKER_DEP)
 
 		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
@@ -156,7 +163,8 @@ describe('HMR E2E — standalone', () => {
 
 	afterAll(() => {
 		proc?.kill()
-		restore?.()
+		restoreEntry?.()
+		restoreDep?.()
 		cleanup()
 	})
 
@@ -165,7 +173,7 @@ describe('HMR E2E — standalone', () => {
 		expect(await res.text()).toBe('v1')
 	})
 
-	test('after file change, response updates to v2', async () => {
+	test('after entry change, response updates to v2', async () => {
 		output.mark()
 		mutateWorkerSource("'v1'", "'v2'")
 
@@ -175,7 +183,7 @@ describe('HMR E2E — standalone', () => {
 		expect(await res.text()).toBe('v2')
 	}, 15_000)
 
-	test('second change updates to v3', async () => {
+	test('second entry change updates to v3', async () => {
 		output.mark()
 		mutateWorkerSource("'v2'", "'v3'")
 
@@ -183,6 +191,36 @@ describe('HMR E2E — standalone', () => {
 
 		const res = await fetch(`http://localhost:${PORT}/version`)
 		expect(await res.text()).toBe('v3')
+	}, 15_000)
+
+	// Regression: edits to a transitive dep imported by the entry used to
+	// be silently dropped — lopata's `?v=<ts>` cache-bust only invalidates
+	// the entry; Bun's module registry kept the cached `dep.ts` and re-used
+	// it across reloads. Fix: invalidate every registered user-code module
+	// before re-importing the entry.
+	test('initial /dep response is d1', async () => {
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d1')
+	})
+
+	test('after transitive dep change, /dep updates to d2', async () => {
+		output.mark()
+		mutateFile(WORKER_DEP, "'d1'", "'d2'")
+
+		await output.waitForNew('Reloaded', 10_000)
+
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d2')
+	}, 15_000)
+
+	test('second transitive dep change updates /dep to d3', async () => {
+		output.mark()
+		mutateFile(WORKER_DEP, "'d2'", "'d3'")
+
+		await output.waitForNew('Reloaded', 10_000)
+
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d3')
 	}, 15_000)
 })
 
