@@ -1,11 +1,7 @@
 import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
-import { setSpanAttribute, startSpan } from '../tracing/span'
+import { startSpan } from '../tracing/span'
 
-/**
- * EmailMessage — exported from `cloudflare:email`.
- * Used to construct an email for sending via a send_email binding.
- */
 export class EmailMessage {
 	readonly from: string
 	readonly to: string
@@ -18,10 +14,40 @@ export class EmailMessage {
 	}
 }
 
-/**
- * SendEmailBinding — the `send_email` binding.
- * Persists sent emails to SQLite.
- */
+export interface EmailAddress {
+	name: string
+	email: string
+}
+
+export type EmailAttachment =
+	| {
+		disposition?: 'inline'
+		contentId: string
+		filename: string
+		type: string
+		content: string | ArrayBuffer | ArrayBufferView
+	}
+	| {
+		disposition: 'attachment'
+		contentId?: undefined
+		filename: string
+		type: string
+		content: string | ArrayBuffer | ArrayBufferView
+	}
+
+export interface SendEmailBuilder {
+	from: string | EmailAddress
+	to: string | string[]
+	subject: string
+	replyTo?: string | EmailAddress
+	cc?: string | string[]
+	bcc?: string | string[]
+	headers?: Record<string, string>
+	text?: string
+	html?: string
+	attachments?: EmailAttachment[]
+}
+
 export class SendEmailBinding {
 	private db: Database
 	private bindingName: string
@@ -35,24 +61,32 @@ export class SendEmailBinding {
 		this.allowedDestinationAddresses = allowedDestinationAddresses
 	}
 
-	async send(message: EmailMessage): Promise<void> {
-		// Validate destination
-		if (this.destinationAddress && message.to !== this.destinationAddress) {
-			throw new Error(
-				`Destination address "${message.to}" not allowed. Binding "${this.bindingName}" only allows sending to "${this.destinationAddress}".`,
-			)
-		}
-		if (this.allowedDestinationAddresses && this.allowedDestinationAddresses.length > 0) {
-			if (!this.allowedDestinationAddresses.includes(message.to)) {
-				throw new Error(`Destination address "${message.to}" not in allowed list for binding "${this.bindingName}".`)
+	async send(message: EmailMessage | SendEmailBuilder): Promise<void> {
+		const normalized = await normalizeMessage(message)
+		for (const recipient of normalized.recipients) {
+			if (this.destinationAddress && recipient !== this.destinationAddress) {
+				throw new Error(
+					`Destination address "${recipient}" not allowed. Binding "${this.bindingName}" only allows sending to "${this.destinationAddress}".`,
+				)
+			}
+			if (this.allowedDestinationAddresses && this.allowedDestinationAddresses.length > 0) {
+				if (!this.allowedDestinationAddresses.includes(recipient)) {
+					throw new Error(`Destination address "${recipient}" not in allowed list for binding "${this.bindingName}".`)
+				}
 			}
 		}
-
-		const rawBytes = await resolveRaw(message.raw)
 		const id = randomUUIDv7()
 		this.db.run(
 			"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)",
-			[id, this.bindingName, message.from, message.to, rawBytes, rawBytes.byteLength, Date.now()],
+			[
+				id,
+				this.bindingName,
+				normalized.from,
+				normalized.to,
+				normalized.raw,
+				normalized.raw.byteLength,
+				Date.now(),
+			],
 		)
 	}
 }
@@ -109,13 +143,21 @@ export class ForwardableEmailMessage {
 		})
 	}
 
-	async reply(message: EmailMessage): Promise<void> {
-		return startSpan({ name: 'email.reply', kind: 'client', attributes: { 'email.reply_to': message.to } }, async () => {
-			const rawBytes = await resolveRaw(message.raw)
+	async reply(message: EmailMessage | SendEmailBuilder): Promise<void> {
+		return startSpan({ name: 'email.reply', kind: 'client', attributes: {} }, async () => {
+			const normalized = await normalizeMessage(message)
 			const id = randomUUIDv7()
 			this.db.run(
 				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'sent', ?)",
-				[id, '_reply', message.from, message.to, rawBytes, rawBytes.byteLength, Date.now()],
+				[
+					id,
+					'_reply',
+					normalized.from,
+					normalized.to,
+					normalized.raw,
+					normalized.raw.byteLength,
+					Date.now(),
+				],
 			)
 		})
 	}
@@ -123,11 +165,30 @@ export class ForwardableEmailMessage {
 
 // ─── Helpers ──────────────────────────────────────────────────────────
 
+interface NormalizedMessage {
+	from: string
+	to: string
+	recipients: string[]
+	raw: Uint8Array
+}
+
+function isEmailMessage(m: EmailMessage | SendEmailBuilder): m is EmailMessage {
+	return m instanceof EmailMessage
+		|| (typeof (m as { raw?: unknown }).raw !== 'undefined' && typeof (m as { subject?: unknown }).subject === 'undefined')
+}
+
+async function normalizeMessage(m: EmailMessage | SendEmailBuilder): Promise<NormalizedMessage> {
+	if (isEmailMessage(m)) {
+		const raw = await resolveRaw(m.raw)
+		return { from: m.from, to: m.to, recipients: [extractEmail(m.to)], raw }
+	}
+	return renderBuilder(m)
+}
+
 async function resolveRaw(raw: ReadableStream<Uint8Array> | Uint8Array | ArrayBuffer | string): Promise<Uint8Array> {
 	if (typeof raw === 'string') return new TextEncoder().encode(raw)
 	if (raw instanceof Uint8Array) return raw
 	if (raw instanceof ArrayBuffer) return new Uint8Array(raw)
-	// ReadableStream
 	const reader = raw.getReader()
 	const chunks: Uint8Array[] = []
 	while (true) {
@@ -145,10 +206,152 @@ async function resolveRaw(raw: ReadableStream<Uint8Array> | Uint8Array | ArrayBu
 	return result
 }
 
+function formatAddress(addr: string | EmailAddress): string {
+	if (typeof addr === 'string') return addr
+	const escapedName = addr.name.replace(/"/g, '\\"')
+	return `"${escapedName}" <${addr.email}>`
+}
+
+function extractEmail(addr: string | EmailAddress): string {
+	if (typeof addr === 'string') {
+		const match = /<([^>]+)>/.exec(addr)
+		return (match?.[1] ?? addr).trim()
+	}
+	return addr.email
+}
+
+function toList(v: string | string[]): string[] {
+	return Array.isArray(v) ? v : [v]
+}
+
+function renderBuilder(b: SendEmailBuilder): NormalizedMessage {
+	const toAddrs = toList(b.to)
+	const ccAddrs = b.cc ? toList(b.cc) : []
+	const bccAddrs = b.bcc ? toList(b.bcc) : []
+
+	const headers: Record<string, string> = {
+		From: formatAddress(b.from),
+		To: toAddrs.join(', '),
+		Subject: b.subject,
+		'MIME-Version': '1.0',
+		Date: new Date().toUTCString(),
+		'Message-ID': `<${randomUUIDv7()}@lopata.local>`,
+	}
+	if (ccAddrs.length > 0) headers.Cc = ccAddrs.join(', ')
+	if (b.replyTo) headers['Reply-To'] = formatAddress(b.replyTo)
+	if (b.headers) Object.assign(headers, b.headers)
+
+	const hasHtml = typeof b.html === 'string'
+	const hasText = typeof b.text === 'string'
+	const hasAttachments = Array.isArray(b.attachments) && b.attachments.length > 0
+
+	let body: string
+
+	if (hasAttachments) {
+		const mixedBoundary = `lopata-mixed-${randomUUIDv7()}`
+		headers['Content-Type'] = `multipart/mixed; boundary="${mixedBoundary}"`
+		const parts: Part[] = [buildAltPart(b.text, b.html), ...b.attachments!.map(buildAttachmentPart)]
+		body = renderMultipart(mixedBoundary, parts)
+	} else if (hasHtml && hasText) {
+		const altBoundary = `lopata-alt-${randomUUIDv7()}`
+		headers['Content-Type'] = `multipart/alternative; boundary="${altBoundary}"`
+		body = renderMultipart(altBoundary, [
+			{ headers: { 'Content-Type': 'text/plain; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' }, body: b.text! },
+			{ headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' }, body: b.html! },
+		])
+	} else if (hasHtml) {
+		headers['Content-Type'] = 'text/html; charset=UTF-8'
+		headers['Content-Transfer-Encoding'] = '7bit'
+		body = b.html!
+	} else if (hasText) {
+		headers['Content-Type'] = 'text/plain; charset=UTF-8'
+		headers['Content-Transfer-Encoding'] = '7bit'
+		body = b.text!
+	} else {
+		headers['Content-Type'] = 'text/plain; charset=UTF-8'
+		body = ''
+	}
+
+	const headerLines = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')
+	const mime = `${headerLines}\r\n\r\n${body}`
+	const raw = new TextEncoder().encode(mime)
+
+	const recipients = [...toAddrs, ...ccAddrs, ...bccAddrs].map(a => extractEmail(a))
+
+	return {
+		from: formatAddress(b.from),
+		to: toAddrs.join(', '),
+		recipients,
+		raw,
+	}
+}
+
+interface Part {
+	headers: Record<string, string>
+	body: string
+}
+
+function renderMultipart(boundary: string, parts: Part[]): string {
+	const sections = parts.map(p => {
+		const h = Object.entries(p.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')
+		return `--${boundary}\r\n${h}\r\n\r\n${p.body}`
+	})
+	return `${sections.join('\r\n')}\r\n--${boundary}--\r\n`
+}
+
+function buildAltPart(text: string | undefined, html: string | undefined): Part {
+	if (text && html) {
+		const altBoundary = `lopata-alt-${randomUUIDv7()}`
+		return {
+			headers: { 'Content-Type': `multipart/alternative; boundary="${altBoundary}"` },
+			body: renderMultipart(altBoundary, [
+				{ headers: { 'Content-Type': 'text/plain; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' }, body: text },
+				{ headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' }, body: html },
+			]),
+		}
+	}
+	if (html) {
+		return {
+			headers: { 'Content-Type': 'text/html; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' },
+			body: html,
+		}
+	}
+	return {
+		headers: { 'Content-Type': 'text/plain; charset=UTF-8', 'Content-Transfer-Encoding': '7bit' },
+		body: text ?? '',
+	}
+}
+
+function buildAttachmentPart(att: EmailAttachment): Part {
+	const content = att.content
+	let bytes: Uint8Array
+	if (typeof content === 'string') {
+		bytes = new TextEncoder().encode(content)
+	} else if (content instanceof ArrayBuffer) {
+		bytes = new Uint8Array(content)
+	} else {
+		bytes = new Uint8Array(content.buffer, content.byteOffset, content.byteLength)
+	}
+	const base64 = Buffer.from(bytes).toString('base64')
+	const chunked = base64.match(/.{1,76}/g)?.join('\r\n') ?? ''
+	const isAttachment = att.disposition === 'attachment'
+	const dispositionHeader = isAttachment
+		? `attachment; filename="${att.filename}"`
+		: `inline; filename="${att.filename}"`
+	const headers: Record<string, string> = {
+		'Content-Type': `${att.type}; name="${att.filename}"`,
+		'Content-Transfer-Encoding': 'base64',
+		'Content-Disposition': dispositionHeader,
+	}
+	if (!isAttachment && att.contentId) {
+		headers['Content-ID'] = `<${att.contentId}>`
+	}
+	return { headers, body: chunked }
+}
+
 function parseEmailHeaders(rawBytes: Uint8Array): Headers {
 	const headers = new Headers()
 	const text = new TextDecoder().decode(rawBytes)
-	// Headers end at the first blank line
 	const headerEnd = text.indexOf('\r\n\r\n')
 	const headerSection = headerEnd !== -1 ? text.slice(0, headerEnd) : text.indexOf('\n\n') !== -1 ? text.slice(0, text.indexOf('\n\n')) : text
 
@@ -158,7 +361,6 @@ function parseEmailHeaders(rawBytes: Uint8Array): Headers {
 
 	for (const line of lines) {
 		if (/^\s/.test(line) && currentKey) {
-			// Continuation line
 			currentValue += ' ' + line.trim()
 		} else {
 			if (currentKey) {
