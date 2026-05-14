@@ -58,8 +58,9 @@ export class StaticAssets {
 		this.limits = { ...STATIC_ASSETS_LIMITS_DEFAULTS, ...limits }
 	}
 
-	async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url)
+	async fetch(input: Request | string | URL): Promise<Response> {
+		const url = input instanceof Request ? new URL(input.url) : new URL(input)
+		const request = input instanceof Request ? input : undefined
 		let pathname = decodeURIComponent(url.pathname)
 
 		// Check _redirects rules first (highest precedence)

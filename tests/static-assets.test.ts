@@ -523,3 +523,32 @@ test('_redirects: preserves query string on redirect', async () => {
 	expect(res.status).toBe(302)
 	expect(res.headers.get('Location')).toBe('http://localhost/new?foo=bar')
 })
+
+// === Input forms: Request | string | URL ===
+// Production Cloudflare's ASSETS binding accepts a Request, a URL string, or a URL object.
+// `@astrojs/cloudflare`'s generated worker calls `env.ASSETS.fetch(urlString)`, so all three must work.
+
+test('fetch accepts a URL string', async () => {
+	createFile('hello.txt', 'Hello World')
+	assets = new StaticAssets(tmpDir)
+	const res = await assets.fetch('http://localhost/hello.txt')
+	expect(res.status).toBe(200)
+	expect(await res.text()).toBe('Hello World')
+})
+
+test('fetch accepts a URL object', async () => {
+	createFile('hello.txt', 'Hello World')
+	assets = new StaticAssets(tmpDir)
+	const res = await assets.fetch(new URL('http://localhost/hello.txt'))
+	expect(res.status).toBe(200)
+	expect(await res.text()).toBe('Hello World')
+})
+
+test('fetch with string input skips conditional-request handling (no If-None-Match)', async () => {
+	createFile('hello.txt', 'Hello World')
+	assets = new StaticAssets(tmpDir)
+	const res = await assets.fetch('http://localhost/hello.txt')
+	// No request object available => cannot read If-None-Match, but the file must still serve.
+	expect(res.status).toBe(200)
+	expect(res.headers.get('ETag')).toBeTruthy()
+})
