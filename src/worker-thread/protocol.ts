@@ -30,6 +30,9 @@ export interface SerializedResponse {
 	statusText: string
 	headers: [string, string][]
 	body: ArrayBuffer | null
+	/** When set, the response carries a WebSocket upgrade — main rebuilds a
+	 *  `CFWebSocket` whose peer bridges send/close to this id on the worker. */
+	webSocketId?: string
 }
 
 export interface SerializedError {
@@ -60,6 +63,10 @@ export type WorkerCommand =
 	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
+	// WebSocket bridge: a real client connected to main's upgraded ws sent us
+	// data / closed; dispatch into the user-facing peer of the worker-side pair.
+	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'ws-client-close'; wsId: string; code: number; reason: string; wasClean: boolean }
 
 /** Worker → main */
 export type WorkerMessage =
@@ -86,3 +93,8 @@ export type WorkerMessage =
 	| { type: 'trace-span-attrs'; spanId: string; attrs: Record<string, unknown> }
 	| { type: 'trace-span-event'; event: Omit<SpanEventData, 'id'> }
 	| { type: 'trace-error'; error: TraceErrorPayload }
+	// WebSocket bridge: user code on the worker sent data / closed the socket.
+	// Main dispatches into its local `CFWebSocket` so the cli/dev.ts WS handler
+	// forwards to the real client.
+	| { type: 'ws-worker-send'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'ws-worker-close'; wsId: string; code: number; reason: string }

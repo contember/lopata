@@ -108,7 +108,7 @@ export class Generation {
 		this.activeRequests++
 		try {
 			if (this.threadExecutor) {
-				return await this._callFetchThread(request, this.threadExecutor)
+				return await this._callFetchThread(request, this.threadExecutor, server)
 			}
 			const ctx = new ExecutionContext()
 			const url = new URL(request.url)
@@ -237,21 +237,31 @@ export class Generation {
 		}
 	}
 
-	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor): Promise<Response> {
+	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor, server: unknown): Promise<Response | undefined> {
 		const url = new URL(request.url)
 		return this._withServerSpan(request, async () => {
 			const assets = this.registry.staticAssets
+			let response: Response
 			if (!assets || this.config.assets?.binding) {
-				return executor.executeFetch(request)
+				response = await executor.executeFetch(request)
+			} else {
+				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+				if (!workerFirst) {
+					const assetResponse = await assets.fetch(request)
+					if (assetResponse.status !== 404) return assetResponse
+					response = await executor.executeFetch(request)
+				} else {
+					response = await executor.executeFetch(request)
+					if (response.status === 404) return await assets.fetch(request)
+				}
 			}
-			const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-			if (!workerFirst) {
-				const assetResponse = await assets.fetch(request)
-				if (assetResponse.status !== 404) return assetResponse
-				return executor.executeFetch(request)
+			const ws = (response as Response & { webSocket?: CFWebSocket }).webSocket
+			if (response.status === 101 && ws instanceof CFWebSocket) {
+				const upgraded = (server as { upgrade(req: Request, opts: { data: unknown }): boolean }).upgrade(request, { data: { cfSocket: ws } })
+				if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
+				return undefined
 			}
-			const response = await executor.executeFetch(request)
-			return response.status === 404 ? await assets.fetch(request) : response
+			return response
 		})
 	}
 
@@ -260,7 +270,7 @@ export class Generation {
 	 * in-process `callFetch` attributes), skipping tracing for infrastructure
 	 * paths and stamping `http.status_code` on the response.
 	 */
-	private async _withServerSpan(request: Request, body: () => Promise<Response>): Promise<Response> {
+	private async _withServerSpan(request: Request, body: () => Promise<Response | undefined>): Promise<Response | undefined> {
 		const url = new URL(request.url)
 		if (isInfrastructurePath(url.pathname)) return body()
 		return startSpan({
@@ -270,7 +280,7 @@ export class Generation {
 			workerName: this.workerName,
 		}, async () => {
 			const response = await body()
-			setSpanAttribute('http.status_code', response.status)
+			if (response) setSpanAttribute('http.status_code', response.status)
 			return response
 		})
 	}

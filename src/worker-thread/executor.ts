@@ -9,9 +9,11 @@
 
 import { dirname, resolve } from 'node:path'
 import { EmailMessage } from '../bindings/email'
+import type { CFWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
+import { MainWsBridge } from './main-ws-bridge'
 import type { BindingTarget, ParentSpanContext, SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
 
 function serializeError(e: unknown): SerializedError {
@@ -64,6 +66,7 @@ export class WorkerThreadExecutor {
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = 0
+	private _wsBridge: MainWsBridge
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -74,6 +77,7 @@ export class WorkerThreadExecutor {
 		})
 
 		this._worker = new Worker(WORKER_ENTRY)
+		this._wsBridge = new MainWsBridge(cmd => this._send(cmd))
 		this._worker.onmessage = (event: MessageEvent<WorkerMessage>) => this._handleMessage(event.data)
 		this._worker.onerror = (event) => {
 			const err = new Error(`Worker thread error: ${event.message ?? 'unknown'}`)
@@ -157,6 +161,12 @@ export class WorkerThreadExecutor {
 			case 'trace-error':
 				getTraceStore().insertError(msg.error)
 				break
+			case 'ws-worker-send':
+				this._wsBridge.deliverWorkerSend(msg.wsId, msg.data)
+				break
+			case 'ws-worker-close':
+				this._wsBridge.deliverWorkerClose(msg.wsId, msg.code, msg.reason)
+				break
 		}
 	}
 
@@ -217,11 +227,15 @@ export class WorkerThreadExecutor {
 			this._send({ type: 'fetch', id, request: { url: request.url, method: request.method, headers, body }, parent })
 		})
 
-		return new Response(serialized.body, {
+		const response = new Response(serialized.body, {
 			status: serialized.status,
 			statusText: serialized.statusText,
 			headers: serialized.headers,
-		})
+		}) as Response & { webSocket?: CFWebSocket }
+		if (serialized.webSocketId) {
+			response.webSocket = this._wsBridge.createSocket(serialized.webSocketId)
+		}
+		return response
 	}
 
 	dispose(): void {
@@ -231,5 +245,6 @@ export class WorkerThreadExecutor {
 		const err = new Error('Worker thread terminated')
 		for (const [, pending] of this._pending) pending.reject(err)
 		this._pending.clear()
+		this._wsBridge.disposeAll()
 	}
 }

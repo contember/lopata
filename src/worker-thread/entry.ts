@@ -1,5 +1,6 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
+import { CFWebSocket } from '../bindings/websocket-pair'
 import { runWithContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
@@ -7,6 +8,7 @@ import type { SerializedError, SerializedRequest, SerializedResponse, WorkerComm
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { buildThreadEnv } from './thread-env'
+import { WorkerWsBridge } from './ws-bridge'
 
 declare var self: Worker
 
@@ -27,9 +29,19 @@ async function deserializeRequest(req: SerializedRequest): Promise<Request> {
 	})
 }
 
-async function serializeResponse(response: Response): Promise<SerializedResponse> {
+async function serializeResponse(response: Response, ws: WorkerWsBridge): Promise<SerializedResponse> {
 	const headers: [string, string][] = []
 	response.headers.forEach((v, k) => headers.push([k, v]))
+	const cfSocket = (response as Response & { webSocket?: CFWebSocket }).webSocket
+	if (response.status === 101 && cfSocket instanceof CFWebSocket) {
+		return {
+			status: response.status,
+			statusText: response.statusText,
+			headers,
+			body: null,
+			webSocketId: ws.register(cfSocket),
+		}
+	}
 	const body = response.body ? await response.arrayBuffer() : null
 	return { status: response.status, statusText: response.statusText, headers, body }
 }
@@ -56,6 +68,7 @@ async function initRuntime(init: WorkerInitConfig) {
 	setTraceStoreOverride(new RemoteTraceStore(post))
 
 	const rpc = new RpcClient(post)
+	const wsBridge = new WorkerWsBridge(post)
 	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
 	const workerModule = await import(init.modulePath)
@@ -77,17 +90,25 @@ async function initRuntime(init: WorkerInitConfig) {
 	self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 		const cmd = event.data
 		if (rpc.handle(cmd)) return
-		if (cmd.type === 'fetch') {
-			try {
-				const request = await deserializeRequest(cmd.request)
-				const response = cmd.parent
-					? await runWithContext({ traceId: cmd.parent.traceId, spanId: cmd.parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, () => callFetch(request))
-					: await callFetch(request)
-				const serialized = await serializeResponse(response)
-				post({ type: 'fetch-result', id: cmd.id, response: serialized })
-			} catch (e) {
-				post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
-			}
+		switch (cmd.type) {
+			case 'fetch':
+				try {
+					const request = await deserializeRequest(cmd.request)
+					const response = cmd.parent
+						? await runWithContext({ traceId: cmd.parent.traceId, spanId: cmd.parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, () => callFetch(request))
+						: await callFetch(request)
+					const serialized = await serializeResponse(response, wsBridge)
+					post({ type: 'fetch-result', id: cmd.id, response: serialized })
+				} catch (e) {
+					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'ws-client-message':
+				wsBridge.deliverClientMessage(cmd.wsId, cmd.data)
+				break
+			case 'ws-client-close':
+				wsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
+				break
 		}
 	}
 
