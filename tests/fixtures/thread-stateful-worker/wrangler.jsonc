@@ -2,6 +2,9 @@
 	"name": "thread-stateful-worker",
 	"main": "src/index.ts",
 	"compatibility_date": "2026-02-12",
+	"kv_namespaces": [
+		{ "binding": "MY_KV", "id": "thread-stateful-kv" }
+	],
 	"queues": {
 		"producers": [
 			{ "binding": "MY_QUEUE", "queue": "thread-stateful-q" }

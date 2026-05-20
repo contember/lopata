@@ -61,6 +61,7 @@ export class WorkerThreadExecutor {
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
+	private _pendingWaitUntil = 0
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -128,7 +129,18 @@ export class WorkerThreadExecutor {
 			case 'binding-call':
 				this._dispatchBindingCall(msg.id, msg.target, msg.method, msg.args)
 				break
+			case 'wait-until-add':
+				this._pendingWaitUntil++
+				break
+			case 'wait-until-settle':
+				this._pendingWaitUntil = Math.max(0, this._pendingWaitUntil - 1)
+				break
 		}
+	}
+
+	/** Background `waitUntil` promises still in flight on the worker side. */
+	pendingWaitUntil(): number {
+		return this._pendingWaitUntil
 	}
 
 	private _resolveBinding(target: BindingTarget): Record<string, unknown> {

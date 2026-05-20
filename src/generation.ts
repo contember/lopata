@@ -419,6 +419,7 @@ export class Generation {
 	/** Check if this generation has no more work */
 	isIdle(): boolean {
 		if (this.activeRequests > 0) return false
+		if (this.threadExecutor && this.threadExecutor.pendingWaitUntil() > 0) return false
 		for (const entry of this.registry.durableObjects) {
 			// Check if any DO instances still have active WebSockets
 			const ns = entry.namespace as any

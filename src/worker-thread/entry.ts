@@ -48,6 +48,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const { buildThreadEnv } = await import('./thread-env')
 	const { RpcClient } = await import('./rpc-client')
+	const { WorkerExecutionContext } = await import('./execution-context')
 	const rpc = new RpcClient(post)
 	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
@@ -55,13 +56,14 @@ async function initRuntime(init: WorkerInitConfig) {
 	const defaultExport = workerModule.default
 
 	const callFetch = async (request: Request): Promise<Response> => {
+		const ctx = new WorkerExecutionContext(post)
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
 			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => { fetch: (r: Request) => Promise<Response> }
-			const instance = new Ctor({}, env)
+			const instance = new Ctor(ctx, env)
 			return instance.fetch(request)
 		}
 		if (defaultExport && typeof defaultExport.fetch === 'function') {
-			return defaultExport.fetch(request, env, {}) as Promise<Response>
+			return defaultExport.fetch(request, env, ctx) as Promise<Response>
 		}
 		throw new Error('Worker module does not export a fetch handler')
 	}

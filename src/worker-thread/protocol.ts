@@ -59,3 +59,7 @@ export type WorkerMessage =
 	| { type: 'fetch-result'; id: number; response: SerializedResponse }
 	| { type: 'fetch-error'; id: number; error: SerializedError }
 	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }
+	// `ctx.waitUntil(p)` and its settlement. Main keeps a counter so reload drain
+	// waits for background work the response no longer carries.
+	| { type: 'wait-until-add' }
+	| { type: 'wait-until-settle' }
