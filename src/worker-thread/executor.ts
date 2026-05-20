@@ -9,7 +9,12 @@
 
 import { dirname, resolve } from 'node:path'
 import type { WranglerConfig } from '../config'
-import type { SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import type { SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+
+function serializeError(e: unknown): SerializedError {
+	const err = e instanceof Error ? e : new Error(String(e))
+	return { message: err.message, stack: err.stack, name: err.name }
+}
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
@@ -22,6 +27,8 @@ export interface WorkerThreadExecutorOptions {
 	modulePath: string
 	config: WranglerConfig
 	baseDir: string
+	/** Main-thread env holding the stateful binding instances the worker calls into via RPC. */
+	mainEnv: Record<string, unknown>
 }
 
 export class WorkerThreadExecutor {
@@ -96,6 +103,26 @@ export class WorkerThreadExecutor {
 				}
 				break
 			}
+			case 'binding-call':
+				this._dispatchBindingCall(msg.id, msg.target.binding, msg.method, msg.args)
+				break
+		}
+	}
+
+	private async _dispatchBindingCall(id: number, bindingName: string, method: string, args: unknown[]): Promise<void> {
+		try {
+			const binding = this._initConfig.mainEnv[bindingName]
+			if (binding == null) {
+				throw new Error(`Binding "${bindingName}" not found on main env`)
+			}
+			const fn = (binding as Record<string, unknown>)[method]
+			if (typeof fn !== 'function') {
+				throw new Error(`Binding "${bindingName}" has no method "${method}"`)
+			}
+			const value = await (fn as (...a: unknown[]) => unknown).call(binding, ...args)
+			this._send({ type: 'binding-result', id, value })
+		} catch (e) {
+			this._send({ type: 'binding-error', id, error: serializeError(e) })
 		}
 	}
 

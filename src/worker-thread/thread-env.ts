@@ -21,13 +21,16 @@ import { StaticAssets } from '../bindings/static-assets'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
+import type { BindingTarget } from './protocol'
+import type { RpcClient } from './rpc-client'
 
 export interface ThreadEnvOptions {
 	config: WranglerConfig
 	baseDir: string
+	rpc: RpcClient
 }
 
-export function buildThreadEnv({ config, baseDir }: ThreadEnvOptions): Record<string, unknown> {
+export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Record<string, unknown> {
 	const dataDir = path.join(baseDir, '.lopata')
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
@@ -68,6 +71,10 @@ export function buildThreadEnv({ config, baseDir }: ThreadEnvOptions): Record<st
 		env[d1.binding] = openD1Database(dataDir, d1.database_name)
 	}
 
+	for (const producer of config.queues?.producers ?? []) {
+		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc)
+	}
+
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
 		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
@@ -104,4 +111,12 @@ export function buildThreadEnv({ config, baseDir }: ThreadEnvOptions): Record<st
 	}
 
 	return env
+}
+
+function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	return {
+		send: (message: unknown, options?: unknown) => rpc.call(target, 'send', [message, options]),
+		sendBatch: (messages: unknown, options?: unknown) => rpc.call(target, 'sendBatch', [messages, options]),
+	}
 }

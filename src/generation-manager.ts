@@ -1,10 +1,9 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
-import { StaticAssets } from './bindings/static-assets'
 import type { WranglerConfig } from './config'
 import { buildEnv, setGlobalEnv, wireClassRefs } from './env'
 import { ExecutionContext } from './execution-context'
-import { type ClassRegistry, Generation, type GenerationInfo } from './generation'
+import { Generation, type GenerationInfo } from './generation'
 import type { WorkerIsolation } from './lopata-config'
 import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
@@ -251,27 +250,20 @@ export class GenerationManager {
 	}
 
 	private async _doReloadThread(): Promise<Generation> {
-		// Stateless bindings live in the worker thread (see thread-env.ts).
-		// Static assets stay main-side for the auto-serve fallback (filesystem only).
-		const env: Record<string, unknown> = {}
-		const registry: ClassRegistry = {
-			durableObjects: [],
-			workflows: [],
-			containers: [],
-			queueConsumers: [],
-			serviceBindings: [],
-			staticAssets: null,
-		}
-
-		if (this.config.assets) {
-			const assetsDir = path.resolve(this.baseDir, this.config.assets.directory)
-			registry.staticAssets = new StaticAssets(assetsDir, this.config.assets.html_handling, this.config.assets.not_found_handling)
+		// Stateful bindings (DO namespaces, queue producers, workflows,
+		// service bindings, email, browser, containers) live in main — the worker
+		// RPCs into them. Stateless ones duplicate in the thread (see thread-env.ts).
+		// Static assets stay main-side for the auto-serve fallback.
+		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
+		for (const entry of registry.durableObjects) {
+			this._doNamespaces.set(entry.className, entry.namespace)
 		}
 
 		const executor = new WorkerThreadExecutor({
 			modulePath: this.workerPath,
 			config: this.config,
 			baseDir: this.baseDir,
+			mainEnv: env,
 		})
 		try {
 			await executor.ready()

@@ -35,10 +35,17 @@ export interface WorkerInitConfig {
 	baseDir: string
 }
 
+/** Identifies which stateful binding (on main) an RPC call targets. */
+export interface BindingTarget {
+	binding: string
+}
+
 /** Main → worker */
 export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	| { type: 'fetch'; id: number; request: SerializedRequest }
+	| { type: 'binding-result'; id: number; value: unknown }
+	| { type: 'binding-error'; id: number; error: SerializedError }
 
 /** Worker → main */
 export type WorkerMessage =
@@ -47,3 +54,4 @@ export type WorkerMessage =
 	| { type: 'init-error'; error: SerializedError }
 	| { type: 'fetch-result'; id: number; response: SerializedResponse }
 	| { type: 'fetch-error'; id: number; error: SerializedError }
+	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }

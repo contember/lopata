@@ -47,7 +47,9 @@ async function initRuntime(init: WorkerInitConfig) {
 	await import('../plugin')
 
 	const { buildThreadEnv } = await import('./thread-env')
-	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir })
+	const { RpcClient } = await import('./rpc-client')
+	const rpc = new RpcClient(post)
+	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
@@ -66,6 +68,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 		const cmd = event.data
+		if (rpc.handle(cmd)) return
 		if (cmd.type === 'fetch') {
 			try {
 				const request = await deserializeRequest(cmd.request)
