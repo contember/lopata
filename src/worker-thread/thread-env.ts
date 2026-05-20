@@ -75,6 +75,10 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Reco
 		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc)
 	}
 
+	for (const email of config.send_email ?? []) {
+		env[email.name] = makeSendEmailProxy(email.name, rpc)
+	}
+
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
 		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
@@ -118,5 +122,38 @@ function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<str
 	return {
 		send: (message: unknown, options?: unknown) => rpc.call(target, 'send', [message, options]),
 		sendBatch: (messages: unknown, options?: unknown) => rpc.call(target, 'sendBatch', [messages, options]),
+	}
+}
+
+async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuffer | string> {
+	if (typeof raw === 'string' || raw instanceof Uint8Array || raw instanceof ArrayBuffer) return raw
+	if (raw && typeof (raw as ReadableStream).getReader === 'function') {
+		return new Response(raw as ReadableStream).arrayBuffer()
+	}
+	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
+}
+
+function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	return {
+		send: async (message: unknown) => {
+			// `EmailMessage` is a class with internal slots; structured-clone strips
+			// identity, so tag it and rebuild on main (see `reifyArgs` in executor).
+			const isEmailMessage = message != null
+				&& typeof message === 'object'
+				&& message.constructor?.name === 'EmailMessage'
+				&& 'from' in message
+				&& 'to' in message
+				&& 'raw' in message
+			const arg = isEmailMessage
+				? {
+					__lopata_class: 'EmailMessage' as const,
+					from: (message as { from: string }).from,
+					to: (message as { to: string }).to,
+					raw: await materializeEmailRaw((message as { raw: unknown }).raw),
+				}
+				: message
+			return rpc.call(target, 'send', [arg])
+		},
 	}
 }

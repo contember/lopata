@@ -16,6 +16,30 @@ function serializeError(e: unknown): SerializedError {
 	return { message: err.message, stack: err.stack, name: err.name }
 }
 
+/**
+ * Restore class identities that structured-clone strips. Worker proxies tag
+ * such args with `__lopata_class` so we can rebuild the real instance here.
+ */
+async function reifyArgs(args: unknown[]): Promise<unknown[]> {
+	const out: unknown[] = []
+	for (const arg of args) {
+		out.push(await reifyArg(arg))
+	}
+	return out
+}
+
+async function reifyArg(arg: unknown): Promise<unknown> {
+	if (arg && typeof arg === 'object' && '__lopata_class' in arg) {
+		const tag = (arg as { __lopata_class: string }).__lopata_class
+		if (tag === 'EmailMessage') {
+			const { EmailMessage } = await import('../bindings/email')
+			const { from, to, raw } = arg as unknown as { from: string; to: string; raw: unknown }
+			return new EmailMessage(from, to, raw as Uint8Array | ArrayBuffer | string)
+		}
+	}
+	return arg
+}
+
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
 interface PendingFetch {
@@ -104,25 +128,67 @@ export class WorkerThreadExecutor {
 				break
 			}
 			case 'binding-call':
-				this._dispatchBindingCall(msg.id, msg.target.binding, msg.method, msg.args)
+				this._dispatchBindingCall(msg.id, msg.target, msg.method, msg.args)
+				break
+			case 'binding-fetch':
+				this._dispatchBindingFetch(msg.id, msg.target, msg.request)
 				break
 		}
 	}
 
-	private async _dispatchBindingCall(id: number, bindingName: string, method: string, args: unknown[]): Promise<void> {
+	private _resolveBinding(target: { binding: string; instanceId?: string }): Record<string, unknown> {
+		const binding = this._initConfig.mainEnv[target.binding]
+		if (binding == null) {
+			throw new Error(`Binding "${target.binding}" not found on main env`)
+		}
+		if (target.instanceId === undefined) {
+			return binding as Record<string, unknown>
+		}
+		const get = (binding as Record<string, unknown>).get
+		if (typeof get !== 'function') {
+			throw new Error(`Binding "${target.binding}" cannot resolve instance "${target.instanceId}" — no .get() method`)
+		}
+		return (get as (id: string) => Record<string, unknown>).call(binding, target.instanceId)
+	}
+
+	private async _dispatchBindingCall(id: number, target: { binding: string; instanceId?: string }, method: string, args: unknown[]): Promise<void> {
 		try {
-			const binding = this._initConfig.mainEnv[bindingName]
-			if (binding == null) {
-				throw new Error(`Binding "${bindingName}" not found on main env`)
-			}
-			const fn = (binding as Record<string, unknown>)[method]
+			const resolved = this._resolveBinding(target)
+			const fn = resolved[method]
 			if (typeof fn !== 'function') {
-				throw new Error(`Binding "${bindingName}" has no method "${method}"`)
+				throw new Error(`Binding "${target.binding}" has no method "${method}"`)
 			}
-			const value = await (fn as (...a: unknown[]) => unknown).call(binding, ...args)
+			const reified = await reifyArgs(args)
+			const value = await (fn as (...a: unknown[]) => unknown).call(resolved, ...reified)
 			this._send({ type: 'binding-result', id, value })
 		} catch (e) {
 			this._send({ type: 'binding-error', id, error: serializeError(e) })
+		}
+	}
+
+	private async _dispatchBindingFetch(
+		id: number,
+		target: { binding: string; instanceId?: string },
+		req: import('./protocol').SerializedRequest,
+	): Promise<void> {
+		try {
+			const resolved = this._resolveBinding(target)
+			const fetch = resolved.fetch
+			if (typeof fetch !== 'function') {
+				throw new Error(`Binding "${target.binding}" has no fetch() method`)
+			}
+			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
+			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, request)
+			const headers: [string, string][] = []
+			response.headers.forEach((v, k) => headers.push([k, v]))
+			const body = response.body ? await response.arrayBuffer() : null
+			this._send({
+				type: 'binding-fetch-result',
+				id,
+				response: { status: response.status, statusText: response.statusText, headers, body },
+			})
+		} catch (e) {
+			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
 	}
 

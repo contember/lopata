@@ -1,3 +1,5 @@
+import { EmailMessage } from 'cloudflare:email'
+
 export default {
 	async fetch(request: Request, env: any): Promise<Response> {
 		const url = new URL(request.url)
@@ -13,6 +15,12 @@ export default {
 				{ body: { item: 2 } },
 			])
 			return new Response('batched')
+		}
+
+		if (url.pathname === '/email/send') {
+			const raw = 'From: a@example.com\r\nTo: b@example.com\r\nSubject: hi\r\n\r\nhello'
+			await env.MY_EMAIL.send(new EmailMessage('a@example.com', 'b@example.com', raw))
+			return new Response('emailed')
 		}
 
 		return new Response('not found', { status: 404 })

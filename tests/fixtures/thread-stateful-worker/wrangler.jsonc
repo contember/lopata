@@ -6,5 +6,8 @@
 		"producers": [
 			{ "binding": "MY_QUEUE", "queue": "thread-stateful-q" }
 		]
-	}
+	},
+	"send_email": [
+		{ "name": "MY_EMAIL" }
+	]
 }

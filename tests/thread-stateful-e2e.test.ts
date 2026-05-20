@@ -48,7 +48,7 @@ describe('Stateful bindings in worker-isolation=thread mode', () => {
 
 	function readQueueBodies(queue: string): string[] {
 		const db = new Database(resolve(FIXTURE_DIR, '.lopata/data.sqlite'), { readonly: true })
-		const rows = db.query<{ body: Uint8Array }, []>('SELECT body FROM queue_messages WHERE queue = ? ORDER BY created_at')
+		const rows = db.query<{ body: Uint8Array }, [string]>('SELECT body FROM queue_messages WHERE queue = ? ORDER BY created_at')
 			.all(queue)
 		db.close()
 		return rows.map(r => new TextDecoder().decode(r.body))
@@ -66,5 +66,17 @@ describe('Stateful bindings in worker-isolation=thread mode', () => {
 		const bodies = readQueueBodies('thread-stateful-q')
 		expect(bodies).toContain('{"item":1}')
 		expect(bodies).toContain('{"item":2}')
+	})
+
+	test('send_email.send() rebuilds EmailMessage on main and persists', async () => {
+		const res = await fetch(`${base}/email/send`)
+		expect(await res.text()).toBe('emailed')
+
+		const db = new Database(resolve(FIXTURE_DIR, '.lopata/data.sqlite'), { readonly: true })
+		const row = db.query<{ from_addr: string; to_addr: string; status: string }, []>(
+			'SELECT from_addr, to_addr, status FROM email_messages ORDER BY created_at DESC LIMIT 1',
+		).get()
+		db.close()
+		expect(row).toMatchObject({ from_addr: 'a@example.com', to_addr: 'b@example.com', status: 'sent' })
 	})
 })
