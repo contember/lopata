@@ -230,6 +230,73 @@ describe('HMR E2E — standalone', () => {
 	}, 15_000)
 })
 
+// Thread-mode runs the worker in a Bun Worker that is terminated and respawned
+// on every reload. Transitive deps pick up edits because the whole module graph
+// is rebuilt, not just the entry — independent of any in-process cache trick.
+describe('HMR E2E — standalone (worker-isolation=thread)', () => {
+	let proc: Subprocess
+	let output: OutputReader
+	let restoreEntry: () => void
+	let restoreDep: () => void
+	const PORT = 18799
+
+	beforeAll(async () => {
+		cleanup()
+		restoreEntry = backupFile(WORKER_SRC)
+		restoreDep = backupFile(WORKER_DEP)
+
+		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT), '--worker-isolation=thread'], {
+			cwd: FIXTURE_DIR,
+			stdout: 'pipe',
+			stderr: 'pipe',
+		})
+		output = new OutputReader(proc)
+
+		await output.waitFor('Server running', 15_000)
+	}, 20_000)
+
+	afterAll(() => {
+		proc?.kill()
+		restoreEntry?.()
+		restoreDep?.()
+		cleanup()
+	})
+
+	test('initial /version is v1', async () => {
+		const res = await fetch(`http://localhost:${PORT}/version`)
+		expect(await res.text()).toBe('v1')
+	})
+
+	test('entry change updates /version to v2', async () => {
+		output.mark()
+		mutateWorkerSource("'v1'", "'v2'")
+		await output.waitForNew('Reloaded', 10_000)
+		const res = await fetch(`http://localhost:${PORT}/version`)
+		expect(await res.text()).toBe('v2')
+	}, 15_000)
+
+	test('initial /dep is d1', async () => {
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d1')
+	})
+
+	test('transitive dep change updates /dep to d2', async () => {
+		output.mark()
+		mutateFile(WORKER_DEP, "'d1'", "'d2'")
+		await output.waitForNew('Reloaded', 10_000)
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d2')
+	}, 15_000)
+
+	test('second transitive dep change updates /dep to d3', async () => {
+		output.mark()
+		mutateFile(WORKER_DEP, "'d2'", "'d3'")
+		await output.waitForNew('Reloaded', 10_000)
+		const res = await fetch(`http://localhost:${PORT}/dep`)
+		expect(await res.text()).toBe('d3')
+	}, 15_000)
+})
+
 describe('HMR E2E — vite', () => {
 	let proc: Subprocess
 	let output: OutputReader

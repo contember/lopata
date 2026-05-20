@@ -11,6 +11,7 @@ import { renderErrorPage } from './error-page-render'
 import { ExecutionContext, runWithExecutionContext } from './execution-context'
 import { getActiveContext } from './tracing/context'
 import { persistError, setSpanAttribute, startSpan } from './tracing/span'
+import type { WorkerThreadExecutor } from './worker-thread/executor'
 
 interface ClassRegistry {
 	durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[]
@@ -52,6 +53,8 @@ export class Generation {
 	readonly config: WranglerConfig
 	readonly workerName: string | undefined
 	readonly cronEnabled: boolean
+	/** When set, fetch is routed through the worker-thread executor instead of in-process. */
+	readonly threadExecutor: WorkerThreadExecutor | null
 	activeRequests = 0
 
 	private queueConsumers: QueueConsumer[] = []
@@ -69,6 +72,7 @@ export class Generation {
 		config: WranglerConfig,
 		workerName?: string,
 		cronEnabled?: boolean,
+		threadExecutor?: WorkerThreadExecutor | null,
 	) {
 		this.id = id
 		this.createdAt = Date.now()
@@ -80,6 +84,7 @@ export class Generation {
 		this.config = config
 		this.workerName = workerName
 		this.cronEnabled = cronEnabled ?? false
+		this.threadExecutor = threadExecutor ?? null
 	}
 
 	/** Get a handler method from the worker module (class-based or object-based) */
@@ -101,8 +106,13 @@ export class Generation {
 	/** Dispatch a fetch request through this generation's handler */
 	async callFetch(request: Request, server: any): Promise<Response | undefined> {
 		this.activeRequests++
-		const ctx = new ExecutionContext()
 		try {
+			if (this.threadExecutor) {
+				// Phase 0: route through worker thread without tracing, ctx, or
+				// static-assets/WebSocket handling — those land in later phases.
+				return await this.threadExecutor.executeFetch(request)
+			}
+			const ctx = new ExecutionContext()
 			const url = new URL(request.url)
 
 			// Skip tracing for internal/infrastructure paths (Bun HMR, browser probes, etc.)
@@ -386,6 +396,7 @@ export class Generation {
 		for (const entry of this.registry.workflows) {
 			entry.binding.abortRunning()
 		}
+		this.threadExecutor?.dispose()
 	}
 
 	/** Check if this generation has no more work */

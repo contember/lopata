@@ -50,9 +50,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		listen: { type: 'string' },
 		host: { type: 'boolean' },
 		port: { type: 'string' },
+		'worker-isolation': { type: 'string' },
 	})
 	const envFlag = ctx.envName
 	const portFlag = values.port
+	const workerIsolationFlag = parseWorkerIsolation(values['worker-isolation'])
 
 	const baseDir = process.cwd()
 	const watchers: FileWatcher[] = []
@@ -87,6 +89,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log(`[lopata] Main worker: ${mainConfig.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(mainConfig)
 
+		const workerIsolation = workerIsolationFlag ?? lopataConfig.workerIsolation ?? 'in-process'
+		if (workerIsolation === 'thread') {
+			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
+		}
+
 		const mainManager = new GenerationManager(mainConfig, mainBaseDir, {
 			workerName: mainConfig.name,
 			workerRegistry: registry,
@@ -95,6 +102,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			executorFactory,
 			configPath: lopataConfig.main,
 			browserConfig: lopataConfig.browser,
+			workerIsolation,
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
@@ -113,6 +121,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				cron: lopataConfig.cron,
 				executorFactory,
 				configPath: workerDef.config,
+				workerIsolation,
 			})
 			registry.register(workerDef.name, auxManager)
 
@@ -226,7 +235,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log(`[lopata] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(config)
 
-		manager = new GenerationManager(config, baseDir)
+		const workerIsolation = workerIsolationFlag ?? 'in-process'
+		if (workerIsolation === 'thread') {
+			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
+		}
+		manager = new GenerationManager(config, baseDir, { workerIsolation })
 		const firstGen = await manager.reload()
 		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
@@ -519,6 +532,12 @@ function resolveWorkerParam(url: URL, registry: WorkerRegistry | undefined, fall
 		return fallback
 	}
 	return target
+}
+
+function parseWorkerIsolation(flag: string | undefined): 'in-process' | 'thread' | undefined {
+	if (flag === undefined) return undefined
+	if (flag === 'in-process' || flag === 'thread') return flag
+	throw new Error(`Invalid --worker-isolation value "${flag}" (expected "in-process" or "thread")`)
 }
 
 function matchGlob(text: string, pattern: string): boolean {

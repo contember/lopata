@@ -6,6 +6,7 @@ import { ExecutionContext } from './execution-context'
 import { Generation, type GenerationInfo } from './generation'
 import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
+import { WorkerThreadExecutor } from './worker-thread/executor'
 
 function isEntrypointClass(exp: unknown): exp is new(ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
 	return typeof exp === 'function' && exp.prototype
@@ -85,6 +86,7 @@ export class GenerationManager {
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
 	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
+	readonly workerIsolation: 'in-process' | 'thread'
 	/** @internal Path to the wrangler config file (for isolated mode worker threads) */
 	_configPath: string = ''
 
@@ -99,6 +101,7 @@ export class GenerationManager {
 			executorFactory?: DOExecutorFactory
 			configPath?: string
 			browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+			workerIsolation?: 'in-process' | 'thread'
 		},
 	) {
 		this.config = config
@@ -111,6 +114,7 @@ export class GenerationManager {
 		this.executorFactory = options?.executorFactory
 		this.browserConfig = options?.browserConfig
 		this._configPath = options?.configPath ?? ''
+		this.workerIsolation = options?.workerIsolation ?? 'in-process'
 	}
 
 	/** The currently active generation (receives new requests) */
@@ -149,6 +153,10 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
+		if (this.workerIsolation === 'thread') {
+			return this._doReloadThread()
+		}
+
 		// 1. Configure executor factory with module/config paths (for isolated mode)
 		if (this.executorFactory && 'configure' in this.executorFactory) {
 			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
@@ -237,6 +245,55 @@ export class GenerationManager {
 		// 9. Start consumers + cron on new generation
 		gen.startConsumers()
 
+		return gen
+	}
+
+	private async _doReloadThread(): Promise<Generation> {
+		// Empty env + registry: bindings + DO/queue wiring land in later phases.
+		const env: Record<string, unknown> = {}
+		const registry = {
+			durableObjects: [],
+			workflows: [],
+			containers: [],
+			queueConsumers: [],
+			serviceBindings: [],
+			staticAssets: null,
+		}
+
+		const executor = new WorkerThreadExecutor({ modulePath: this.workerPath })
+		try {
+			await executor.ready()
+		} catch (err) {
+			executor.dispose()
+			throw err
+		}
+
+		const genId = this.nextGenId++
+		const gen = new Generation(genId, {}, null, false, env, registry, this.config, this.workerName, this.cronEnabled, executor)
+		this.generations.set(genId, gen)
+
+		const oldGenId = this._activeGenId
+		if (oldGenId !== null) {
+			const oldGen = this.generations.get(oldGenId)
+			if (oldGen && oldGen.state === 'active') {
+				oldGen.drain()
+				if (oldGen.isIdle()) {
+					this._stopGeneration(oldGenId)
+				} else {
+					oldGen.drainPollTimer = setInterval(() => {
+						if (oldGen.isIdle()) {
+							this._stopGeneration(oldGenId)
+						}
+					}, 200)
+					oldGen.drainTimer = setTimeout(() => {
+						this._stopGeneration(oldGenId)
+					}, this.gracePeriodMs)
+				}
+			}
+		}
+
+		this._activeGenId = genId
+		gen.startConsumers()
 		return gen
 	}
 
