@@ -12,6 +12,7 @@ import path from 'node:path'
 import { AiBinding } from '../bindings/ai'
 import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
 import { openD1Database } from '../bindings/d1'
+import { EmailMessage } from '../bindings/email'
 import { HyperdriveBinding } from '../bindings/hyperdrive'
 import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
@@ -137,20 +138,14 @@ function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string,
 	const target: BindingTarget = { binding: bindingName }
 	return {
 		send: async (message: unknown) => {
-			// `EmailMessage` is a class with internal slots; structured-clone strips
-			// identity, so tag it and rebuild on main (see `reifyArgs` in executor).
-			const isEmailMessage = message != null
-				&& typeof message === 'object'
-				&& message.constructor?.name === 'EmailMessage'
-				&& 'from' in message
-				&& 'to' in message
-				&& 'raw' in message
-			const arg = isEmailMessage
+			// Structured-clone strips EmailMessage's class identity, so tag it and
+			// let main rebuild via `reifyArgs` in executor.ts.
+			const arg = message instanceof EmailMessage
 				? {
 					__lopata_class: 'EmailMessage' as const,
-					from: (message as { from: string }).from,
-					to: (message as { to: string }).to,
-					raw: await materializeEmailRaw((message as { raw: unknown }).raw),
+					from: message.from,
+					to: message.to,
+					raw: await materializeEmailRaw(message.raw),
 				}
 				: message
 			return rpc.call(target, 'send', [arg])

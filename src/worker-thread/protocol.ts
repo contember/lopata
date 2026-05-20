@@ -35,16 +35,12 @@ export interface WorkerInitConfig {
 	baseDir: string
 }
 
-/**
- * Identifies which stateful binding (on main) an RPC call targets.
- *
- * `instanceId` is used by collection-like bindings whose entries can be
- * addressed by id (Workflows: `env.WF.get(instanceId).method()`). Main
- * resolves the actual target via `env[binding].get(instanceId)` before
- * invoking the method.
- */
 export interface BindingTarget {
 	binding: string
+	/**
+	 * @internal Scaffold for upcoming workflow / DO instance RPC. When set, main
+	 * resolves via `env[binding].get(instanceId)` before invoking `method`.
+	 */
 	instanceId?: string
 }
 
@@ -54,8 +50,6 @@ export type WorkerCommand =
 	| { type: 'fetch'; id: number; request: SerializedRequest }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
-	| { type: 'binding-fetch-result'; id: number; response: SerializedResponse }
-	| { type: 'binding-fetch-error'; id: number; error: SerializedError }
 
 /** Worker → main */
 export type WorkerMessage =
@@ -65,4 +59,3 @@ export type WorkerMessage =
 	| { type: 'fetch-result'; id: number; response: SerializedResponse }
 	| { type: 'fetch-error'; id: number; error: SerializedError }
 	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }
-	| { type: 'binding-fetch'; id: number; target: BindingTarget; request: SerializedRequest }

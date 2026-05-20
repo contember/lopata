@@ -8,8 +8,9 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import { EmailMessage } from '../bindings/email'
 import type { WranglerConfig } from '../config'
-import type { SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import type { BindingTarget, SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
 
 function serializeError(e: unknown): SerializedError {
 	const err = e instanceof Error ? e : new Error(String(e))
@@ -20,19 +21,14 @@ function serializeError(e: unknown): SerializedError {
  * Restore class identities that structured-clone strips. Worker proxies tag
  * such args with `__lopata_class` so we can rebuild the real instance here.
  */
-async function reifyArgs(args: unknown[]): Promise<unknown[]> {
-	const out: unknown[] = []
-	for (const arg of args) {
-		out.push(await reifyArg(arg))
-	}
-	return out
+function reifyArgs(args: unknown[]): unknown[] {
+	return args.map(reifyArg)
 }
 
-async function reifyArg(arg: unknown): Promise<unknown> {
+function reifyArg(arg: unknown): unknown {
 	if (arg && typeof arg === 'object' && '__lopata_class' in arg) {
 		const tag = (arg as { __lopata_class: string }).__lopata_class
 		if (tag === 'EmailMessage') {
-			const { EmailMessage } = await import('../bindings/email')
 			const { from, to, raw } = arg as unknown as { from: string; to: string; raw: unknown }
 			return new EmailMessage(from, to, raw as Uint8Array | ArrayBuffer | string)
 		}
@@ -64,9 +60,11 @@ export class WorkerThreadExecutor {
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
+	private _mainEnv: Record<string, unknown>
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
+		this._mainEnv = options.mainEnv
 		this._ready = new Promise<void>((res, rej) => {
 			this._readyResolve = res
 			this._readyReject = rej
@@ -130,14 +128,11 @@ export class WorkerThreadExecutor {
 			case 'binding-call':
 				this._dispatchBindingCall(msg.id, msg.target, msg.method, msg.args)
 				break
-			case 'binding-fetch':
-				this._dispatchBindingFetch(msg.id, msg.target, msg.request)
-				break
 		}
 	}
 
-	private _resolveBinding(target: { binding: string; instanceId?: string }): Record<string, unknown> {
-		const binding = this._initConfig.mainEnv[target.binding]
+	private _resolveBinding(target: BindingTarget): Record<string, unknown> {
+		const binding = this._mainEnv[target.binding]
 		if (binding == null) {
 			throw new Error(`Binding "${target.binding}" not found on main env`)
 		}
@@ -151,44 +146,17 @@ export class WorkerThreadExecutor {
 		return (get as (id: string) => Record<string, unknown>).call(binding, target.instanceId)
 	}
 
-	private async _dispatchBindingCall(id: number, target: { binding: string; instanceId?: string }, method: string, args: unknown[]): Promise<void> {
+	private async _dispatchBindingCall(id: number, target: BindingTarget, method: string, args: unknown[]): Promise<void> {
 		try {
 			const resolved = this._resolveBinding(target)
 			const fn = resolved[method]
 			if (typeof fn !== 'function') {
 				throw new Error(`Binding "${target.binding}" has no method "${method}"`)
 			}
-			const reified = await reifyArgs(args)
-			const value = await (fn as (...a: unknown[]) => unknown).call(resolved, ...reified)
+			const value = await (fn as (...a: unknown[]) => unknown).call(resolved, ...reifyArgs(args))
 			this._send({ type: 'binding-result', id, value })
 		} catch (e) {
 			this._send({ type: 'binding-error', id, error: serializeError(e) })
-		}
-	}
-
-	private async _dispatchBindingFetch(
-		id: number,
-		target: { binding: string; instanceId?: string },
-		req: import('./protocol').SerializedRequest,
-	): Promise<void> {
-		try {
-			const resolved = this._resolveBinding(target)
-			const fetch = resolved.fetch
-			if (typeof fetch !== 'function') {
-				throw new Error(`Binding "${target.binding}" has no fetch() method`)
-			}
-			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
-			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, request)
-			const headers: [string, string][] = []
-			response.headers.forEach((v, k) => headers.push([k, v]))
-			const body = response.body ? await response.arrayBuffer() : null
-			this._send({
-				type: 'binding-fetch-result',
-				id,
-				response: { status: response.status, statusText: response.statusText, headers, body },
-			})
-		} catch (e) {
-			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
 	}
 
