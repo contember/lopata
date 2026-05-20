@@ -6,8 +6,8 @@ export default {
 			if (request.headers.get('Upgrade') !== 'websocket') {
 				return new Response('Expected websocket', { status: 426 })
 			}
-			const pair = new (globalThis as any).WebSocketPair()
-			const [client, server] = Object.values(pair) as [any, any]
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
 			server.accept()
 			server.addEventListener('message', (event: MessageEvent) => {
 				const data = event.data
@@ -24,8 +24,8 @@ export default {
 			if (request.headers.get('Upgrade') !== 'websocket') {
 				return new Response('Expected websocket', { status: 426 })
 			}
-			const pair = new (globalThis as any).WebSocketPair()
-			const [client, server] = Object.values(pair) as [any, any]
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
 			server.accept()
 			// Server initiates a message after a tick
 			setTimeout(() => server.send('hello-from-server'), 10)
@@ -36,8 +36,8 @@ export default {
 			if (request.headers.get('Upgrade') !== 'websocket') {
 				return new Response('Expected websocket', { status: 426 })
 			}
-			const pair = new (globalThis as any).WebSocketPair()
-			const [client, server] = Object.values(pair) as [any, any]
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
 			server.accept()
 			server.addEventListener('message', () => {
 				server.close(4000, 'server-closed')

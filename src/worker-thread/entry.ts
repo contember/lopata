@@ -1,6 +1,6 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
-import { CFWebSocket } from '../bindings/websocket-pair'
+import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { runWithContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
@@ -32,7 +32,7 @@ async function deserializeRequest(req: SerializedRequest): Promise<Request> {
 async function serializeResponse(response: Response, ws: WorkerWsBridge): Promise<SerializedResponse> {
 	const headers: [string, string][] = []
 	response.headers.forEach((v, k) => headers.push([k, v]))
-	const cfSocket = (response as Response & { webSocket?: CFWebSocket }).webSocket
+	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	if (response.status === 101 && cfSocket instanceof CFWebSocket) {
 		return {
 			status: response.status,

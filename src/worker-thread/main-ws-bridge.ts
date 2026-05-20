@@ -8,47 +8,36 @@
  *   to the real client. We synthesise message events on this side whenever
  *   the worker emits `ws-worker-send`.
  *
- * - `cfSocket._peer` — a `BridgeWebSocketPeer`. `cli/dev.ts` calls
- *   `_dispatchWSEvent` on it when the real client sends data, and reads
- *   `_accepted` / `readyState`. The peer's job: post `ws-client-message`
- *   to the worker so the user-facing pair fires its listener.
+ * - `cfSocket._peer` — a `BridgeWebSocketPeer` (subclass of `CFWebSocket`)
+ *   that overrides `_dispatchWSEvent` to post the inbound event back to the
+ *   worker instead of dispatching it locally.
  */
 
-import { CFWebSocket } from '../bindings/websocket-pair'
+import { CFWebSocket, type WSEvent } from '../bindings/websocket-pair'
 import type { WorkerCommand } from './protocol'
 
-const OPEN = 1
-const CLOSED = 3
-
-class BridgeWebSocketPeer extends EventTarget {
-	static readonly OPEN = OPEN
-	static readonly CLOSED = CLOSED
-	readyState: number = OPEN
-	/** @internal Set so `cli/dev.ts:467` dispatches incoming messages immediately. */
-	_accepted = true
-	/** @internal Back-ref keeps the `cli/dev.ts` close handler happy. */
-	_peer: CFWebSocket | null = null
-	/** @internal Required by `cli/dev.ts` close handler — never used here. */
-	_eventQueue: unknown[] = []
-	/** @internal Required by hibernation API code paths; unused for plain WS. */
-	_attachment: unknown = null
-
+class BridgeWebSocketPeer extends CFWebSocket {
 	private _post: (cmd: WorkerCommand) => void
 	private _wsId: string
+	private _onForget: (wsId: string) => void
 
-	constructor(wsId: string, post: (cmd: WorkerCommand) => void) {
+	constructor(wsId: string, post: (cmd: WorkerCommand) => void, onForget: (wsId: string) => void) {
 		super()
 		this._wsId = wsId
 		this._post = post
+		this._onForget = onForget
+		// `cli/dev.ts:467` requires `_accepted` so it dispatches inbound messages
+		// without queuing — we're always ready to forward to the worker.
+		this._accepted = true
+		this.readyState = CFWebSocket.OPEN
 	}
 
-	_dispatchWSEvent(evt: { type: string; data?: string | ArrayBuffer; code?: number; reason?: string; wasClean?: boolean }): void {
+	override _dispatchWSEvent(evt: WSEvent): void {
 		if (evt.type === 'message' && evt.data !== undefined) {
 			this._post({ type: 'ws-client-message', wsId: this._wsId, data: evt.data })
 			return
 		}
 		if (evt.type === 'close') {
-			this.readyState = CLOSED
 			this._post({
 				type: 'ws-client-close',
 				wsId: this._wsId,
@@ -56,6 +45,7 @@ class BridgeWebSocketPeer extends EventTarget {
 				reason: evt.reason ?? '',
 				wasClean: evt.wasClean ?? true,
 			})
+			this._onForget(this._wsId)
 		}
 	}
 }
@@ -71,8 +61,8 @@ export class MainWsBridge {
 
 	createSocket(wsId: string): CFWebSocket {
 		const cfSocket = new CFWebSocket()
-		const peer = new BridgeWebSocketPeer(wsId, this._post)
-		cfSocket._peer = peer as unknown as CFWebSocket
+		const peer = new BridgeWebSocketPeer(wsId, this._post, id => this._sockets.delete(id))
+		cfSocket._peer = peer
 		peer._peer = cfSocket
 		this._sockets.set(wsId, cfSocket)
 		return cfSocket
@@ -91,7 +81,7 @@ export class MainWsBridge {
 	deliverWorkerClose(wsId: string, code: number, reason: string): void {
 		const cfSocket = this._sockets.get(wsId)
 		if (!cfSocket) return
-		const evt = { type: 'close' as const, code, reason, wasClean: true }
+		const evt: WSEvent = { type: 'close', code, reason, wasClean: true }
 		if (cfSocket._accepted) {
 			cfSocket._dispatchWSEvent(evt)
 		} else {
@@ -100,9 +90,20 @@ export class MainWsBridge {
 		this._sockets.delete(wsId)
 	}
 
+	/**
+	 * Notify any active real clients that this generation is going away, then
+	 * drop them. Mirrors the `1012 Service Restart` close code WebSockets use
+	 * for planned restarts.
+	 */
 	disposeAll(): void {
 		for (const cfSocket of this._sockets.values()) {
-			if (cfSocket.readyState !== CLOSED) cfSocket.readyState = CLOSED
+			if (cfSocket.readyState === CFWebSocket.CLOSED) continue
+			const evt: WSEvent = { type: 'close', code: 1012, reason: 'Service Restart', wasClean: true }
+			if (cfSocket._accepted) {
+				cfSocket._dispatchWSEvent(evt)
+			} else {
+				cfSocket._eventQueue.push(evt)
+			}
 		}
 		this._sockets.clear()
 	}

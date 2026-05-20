@@ -9,7 +9,7 @@
 
 import { dirname, resolve } from 'node:path'
 import { EmailMessage } from '../bindings/email'
-import type { CFWebSocket } from '../bindings/websocket-pair'
+import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
@@ -231,7 +231,7 @@ export class WorkerThreadExecutor {
 			status: serialized.status,
 			statusText: serialized.statusText,
 			headers: serialized.headers,
-		}) as Response & { webSocket?: CFWebSocket }
+		}) as ResponseWithWebSocket
 		if (serialized.webSocketId) {
 			response.webSocket = this._wsBridge.createSocket(serialized.webSocketId)
 		}

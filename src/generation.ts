@@ -1,9 +1,9 @@
-import { randomUUIDv7 } from 'bun'
+import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { ForwardableEmailMessage } from './bindings/email'
 import { QueueConsumer } from './bindings/queue'
 import { createScheduledController, startCronScheduler } from './bindings/scheduled'
-import { CFWebSocket } from './bindings/websocket-pair'
+import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase } from './db'
@@ -237,7 +237,7 @@ export class Generation {
 		}
 	}
 
-	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor, server: unknown): Promise<Response | undefined> {
+	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor, server: Server<unknown>): Promise<Response | undefined> {
 		const url = new URL(request.url)
 		return this._withServerSpan(request, async () => {
 			const assets = this.registry.staticAssets
@@ -255,9 +255,9 @@ export class Generation {
 					if (response.status === 404) return await assets.fetch(request)
 				}
 			}
-			const ws = (response as Response & { webSocket?: CFWebSocket }).webSocket
+			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
-				const upgraded = (server as { upgrade(req: Request, opts: { data: unknown }): boolean }).upgrade(request, { data: { cfSocket: ws } })
+				const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
 				if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
 				return undefined
 			}

@@ -6,15 +6,18 @@
  * Events are buffered until accept() is called.
  */
 
-type WSEventType = 'message' | 'close' | 'error' | 'open'
+export type WSEventType = 'message' | 'close' | 'error' | 'open'
 
-interface WSEvent {
+export interface WSEvent {
 	type: WSEventType
 	data?: string | ArrayBuffer
 	code?: number
 	reason?: string
 	wasClean?: boolean
 }
+
+/** Response with optional CF `webSocket` property — used by upgrade flows. */
+export type ResponseWithWebSocket = Response & { webSocket?: CFWebSocket }
 
 const CONNECTING = 0
 const OPEN = 1
