@@ -113,8 +113,7 @@ export class Generation {
 			const ctx = new ExecutionContext()
 			const url = new URL(request.url)
 
-			// Skip tracing for internal/infrastructure paths (Bun HMR, browser probes, etc.)
-			const skipTracing = url.pathname.startsWith('/_bun/') || url.pathname.startsWith('/.well-known/')
+			const skipTracing = isInfrastructurePath(url.pathname)
 
 			// Capture caller stack before entering the worker — frameworks like Hono
 			// use .then()/.catch() internally which destroys async stack traces in Bun.
@@ -240,9 +239,7 @@ export class Generation {
 
 	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor): Promise<Response> {
 		const url = new URL(request.url)
-		const skipTracing = url.pathname.startsWith('/_bun/') || url.pathname.startsWith('/.well-known/')
-
-		const dispatch = async (): Promise<Response> => {
+		return this._withServerSpan(request, async () => {
 			const assets = this.registry.staticAssets
 			if (!assets || this.config.assets?.binding) {
 				return executor.executeFetch(request)
@@ -255,17 +252,24 @@ export class Generation {
 			}
 			const response = await executor.executeFetch(request)
 			return response.status === 404 ? await assets.fetch(request) : response
-		}
+		})
+	}
 
-		if (skipTracing) return dispatch()
-
+	/**
+	 * Wrap a thread-mode fetch in the canonical server span (matching the
+	 * in-process `callFetch` attributes), skipping tracing for infrastructure
+	 * paths and stamping `http.status_code` on the response.
+	 */
+	private async _withServerSpan(request: Request, body: () => Promise<Response>): Promise<Response> {
+		const url = new URL(request.url)
+		if (isInfrastructurePath(url.pathname)) return body()
 		return startSpan({
 			name: `${request.method} ${url.pathname}`,
 			kind: 'server',
 			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
 		}, async () => {
-			const response = await dispatch()
+			const response = await body()
 			setSpanAttribute('http.status_code', response.status)
 			return response
 		})
@@ -495,6 +499,11 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')
+}
+
+/** Bun HMR + browser well-known probes that shouldn't get spans. */
+function isInfrastructurePath(pathname: string): boolean {
+	return pathname.startsWith('/_bun/') || pathname.startsWith('/.well-known/')
 }
 
 function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {

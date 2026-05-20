@@ -4,7 +4,7 @@ import { runWithContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
 import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerInitConfig, WorkerMessage } from './protocol'
-import { asTraceStore, RemoteTraceStore } from './remote-trace-store'
+import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { buildThreadEnv } from './thread-env'
 
@@ -53,7 +53,7 @@ async function initRuntime(init: WorkerInitConfig) {
 	await import('../plugin')
 
 	// Route all tracing operations through main so the dashboard's subscribers fire.
-	setTraceStoreOverride(asTraceStore(new RemoteTraceStore(post)))
+	setTraceStoreOverride(new RemoteTraceStore(post))
 
 	const rpc = new RpcClient(post)
 	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })

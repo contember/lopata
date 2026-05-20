@@ -605,10 +605,12 @@ export function setTraceStore(store: TraceStore | null): void {
 }
 
 /**
- * Replace the process-local trace store. Used by the worker-thread runtime
- * to install a remote store that forwards every operation to main rather
- * than writing to disk locally.
+ * Swap the process-local trace store. Used by the worker-thread runtime to
+ * install a forwarding store. **Do not call from main** — that mutes the
+ * dashboard subscribers attached to the real store.
  */
-export function setTraceStoreOverride(store: TraceStore | null): void {
-	overrideStore = store
+export function setTraceStoreOverride(
+	store: Pick<TraceStore, 'insertSpan' | 'endSpan' | 'setSpanStatus' | 'getSpanStatus' | 'updateAttributes' | 'addEvent' | 'insertError'> | null,
+): void {
+	overrideStore = store as TraceStore | null
 }

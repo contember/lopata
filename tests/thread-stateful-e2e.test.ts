@@ -104,29 +104,32 @@ describe('Stateful bindings in worker-isolation=thread mode', () => {
 		const res = await fetch(`${base}/trace/nested`)
 		expect(await res.text()).toBe('traced')
 
-		// Give the bridge a beat to flush postMessage envelopes.
-		await new Promise(r => setTimeout(r, 200))
-
-		const traces = new Database(resolve(FIXTURE_DIR, '.lopata/traces.sqlite'), { readonly: true })
-		try {
-			const spans = traces.query<{ name: string; parent_span_id: string | null; trace_id: string; kind: string }, [string]>(
+		// Poll traces.sqlite until the child span flushes through the bridge.
+		const deadline = Date.now() + 2_000
+		let spans: { name: string; parent_span_id: string | null; trace_id: string; kind: string }[] = []
+		while (Date.now() < deadline) {
+			const traces = new Database(resolve(FIXTURE_DIR, '.lopata/traces.sqlite'), { readonly: true })
+			spans = traces.query<{ name: string; parent_span_id: string | null; trace_id: string; kind: string }, [string]>(
 				'SELECT name, parent_span_id, trace_id, kind FROM spans WHERE trace_id IN (SELECT trace_id FROM spans WHERE name = ? ORDER BY start_time DESC LIMIT 1)',
 			).all('phase4-child')
-
-			const root = spans.find(s => s.parent_span_id === null)
-			const child = spans.find(s => s.name === 'phase4-child')
-			expect(root?.kind).toBe('server')
-			expect(root?.name).toBe('GET /trace/nested')
-			expect(child).toBeDefined()
-			expect(child?.trace_id).toBe(root?.trace_id)
-
-			const events = traces.query<{ name: string; message: string | null }, [string]>(
-				'SELECT name, message FROM span_events WHERE span_id = (SELECT span_id FROM spans WHERE name = ? ORDER BY start_time DESC LIMIT 1)',
-			).all('phase4-child')
-			expect(events.some(e => e.name === 'phase4-event' && e.message === 'from inside child span')).toBe(true)
-		} finally {
 			traces.close()
+			if (spans.some(s => s.name === 'phase4-child')) break
+			await new Promise(r => setTimeout(r, 20))
 		}
+
+		const root = spans.find(s => s.parent_span_id === null)
+		const child = spans.find(s => s.name === 'phase4-child')
+		expect(root?.kind).toBe('server')
+		expect(root?.name).toBe('GET /trace/nested')
+		expect(child).toBeDefined()
+		expect(child?.trace_id).toBe(root?.trace_id)
+
+		const traces = new Database(resolve(FIXTURE_DIR, '.lopata/traces.sqlite'), { readonly: true })
+		const events = traces.query<{ name: string; message: string | null }, [string]>(
+			'SELECT name, message FROM span_events WHERE span_id = (SELECT span_id FROM spans WHERE name = ? ORDER BY start_time DESC LIMIT 1)',
+		).all('phase4-child')
+		traces.close()
+		expect(events.some(e => e.name === 'phase4-event' && e.message === 'from inside child span')).toBe(true)
 	}, 5_000)
 
 	test('reload drains waitUntil from the previous generation before terminating its worker', async () => {

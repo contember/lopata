@@ -10,7 +10,12 @@ import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 import type { TraceErrorPayload, WorkerMessage } from './protocol'
 
-export class RemoteTraceStore {
+/** Methods of `TraceStore` actually called from worker-side code. Adding a new
+ *  call site against the store from `span.ts` / `instrument.ts` / `setup-globals.ts`
+ *  must extend this list (and `RemoteTraceStore` below). */
+type RemotedMethods = 'insertSpan' | 'endSpan' | 'setSpanStatus' | 'getSpanStatus' | 'updateAttributes' | 'addEvent' | 'insertError'
+
+export class RemoteTraceStore implements Pick<TraceStore, RemotedMethods> {
 	private _statuses = new Map<string, 'ok' | 'error' | 'unset'>()
 	private _post: (msg: WorkerMessage) => void
 
@@ -24,8 +29,8 @@ export class RemoteTraceStore {
 	}
 
 	endSpan(spanId: string, endTime: number, status: 'ok' | 'error', statusMessage?: string): void {
-		this._statuses.set(spanId, status)
 		this._post({ type: 'trace-span-end', spanId, endTime, status, statusMessage: statusMessage ?? null })
+		this._statuses.delete(spanId)
 	}
 
 	setSpanStatus(spanId: string, status: 'ok' | 'error', statusMessage: string | null): void {
@@ -48,10 +53,4 @@ export class RemoteTraceStore {
 	insertError(opts: TraceErrorPayload): void {
 		this._post({ type: 'trace-error', error: opts })
 	}
-}
-
-/** Tells TypeScript the remote store quacks like a TraceStore — only the methods
- *  span.ts / instrument.ts / setup-globals.ts actually call need to be present. */
-export function asTraceStore(remote: RemoteTraceStore): TraceStore {
-	return remote as unknown as TraceStore
 }

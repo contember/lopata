@@ -7,6 +7,7 @@
  */
 
 import type { WranglerConfig } from '../config'
+import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 
 /** Parent span context handed to the worker so its spans nest under main's server span. */
@@ -15,19 +16,7 @@ export interface ParentSpanContext {
 	spanId: string
 }
 
-export interface TraceErrorPayload {
-	id: string
-	timestamp: number
-	errorName: string
-	errorMessage: string
-	requestMethod?: string | null
-	requestUrl?: string | null
-	workerName?: string | null
-	traceId?: string | null
-	spanId?: string | null
-	source?: string | null
-	data: string
-}
+export type TraceErrorPayload = Parameters<TraceStore['insertError']>[0]
 
 export interface SerializedRequest {
 	url: string
@@ -87,6 +76,10 @@ export type WorkerMessage =
 	// Trace store forwarding. The worker holds a `RemoteTraceStore` that posts
 	// each operation here; main writes to the single real `TraceStore` so the
 	// dashboard's subscribers fire normally.
+	//
+	// INVARIANT: wire shape == TraceStore row shape. If `SpanData` /
+	// `SpanEventData` / `insertError` params gain a non-optional field, bump a
+	// protocol version and translate at the dispatch site in `executor.ts`.
 	| { type: 'trace-span-insert'; span: SpanData }
 	| { type: 'trace-span-end'; spanId: string; endTime: number; status: 'ok' | 'error'; statusMessage: string | null }
 	| { type: 'trace-span-status'; spanId: string; status: 'ok' | 'error'; statusMessage: string | null }
