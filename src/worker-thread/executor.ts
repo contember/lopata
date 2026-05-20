@@ -133,6 +133,8 @@ export class WorkerThreadExecutor {
 				this._pendingWaitUntil++
 				break
 			case 'wait-until-settle':
+				// `Math.max(0, ...)` guards against any future double-post slipping
+				// through (e.g. if the worker handler gains a second listener).
 				this._pendingWaitUntil = Math.max(0, this._pendingWaitUntil - 1)
 				break
 		}

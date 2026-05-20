@@ -1,6 +1,9 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
+import { WorkerExecutionContext } from './execution-context'
 import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerInitConfig, WorkerMessage } from './protocol'
+import { RpcClient } from './rpc-client'
+import { buildThreadEnv } from './thread-env'
 
 declare var self: Worker
 
@@ -46,9 +49,6 @@ async function initRuntime(init: WorkerInitConfig) {
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	await import('../plugin')
 
-	const { buildThreadEnv } = await import('./thread-env')
-	const { RpcClient } = await import('./rpc-client')
-	const { WorkerExecutionContext } = await import('./execution-context')
 	const rpc = new RpcClient(post)
 	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 

@@ -4,9 +4,11 @@
  * notifies main of each add/settle so reload drain can wait for them.
  */
 
+import { logIfRejected } from '../execution-context'
 import type { WorkerMessage } from './protocol'
 
 export class WorkerExecutionContext {
+	/** @internal Reserved for Phase 7 service-binding `props` wiring; currently always `{}`. */
 	readonly props: Record<string, unknown>
 	private _post: (msg: WorkerMessage) => void
 
@@ -17,9 +19,7 @@ export class WorkerExecutionContext {
 
 	waitUntil(promise: Promise<unknown>): void {
 		this._post({ type: 'wait-until-add' })
-		Promise.resolve(promise).catch(err => {
-			console.error('[lopata] waitUntil promise rejected:', err)
-		}).finally(() => {
+		logIfRejected(promise).finally(() => {
 			this._post({ type: 'wait-until-settle' })
 		})
 	}
