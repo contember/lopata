@@ -6,6 +6,8 @@
  * terminate + respawn.
  */
 
+import type { WranglerConfig } from '../config'
+
 export interface SerializedRequest {
 	url: string
 	method: string
@@ -27,8 +29,10 @@ export interface SerializedError {
 }
 
 export interface WorkerInitConfig {
-	/** Absolute path to the user's worker entry. */
 	modulePath: string
+	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
+	config: WranglerConfig
+	baseDir: string
 }
 
 /** Main → worker */

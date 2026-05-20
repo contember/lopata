@@ -25,7 +25,7 @@ import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase } from '../db'
 import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
-import { loadLopataConfig } from '../lopata-config'
+import { loadLopataConfig, type WorkerIsolation } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
 import { handleS3ProxyRequest, matchS3Path } from '../s3/proxy'
@@ -534,7 +534,7 @@ function resolveWorkerParam(url: URL, registry: WorkerRegistry | undefined, fall
 	return target
 }
 
-function parseWorkerIsolation(flag: string | undefined): 'in-process' | 'thread' | undefined {
+function parseWorkerIsolation(flag: string | undefined): WorkerIsolation | undefined {
 	if (flag === undefined) return undefined
 	if (flag === 'in-process' || flag === 'thread') return flag
 	throw new Error(`Invalid --worker-isolation value "${flag}" (expected "in-process" or "thread")`)

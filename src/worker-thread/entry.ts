@@ -1,12 +1,6 @@
-/**
- * Worker-thread entry point.
- *
- * Phase 0: imports the user module with env = {} and dispatches `fetch`
- * commands. No bindings, no tracing, no waitUntil. Bindings + ctx wiring
- * land in later phases.
- */
+/** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
-import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerInitConfig, WorkerMessage } from './protocol'
 
 declare var self: Worker
 
@@ -39,7 +33,7 @@ self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 	if (msg.type !== 'init') return
 
 	try {
-		await initRuntime(msg.config.modulePath)
+		await initRuntime(msg.config)
 	} catch (e) {
 		post({ type: 'init-error', error: serializeError(e) })
 	}
@@ -47,21 +41,21 @@ self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 
 post({ type: 'need-init' })
 
-async function initRuntime(modulePath: string) {
-	// Register Bun plugins for cloudflare:workers, cloudflare:workflows, etc.
+async function initRuntime(init: WorkerInitConfig) {
+	// Plugin import must run before user code so Bun.plugin().module() intercepts
+	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	await import('../plugin')
 
-	const workerModule = await import(modulePath)
-	const defaultExport = workerModule.default
+	const { buildThreadEnv } = await import('./thread-env')
+	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir })
 
-	const env: Record<string, unknown> = {}
+	const workerModule = await import(init.modulePath)
+	const defaultExport = workerModule.default
 
 	const callFetch = async (request: Request): Promise<Response> => {
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
-			// Class-based entrypoint
 			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => { fetch: (r: Request) => Promise<Response> }
-			const ctx = {} // placeholder until Phase 3
-			const instance = new Ctor(ctx, env)
+			const instance = new Ctor({}, env)
 			return instance.fetch(request)
 		}
 		if (defaultExport && typeof defaultExport.fetch === 'function') {

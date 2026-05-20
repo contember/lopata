@@ -13,7 +13,7 @@ import { getActiveContext } from './tracing/context'
 import { persistError, setSpanAttribute, startSpan } from './tracing/span'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
-interface ClassRegistry {
+export interface ClassRegistry {
 	durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[]
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 	containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[]
@@ -108,9 +108,7 @@ export class Generation {
 		this.activeRequests++
 		try {
 			if (this.threadExecutor) {
-				// Phase 0: route through worker thread without tracing, ctx, or
-				// static-assets/WebSocket handling — those land in later phases.
-				return await this.threadExecutor.executeFetch(request)
+				return await this._callFetchThread(request, this.threadExecutor)
 			}
 			const ctx = new ExecutionContext()
 			const url = new URL(request.url)
@@ -238,6 +236,25 @@ export class Generation {
 		} finally {
 			this.activeRequests--
 		}
+	}
+
+	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor): Promise<Response> {
+		const assets = this.registry.staticAssets
+		if (!assets || this.config.assets?.binding) {
+			return executor.executeFetch(request)
+		}
+
+		const url = new URL(request.url)
+		const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+
+		if (!workerFirst) {
+			const assetResponse = await assets.fetch(request)
+			if (assetResponse.status !== 404) return assetResponse
+			return executor.executeFetch(request)
+		}
+
+		const response = await executor.executeFetch(request)
+		return response.status === 404 ? await assets.fetch(request) : response
 	}
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */

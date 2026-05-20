@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
+export type WorkerIsolation = 'in-process' | 'thread'
+
 export interface LopataConfig {
 	/** Path to the main worker's wrangler config (HTTP entrypoint) */
 	main: string
@@ -29,7 +31,7 @@ export interface LopataConfig {
 	 * file the worker imports (transitively) always take effect. Required on Bun
 	 * >= 1.3.14 where the in-process module cache can't be invalidated reliably.
 	 */
-	workerIsolation?: 'in-process' | 'thread'
+	workerIsolation?: WorkerIsolation
 	/** AI SQL generation config for the D1 console */
 	ai?: {
 		/** OpenRouter API key (fallback: OPENROUTER_API_KEY env var) */

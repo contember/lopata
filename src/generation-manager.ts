@@ -1,9 +1,11 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
+import { StaticAssets } from './bindings/static-assets'
 import type { WranglerConfig } from './config'
 import { buildEnv, setGlobalEnv, wireClassRefs } from './env'
 import { ExecutionContext } from './execution-context'
-import { Generation, type GenerationInfo } from './generation'
+import { type ClassRegistry, Generation, type GenerationInfo } from './generation'
+import type { WorkerIsolation } from './lopata-config'
 import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
 import { WorkerThreadExecutor } from './worker-thread/executor'
@@ -86,7 +88,7 @@ export class GenerationManager {
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
 	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
-	readonly workerIsolation: 'in-process' | 'thread'
+	readonly workerIsolation: WorkerIsolation
 	/** @internal Path to the wrangler config file (for isolated mode worker threads) */
 	_configPath: string = ''
 
@@ -101,7 +103,7 @@ export class GenerationManager {
 			executorFactory?: DOExecutorFactory
 			configPath?: string
 			browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
-			workerIsolation?: 'in-process' | 'thread'
+			workerIsolation?: WorkerIsolation
 		},
 	) {
 		this.config = config
@@ -249,9 +251,10 @@ export class GenerationManager {
 	}
 
 	private async _doReloadThread(): Promise<Generation> {
-		// Empty env + registry: bindings + DO/queue wiring land in later phases.
+		// Stateless bindings live in the worker thread (see thread-env.ts).
+		// Static assets stay main-side for the auto-serve fallback (filesystem only).
 		const env: Record<string, unknown> = {}
-		const registry = {
+		const registry: ClassRegistry = {
 			durableObjects: [],
 			workflows: [],
 			containers: [],
@@ -260,7 +263,16 @@ export class GenerationManager {
 			staticAssets: null,
 		}
 
-		const executor = new WorkerThreadExecutor({ modulePath: this.workerPath })
+		if (this.config.assets) {
+			const assetsDir = path.resolve(this.baseDir, this.config.assets.directory)
+			registry.staticAssets = new StaticAssets(assetsDir, this.config.assets.html_handling, this.config.assets.not_found_handling)
+		}
+
+		const executor = new WorkerThreadExecutor({
+			modulePath: this.workerPath,
+			config: this.config,
+			baseDir: this.baseDir,
+		})
 		try {
 			await executor.ready()
 		} catch (err) {

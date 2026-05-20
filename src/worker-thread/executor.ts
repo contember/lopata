@@ -8,6 +8,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import type { WranglerConfig } from '../config'
 import type { SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
@@ -19,6 +20,8 @@ interface PendingFetch {
 
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
+	config: WranglerConfig
+	baseDir: string
 }
 
 export class WorkerThreadExecutor {
@@ -55,7 +58,14 @@ export class WorkerThreadExecutor {
 	private _handleMessage(msg: WorkerMessage): void {
 		switch (msg.type) {
 			case 'need-init':
-				this._send({ type: 'init', config: { modulePath: this._initConfig.modulePath } })
+				this._send({
+					type: 'init',
+					config: {
+						modulePath: this._initConfig.modulePath,
+						config: this._initConfig.config,
+						baseDir: this._initConfig.baseDir,
+					},
+				})
 				break
 			case 'ready':
 				this._readyResolve()
