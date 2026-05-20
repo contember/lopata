@@ -1,7 +1,10 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
+import { runWithContext } from '../tracing/context'
+import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
 import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerInitConfig, WorkerMessage } from './protocol'
+import { asTraceStore, RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { buildThreadEnv } from './thread-env'
 
@@ -49,6 +52,9 @@ async function initRuntime(init: WorkerInitConfig) {
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	await import('../plugin')
 
+	// Route all tracing operations through main so the dashboard's subscribers fire.
+	setTraceStoreOverride(asTraceStore(new RemoteTraceStore(post)))
+
 	const rpc = new RpcClient(post)
 	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
@@ -74,7 +80,9 @@ async function initRuntime(init: WorkerInitConfig) {
 		if (cmd.type === 'fetch') {
 			try {
 				const request = await deserializeRequest(cmd.request)
-				const response = await callFetch(request)
+				const response = cmd.parent
+					? await runWithContext({ traceId: cmd.parent.traceId, spanId: cmd.parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, () => callFetch(request))
+					: await callFetch(request)
 				const serialized = await serializeResponse(response)
 				post({ type: 'fetch-result', id: cmd.id, response: serialized })
 			} catch (e) {

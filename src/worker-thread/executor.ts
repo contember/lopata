@@ -10,7 +10,9 @@
 import { dirname, resolve } from 'node:path'
 import { EmailMessage } from '../bindings/email'
 import type { WranglerConfig } from '../config'
-import type { BindingTarget, SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import { getActiveContext } from '../tracing/context'
+import { getTraceStore } from '../tracing/store'
+import type { BindingTarget, ParentSpanContext, SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
 
 function serializeError(e: unknown): SerializedError {
 	const err = e instanceof Error ? e : new Error(String(e))
@@ -137,6 +139,24 @@ export class WorkerThreadExecutor {
 				// through (e.g. if the worker handler gains a second listener).
 				this._pendingWaitUntil = Math.max(0, this._pendingWaitUntil - 1)
 				break
+			case 'trace-span-insert':
+				getTraceStore().insertSpan(msg.span)
+				break
+			case 'trace-span-end':
+				getTraceStore().endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
+				break
+			case 'trace-span-status':
+				getTraceStore().setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
+				break
+			case 'trace-span-attrs':
+				getTraceStore().updateAttributes(msg.spanId, msg.attrs)
+				break
+			case 'trace-span-event':
+				getTraceStore().addEvent(msg.event)
+				break
+			case 'trace-error':
+				getTraceStore().insertError(msg.error)
+				break
 		}
 	}
 
@@ -187,10 +207,14 @@ export class WorkerThreadExecutor {
 		request.headers.forEach((v, k) => headers.push([k, v]))
 		const body = request.body ? await request.arrayBuffer() : null
 
+		// Hand the worker the current span context so its sub-spans nest correctly.
+		const active = getActiveContext()
+		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
+
 		const id = this._nextId++
 		const serialized = await new Promise<SerializedResponse>((resolve, reject) => {
 			this._pending.set(id, { resolve, reject })
-			this._send({ type: 'fetch', id, request: { url: request.url, method: request.method, headers, body } })
+			this._send({ type: 'fetch', id, request: { url: request.url, method: request.method, headers, body }, parent })
 		})
 
 		return new Response(serialized.body, {

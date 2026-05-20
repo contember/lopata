@@ -32,6 +32,14 @@ export default {
 			return new Response('queued')
 		}
 
+		if (url.pathname === '/trace/nested') {
+			await (globalThis as any).__lopata.trace('phase4-child', { 'phase4.attr': 'yes' }, async () => {
+				;(globalThis as any).__lopata.addEvent('phase4-event', 'from inside child span')
+				return null
+			})
+			return new Response('traced')
+		}
+
 		return new Response('not found', { status: 404 })
 	},
 }

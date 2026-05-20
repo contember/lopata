@@ -239,22 +239,36 @@ export class Generation {
 	}
 
 	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor): Promise<Response> {
-		const assets = this.registry.staticAssets
-		if (!assets || this.config.assets?.binding) {
-			return executor.executeFetch(request)
-		}
-
 		const url = new URL(request.url)
-		const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+		const skipTracing = url.pathname.startsWith('/_bun/') || url.pathname.startsWith('/.well-known/')
 
-		if (!workerFirst) {
-			const assetResponse = await assets.fetch(request)
-			if (assetResponse.status !== 404) return assetResponse
-			return executor.executeFetch(request)
+		const dispatch = async (): Promise<Response> => {
+			const assets = this.registry.staticAssets
+			if (!assets || this.config.assets?.binding) {
+				return executor.executeFetch(request)
+			}
+			const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+			if (!workerFirst) {
+				const assetResponse = await assets.fetch(request)
+				if (assetResponse.status !== 404) return assetResponse
+				return executor.executeFetch(request)
+			}
+			const response = await executor.executeFetch(request)
+			return response.status === 404 ? await assets.fetch(request) : response
 		}
 
-		const response = await executor.executeFetch(request)
-		return response.status === 404 ? await assets.fetch(request) : response
+		if (skipTracing) return dispatch()
+
+		return startSpan({
+			name: `${request.method} ${url.pathname}`,
+			kind: 'server',
+			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': this.id },
+			workerName: this.workerName,
+		}, async () => {
+			const response = await dispatch()
+			setSpanAttribute('http.status_code', response.status)
+			return response
+		})
 	}
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */

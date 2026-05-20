@@ -589,8 +589,10 @@ function parseCursor(cursor?: string): { time: number; id: string } {
 }
 
 let defaultStore: TraceStore | null = null
+let overrideStore: TraceStore | null = null
 
 export function getTraceStore(): TraceStore {
+	if (overrideStore) return overrideStore
 	if (!defaultStore) {
 		defaultStore = new TraceStore()
 	}
@@ -600,4 +602,13 @@ export function getTraceStore(): TraceStore {
 /** Override the process-wide default store. Used by tests to inject an in-memory DB. */
 export function setTraceStore(store: TraceStore | null): void {
 	defaultStore = store
+}
+
+/**
+ * Replace the process-local trace store. Used by the worker-thread runtime
+ * to install a remote store that forwards every operation to main rather
+ * than writing to disk locally.
+ */
+export function setTraceStoreOverride(store: TraceStore | null): void {
+	overrideStore = store
 }

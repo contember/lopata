@@ -7,6 +7,27 @@
  */
 
 import type { WranglerConfig } from '../config'
+import type { SpanData, SpanEventData } from '../tracing/types'
+
+/** Parent span context handed to the worker so its spans nest under main's server span. */
+export interface ParentSpanContext {
+	traceId: string
+	spanId: string
+}
+
+export interface TraceErrorPayload {
+	id: string
+	timestamp: number
+	errorName: string
+	errorMessage: string
+	requestMethod?: string | null
+	requestUrl?: string | null
+	workerName?: string | null
+	traceId?: string | null
+	spanId?: string | null
+	source?: string | null
+	data: string
+}
 
 export interface SerializedRequest {
 	url: string
@@ -47,7 +68,7 @@ export interface BindingTarget {
 /** Main → worker */
 export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
-	| { type: 'fetch'; id: number; request: SerializedRequest }
+	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
 
@@ -63,3 +84,12 @@ export type WorkerMessage =
 	// waits for background work the response no longer carries.
 	| { type: 'wait-until-add' }
 	| { type: 'wait-until-settle' }
+	// Trace store forwarding. The worker holds a `RemoteTraceStore` that posts
+	// each operation here; main writes to the single real `TraceStore` so the
+	// dashboard's subscribers fire normally.
+	| { type: 'trace-span-insert'; span: SpanData }
+	| { type: 'trace-span-end'; spanId: string; endTime: number; status: 'ok' | 'error'; statusMessage: string | null }
+	| { type: 'trace-span-status'; spanId: string; status: 'ok' | 'error'; statusMessage: string | null }
+	| { type: 'trace-span-attrs'; spanId: string; attrs: Record<string, unknown> }
+	| { type: 'trace-span-event'; event: Omit<SpanEventData, 'id'> }
+	| { type: 'trace-error'; error: TraceErrorPayload }
