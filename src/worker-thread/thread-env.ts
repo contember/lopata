@@ -86,6 +86,10 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Reco
 		env[svc.binding] = makeServiceBindingProxy(svc.binding, rpc)
 	}
 
+	for (const doBinding of config.durable_objects?.bindings ?? []) {
+		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc)
+	}
+
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
 		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
@@ -138,6 +142,67 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 		return new Response(raw as ReadableStream).arrayBuffer()
 	}
 	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
+}
+
+interface DurableObjectIdLike {
+	readonly id: string
+	readonly name?: string
+	toString(): string
+	equals(other: DurableObjectIdLike): boolean
+}
+
+function buildDurableObjectId(id: string, name?: string): DurableObjectIdLike {
+	return {
+		id,
+		name,
+		toString() {
+			return id
+		},
+		equals(other: DurableObjectIdLike) {
+			return other?.toString() === id
+		},
+	}
+}
+
+function sha256Hex(input: string): string {
+	const hasher = new Bun.CryptoHasher('sha256')
+	hasher.update(input)
+	return hasher.digest('hex')
+}
+
+function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdLike, rpc: RpcClient): unknown {
+	const target: BindingTarget = { binding: bindingName, instanceId: idStr }
+	return new Proxy({} as Record<string, unknown>, {
+		get(_obj, prop) {
+			if (typeof prop === 'symbol') return undefined
+			if (prop === 'id') return id
+			if (prop === 'name') return id.name
+			if (prop === 'fetch') {
+				return async (input: Request | string | URL, init?: RequestInit) => {
+					const url = input instanceof URL ? input.toString() : input
+					const request = typeof url === 'string' ? new Request(url, init) : url
+					return deserializeResponse(await rpc.callFetch(target, request))
+				}
+			}
+			// RPC method call on the DO instance.
+			return (...args: unknown[]) => rpc.call(target, prop, args)
+		},
+	})
+}
+
+function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+	const idFromName = (name: string) => buildDurableObjectId(sha256Hex(name), name)
+	const idFromString = (idStr: string) => buildDurableObjectId(idStr)
+	const newUniqueId = (_opts?: { jurisdiction?: string }) => buildDurableObjectId(crypto.randomUUID().replace(/-/g, ''))
+	const get = (id: DurableObjectIdLike) => makeDOStubProxy(bindingName, id.toString(), id, rpc)
+	return {
+		idFromName,
+		idFromString,
+		newUniqueId,
+		get,
+		getByName: (name: string) => get(idFromName(name)),
+		jurisdiction: () => makeDONamespaceProxy(bindingName, rpc),
+	}
 }
 
 function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {

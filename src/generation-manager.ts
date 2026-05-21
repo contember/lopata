@@ -254,12 +254,22 @@ export class GenerationManager {
 		// service bindings, email, browser, containers) live in main — the worker
 		// RPCs into them. Stateless ones duplicate in the thread (see thread-env.ts).
 		// Static assets stay main-side for the auto-serve fallback.
+		if (this.executorFactory && 'configure' in this.executorFactory) {
+			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
+		}
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
 		for (const entry of registry.durableObjects) {
 			this._doNamespaces.set(entry.className, entry.namespace)
 		}
-		// DO + Workflow class wiring needs user code (lives in the worker);
-		// service bindings only need the registry, so we can wire them here.
+		// DO class refs themselves live in the worker thread — but the namespace's
+		// `_class` field gates `get(id)` and the executor factory only uses the
+		// className from config. A stub class satisfies the gate; the WorkerExecutor
+		// in `isolated` mode loads the real class from `modulePath` itself.
+		for (const entry of registry.durableObjects) {
+			entry.namespace._setClass(class {} as any, env, this.nextGenId)
+		}
+		// Workflow + container class wiring still needs the real user code on main
+		// (state machine here invokes the class); deferred to a follow-up.
 		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({

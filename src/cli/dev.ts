@@ -20,7 +20,7 @@ import {
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
-import { autoLoadConfig, loadConfig } from '../config'
+import { autoLoadConfig, findConfigPath, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase } from '../db'
 import { FileWatcher } from '../file-watcher'
@@ -71,9 +71,13 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
 		setLopataConfig(lopataConfig)
 
-		// Create executor factory based on isolation mode
+		const workerIsolation = workerIsolationFlag ?? lopataConfig.workerIsolation ?? 'in-process'
+
+		// Create executor factory based on isolation mode. Thread-mode main workers
+		// can't host DO classes (user code lives in the worker thread), so we force
+		// isolated DOs there — each DO gets its own thread that loads user code itself.
 		let executorFactory: import('../bindings/do-executor').DOExecutorFactory | undefined
-		if (lopataConfig.isolation === 'isolated') {
+		if (lopataConfig.isolation === 'isolated' || workerIsolation === 'thread') {
 			const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
 			executorFactory = new WorkerExecutorFactory()
 			console.log('[lopata] DO isolation: isolated (Worker threads)')
@@ -89,7 +93,6 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log(`[lopata] Main worker: ${mainConfig.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(mainConfig)
 
-		const workerIsolation = workerIsolationFlag ?? lopataConfig.workerIsolation ?? 'in-process'
 		if (workerIsolation === 'thread') {
 			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
 		}
@@ -236,10 +239,17 @@ export async function run(ctx: CliContext, args: string[]) {
 		setDashboardConfig(config)
 
 		const workerIsolation = workerIsolationFlag ?? 'in-process'
+		let executorFactory: import('../bindings/do-executor').DOExecutorFactory | undefined
 		if (workerIsolation === 'thread') {
 			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
+			const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
+			executorFactory = new WorkerExecutorFactory()
 		}
-		manager = new GenerationManager(config, baseDir, { workerIsolation })
+		manager = new GenerationManager(config, baseDir, {
+			workerIsolation,
+			executorFactory,
+			configPath: findConfigPath(baseDir),
+		})
 		const firstGen = await manager.reload()
 		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
