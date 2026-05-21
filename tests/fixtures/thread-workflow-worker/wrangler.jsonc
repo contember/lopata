@@ -1,0 +1,8 @@
+{
+	"name": "thread-workflow-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"workflows": [
+		{ "name": "greeter", "binding": "GREETER", "class_name": "Greeter" }
+	]
+}

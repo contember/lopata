@@ -22,6 +22,7 @@ import { FileR2Bucket } from '../bindings/r2'
 import { NON_RPC_PROPS } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
+import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
@@ -35,7 +36,13 @@ export interface ThreadEnvOptions {
 	rpc: RpcClient
 }
 
-export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Record<string, unknown> {
+export interface ThreadEnvBuilt {
+	env: Record<string, unknown>
+	/** Workflows the caller still needs to wire after the user module loads. */
+	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
+}
+
+export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): ThreadEnvBuilt {
 	const dataDir = path.join(baseDir, '.lopata')
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
@@ -92,6 +99,16 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Reco
 		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc)
 	}
 
+	// Workflows live entirely in the worker thread — class refs and the
+	// state machine are both here; main never sees the binding. Caller wires
+	// the class once the user module is imported.
+	const workflows: ThreadEnvBuilt['workflows'] = []
+	for (const wf of config.workflows ?? []) {
+		const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name, wf.limits)
+		env[wf.binding] = binding
+		workflows.push({ bindingName: wf.binding, className: wf.class_name, binding })
+	}
+
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
 		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
@@ -127,7 +144,7 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Reco
 		}
 	}
 
-	return env
+	return { env, workflows }
 }
 
 function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {

@@ -64,10 +64,17 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const rpc = new RpcClient(post)
 	const wsBridge = new WorkerWsBridge(post)
-	const env = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
+	const { env, workflows } = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
+
+	for (const wf of workflows) {
+		const cls = workerModule[wf.className]
+		if (!cls) throw new Error(`Workflow class "${wf.className}" not exported from worker module`)
+		wf.binding._setClass(cls, env)
+		wf.binding.resumeInterrupted()
+	}
 
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
