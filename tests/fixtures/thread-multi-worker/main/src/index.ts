@@ -14,6 +14,20 @@ export default {
 			return new Response(`main->aux: ${auxText}`)
 		}
 
+		if (url.pathname.startsWith('/aux-rpc/')) {
+			const method = url.pathname.slice('/aux-rpc/'.length)
+			if (method === 'double') {
+				const n = Number(url.searchParams.get('n') ?? '0')
+				const result = await env.AUX.double(n)
+				return new Response(String(result))
+			}
+			if (method === 'greet') {
+				const name = url.searchParams.get('name') ?? 'world'
+				const result = await env.AUX.greet(name)
+				return Response.json(result)
+			}
+		}
+
 		return new Response('not found', { status: 404 })
 	},
 }

@@ -77,6 +77,24 @@ async function initRuntime(init: WorkerInitConfig) {
 	const _queueConsumers = startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
 	void _queueConsumers
 
+	const invokeEntrypointRpc = async (entrypoint: string | undefined, method: string, args: unknown[]): Promise<unknown> => {
+		const ctx = new WorkerExecutionContext(post)
+		const target = entrypoint
+			? (() => {
+				const cls = workerModule[entrypoint]
+				if (typeof cls !== 'function') throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
+				return new (cls as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
+			})()
+			: typeof defaultExport === 'function' && defaultExport.prototype
+			? new (defaultExport as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
+			: defaultExport as Record<string, unknown>
+		const member = target?.[method]
+		if (typeof member !== 'function') {
+			throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
+		}
+		return await (member as (...a: unknown[]) => unknown).call(target, ...args)
+	}
+
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
@@ -162,6 +180,14 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'ws-client-close':
 				wsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
+				break
+			case 'entrypoint-rpc':
+				try {
+					const value = await invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args)
+					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
+				} catch (e) {
+					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })
+				}
 				break
 		}
 	}

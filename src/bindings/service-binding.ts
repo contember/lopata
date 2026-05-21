@@ -185,6 +185,13 @@ export class ServiceBinding {
 				const rpcCallable = (...args: unknown[]) => {
 					self._checkSubrequestLimit()
 					warnInvalidRpcArgs(args, prop)
+					// Thread-mode target: RPC into its worker. The class instance lives
+					// in the target's thread, so we can't construct it locally.
+					const resolved = self._resolve()
+					if (resolved.threadExecutor) {
+						return resolved.threadExecutor.executeEntrypointRpc(self._entrypoint, prop, args)
+							.then((r) => wrapRpcReturnValue(r, prop))
+					}
 					const target = self._getTarget()
 					const member = target[prop]
 					if (typeof member !== 'function') {

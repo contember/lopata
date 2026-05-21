@@ -61,6 +61,11 @@ interface PendingHandler {
 	reject: (error: Error) => void
 }
 
+interface PendingRpc {
+	resolve: (value: unknown) => void
+	reject: (error: Error) => void
+}
+
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
 	config: WranglerConfig
@@ -77,6 +82,7 @@ export class WorkerThreadExecutor {
 	private _readyReject!: (err: Error) => void
 	private _pending = new Map<number, PendingFetch>()
 	private _pendingHandlers = new Map<number, PendingHandler>()
+	private _pendingRpc = new Map<number, PendingRpc>()
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
@@ -156,6 +162,24 @@ export class WorkerThreadExecutor {
 					this._pendingHandlers.delete(msg.id)
 					p.resolve({ ok: true })
 				}
+				break
+			}
+			case 'entrypoint-rpc-result': {
+				const p = this._pendingRpc.get(msg.id)
+				if (p) {
+					this._pendingRpc.delete(msg.id)
+					p.resolve(msg.value)
+				}
+				break
+			}
+			case 'entrypoint-rpc-error': {
+				const p = this._pendingRpc.get(msg.id)
+				if (!p) break
+				this._pendingRpc.delete(msg.id)
+				const err = new Error(msg.error.message)
+				if (msg.error.stack) err.stack = msg.error.stack
+				err.name = msg.error.name ?? 'Error'
+				p.reject(err)
 				break
 			}
 			case 'scheduled-error':
@@ -303,6 +327,16 @@ export class WorkerThreadExecutor {
 		})
 	}
 
+	async executeEntrypointRpc(entrypoint: string | undefined, method: string, args: unknown[]): Promise<unknown> {
+		if (this._disposed) throw new Error('Worker-thread executor disposed')
+		await this._ready
+		const id = this._nextId++
+		return new Promise<unknown>((resolve, reject) => {
+			this._pendingRpc.set(id, { resolve, reject })
+			this._send({ type: 'entrypoint-rpc', id, entrypoint, method, args })
+		})
+	}
+
 	async executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<{ ok: true } | { ok: false; noHandler: true }> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
@@ -324,8 +358,10 @@ export class WorkerThreadExecutor {
 		const err = new Error('Worker thread terminated')
 		for (const [, pending] of this._pending) pending.reject(err)
 		for (const [, pending] of this._pendingHandlers) pending.reject(err)
+		for (const [, pending] of this._pendingRpc) pending.reject(err)
 		this._pending.clear()
 		this._pendingHandlers.clear()
+		this._pendingRpc.clear()
 		this._wsBridge.disposeAll()
 	}
 }

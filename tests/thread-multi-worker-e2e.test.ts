@@ -62,4 +62,14 @@ describe('Multi-worker thread mode + cross-thread service bindings', () => {
 		const res = await fetch(`${base}/via-aux/echo?msg=hello`)
 		expect(await res.text()).toBe('main->aux: aux echo ?msg=hello')
 	})
+
+	test('RPC method with a primitive return crosses the thread boundary', async () => {
+		const res = await fetch(`${base}/aux-rpc/double?n=21`)
+		expect(await res.text()).toBe('42')
+	})
+
+	test('RPC method with an object return is structured-cloned across the bridge', async () => {
+		const res = await fetch(`${base}/aux-rpc/greet?name=alice`)
+		expect(await res.json()).toEqual({ greeting: 'aux greets alice' })
+	})
 })

@@ -214,12 +214,23 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<strin
 
 function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
 	const target: BindingTarget = { binding: bindingName }
-	return {
-		fetch: (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init),
-		connect: () => {
-			throw serviceBindingConnectError(bindingName)
+	return new Proxy({} as Record<string, unknown>, {
+		get(_obj, prop) {
+			// Filter Promise-protocol props so `await binding.foo` doesn't dispatch
+			// `then` / `catch` / `finally` as RPC method calls.
+			if (NON_RPC_PROPS.has(prop)) return undefined
+			if (prop === 'fetch') {
+				return (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
+			}
+			if (prop === 'connect') {
+				return () => {
+					throw serviceBindingConnectError(bindingName)
+				}
+			}
+			// RPC method call on the target's entrypoint class.
+			return (...args: unknown[]) => rpc.call(target, prop as string, args)
 		},
-	}
+	})
 }
 
 function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
