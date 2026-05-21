@@ -11,6 +11,7 @@
 import { ExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext, runWithContext } from '../tracing/context'
+import type { ResolvedTarget } from '../worker-registry'
 import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 
 type WorkerModule = Record<string, unknown>
@@ -30,16 +31,13 @@ const SERVICE_BINDING_DEFAULTS: Required<ServiceBindingLimits> = {
 // Internal properties that should be forwarded to the ServiceBinding instance
 const INTERNAL_PROPS = new Set(['_wire', 'isWired', '_subrequestCount'])
 
-/** Target shape returned by the service binding's resolver. */
-export interface ServiceBindingResolved {
-	workerModule: Record<string, unknown>
-	env: Record<string, unknown>
-	/** Set when the target runs in a Bun Worker thread — `.fetch()` RPCs through it. */
-	threadExecutor?: { executeFetch(request: Request): Promise<Response> } | null
+/** Error thrown by `connect()` (both in-process and worker-thread paths). */
+export function serviceBindingConnectError(name: string): Error {
+	return new Error(`Service binding "${name}": connect() (TCP sockets) is not supported in local dev mode`)
 }
 
 export class ServiceBinding {
-	private _resolver: (() => ServiceBindingResolved) | null = null
+	private _resolver: (() => ResolvedTarget) | null = null
 	private _entrypoint: string | undefined
 	private _serviceName: string
 	private _limits: Required<ServiceBindingLimits>
@@ -55,17 +53,17 @@ export class ServiceBinding {
 	}
 
 	_wire(
-		resolverOrModule: (() => ServiceBindingResolved) | Record<string, unknown>,
+		resolverOrModule: (() => ResolvedTarget) | Record<string, unknown>,
 		env?: Record<string, unknown>,
 	): void {
 		if (typeof resolverOrModule === 'function' && env === undefined) {
 			// New API: resolver function
-			this._resolver = resolverOrModule as () => ServiceBindingResolved
+			this._resolver = resolverOrModule as () => ResolvedTarget
 		} else {
 			// Legacy API: _wire(workerModule, env)
 			const workerModule = resolverOrModule as Record<string, unknown>
 			const capturedEnv = env!
-			this._resolver = () => ({ workerModule, env: capturedEnv })
+			this._resolver = () => ({ workerModule, env: capturedEnv, threadExecutor: null })
 		}
 	}
 
@@ -73,7 +71,7 @@ export class ServiceBinding {
 		return this._resolver !== null
 	}
 
-	private _resolve(): ServiceBindingResolved {
+	private _resolve(): ResolvedTarget {
 		if (!this._resolver) {
 			throw new Error(`Service binding "${this._serviceName}" is not wired — target worker not loaded`)
 		}
@@ -120,10 +118,11 @@ export class ServiceBinding {
 		const request = typeof url === 'string' ? new Request(url, init) : url
 
 		const resolved = this._resolve()
-		// Thread-mode target: RPC into its worker. The trace context propagates
-		// through `executor.executeFetch` via the active span.
+		// Thread-mode target: RPC into its worker. Trace context flows via
+		// `executor.executeFetch → getActiveContext() → ParentSpanContext` over
+		// postMessage; don't wrap in `runWithContext` here (would double-parent).
 		if (resolved.threadExecutor) {
-			return resolved.threadExecutor.executeFetch(request)
+			return resolved.threadExecutor.executeFetch(request, this._props)
 		}
 
 		const execCtx = new ExecutionContext(this._props)
@@ -151,9 +150,7 @@ export class ServiceBinding {
 	}
 
 	connect(_address: string | { hostname: string; port: number }): never {
-		throw new Error(
-			`Service binding "${this._serviceName}": connect() (TCP sockets) is not supported in local dev mode`,
-		)
+		throw serviceBindingConnectError(this._serviceName)
 	}
 
 	toProxy(): Record<string, unknown> {

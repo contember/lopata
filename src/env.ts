@@ -21,7 +21,7 @@ import { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
 import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
-import type { WorkerRegistry } from './worker-registry'
+import type { ResolvedTarget, WorkerRegistry } from './worker-registry'
 
 /**
  * Global reference to the built env object. Used by cloudflare:workers `env` export.
@@ -420,14 +420,14 @@ export function wireServiceBindings(
 	workerRegistry?: WorkerRegistry,
 ) {
 	for (const entry of registry.serviceBindings) {
-		const wire = entry.proxy._wire as ((resolver: () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void) | undefined
+		const wire = entry.proxy._wire as ((resolver: () => ResolvedTarget) => void) | undefined
 		if (!wire) continue
 		if (workerRegistry) {
 			// Resolve through registry (handles both self-ref and cross-worker)
 			wire(() => workerRegistry.resolveTarget(entry.serviceName))
 		} else {
-			// Backward compat: self-reference
-			wire(() => ({ workerModule, env }))
+			// Backward compat: self-reference (no thread executor in this path)
+			wire(() => ({ workerModule, env, threadExecutor: null }))
 		}
 		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 	}

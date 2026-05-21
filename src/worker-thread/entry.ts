@@ -7,17 +7,10 @@ import { getDatabase } from '../db'
 import { runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
-import type {
-	SerializedError,
-	SerializedRequest,
-	SerializedResponse,
-	WorkerCommand,
-	WorkerHandlerName,
-	WorkerInitConfig,
-	WorkerMessage,
-} from './protocol'
+import type { SerializedError, SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
+import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
 import { buildThreadEnv } from './thread-env'
 import { WorkerWsBridge } from './ws-bridge'
 
@@ -32,19 +25,11 @@ function post(msg: WorkerMessage): void {
 	postMessage(msg)
 }
 
-async function deserializeRequest(req: SerializedRequest): Promise<Request> {
-	return new Request(req.url, {
-		method: req.method,
-		headers: req.headers,
-		body: req.body,
-	})
-}
-
 async function serializeResponse(response: Response, ws: WorkerWsBridge): Promise<SerializedResponse> {
-	const headers: [string, string][] = []
-	response.headers.forEach((v, k) => headers.push([k, v]))
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	if (response.status === 101 && cfSocket instanceof CFWebSocket) {
+		const headers: [string, string][] = []
+		response.headers.forEach((v, k) => headers.push([k, v]))
 		return {
 			status: response.status,
 			statusText: response.statusText,
@@ -53,8 +38,7 @@ async function serializeResponse(response: Response, ws: WorkerWsBridge): Promis
 			webSocketId: ws.register(cfSocket),
 		}
 	}
-	const body = response.body ? await response.arrayBuffer() : null
-	return { status: response.status, statusText: response.statusText, headers, body }
+	return serializeResponseShared(response)
 }
 
 self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
@@ -85,8 +69,8 @@ async function initRuntime(init: WorkerInitConfig) {
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
 
-	const callFetch = async (request: Request): Promise<Response> => {
-		const ctx = new WorkerExecutionContext(post)
+	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
+		const ctx = new WorkerExecutionContext(post, props)
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
 			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => { fetch: (r: Request) => Promise<Response> }
 			const instance = new Ctor(ctx, env)
@@ -139,8 +123,8 @@ async function initRuntime(init: WorkerInitConfig) {
 		switch (cmd.type) {
 			case 'fetch':
 				try {
-					const request = await deserializeRequest(cmd.request)
-					const response = await runWithParentContext(cmd.parent, () => callFetch(request))
+					const request = deserializeRequest(cmd.request)
+					const response = await runWithParentContext(cmd.parent, () => callFetch(request, cmd.props))
 					const serialized = await serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 				} catch (e) {

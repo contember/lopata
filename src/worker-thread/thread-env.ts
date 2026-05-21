@@ -18,12 +18,14 @@ import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
 import { MediaBinding } from '../bindings/media'
 import { FileR2Bucket } from '../bindings/r2'
+import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
 import type { BindingTarget } from './protocol'
 import type { RpcClient } from './rpc-client'
+import { deserializeResponse } from './serialize'
 
 export interface ThreadEnvOptions {
 	config: WranglerConfig
@@ -144,15 +146,10 @@ function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
 		fetch: async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
 			const url = input instanceof URL ? input.toString() : input
 			const request = typeof url === 'string' ? new Request(url, init) : url
-			const serialized = await rpc.callFetch(target, request)
-			return new Response(serialized.body, {
-				status: serialized.status,
-				statusText: serialized.statusText,
-				headers: serialized.headers,
-			})
+			return deserializeResponse(await rpc.callFetch(target, request))
 		},
 		connect: () => {
-			throw new Error(`Service binding "${bindingName}": connect() (TCP sockets) is not supported in local dev mode`)
+			throw serviceBindingConnectError(bindingName)
 		},
 	}
 }

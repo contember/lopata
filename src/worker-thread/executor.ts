@@ -23,6 +23,7 @@ import type {
 	WorkerCommand,
 	WorkerMessage,
 } from './protocol'
+import { deserializeRequest, deserializeResponse, serializeRequest, serializeResponse } from './serialize'
 
 function serializeError(e: unknown): SerializedError {
 	const err = e instanceof Error ? e : new Error(String(e))
@@ -252,16 +253,8 @@ export class WorkerThreadExecutor {
 			if (typeof fetch !== 'function') {
 				throw new Error(`Binding "${target.binding}" has no fetch() method`)
 			}
-			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
-			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, request)
-			const headers: [string, string][] = []
-			response.headers.forEach((v, k) => headers.push([k, v]))
-			const body = response.body ? await response.arrayBuffer() : null
-			this._send({
-				type: 'binding-fetch-result',
-				id,
-				response: { status: response.status, statusText: response.statusText, headers, body },
-			})
+			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, deserializeRequest(req))
+			this._send({ type: 'binding-fetch-result', id, response: await serializeResponse(response) })
 		} catch (e) {
 			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
@@ -272,29 +265,22 @@ export class WorkerThreadExecutor {
 		return this._ready
 	}
 
-	async executeFetch(request: Request): Promise<Response> {
+	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
-
-		const headers: [string, string][] = []
-		request.headers.forEach((v, k) => headers.push([k, v]))
-		const body = request.body ? await request.arrayBuffer() : null
 
 		// Hand the worker the current span context so its sub-spans nest correctly.
 		const active = getActiveContext()
 		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 
+		const req = await serializeRequest(request)
 		const id = this._nextId++
 		const serialized = await new Promise<SerializedResponse>((resolve, reject) => {
 			this._pending.set(id, { resolve, reject })
-			this._send({ type: 'fetch', id, request: { url: request.url, method: request.method, headers, body }, parent })
+			this._send({ type: 'fetch', id, request: req, parent, props })
 		})
 
-		const response = new Response(serialized.body, {
-			status: serialized.status,
-			statusText: serialized.statusText,
-			headers: serialized.headers,
-		}) as ResponseWithWebSocket
+		const response = deserializeResponse(serialized) as ResponseWithWebSocket
 		if (serialized.webSocketId) {
 			response.webSocket = this._wsBridge.createSocket(serialized.webSocketId)
 		}

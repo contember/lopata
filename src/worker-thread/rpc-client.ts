@@ -1,6 +1,7 @@
 /** Worker-side caller for stateful binding RPC. */
 
 import type { BindingTarget, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import { serializeRequest } from './serialize'
 
 interface PendingCall {
 	resolve: (value: unknown) => void
@@ -25,14 +26,12 @@ export class RpcClient {
 	}
 
 	async callFetch(target: BindingTarget, request: Request): Promise<SerializedResponse> {
-		const headers: [string, string][] = []
-		request.headers.forEach((v, k) => headers.push([k, v]))
-		const body = request.body ? await request.arrayBuffer() : null
-
+		const req = await serializeRequest(request)
 		const id = this._nextId++
 		return new Promise<SerializedResponse>((resolve, reject) => {
+			// `_pending` is widened to `unknown`; SerializedResponse satisfies that.
 			this._pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-			this._post({ type: 'binding-fetch', id, target, request: { url: request.url, method: request.method, headers, body } })
+			this._post({ type: 'binding-fetch', id, target, request: req })
 		})
 	}
 

@@ -63,7 +63,9 @@ export interface BindingTarget {
 /** Main → worker */
 export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
-	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext }
+	// `props` carry the service-binding context `props` from the calling worker
+	// across to the target's `ExecutionContext.props`. Absent for top-level HTTP.
+	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext; props?: Record<string, unknown> }
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
