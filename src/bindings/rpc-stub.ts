@@ -34,6 +34,41 @@ export const NON_RPC_PROPS = new Set<string | symbol>([
 	Symbol.asyncIterator,
 ])
 
+/**
+ * Build a Proxy that exposes `.fetch` (HTTP round-trip) and turns any other
+ * property access into a method call. Used to construct cross-thread binding
+ * proxies — main-worker service bindings, DO stubs, and DO-worker env-binding
+ * proxies all share this shape.
+ *
+ * `callbacks.call` is invoked for any prop that isn't `'fetch'` or in
+ * `NON_RPC_PROPS`. `extras` overrides specific props (DO stubs use it to
+ * surface `id`/`name`, service bindings to surface `connect`). Per-prop
+ * methods are cached so hot callers don't allocate a fresh closure per
+ * access.
+ */
+export function makeBindingProxy(
+	callbacks: {
+		fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>
+		call: (prop: string, args: unknown[]) => unknown
+	},
+	extras: Record<string | symbol, unknown> = {},
+): Record<string, unknown> {
+	const methodCache = new Map<string | symbol, unknown>()
+	return new Proxy({} as Record<string, unknown>, {
+		get(_obj, prop) {
+			if (NON_RPC_PROPS.has(prop)) return undefined
+			if (prop in extras) return extras[prop]
+			const cached = methodCache.get(prop)
+			if (cached) return cached
+			const fn = prop === 'fetch'
+				? callbacks.fetch
+				: (...args: unknown[]) => callbacks.call(prop as string, args)
+			methodCache.set(prop, fn)
+			return fn
+		},
+	})
+}
+
 // Cache to avoid wrapping the same target twice (handles `return this`)
 const stubCache = new WeakMap<object, object>()
 

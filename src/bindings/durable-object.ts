@@ -784,7 +784,7 @@ export class DurableObjectNamespaceImpl {
 	private _stubs = new Map<string, unknown>()
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
-	private _env?: unknown
+	private _env?: Record<string, unknown>
 	private db: Database
 	private namespaceName: string
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -822,7 +822,7 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** Called after worker module is loaded to wire the actual class */
-	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, generationId?: number) {
+	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: Record<string, unknown>, generationId?: number) {
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
 				// Hot-swap: reuse state + WebSocket connections, create new instance with new code
@@ -932,7 +932,7 @@ export class DurableObjectNamespaceImpl {
 			db: this.db,
 			namespaceName: this.namespaceName,
 			cls: this._class,
-			env: this._env,
+			env: this._env ?? {},
 			dataDir: this.dataDir,
 			limits: this.limits,
 			containerConfig: this._containerConfig,

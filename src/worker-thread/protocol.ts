@@ -41,6 +41,11 @@ export interface SerializedError {
 	name?: string
 }
 
+export function serializeError(e: unknown): SerializedError {
+	const err = e instanceof Error ? e : new Error(String(e))
+	return { message: err.message, stack: err.stack, name: err.name }
+}
+
 export interface WorkerInitConfig {
 	modulePath: string
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */

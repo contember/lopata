@@ -14,21 +14,9 @@ import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
 import { MainWsBridge } from './main-ws-bridge'
-import type {
-	BindingTarget,
-	ParentSpanContext,
-	SerializedError,
-	SerializedRequest,
-	SerializedResponse,
-	WorkerCommand,
-	WorkerMessage,
-} from './protocol'
+import type { BindingTarget, ParentSpanContext, SerializedRequest, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import { serializeError } from './protocol'
 import { deserializeRequest, deserializeResponse, serializeRequest, serializeResponse } from './serialize'
-
-function serializeError(e: unknown): SerializedError {
-	const err = e instanceof Error ? e : new Error(String(e))
-	return { message: err.message, stack: err.stack, name: err.name }
-}
 
 /**
  * Restore class identities that structured-clone strips. Worker proxies tag

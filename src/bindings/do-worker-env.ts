@@ -18,19 +18,7 @@ import { DurableObjectNamespaceImpl } from './durable-object'
 import { SqliteKVNamespace } from './kv'
 import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
-
-/** Properties we must NOT dispatch as RPC method calls on the env proxy. */
-const NON_RPC_PROPS = new Set<string | symbol>([
-	'then',
-	'catch',
-	'finally',
-	'constructor',
-	'prototype',
-	Symbol.toPrimitive,
-	Symbol.iterator,
-	Symbol.asyncIterator,
-	Symbol.toStringTag,
-])
+import { makeBindingProxy } from './rpc-stub'
 
 /**
  * Minimal RPC helper for DO-worker → main bridges. Each call posts a
@@ -93,28 +81,14 @@ export function createDoEnvRpc(post: (msg: DOMainMessage) => void): DoEnvRpc {
 	}
 }
 
-/**
- * Proxy that mirrors how stateful bindings work in the main worker thread:
- * `.fetch(req)` round-trips a serialized request, everything else becomes an
- * RPC method call.
- */
-function makeEnvBindingProxy(binding: string, rpc: DoEnvRpc): unknown {
-	const methodCache = new Map<string | symbol, unknown>()
-	return new Proxy({} as Record<string, unknown>, {
-		get(_target, prop) {
-			if (NON_RPC_PROPS.has(prop)) return undefined
-			const cached = methodCache.get(prop)
-			if (cached) return cached
-			const fn = prop === 'fetch'
-				? async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
-					const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
-					const r = await rpc.callFetch(binding, req)
-					return new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers })
-				}
-				: (...args: unknown[]) => rpc.call(binding, prop as string, args)
-			methodCache.set(prop, fn)
-			return fn
+function makeEnvBindingProxy(binding: string, rpc: DoEnvRpc): Record<string, unknown> {
+	return makeBindingProxy({
+		fetch: async (input, init) => {
+			const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
+			const r = await rpc.callFetch(binding, req)
+			return new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers })
 		},
+		call: (prop, args) => rpc.call(binding, prop, args),
 	})
 }
 
@@ -129,7 +103,7 @@ function makeEnvBindingProxy(binding: string, rpc: DoEnvRpc): unknown {
 export function buildWorkerEnv(
 	config: WranglerConfig,
 	dataDir: string,
-	rpc?: DoEnvRpc,
+	rpc: DoEnvRpc,
 ): { db: Database; env: Record<string, unknown>; doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -175,19 +149,14 @@ export function buildWorkerEnv(
 		env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0)
 	}
 
-	// Stateful bindings routed through main via the DO worker's message channel.
-	// Skipping any binding name already populated (e.g. a queue producer that
-	// shares the binding name with a service entry — unlikely but defensible).
-	if (rpc) {
-		for (const svc of config.services ?? []) {
-			if (env[svc.binding] === undefined) env[svc.binding] = makeEnvBindingProxy(svc.binding, rpc)
-		}
-		for (const email of config.send_email ?? []) {
-			if (env[email.name] === undefined) env[email.name] = makeEnvBindingProxy(email.name, rpc)
-		}
-		for (const wf of config.workflows ?? []) {
-			if (env[wf.binding] === undefined) env[wf.binding] = makeEnvBindingProxy(wf.binding, rpc)
-		}
+	for (const svc of config.services ?? []) {
+		env[svc.binding] = makeEnvBindingProxy(svc.binding, rpc)
+	}
+	for (const email of config.send_email ?? []) {
+		env[email.name] = makeEnvBindingProxy(email.name, rpc)
+	}
+	for (const wf of config.workflows ?? []) {
+		env[wf.binding] = makeEnvBindingProxy(wf.binding, rpc)
 	}
 
 	return { db, env, doNamespaces }

@@ -7,7 +7,7 @@ export interface ExecutorConfig {
 	db: Database
 	namespaceName: string
 	cls: new(ctx: any, env: unknown) => DurableObjectBase
-	env: unknown
+	env: Record<string, unknown>
 	dataDir?: string
 	limits?: DurableObjectLimits
 	containerConfig?: ContainerConfig

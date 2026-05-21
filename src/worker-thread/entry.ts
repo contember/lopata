@@ -8,7 +8,8 @@ import { getDatabase } from '../db'
 import { runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
-import type { SerializedError, SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
+import type { SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
+import { serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
@@ -17,11 +18,6 @@ import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WorkerWsBridge } from './ws-bridge'
 
 declare var self: Worker
-
-function serializeError(e: unknown): SerializedError {
-	const err = e instanceof Error ? e : new Error(String(e))
-	return { message: err.message, stack: err.stack, name: err.name }
-}
 
 function post(msg: WorkerMessage): void {
 	postMessage(msg)

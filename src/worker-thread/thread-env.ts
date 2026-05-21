@@ -20,7 +20,7 @@ import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
 import { MediaBinding } from '../bindings/media'
 import { FileR2Bucket } from '../bindings/r2'
-import { NON_RPC_PROPS } from '../bindings/rpc-stub'
+import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
@@ -186,30 +186,14 @@ async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request 
 	return response
 }
 
-/**
- * Build a Proxy that exposes `.fetch` over `binding-fetch` and turns any other
- * (non-NON_RPC_PROPS) property into an RPC method callable. `extras` overrides
- * specific props (used by DO stubs to surface `id`/`name`, service bindings
- * to surface `connect`). Methods are cached per (proxy, prop) so hot callers
- * don't allocate a fresh function per access.
- */
-function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): unknown {
-	const methodCache = new Map<string | symbol, unknown>()
-	return new Proxy({} as Record<string, unknown>, {
-		get(_obj, prop) {
-			// Filter Promise-protocol props so `await proxy.foo` doesn't dispatch
-			// `then`/`catch`/`finally` as RPC method calls.
-			if (NON_RPC_PROPS.has(prop)) return undefined
-			if (prop in extras) return extras[prop]
-			const cached = methodCache.get(prop)
-			if (cached) return cached
-			const fn = prop === 'fetch'
-				? (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
-				: (...args: unknown[]) => rpc.call(target, prop as string, args)
-			methodCache.set(prop, fn)
-			return fn
+function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): Record<string, unknown> {
+	return makeBindingProxy(
+		{
+			fetch: (input, init) => proxyFetch(target, rpc, input, init),
+			call: (prop, args) => rpc.call(target, prop, args),
 		},
-	})
+		extras,
+	)
 }
 
 function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {

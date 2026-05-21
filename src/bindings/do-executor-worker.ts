@@ -6,6 +6,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import { serializeError } from '../worker-thread/protocol'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
 import { CFWebSocket, type WSEvent } from './websocket-pair'
@@ -379,22 +380,24 @@ export class WorkerExecutor implements DOExecutor {
 	 * stateful binding (service binding RPC, email send, workflow create, …).
 	 */
 	private async _dispatchEnvCall(id: number, binding: string, method: string, args: unknown[]): Promise<void> {
+		if (this._disposed) return
 		try {
-			const target = (this._config.env as Record<string, unknown>)?.[binding] as Record<string, unknown> | undefined
+			const target = this._config.env[binding] as Record<string, unknown> | undefined
 			if (!target) throw new Error(`Binding "${binding}" not found on main env`)
 			const fn = target[method]
 			if (typeof fn !== 'function') throw new Error(`Binding "${binding}" has no method "${method}"`)
 			const value = await (fn as (...a: unknown[]) => unknown).call(target, ...args)
 			this._worker?.postMessage({ type: 'env-call-result', id, value } satisfies DOWorkerMessage)
 		} catch (e) {
-			const err = e instanceof Error ? e : new Error(String(e))
+			const err = serializeError(e)
 			this._worker?.postMessage({ type: 'env-call-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
 		}
 	}
 
 	private async _dispatchEnvFetch(id: number, binding: string, req: SerializedEnvRequest): Promise<void> {
+		if (this._disposed) return
 		try {
-			const target = (this._config.env as Record<string, unknown>)?.[binding] as { fetch?: (r: Request) => Promise<Response> } | undefined
+			const target = this._config.env[binding] as { fetch?: (r: Request) => Promise<Response> } | undefined
 			if (!target?.fetch) throw new Error(`Binding "${binding}" has no fetch() method`)
 			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
 			const response = await target.fetch(request)
@@ -409,7 +412,7 @@ export class WorkerExecutor implements DOExecutor {
 				} satisfies DOWorkerMessage,
 			)
 		} catch (e) {
-			const err = e instanceof Error ? e : new Error(String(e))
+			const err = serializeError(e)
 			this._worker?.postMessage({ type: 'env-fetch-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
 		}
 	}
