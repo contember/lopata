@@ -283,6 +283,7 @@ export class GenerationManager {
 			modulePath: this.workerPath,
 			config: this.config,
 			baseDir: this.baseDir,
+			workerName: this.workerName,
 			mainEnv: env,
 		})
 		try {

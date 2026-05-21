@@ -720,6 +720,23 @@ export function parseDuration(duration: string | number): number {
 
 // --- Base class ---
 
+/**
+ * Wire a workflow class from the user module onto a `SqliteWorkflowBinding`.
+ * Both the in-process `wireClassRefs` and the worker-thread entry use this
+ * — keeps the lookup-throw-setClass-resumeInterrupted contract in one place.
+ */
+export function wireWorkflowClass(
+	binding: SqliteWorkflowBinding,
+	className: string,
+	workerModule: Record<string, unknown>,
+	env: Record<string, unknown>,
+): void {
+	const cls = workerModule[className]
+	if (!cls) throw new Error(`Workflow class "${className}" not exported from worker module`)
+	binding._setClass(cls as new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env)
+	binding.resumeInterrupted()
+}
+
 export class WorkflowEntrypointBase {
 	ctx: { env: unknown; waitUntil(p: Promise<unknown>): void }
 	env: unknown

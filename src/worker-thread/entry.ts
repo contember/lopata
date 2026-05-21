@@ -11,7 +11,8 @@ import type { SerializedError, SerializedResponse, WorkerCommand, WorkerHandlerN
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
-import { buildThreadEnv, startThreadQueueConsumers } from './thread-env'
+import { buildThreadEnv } from './thread-env'
+import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WorkerWsBridge } from './ws-bridge'
 
 declare var self: Worker
@@ -64,19 +65,17 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const rpc = new RpcClient(post)
 	const wsBridge = new WorkerWsBridge(post)
-	const { env, db, workflows } = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
+	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
+	const { env } = built
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
 
-	for (const wf of workflows) {
-		const cls = workerModule[wf.className]
-		if (!cls) throw new Error(`Workflow class "${wf.className}" not exported from worker module`)
-		wf.binding._setClass(cls, env)
-		wf.binding.resumeInterrupted()
-	}
-
-	startThreadQueueConsumers(init.config, db, env, workerModule)
+	wireWorkflows(built, workerModule)
+	// Capture for a future graceful-shutdown command — `Worker.terminate()`
+	// kills timers regardless, but holding the array keeps the option open.
+	const _queueConsumers = startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
+	void _queueConsumers
 
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)

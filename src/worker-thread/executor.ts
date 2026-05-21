@@ -65,6 +65,7 @@ export interface WorkerThreadExecutorOptions {
 	modulePath: string
 	config: WranglerConfig
 	baseDir: string
+	workerName?: string
 	/** Main-thread env holding the stateful binding instances the worker calls into via RPC. */
 	mainEnv: Record<string, unknown>
 }
@@ -115,6 +116,7 @@ export class WorkerThreadExecutor {
 						modulePath: this._initConfig.modulePath,
 						config: this._initConfig.config,
 						baseDir: this._initConfig.baseDir,
+						workerName: this._initConfig.workerName,
 					},
 				})
 				break

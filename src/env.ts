@@ -17,7 +17,7 @@ import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
 import { FileR2Bucket } from './bindings/r2'
 import { createServiceBinding } from './bindings/service-binding'
 import { StaticAssets } from './bindings/static-assets'
-import { SqliteWorkflowBinding } from './bindings/workflow'
+import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
 import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
@@ -386,10 +386,7 @@ export function wireClassRefs(
 	}
 
 	for (const entry of registry.workflows) {
-		const cls = workerModule[entry.className]
-		if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`)
-		entry.binding._setClass(cls as any, env)
-		entry.binding.resumeInterrupted()
+		wireWorkflowClass(entry.binding, entry.className, workerModule, env)
 		console.log(`[lopata] Wired Workflow class: ${entry.className}`)
 	}
 

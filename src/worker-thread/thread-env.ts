@@ -18,7 +18,6 @@ import { HyperdriveBinding } from '../bindings/hyperdrive'
 import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
 import { MediaBinding } from '../bindings/media'
-import { QueueConsumer } from '../bindings/queue'
 import { FileR2Bucket } from '../bindings/r2'
 import { NON_RPC_PROPS } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
@@ -39,8 +38,8 @@ export interface ThreadEnvOptions {
 
 export interface ThreadEnvBuilt {
 	env: Record<string, unknown>
-	/** Thread-local DB handle. Exposed so the caller can spin up queue consumers
-	 *  (need the same handle the bindings write to). */
+	/** Thread-local DB handle — shared with the workflow + queue consumer wiring
+	 *  the caller does after the user module loads. */
 	db: Database
 	/** Workflows the caller still needs to wire after the user module loads. */
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
@@ -149,64 +148,6 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Thre
 	}
 
 	return { env, db, workflows }
-}
-
-/**
- * Start queue consumers in the worker thread. The shared SQLite means the
- * consumer can poll, manage leases, and apply ack/retry decisions locally —
- * exactly like the in-process flow — without any cross-thread RPC.
- */
-export function startThreadQueueConsumers(
-	config: WranglerConfig,
-	db: Database,
-	env: Record<string, unknown>,
-	workerModule: Record<string, unknown>,
-): QueueConsumer[] {
-	const handler = resolveQueueHandler(workerModule)
-	if (!handler) return []
-	const consumers: QueueConsumer[] = []
-	for (const cfg of config.queues?.consumers ?? []) {
-		const consumer = new QueueConsumer(
-			db,
-			{
-				queue: cfg.queue,
-				maxBatchSize: cfg.max_batch_size ?? 10,
-				maxBatchTimeout: cfg.max_batch_timeout ?? 5,
-				maxRetries: cfg.max_retries ?? 3,
-				deadLetterQueue: cfg.dead_letter_queue ?? null,
-				maxConcurrency: cfg.max_concurrency ?? null,
-				retryDelay: cfg.retry_delay ?? null,
-			},
-			handler,
-			env,
-		)
-		consumer.start()
-		consumers.push(consumer)
-	}
-	return consumers
-}
-
-/** Wrap whatever the user returns into the QueueHandler signature (`Promise<void>`). */
-function resolveQueueHandler(workerModule: Record<string, unknown>): ((batch: unknown, env: unknown, ctx: unknown) => Promise<void>) | null {
-	const def = workerModule.default
-	if (typeof def === 'function' && def.prototype) {
-		const proto = def.prototype as Record<string, unknown>
-		if (typeof proto.queue !== 'function') return null
-		// Class-based: construct a fresh instance per batch — mirrors
-		// `Generation.getHandler` for the in-process path.
-		const Ctor = def as new(ctx: unknown, env: unknown) => Record<string, (...a: unknown[]) => Promise<unknown>>
-		return async (batch, env, ctx) => {
-			const instance = new Ctor(ctx, env)
-			await instance.queue!(batch, env, ctx)
-		}
-	}
-	const obj = def as Record<string, unknown> | null | undefined
-	const queueFn = obj?.queue
-	if (typeof queueFn !== 'function') return null
-	const fn = queueFn as (batch: unknown, env: unknown, ctx: unknown) => Promise<unknown>
-	return async (batch, env, ctx) => {
-		await fn.call(obj, batch, env, ctx)
-	}
 }
 
 function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {

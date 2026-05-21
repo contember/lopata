@@ -46,6 +46,9 @@ export interface WorkerInitConfig {
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
 	config: WranglerConfig
 	baseDir: string
+	/** Worker name from `lopata.config.ts` (or single-worker wrangler config). Used
+	 *  for span attribution + error attribution; mirrors `Generation.workerName`. */
+	workerName?: string
 }
 
 /** Names of the worker handlers we know how to invoke via RPC. */
