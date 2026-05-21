@@ -100,6 +100,28 @@ describe('Stateful bindings in worker-isolation=thread mode', () => {
 		expect(readKv('phase3-receipt')).toBe('done')
 	}, 5_000)
 
+	test('manual /cdn-cgi/handler/scheduled invokes the worker scheduled handler', async () => {
+		const cron = '*/5 * * * *'
+		const res = await fetch(`${base}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(cron)}`)
+		expect(res.status).toBe(200)
+
+		const receipt = readKv('scheduled-receipt')
+		expect(receipt).not.toBeNull()
+		expect(receipt!.split('|')[0]).toBe(cron)
+	})
+
+	test('manual /cdn-cgi/handler/email invokes the worker email handler', async () => {
+		const raw = 'From: alice@example.com\r\nTo: bob@example.com\r\nSubject: test\r\n\r\nhello\r\n'
+		const res = await fetch(`${base}/cdn-cgi/handler/email?from=alice@example.com&to=bob@example.com`, {
+			method: 'POST',
+			body: raw,
+		})
+		expect(res.status).toBe(200)
+
+		const receipt = readKv('email-receipt')
+		expect(receipt).toBe(`alice@example.com|bob@example.com|${raw.length}`)
+	})
+
 	test("worker-created spans land in main's trace store under the server parent", async () => {
 		const res = await fetch(`${base}/trace/nested`)
 		expect(await res.text()).toBe('traced')

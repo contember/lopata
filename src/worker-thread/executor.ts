@@ -47,6 +47,11 @@ interface PendingFetch {
 	reject: (error: Error) => void
 }
 
+interface PendingHandler {
+	resolve: (result: { ok: true } | { ok: false; noHandler: true }) => void
+	reject: (error: Error) => void
+}
+
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
 	config: WranglerConfig
@@ -61,6 +66,7 @@ export class WorkerThreadExecutor {
 	private _readyResolve!: () => void
 	private _readyReject!: (err: Error) => void
 	private _pending = new Map<number, PendingFetch>()
+	private _pendingHandlers = new Map<number, PendingHandler>()
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
@@ -129,6 +135,30 @@ export class WorkerThreadExecutor {
 					if (msg.error.stack) err.stack = msg.error.stack
 					err.name = msg.error.name ?? 'Error'
 					pending.reject(err)
+				}
+				break
+			}
+			case 'scheduled-result':
+			case 'email-result': {
+				const p = this._pendingHandlers.get(msg.id)
+				if (p) {
+					this._pendingHandlers.delete(msg.id)
+					p.resolve({ ok: true })
+				}
+				break
+			}
+			case 'scheduled-error':
+			case 'email-error': {
+				const p = this._pendingHandlers.get(msg.id)
+				if (!p) break
+				this._pendingHandlers.delete(msg.id)
+				if (msg.noHandler) {
+					p.resolve({ ok: false, noHandler: true })
+				} else {
+					const err = new Error(msg.error.message)
+					if (msg.error.stack) err.stack = msg.error.stack
+					err.name = msg.error.name ?? 'Error'
+					p.reject(err)
 				}
 				break
 			}
@@ -238,13 +268,45 @@ export class WorkerThreadExecutor {
 		return response
 	}
 
+	async executeScheduled(cronExpr: string, scheduledTime: number): Promise<{ ok: true } | { ok: false; noHandler: true }> {
+		if (this._disposed) throw new Error('Worker-thread executor disposed')
+		await this._ready
+
+		const active = getActiveContext()
+		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
+
+		const id = this._nextId++
+		return new Promise((resolve, reject) => {
+			this._pendingHandlers.set(id, { resolve, reject })
+			this._send({ type: 'scheduled', id, cronExpr, scheduledTime, parent })
+		})
+	}
+
+	async executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<{ ok: true } | { ok: false; noHandler: true }> {
+		if (this._disposed) throw new Error('Worker-thread executor disposed')
+		await this._ready
+
+		const active = getActiveContext()
+		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
+
+		const id = this._nextId++
+		// `raw` is a Uint8Array; postMessage needs an ArrayBuffer for the wire.
+		const rawBuf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer
+		return new Promise((resolve, reject) => {
+			this._pendingHandlers.set(id, { resolve, reject })
+			this._send({ type: 'email', id, messageId, from, to, raw: rawBuf, parent })
+		})
+	}
+
 	dispose(): void {
 		if (this._disposed) return
 		this._disposed = true
 		this._worker.terminate()
 		const err = new Error('Worker thread terminated')
 		for (const [, pending] of this._pending) pending.reject(err)
+		for (const [, pending] of this._pendingHandlers) pending.reject(err)
 		this._pending.clear()
+		this._pendingHandlers.clear()
 		this._wsBridge.disposeAll()
 	}
 }

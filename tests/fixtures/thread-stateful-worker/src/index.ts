@@ -1,6 +1,14 @@
 import { EmailMessage } from 'cloudflare:email'
 
 export default {
+	async scheduled(controller: any, env: any): Promise<void> {
+		await env.MY_KV.put('scheduled-receipt', `${controller.cron}|${controller.scheduledTime}`)
+	},
+
+	async email(message: any, env: any): Promise<void> {
+		await env.MY_KV.put('email-receipt', `${message.from}|${message.to}|${message.rawSize}`)
+	},
+
 	async fetch(request: Request, env: any, ctx: any): Promise<Response> {
 		const url = new URL(request.url)
 

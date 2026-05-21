@@ -2,7 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { ForwardableEmailMessage } from './bindings/email'
 import { QueueConsumer } from './bindings/queue'
-import { createScheduledController, startCronScheduler } from './bindings/scheduled'
+import { createScheduledController, cronMatchesDate, parseCron, startCronScheduler } from './bindings/scheduled'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -287,92 +287,97 @@ export class Generation {
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */
 	async callScheduled(cronExpr: string): Promise<Response> {
-		const ctx = new ExecutionContext()
 		return startSpan({
 			name: 'scheduled',
 			kind: 'server',
 			attributes: { cron: cronExpr, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				let handler: Function | undefined
-				if (this.classBasedExport) {
-					const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
-					if (typeof proto.scheduled === 'function') {
-						const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
-						handler = instance.scheduled!.bind(instance)
-					}
-				} else {
-					const obj = this.defaultExport as Record<string, unknown>
-					if (typeof obj.scheduled === 'function') {
-						handler = (obj.scheduled as Function).bind(obj)
-					}
+		}, async () => {
+			try {
+				if (this.threadExecutor) {
+					const result = await this.threadExecutor.executeScheduled(cronExpr, Date.now())
+					if (!result.ok) return new Response('No scheduled handler defined', { status: 404 })
+					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
 				}
-
-				if (!handler) {
-					return new Response('No scheduled handler defined', { status: 404 })
-				}
-				const controller = createScheduledController(cronExpr, Date.now())
-				try {
+				const ctx = new ExecutionContext()
+				return await runWithExecutionContext(ctx, async () => {
+					let handler: Function | undefined
+					if (this.classBasedExport) {
+						const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
+						if (typeof proto.scheduled === 'function') {
+							const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
+							handler = instance.scheduled!.bind(instance)
+						}
+					} else {
+						const obj = this.defaultExport as Record<string, unknown>
+						if (typeof obj.scheduled === 'function') {
+							handler = (obj.scheduled as Function).bind(obj)
+						}
+					}
+					if (!handler) return new Response('No scheduled handler defined', { status: 404 })
+					const controller = createScheduledController(cronExpr, Date.now())
 					await handler(controller, this.env, ctx)
 					await ctx._awaitAll()
 					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata] Scheduled handler error:', err)
-					persistError(err, 'scheduled', this.workerName)
-					throw err
-				}
-			}))
+				})
+			} catch (err) {
+				console.error('[lopata] Scheduled handler error:', err)
+				persistError(err, 'scheduled', this.workerName)
+				throw err
+			}
+		})
 	}
 
 	/** Handle incoming email — dispatches to the worker's email() handler */
 	async callEmail(rawBytes: Uint8Array, from: string, to: string): Promise<Response> {
-		const ctx = new ExecutionContext()
 		return startSpan({
 			name: 'email',
 			kind: 'server',
 			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				let handler: Function | undefined
-				if (this.classBasedExport) {
-					const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
-					if (typeof proto.email === 'function') {
-						const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
-						handler = instance.email!.bind(instance)
-					}
-				} else {
-					const obj = this.defaultExport as Record<string, unknown>
-					if (typeof obj.email === 'function') {
-						handler = (obj.email as Function).bind(obj)
-					}
+		}, async () => {
+			// Persist incoming email to DB before invoking the handler — both
+			// modes need the row so `setReject`/`forward` can find it.
+			const db = getDatabase()
+			const messageId = randomUUIDv7()
+			db.run(
+				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+				[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
+			)
+
+			try {
+				if (this.threadExecutor) {
+					const result = await this.threadExecutor.executeEmail(messageId, from, to, rawBytes)
+					if (!result.ok) return new Response('No email handler defined', { status: 404 })
+					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
 				}
-
-				if (!handler) {
-					return new Response('No email handler defined', { status: 404 })
-				}
-
-				// Persist incoming email to DB
-				const db = getDatabase()
-				const messageId = randomUUIDv7()
-				db.run(
-					"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
-					[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
-				)
-
-				const message = new ForwardableEmailMessage(db, messageId, from, to, rawBytes)
-
-				try {
+				const ctx = new ExecutionContext()
+				return await runWithExecutionContext(ctx, async () => {
+					let handler: Function | undefined
+					if (this.classBasedExport) {
+						const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
+						if (typeof proto.email === 'function') {
+							const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
+							handler = instance.email!.bind(instance)
+						}
+					} else {
+						const obj = this.defaultExport as Record<string, unknown>
+						if (typeof obj.email === 'function') {
+							handler = (obj.email as Function).bind(obj)
+						}
+					}
+					if (!handler) return new Response('No email handler defined', { status: 404 })
+					const message = new ForwardableEmailMessage(db, messageId, from, to, rawBytes)
 					await handler(message, this.env, ctx)
 					await ctx._awaitAll()
 					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata] Email handler error:', err)
-					persistError(err, 'email', this.workerName)
-					throw err
-				}
-			}))
+				})
+			} catch (err) {
+				console.error('[lopata] Email handler error:', err)
+				persistError(err, 'email', this.workerName)
+				throw err
+			}
+		})
 	}
 
 	/** Start queue consumers and cron scheduler */
@@ -389,11 +394,39 @@ export class Generation {
 
 		if (this.cronEnabled) {
 			const crons = this.config.triggers?.crons ?? []
-			const scheduledHandler = this.getHandler('scheduled')
-			if (crons.length > 0 && scheduledHandler) {
-				this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env, this.workerName)
+			if (crons.length === 0) return
+			if (this.threadExecutor) {
+				this.cronTimer = this._startThreadCronScheduler(crons, this.threadExecutor)
+			} else {
+				const scheduledHandler = this.getHandler('scheduled')
+				if (scheduledHandler) {
+					this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env, this.workerName)
+				}
 			}
 		}
+	}
+
+	private _startThreadCronScheduler(crons: string[], executor: WorkerThreadExecutor): ReturnType<typeof setInterval> {
+		const parsed = crons.map(parseCron)
+		const workerName = this.workerName
+		return setInterval(() => {
+			const now = new Date()
+			for (const cron of parsed) {
+				if (!cronMatchesDate(cron, now)) continue
+				console.log(`[lopata] Cron triggered: ${cron.expression}`)
+				startSpan({
+					name: 'scheduled',
+					kind: 'server',
+					attributes: { cron: cron.expression },
+					workerName,
+				}, async () => {
+					await executor.executeScheduled(cron.expression, now.getTime())
+				}).catch(err => {
+					console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
+					persistError(err, 'scheduled', workerName)
+				})
+			}
+		}, 60_000)
 	}
 
 	/** Stop queue consumers and cron scheduler */

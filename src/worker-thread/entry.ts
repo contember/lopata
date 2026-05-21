@@ -4,7 +4,15 @@ import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-p
 import { runWithContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
-import type { SerializedError, SerializedRequest, SerializedResponse, WorkerCommand, WorkerInitConfig, WorkerMessage } from './protocol'
+import type {
+	ParentSpanContext,
+	SerializedError,
+	SerializedRequest,
+	SerializedResponse,
+	WorkerCommand,
+	WorkerInitConfig,
+	WorkerMessage,
+} from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { buildThreadEnv } from './thread-env'
@@ -87,6 +95,46 @@ async function initRuntime(init: WorkerInitConfig) {
 		throw new Error('Worker module does not export a fetch handler')
 	}
 
+	/** Resolve the named handler ('scheduled' / 'email' / 'queue') honoring class- vs object-based exports. */
+	function resolveHandler(name: 'scheduled' | 'email' | 'queue', ctx: WorkerExecutionContext): ((...args: unknown[]) => Promise<unknown>) | null {
+		if (typeof defaultExport === 'function' && defaultExport.prototype) {
+			const fn = defaultExport.prototype[name]
+			if (typeof fn !== 'function') return null
+			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => Record<string, (...args: unknown[]) => Promise<unknown>>
+			const instance = new Ctor(ctx, env)
+			return instance[name]!.bind(instance)
+		}
+		const obj = defaultExport as Record<string, unknown> | null | undefined
+		const fn = obj?.[name]
+		return typeof fn === 'function' ? (fn as (...a: unknown[]) => Promise<unknown>).bind(obj) : null
+	}
+
+	const callScheduled = async (cronExpr: string, scheduledTime: number): Promise<{ ok: boolean; noHandler?: boolean }> => {
+		const ctx = new WorkerExecutionContext(post)
+		const handler = resolveHandler('scheduled', ctx)
+		if (!handler) return { ok: false, noHandler: true }
+		const { createScheduledController } = await import('../bindings/scheduled')
+		const controller = createScheduledController(cronExpr, scheduledTime)
+		await handler(controller, env, ctx)
+		return { ok: true }
+	}
+
+	const callEmail = async (messageId: string, from: string, to: string, raw: Uint8Array): Promise<{ ok: boolean; noHandler?: boolean }> => {
+		const ctx = new WorkerExecutionContext(post)
+		const handler = resolveHandler('email', ctx)
+		if (!handler) return { ok: false, noHandler: true }
+		const { ForwardableEmailMessage } = await import('../bindings/email')
+		const { getDatabase } = await import('../db')
+		const message = new ForwardableEmailMessage(getDatabase(), messageId, from, to, raw)
+		await handler(message, env, ctx)
+		return { ok: true }
+	}
+
+	function withParent<T>(parent: ParentSpanContext | undefined, fn: () => Promise<T>): Promise<T> {
+		if (!parent) return fn()
+		return runWithContext({ traceId: parent.traceId, spanId: parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, fn)
+	}
+
 	self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 		const cmd = event.data
 		if (rpc.handle(cmd)) return
@@ -94,13 +142,29 @@ async function initRuntime(init: WorkerInitConfig) {
 			case 'fetch':
 				try {
 					const request = await deserializeRequest(cmd.request)
-					const response = cmd.parent
-						? await runWithContext({ traceId: cmd.parent.traceId, spanId: cmd.parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, () => callFetch(request))
-						: await callFetch(request)
+					const response = await withParent(cmd.parent, () => callFetch(request))
 					const serialized = await serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 				} catch (e) {
 					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'scheduled':
+				try {
+					const result = await withParent(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
+					if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'No scheduled handler defined' }, noHandler: true })
+					else post({ type: 'scheduled-result', id: cmd.id })
+				} catch (e) {
+					post({ type: 'scheduled-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'email':
+				try {
+					const result = await withParent(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, new Uint8Array(cmd.raw)))
+					if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'No email handler defined' }, noHandler: true })
+					else post({ type: 'email-result', id: cmd.id })
+				} catch (e) {
+					post({ type: 'email-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 			case 'ws-client-message':

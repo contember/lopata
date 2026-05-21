@@ -61,6 +61,8 @@ export interface BindingTarget {
 export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext }
+	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
+	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: ArrayBuffer; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us
@@ -75,6 +77,10 @@ export type WorkerMessage =
 	| { type: 'init-error'; error: SerializedError }
 	| { type: 'fetch-result'; id: number; response: SerializedResponse }
 	| { type: 'fetch-error'; id: number; error: SerializedError }
+	| { type: 'scheduled-result'; id: number }
+	| { type: 'scheduled-error'; id: number; error: SerializedError; noHandler?: boolean }
+	| { type: 'email-result'; id: number }
+	| { type: 'email-error'; id: number; error: SerializedError; noHandler?: boolean }
 	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }
 	// `ctx.waitUntil(p)` and its settlement. Main keeps a counter so reload drain
 	// waits for background work the response no longer carries.
