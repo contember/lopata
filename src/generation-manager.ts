@@ -9,6 +9,13 @@ import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
 import { WorkerThreadExecutor } from './worker-thread/executor'
 
+/**
+ * Sentinel for thread-mode DO namespaces. Their real class lives in the DO
+ * worker thread; the namespace only checks `_class` for truthiness and the
+ * executor factory reads `className` from config, so an empty class suffices.
+ */
+const EXTERNAL_DO_CLASS = class {} as any // eslint-disable-line @typescript-eslint/no-explicit-any
+
 function isEntrypointClass(exp: unknown): exp is new(ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
 	return typeof exp === 'function' && exp.prototype
 		&& typeof exp.prototype.fetch === 'function'
@@ -262,11 +269,11 @@ export class GenerationManager {
 			this._doNamespaces.set(entry.className, entry.namespace)
 		}
 		// DO class refs themselves live in the worker thread — but the namespace's
-		// `_class` field gates `get(id)` and the executor factory only uses the
-		// className from config. A stub class satisfies the gate; the WorkerExecutor
-		// in `isolated` mode loads the real class from `modulePath` itself.
+		// `_class` field gates `get(id)` and the WorkerExecutorFactory only reads
+		// the className from config. `EXTERNAL_DO_CLASS` satisfies the gate; the
+		// DO worker thread loads the real class from `modulePath` itself.
 		for (const entry of registry.durableObjects) {
-			entry.namespace._setClass(class {} as any, env, this.nextGenId)
+			entry.namespace._setClass(EXTERNAL_DO_CLASS, env, this.nextGenId)
 		}
 		// Workflow + container class wiring still needs the real user code on main
 		// (state machine here invokes the class); deferred to a follow-up.

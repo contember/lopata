@@ -12,12 +12,14 @@ import path from 'node:path'
 import { AiBinding } from '../bindings/ai'
 import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
 import { openD1Database } from '../bindings/d1'
+import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
 import { HyperdriveBinding } from '../bindings/hyperdrive'
 import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
 import { MediaBinding } from '../bindings/media'
 import { FileR2Bucket } from '../bindings/r2'
+import { NON_RPC_PROPS } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
 import type { WranglerConfig } from '../config'
@@ -144,75 +146,56 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
 }
 
-interface DurableObjectIdLike {
-	readonly id: string
-	readonly name?: string
-	toString(): string
-	equals(other: DurableObjectIdLike): boolean
+async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request | string | URL, init?: RequestInit): Promise<Response> {
+	const url = input instanceof URL ? input.toString() : input
+	const request = typeof url === 'string' ? new Request(url, init) : url
+	return deserializeResponse(await rpc.callFetch(target, request))
 }
 
-function buildDurableObjectId(id: string, name?: string): DurableObjectIdLike {
-	return {
-		id,
-		name,
-		toString() {
-			return id
-		},
-		equals(other: DurableObjectIdLike) {
-			return other?.toString() === id
-		},
-	}
-}
-
-function sha256Hex(input: string): string {
-	const hasher = new Bun.CryptoHasher('sha256')
-	hasher.update(input)
-	return hasher.digest('hex')
-}
-
-function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdLike, rpc: RpcClient): unknown {
+function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {
 	const target: BindingTarget = { binding: bindingName, instanceId: idStr }
 	return new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop) {
-			if (typeof prop === 'symbol') return undefined
+			// Filter Promise-protocol props so `await stub.foo` doesn't dispatch
+			// `then`/`catch`/`finally` as RPC method calls.
+			if (NON_RPC_PROPS.has(prop)) return undefined
 			if (prop === 'id') return id
 			if (prop === 'name') return id.name
 			if (prop === 'fetch') {
-				return async (input: Request | string | URL, init?: RequestInit) => {
-					const url = input instanceof URL ? input.toString() : input
-					const request = typeof url === 'string' ? new Request(url, init) : url
-					return deserializeResponse(await rpc.callFetch(target, request))
-				}
+				return (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
 			}
-			// RPC method call on the DO instance.
-			return (...args: unknown[]) => rpc.call(target, prop, args)
+			return (...args: unknown[]) => rpc.call(target, prop as string, args)
 		},
 	})
 }
 
 function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
-	const idFromName = (name: string) => buildDurableObjectId(sha256Hex(name), name)
-	const idFromString = (idStr: string) => buildDurableObjectId(idStr)
-	const newUniqueId = (_opts?: { jurisdiction?: string }) => buildDurableObjectId(crypto.randomUUID().replace(/-/g, ''))
-	const get = (id: DurableObjectIdLike) => makeDOStubProxy(bindingName, id.toString(), id, rpc)
+	const stubs = new Map<string, unknown>()
+	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
+	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
+	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
+	const get = (id: DurableObjectIdImpl) => {
+		const key = id.toString()
+		let stub = stubs.get(key)
+		if (!stub) {
+			stub = makeDOStubProxy(bindingName, key, id, rpc)
+			stubs.set(key, stub)
+		}
+		return stub
+	}
 	return {
 		idFromName,
 		idFromString,
 		newUniqueId,
 		get,
 		getByName: (name: string) => get(idFromName(name)),
-		jurisdiction: () => makeDONamespaceProxy(bindingName, rpc),
 	}
 }
 
 function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
 	const target: BindingTarget = { binding: bindingName }
 	return {
-		fetch: async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
-			const url = input instanceof URL ? input.toString() : input
-			const request = typeof url === 'string' ? new Request(url, init) : url
-			return deserializeResponse(await rpc.callFetch(target, request))
-		},
+		fetch: (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init),
 		connect: () => {
 			throw serviceBindingConnectError(bindingName)
 		},

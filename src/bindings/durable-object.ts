@@ -530,6 +530,18 @@ export class DurableObjectIdImpl {
 	}
 }
 
+/** Deterministic id from name. Shared by the in-process namespace and the thread-mode proxy. */
+export function hashIdFromName(name: string): string {
+	const hasher = new Bun.CryptoHasher('sha256')
+	hasher.update(name)
+	return hasher.digest('hex')
+}
+
+/** Random 128-bit id matching CF's `newUniqueId` hex shape. */
+export function randomUniqueIdHex(): string {
+	return crypto.randomUUID().replace(/-/g, '')
+}
+
 // --- State ---
 
 interface AcceptedWebSocket {
@@ -1103,15 +1115,11 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
-		return new DurableObjectIdImpl(crypto.randomUUID().replace(/-/g, ''))
+		return new DurableObjectIdImpl(randomUniqueIdHex())
 	}
 
 	idFromName(name: string): DurableObjectIdImpl {
-		// Deterministic ID from name using simple hash
-		const hasher = new Bun.CryptoHasher('sha256')
-		hasher.update(name)
-		const hex = hasher.digest('hex')
-		return new DurableObjectIdImpl(hex, name)
+		return new DurableObjectIdImpl(hashIdFromName(name), name)
 	}
 
 	idFromString(id: string): DurableObjectIdImpl {
