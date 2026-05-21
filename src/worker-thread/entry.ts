@@ -2,6 +2,7 @@
 
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
+import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { getDatabase } from '../db'
 import { runWithParentContext } from '../tracing/context'
@@ -77,17 +78,14 @@ async function initRuntime(init: WorkerInitConfig) {
 	const _queueConsumers = startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
 	void _queueConsumers
 
-	const invokeEntrypointRpc = async (entrypoint: string | undefined, method: string, args: unknown[]): Promise<unknown> => {
-		const ctx = new WorkerExecutionContext(post)
-		const target = entrypoint
-			? (() => {
-				const cls = workerModule[entrypoint]
-				if (typeof cls !== 'function') throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
-				return new (cls as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
-			})()
-			: typeof defaultExport === 'function' && defaultExport.prototype
-			? new (defaultExport as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
-			: defaultExport as Record<string, unknown>
+	const invokeEntrypointRpc = async (
+		entrypoint: string | undefined,
+		method: string,
+		args: unknown[],
+		props?: Record<string, unknown>,
+	): Promise<unknown> => {
+		const ctx = new WorkerExecutionContext(post, props)
+		const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
 		const member = target?.[method]
 		if (typeof member !== 'function') {
 			throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
@@ -183,7 +181,7 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'entrypoint-rpc':
 				try {
-					const value = await invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args)
+					const value = await runWithParentContext(cmd.parent, () => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props))
 					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })

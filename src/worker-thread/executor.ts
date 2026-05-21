@@ -51,20 +51,12 @@ function reifyArg(arg: unknown): unknown {
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
-interface PendingFetch {
-	resolve: (response: SerializedResponse) => void
+interface Pending<T> {
+	resolve: (value: T) => void
 	reject: (error: Error) => void
 }
 
-interface PendingHandler {
-	resolve: (result: { ok: true } | { ok: false; noHandler: true }) => void
-	reject: (error: Error) => void
-}
-
-interface PendingRpc {
-	resolve: (value: unknown) => void
-	reject: (error: Error) => void
-}
+type HandlerResult = { ok: true } | { ok: false; noHandler: true }
 
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
@@ -80,9 +72,9 @@ export class WorkerThreadExecutor {
 	private _ready: Promise<void>
 	private _readyResolve!: () => void
 	private _readyReject!: (err: Error) => void
-	private _pending = new Map<number, PendingFetch>()
-	private _pendingHandlers = new Map<number, PendingHandler>()
-	private _pendingRpc = new Map<number, PendingRpc>()
+	private _pending = new Map<number, Pending<SerializedResponse>>()
+	private _pendingHandlers = new Map<number, Pending<HandlerResult>>()
+	private _pendingRpc = new Map<number, Pending<unknown>>()
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
@@ -291,20 +283,29 @@ export class WorkerThreadExecutor {
 		return this._ready
 	}
 
-	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
+	/**
+	 * Allocate an id, register a pending promise, post the command. The `build`
+	 * callback receives the id + active span context (so sub-spans on the worker
+	 * side link to the caller) and returns the actual `WorkerCommand`.
+	 */
+	private async _sendAndAwait<T>(
+		map: Map<number, Pending<T>>,
+		build: (id: number, parent: ParentSpanContext | undefined) => WorkerCommand,
+	): Promise<T> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
-
-		// Hand the worker the current span context so its sub-spans nest correctly.
 		const active = getActiveContext()
 		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
-
-		const req = await serializeRequest(request)
 		const id = this._nextId++
-		const serialized = await new Promise<SerializedResponse>((resolve, reject) => {
-			this._pending.set(id, { resolve, reject })
-			this._send({ type: 'fetch', id, request: req, parent, props })
+		return new Promise<T>((resolve, reject) => {
+			map.set(id, { resolve, reject })
+			this._send(build(id, parent))
 		})
+	}
+
+	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
+		const req = await serializeRequest(request)
+		const serialized = await this._sendAndAwait(this._pending, (id, parent) => ({ type: 'fetch', id, request: req, parent, props }))
 
 		const response = deserializeResponse(serialized) as ResponseWithWebSocket
 		if (serialized.webSocketId) {
@@ -313,42 +314,16 @@ export class WorkerThreadExecutor {
 		return response
 	}
 
-	async executeScheduled(cronExpr: string, scheduledTime: number): Promise<{ ok: true } | { ok: false; noHandler: true }> {
-		if (this._disposed) throw new Error('Worker-thread executor disposed')
-		await this._ready
-
-		const active = getActiveContext()
-		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
-
-		const id = this._nextId++
-		return new Promise((resolve, reject) => {
-			this._pendingHandlers.set(id, { resolve, reject })
-			this._send({ type: 'scheduled', id, cronExpr, scheduledTime, parent })
-		})
+	executeScheduled(cronExpr: string, scheduledTime: number): Promise<HandlerResult> {
+		return this._sendAndAwait(this._pendingHandlers, (id, parent) => ({ type: 'scheduled', id, cronExpr, scheduledTime, parent }))
 	}
 
-	async executeEntrypointRpc(entrypoint: string | undefined, method: string, args: unknown[]): Promise<unknown> {
-		if (this._disposed) throw new Error('Worker-thread executor disposed')
-		await this._ready
-		const id = this._nextId++
-		return new Promise<unknown>((resolve, reject) => {
-			this._pendingRpc.set(id, { resolve, reject })
-			this._send({ type: 'entrypoint-rpc', id, entrypoint, method, args })
-		})
+	executeEntrypointRpc(entrypoint: string | undefined, method: string, args: unknown[], props?: Record<string, unknown>): Promise<unknown> {
+		return this._sendAndAwait(this._pendingRpc, (id, parent) => ({ type: 'entrypoint-rpc', id, entrypoint, method, args, props, parent }))
 	}
 
-	async executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<{ ok: true } | { ok: false; noHandler: true }> {
-		if (this._disposed) throw new Error('Worker-thread executor disposed')
-		await this._ready
-
-		const active = getActiveContext()
-		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
-
-		const id = this._nextId++
-		return new Promise((resolve, reject) => {
-			this._pendingHandlers.set(id, { resolve, reject })
-			this._send({ type: 'email', id, messageId, from, to, raw, parent })
-		})
+	executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<HandlerResult> {
+		return this._sendAndAwait(this._pendingHandlers, (id, parent) => ({ type: 'email', id, messageId, from, to, raw, parent }))
 	}
 
 	dispose(): void {

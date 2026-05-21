@@ -36,6 +36,34 @@ export function serviceBindingConnectError(name: string): Error {
 	return new Error(`Service binding "${name}": connect() (TCP sockets) is not supported in local dev mode`)
 }
 
+/**
+ * Resolve the call target for a service binding RPC (`fetch` or method):
+ * a named entrypoint class, an unnamed default class, or the default object.
+ *
+ * Used by `ServiceBinding._getTarget` (in-process) and the worker-thread's
+ * `invokeEntrypointRpc`. Single source of truth so the in-process and
+ * thread-mode paths can't drift.
+ */
+export function resolveEntrypointTarget(
+	workerModule: Record<string, unknown>,
+	entrypoint: string | undefined,
+	ctx: unknown,
+	env: unknown,
+): Record<string, unknown> {
+	if (entrypoint) {
+		const cls = workerModule[entrypoint]
+		if (typeof cls !== 'function') {
+			throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
+		}
+		return new (cls as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
+	}
+	const def = workerModule.default
+	if (typeof def === 'function' && def.prototype) {
+		return new (def as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
+	}
+	return def as Record<string, unknown>
+}
+
 export class ServiceBinding {
 	private _resolver: (() => ResolvedTarget) | null = null
 	private _entrypoint: string | undefined
@@ -97,19 +125,7 @@ export class ServiceBinding {
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
 		const { workerModule, env } = this._resolve()
 		const execCtx = ctx ?? new ExecutionContext(this._props)
-		if (this._entrypoint) {
-			const cls = workerModule[this._entrypoint] as (new(...args: unknown[]) => Record<string, unknown>) | undefined
-			if (!cls) {
-				throw new Error(`Entrypoint "${this._entrypoint}" not exported from worker module`)
-			}
-			return new cls(execCtx, env)
-		}
-		// Default export: could be class-based or object-based
-		const def = workerModule.default
-		if (typeof def === 'function' && def.prototype && typeof def.prototype.fetch === 'function') {
-			return new (def as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(execCtx, env)
-		}
-		return def as Record<string, unknown>
+		return resolveEntrypointTarget(workerModule, this._entrypoint, execCtx, env)
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
@@ -189,7 +205,7 @@ export class ServiceBinding {
 					// in the target's thread, so we can't construct it locally.
 					const resolved = self._resolve()
 					if (resolved.threadExecutor) {
-						return resolved.threadExecutor.executeEntrypointRpc(self._entrypoint, prop, args)
+						return resolved.threadExecutor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
 					const target = self._getTarget()

@@ -77,8 +77,18 @@ export type WorkerCommand =
 	| { type: 'binding-fetch-error'; id: number; error: SerializedError }
 	// RPC method call into the worker's user-defined entrypoint class.
 	// Sent from main when a `ServiceBinding` RPC callable resolves a target
-	// whose entrypoint class lives in a worker thread.
-	| { type: 'entrypoint-rpc'; id: number; entrypoint: string | undefined; method: string; args: unknown[] }
+	// whose entrypoint class lives in a worker thread. `props` carries the
+	// `ServiceBinding._props` so `ctx.props` matches the in-process path;
+	// `parent` propagates trace context so child spans link to the caller.
+	| {
+		type: 'entrypoint-rpc'
+		id: number
+		entrypoint: string | undefined
+		method: string
+		args: unknown[]
+		props?: Record<string, unknown>
+		parent?: ParentSpanContext
+	}
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }

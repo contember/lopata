@@ -172,21 +172,34 @@ async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request 
 	return deserializeResponse(await rpc.callFetch(target, request))
 }
 
-function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {
-	const target: BindingTarget = { binding: bindingName, instanceId: idStr }
+/**
+ * Build a Proxy that exposes `.fetch` over `binding-fetch` and turns any other
+ * (non-NON_RPC_PROPS) property into an RPC method callable. `extras` overrides
+ * specific props (used by DO stubs to surface `id`/`name`, service bindings
+ * to surface `connect`). Methods are cached per (proxy, prop) so hot callers
+ * don't allocate a fresh function per access.
+ */
+function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): unknown {
+	const methodCache = new Map<string | symbol, unknown>()
 	return new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop) {
-			// Filter Promise-protocol props so `await stub.foo` doesn't dispatch
+			// Filter Promise-protocol props so `await proxy.foo` doesn't dispatch
 			// `then`/`catch`/`finally` as RPC method calls.
 			if (NON_RPC_PROPS.has(prop)) return undefined
-			if (prop === 'id') return id
-			if (prop === 'name') return id.name
-			if (prop === 'fetch') {
-				return (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
-			}
-			return (...args: unknown[]) => rpc.call(target, prop as string, args)
+			if (prop in extras) return extras[prop]
+			const cached = methodCache.get(prop)
+			if (cached) return cached
+			const fn = prop === 'fetch'
+				? (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
+				: (...args: unknown[]) => rpc.call(target, prop as string, args)
+			methodCache.set(prop, fn)
+			return fn
 		},
 	})
+}
+
+function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr }, rpc, { id, name: id.name })
 }
 
 function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
@@ -213,22 +226,9 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<strin
 }
 
 function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
-	const target: BindingTarget = { binding: bindingName }
-	return new Proxy({} as Record<string, unknown>, {
-		get(_obj, prop) {
-			// Filter Promise-protocol props so `await binding.foo` doesn't dispatch
-			// `then` / `catch` / `finally` as RPC method calls.
-			if (NON_RPC_PROPS.has(prop)) return undefined
-			if (prop === 'fetch') {
-				return (input: Request | string | URL, init?: RequestInit) => proxyFetch(target, rpc, input, init)
-			}
-			if (prop === 'connect') {
-				return () => {
-					throw serviceBindingConnectError(bindingName)
-				}
-			}
-			// RPC method call on the target's entrypoint class.
-			return (...args: unknown[]) => rpc.call(target, prop as string, args)
+	return makeRpcProxy({ binding: bindingName }, rpc, {
+		connect: () => {
+			throw serviceBindingConnectError(bindingName)
 		},
 	})
 }
