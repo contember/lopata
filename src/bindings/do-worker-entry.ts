@@ -52,14 +52,15 @@ async function initWorker(workerConfig: WorkerConfig) {
 	await import('../plugin')
 
 	const { loadConfig } = await import('../config')
-	const { buildWorkerEnv } = await import('./do-worker-env')
+	const { buildWorkerEnv, createDoEnvRpc } = await import('./do-worker-env')
 	const { DurableObjectStateImpl, DurableObjectIdImpl } = await import('./durable-object')
 	const { BridgeWebSocket } = await import('./do-websocket-bridge')
 	const { CFWebSocket } = await import('./websocket-pair')
 	const { generateId } = await import('../tracing/context')
 
 	const config = await loadConfig(workerConfig.configPath)
-	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir)
+	const envRpc = createDoEnvRpc(msg => postMessage(msg))
+	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc)
 
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
@@ -249,6 +250,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// Replace the init handler with the command handler
 	self.onmessage = async (event: MessageEvent<DOWorkerMessage>) => {
 		const msg = event.data
+
+		// Env-binding RPC results from main (service-binding fetches, etc.)
+		if (envRpc.handle(msg)) return
 
 		if (msg.type === 'command') {
 			try {

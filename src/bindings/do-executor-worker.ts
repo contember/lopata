@@ -37,6 +37,22 @@ export type DOResult =
 	| { type: 'ws-created'; wsId: string }
 	| { type: 'error'; message: string; stack?: string; name?: string }
 
+/** Serialized Request payload for env-binding RPC fetches. */
+export interface SerializedEnvRequest {
+	url: string
+	method: string
+	headers: [string, string][]
+	body: ArrayBuffer | null
+}
+
+/** Serialized Response payload for env-binding RPC fetch results. */
+export interface SerializedEnvResponse {
+	status: number
+	statusText: string
+	headers: [string, string][]
+	body: ArrayBuffer | null
+}
+
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
 	| { type: 'command'; id: number; command: DOCommand }
@@ -46,6 +62,12 @@ export type DOWorkerMessage =
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
+	/** Result of a DO-worker-side `this.env.X.method(...)` proxy call. */
+	| { type: 'env-call-result'; id: number; value: unknown }
+	| { type: 'env-call-error'; id: number; message: string; stack?: string; name?: string }
+	/** Result of a DO-worker-side `this.env.X.fetch(req)` proxy call. */
+	| { type: 'env-fetch-result'; id: number; response: SerializedEnvResponse }
+	| { type: 'env-fetch-error'; id: number; message: string; stack?: string; name?: string }
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
@@ -57,6 +79,9 @@ export type DOMainMessage =
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
+	/** Stateful env-binding RPC from the DO worker (e.g. `this.env.FAILING.greet(name)`). */
+	| { type: 'env-call'; id: number; binding: string; method: string; args: unknown[] }
+	| { type: 'env-fetch'; id: number; binding: string; request: SerializedEnvRequest }
 
 // --- Pending command tracking ---
 
@@ -170,6 +195,14 @@ export class WorkerExecutor implements DOExecutor {
 					this._fetchBridgedSockets.delete(msg.wsId)
 					break
 				}
+
+				case 'env-call':
+					this._dispatchEnvCall(msg.id, msg.binding, msg.method, msg.args)
+					break
+
+				case 'env-fetch':
+					this._dispatchEnvFetch(msg.id, msg.binding, msg.request)
+					break
 			}
 		}
 
@@ -338,6 +371,47 @@ export class WorkerExecutor implements DOExecutor {
 		bridgePeer._peer = cfSocket
 		this._fetchBridgedSockets.set(wsId, cfSocket)
 		return cfSocket
+	}
+
+	/**
+	 * Resolve a binding name against the main-side env and invoke a method on
+	 * it. Used when the DO worker calls `this.env.X.someMethod(...)` for any
+	 * stateful binding (service binding RPC, email send, workflow create, …).
+	 */
+	private async _dispatchEnvCall(id: number, binding: string, method: string, args: unknown[]): Promise<void> {
+		try {
+			const target = (this._config.env as Record<string, unknown>)?.[binding] as Record<string, unknown> | undefined
+			if (!target) throw new Error(`Binding "${binding}" not found on main env`)
+			const fn = target[method]
+			if (typeof fn !== 'function') throw new Error(`Binding "${binding}" has no method "${method}"`)
+			const value = await (fn as (...a: unknown[]) => unknown).call(target, ...args)
+			this._worker?.postMessage({ type: 'env-call-result', id, value } satisfies DOWorkerMessage)
+		} catch (e) {
+			const err = e instanceof Error ? e : new Error(String(e))
+			this._worker?.postMessage({ type: 'env-call-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
+		}
+	}
+
+	private async _dispatchEnvFetch(id: number, binding: string, req: SerializedEnvRequest): Promise<void> {
+		try {
+			const target = (this._config.env as Record<string, unknown>)?.[binding] as { fetch?: (r: Request) => Promise<Response> } | undefined
+			if (!target?.fetch) throw new Error(`Binding "${binding}" has no fetch() method`)
+			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
+			const response = await target.fetch(request)
+			const headers: [string, string][] = []
+			response.headers.forEach((v, k) => headers.push([k, v]))
+			const body = response.body ? await response.arrayBuffer() : null
+			this._worker?.postMessage(
+				{
+					type: 'env-fetch-result',
+					id,
+					response: { status: response.status, statusText: response.statusText, headers, body },
+				} satisfies DOWorkerMessage,
+			)
+		} catch (e) {
+			const err = e instanceof Error ? e : new Error(String(e))
+			this._worker?.postMessage({ type: 'env-fetch-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
+		}
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
