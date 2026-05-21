@@ -9,7 +9,7 @@
 
 import { dirname, resolve } from 'node:path'
 import { EmailMessage } from '../bindings/email'
-import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
@@ -63,6 +63,7 @@ export interface WorkerThreadExecutorOptions {
 	config: WranglerConfig
 	baseDir: string
 	workerName?: string
+	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
 	/** Main-thread env holding the stateful binding instances the worker calls into via RPC. */
 	mainEnv: Record<string, unknown>
 }
@@ -115,6 +116,7 @@ export class WorkerThreadExecutor {
 						config: this._initConfig.config,
 						baseDir: this._initConfig.baseDir,
 						workerName: this._initConfig.workerName,
+						browserConfig: this._initConfig.browserConfig,
 					},
 				})
 				break
@@ -272,7 +274,12 @@ export class WorkerThreadExecutor {
 				throw new Error(`Binding "${target.binding}" has no fetch() method`)
 			}
 			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, deserializeRequest(req))
-			this._send({ type: 'binding-fetch-result', id, response: await serializeResponse(response) })
+			const serialized = await serializeResponse(response)
+			const ws = (response as ResponseWithWebSocket).webSocket
+			if (response.status === 101 && ws instanceof CFWebSocket) {
+				serialized.webSocketId = this._wsBridge.adoptExisting(ws)
+			}
+			this._send({ type: 'binding-fetch-result', id, response: serialized })
 		} catch (e) {
 			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
@@ -309,7 +316,10 @@ export class WorkerThreadExecutor {
 
 		const response = deserializeResponse(serialized) as ResponseWithWebSocket
 		if (serialized.webSocketId) {
-			response.webSocket = this._wsBridge.createSocket(serialized.webSocketId)
+			// If the id was adopted earlier (e.g. WS came back through a DO/service
+			// binding fetch), reuse that real CFWebSocket so `Bun.serve.upgrade`
+			// gets the actual peer instead of a fresh bridge.
+			response.webSocket = this._wsBridge.getSocket(serialized.webSocketId) ?? this._wsBridge.createSocket(serialized.webSocketId)
 		}
 		return response
 	}

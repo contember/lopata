@@ -1,15 +1,10 @@
 import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
-import { ForwardableEmailMessage } from './bindings/email'
-import { QueueConsumer } from './bindings/queue'
-import { createScheduledController, startCronScheduler, startCronTimer } from './bindings/scheduled'
+import { startCronTimer } from './bindings/scheduled'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase } from './db'
-import { renderErrorPage } from './error-page-render'
-import { ExecutionContext, runWithExecutionContext } from './execution-context'
-import { getActiveContext } from './tracing/context'
 import { persistError, setSpanAttribute, startSpan } from './tracing/span'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
@@ -45,244 +40,83 @@ export class Generation {
 	readonly id: number
 	state: GenerationState = 'active'
 	readonly createdAt: number
-	readonly workerModule: Record<string, unknown>
-	readonly defaultExport: unknown
-	readonly classBasedExport: boolean
 	readonly env: Record<string, unknown>
 	readonly registry: ClassRegistry
 	readonly config: WranglerConfig
 	readonly workerName: string | undefined
 	readonly cronEnabled: boolean
-	/** When set, fetch is routed through the worker-thread executor instead of in-process. */
-	readonly threadExecutor: WorkerThreadExecutor | null
+	readonly threadExecutor: WorkerThreadExecutor
 	activeRequests = 0
 
-	private queueConsumers: QueueConsumer[] = []
 	private cronTimer: NodeJS.Timer | ReturnType<typeof setInterval> | null = null
 	drainTimer: ReturnType<typeof setTimeout> | null = null
 	drainPollTimer: ReturnType<typeof setInterval> | null = null
 
 	constructor(
 		id: number,
-		workerModule: Record<string, unknown>,
-		defaultExport: unknown,
-		classBasedExport: boolean,
 		env: Record<string, unknown>,
 		registry: ClassRegistry,
 		config: WranglerConfig,
+		threadExecutor: WorkerThreadExecutor,
 		workerName?: string,
 		cronEnabled?: boolean,
-		threadExecutor?: WorkerThreadExecutor | null,
 	) {
 		this.id = id
 		this.createdAt = Date.now()
-		this.workerModule = workerModule
-		this.defaultExport = defaultExport
-		this.classBasedExport = classBasedExport
 		this.env = env
 		this.registry = registry
 		this.config = config
 		this.workerName = workerName
 		this.cronEnabled = cronEnabled ?? false
-		this.threadExecutor = threadExecutor ?? null
+		this.threadExecutor = threadExecutor
 	}
 
-	/** Get a handler method from the worker module (class-based or object-based) */
-	private getHandler(name: string): ((...args: unknown[]) => Promise<void>) | undefined {
-		if (this.classBasedExport) {
-			if (typeof (this.defaultExport as any).prototype[name] === 'function') {
-				return (...args: unknown[]) => {
-					const ctx = new ExecutionContext()
-					const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, this.env)
-					return (instance[name] as (...a: unknown[]) => Promise<void>)(...args)
-				}
-			}
-			return undefined
-		}
-		const method = (this.defaultExport as Record<string, unknown>)?.[name]
-		return typeof method === 'function' ? method.bind(this.defaultExport) : undefined
-	}
-
-	/** Dispatch a fetch request through this generation's handler */
-	async callFetch(request: Request, server: any): Promise<Response | undefined> {
+	/** Dispatch a fetch request through the worker thread. */
+	async callFetch(request: Request, server: Server<unknown>): Promise<Response | undefined> {
 		this.activeRequests++
 		try {
-			if (this.threadExecutor) {
-				return await this._callFetchThread(request, this.threadExecutor, server)
-			}
-			const ctx = new ExecutionContext()
 			const url = new URL(request.url)
-
-			const skipTracing = isInfrastructurePath(url.pathname)
-
-			// Capture caller stack before entering the worker — frameworks like Hono
-			// use .then()/.catch() internally which destroys async stack traces in Bun.
-			// We stitch this context onto caught errors so the error page shows the
-			// full call chain even when the engine loses it.
-			const callerStack = skipTracing ? null : new Error()
-
-			const handler = async () => {
-				const callWorkerFetch = async (req: Request) => {
-					if (this.classBasedExport) {
-						const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, this.env)
-						return await (instance.fetch as (r: Request) => Promise<Response>)(req)
-					}
-					if ((this.defaultExport as Record<string, unknown>)?.fetch) {
-						return await (this.defaultExport as { fetch: Function }).fetch(req, this.env, ctx) as Response
-					}
-					// Service worker syntax: addEventListener("fetch", handler)
-					const swHandlers = (globalThis as any).__lopata_sw_handlers as { fetch?: (event: any) => void } | undefined
-					if (swHandlers?.fetch) {
-						return await new Promise<Response>((resolve, reject) => {
-							const event = {
-								type: 'fetch',
-								request: req,
-								respondWith(response: Response | Promise<Response>) {
-									Promise.resolve(response).then(resolve, reject)
-								},
-								waitUntil(promise: Promise<unknown>) {
-									ctx.waitUntil(promise)
-								},
-								passThroughOnException() {},
-							}
-							swHandlers.fetch!(event)
-						})
-					}
-					throw new Error('No fetch handler found')
-				}
-
-				const handleResponse = (response: Response): Response | undefined => {
-					setSpanAttribute('http.status_code', response.status)
-					const ws = (response as Response & { webSocket?: CFWebSocket }).webSocket
-					if (response.status === 101 && ws instanceof CFWebSocket) {
-						const upgraded = (server as { upgrade(req: Request, opts: { data: unknown }): boolean }).upgrade(request, { data: { cfSocket: ws } })
-						if (!upgraded) {
-							return new Response('WebSocket upgrade failed', { status: 500 })
-						}
-						return undefined
-					}
-					const ctx = getActiveContext()
-					if (ctx) {
-						const res = new Response(response.body, response)
-						res.headers.set('X-Trace-Id', ctx.traceId)
-						return res
-					}
-					return response
-				}
-
-				const handleError = async (err: unknown): Promise<Response> => {
-					if (err instanceof Error) {
-						// Prefer fetch call-site stack — it shows the user's code that
-						// triggered the outbound call (e.g. graphql client → user handler).
-						// Fall back to callerStack which only shows lopata entry frames.
-						const ctx = getActiveContext()
-						const fetchCallStack = ctx?.fetchStack.current
-						stitchAsyncStack(err, fetchCallStack ?? callerStack)
-					}
-					console.error('[lopata] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-					return renderErrorPage(err, request, this.env, this.config, this.workerName)
-				}
-
-				const runWorkerFirst = this.config.assets?.run_worker_first
-				const hasAssets = this.registry.staticAssets && !this.config.assets?.binding
-				const workerFirst = hasAssets && shouldRunWorkerFirst(runWorkerFirst, url.pathname)
-
-				if (workerFirst) {
-					try {
-						const workerResponse = await callWorkerFetch(request)
-						const result = handleResponse(workerResponse)
-						if (result === undefined) return undefined
-						if (result.status !== 404) {
-							ctx._awaitAll().catch(() => {})
-							return result
-						}
-					} catch (err) {
-						return handleError(err)
-					}
-					return await this.registry.staticAssets!.fetch(request)
-				}
-
-				if (hasAssets) {
-					const assetResponse = await this.registry.staticAssets!.fetch(request)
-					if (assetResponse.status !== 404) {
-						return assetResponse
-					}
-				}
-
-				try {
-					const response = await callWorkerFetch(request)
-					const result = handleResponse(response)
-					if (result === undefined) return undefined
-					ctx._awaitAll().catch(() => {})
-					return result
-				} catch (err) {
-					return handleError(err)
-				}
+			if (isInfrastructurePath(url.pathname)) {
+				return this._dispatchFetch(request, server, url)
 			}
-
-			const wrappedHandler = () => runWithExecutionContext(ctx, handler)
-
-			if (skipTracing) {
-				return await wrappedHandler()
-			}
-
-			return await startSpan({
+			return startSpan({
 				name: `${request.method} ${url.pathname}`,
 				kind: 'server',
 				attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': this.id },
 				workerName: this.workerName,
-			}, wrappedHandler)
+			}, async () => {
+				const response = await this._dispatchFetch(request, server, url)
+				if (response) setSpanAttribute('http.status_code', response.status)
+				return response
+			})
 		} finally {
 			this.activeRequests--
 		}
 	}
 
-	private async _callFetchThread(request: Request, executor: WorkerThreadExecutor, server: Server<unknown>): Promise<Response | undefined> {
-		const url = new URL(request.url)
-		return this._withServerSpan(request, async () => {
-			const assets = this.registry.staticAssets
-			let response: Response
-			if (!assets || this.config.assets?.binding) {
-				response = await executor.executeFetch(request)
+	private async _dispatchFetch(request: Request, server: Server<unknown>, url: URL): Promise<Response | undefined> {
+		const assets = this.registry.staticAssets
+		let response: Response
+		if (!assets || this.config.assets?.binding) {
+			response = await this.threadExecutor.executeFetch(request)
+		} else {
+			const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+			if (!workerFirst) {
+				const assetResponse = await assets.fetch(request)
+				if (assetResponse.status !== 404) return assetResponse
+				response = await this.threadExecutor.executeFetch(request)
 			} else {
-				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				if (!workerFirst) {
-					const assetResponse = await assets.fetch(request)
-					if (assetResponse.status !== 404) return assetResponse
-					response = await executor.executeFetch(request)
-				} else {
-					response = await executor.executeFetch(request)
-					if (response.status === 404) return await assets.fetch(request)
-				}
+				response = await this.threadExecutor.executeFetch(request)
+				if (response.status === 404) return assets.fetch(request)
 			}
-			const ws = (response as ResponseWithWebSocket).webSocket
-			if (response.status === 101 && ws instanceof CFWebSocket) {
-				const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
-				if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
-				return undefined
-			}
-			return response
-		})
-	}
-
-	/**
-	 * Wrap a thread-mode fetch in the canonical server span (matching the
-	 * in-process `callFetch` attributes), skipping tracing for infrastructure
-	 * paths and stamping `http.status_code` on the response.
-	 */
-	private async _withServerSpan(request: Request, body: () => Promise<Response | undefined>): Promise<Response | undefined> {
-		const url = new URL(request.url)
-		if (isInfrastructurePath(url.pathname)) return body()
-		return startSpan({
-			name: `${request.method} ${url.pathname}`,
-			kind: 'server',
-			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': this.id },
-			workerName: this.workerName,
-		}, async () => {
-			const response = await body()
-			if (response) setSpanAttribute('http.status_code', response.status)
-			return response
-		})
+		}
+		const ws = (response as ResponseWithWebSocket).webSocket
+		if (response.status === 101 && ws instanceof CFWebSocket) {
+			const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
+			if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
+			return undefined
+		}
+		return response
 	}
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */
@@ -294,32 +128,9 @@ export class Generation {
 			workerName: this.workerName,
 		}, async () => {
 			try {
-				if (this.threadExecutor) {
-					const result = await this.threadExecutor.executeScheduled(cronExpr, Date.now())
-					if (!result.ok) return new Response('No scheduled handler defined', { status: 404 })
-					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
-				}
-				const ctx = new ExecutionContext()
-				return await runWithExecutionContext(ctx, async () => {
-					let handler: Function | undefined
-					if (this.classBasedExport) {
-						const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
-						if (typeof proto.scheduled === 'function') {
-							const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
-							handler = instance.scheduled!.bind(instance)
-						}
-					} else {
-						const obj = this.defaultExport as Record<string, unknown>
-						if (typeof obj.scheduled === 'function') {
-							handler = (obj.scheduled as Function).bind(obj)
-						}
-					}
-					if (!handler) return new Response('No scheduled handler defined', { status: 404 })
-					const controller = createScheduledController(cronExpr, Date.now())
-					await handler(controller, this.env, ctx)
-					await ctx._awaitAll()
-					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
-				})
+				const result = await this.threadExecutor.executeScheduled(cronExpr, Date.now())
+				if (!result.ok) return new Response('No scheduled handler defined', { status: 404 })
+				return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
 			} catch (err) {
 				this._persistAndRethrow('scheduled', err)
 			}
@@ -334,73 +145,31 @@ export class Generation {
 			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': this.id },
 			workerName: this.workerName,
 		}, async () => {
-			// Persist incoming email to DB before invoking the handler — both
-			// modes need the row so `setReject`/`forward` can find it.
+			// Persist incoming email so `setReject` / `forward` can find it. Main
+			// inserts here; the worker thread reads it from the shared SQLite.
 			const db = getDatabase()
 			const messageId = randomUUIDv7()
 			db.run(
 				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
 				[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
 			)
-
 			try {
-				if (this.threadExecutor) {
-					const result = await this.threadExecutor.executeEmail(messageId, from, to, rawBytes)
-					if (!result.ok) return new Response('No email handler defined', { status: 404 })
-					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
-				}
-				const ctx = new ExecutionContext()
-				return await runWithExecutionContext(ctx, async () => {
-					let handler: Function | undefined
-					if (this.classBasedExport) {
-						const proto = (this.defaultExport as { prototype: Record<string, unknown> }).prototype
-						if (typeof proto.email === 'function') {
-							const instance = new (this.defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, Function>)(ctx, this.env)
-							handler = instance.email!.bind(instance)
-						}
-					} else {
-						const obj = this.defaultExport as Record<string, unknown>
-						if (typeof obj.email === 'function') {
-							handler = (obj.email as Function).bind(obj)
-						}
-					}
-					if (!handler) return new Response('No email handler defined', { status: 404 })
-					const message = new ForwardableEmailMessage(db, messageId, from, to, rawBytes)
-					await handler(message, this.env, ctx)
-					await ctx._awaitAll()
-					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
-				})
+				const result = await this.threadExecutor.executeEmail(messageId, from, to, rawBytes)
+				if (!result.ok) return new Response('No email handler defined', { status: 404 })
+				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
 			} catch (err) {
 				this._persistAndRethrow('email', err)
 			}
 		})
 	}
 
-	/** Start queue consumers and cron scheduler */
+	/** Start cron timer. Queue consumers run in the worker thread; no main-side action needed. */
 	startConsumers(): void {
-		const queueHandler = this.getHandler('queue')
-		if (this.registry.queueConsumers.length > 0 && queueHandler) {
-			const db = getDatabase()
-			for (const config of this.registry.queueConsumers) {
-				const consumer = new QueueConsumer(db, config, queueHandler as any, this.env, this.workerName)
-				consumer.start()
-				this.queueConsumers.push(consumer)
-			}
-		}
-
-		if (this.cronEnabled) {
-			const crons = this.config.triggers?.crons ?? []
-			if (crons.length === 0) return
-			if (this.threadExecutor) {
-				const executor = this.threadExecutor
-				this.cronTimer = startCronTimer(crons, (cronExpr, now) => executor.executeScheduled(cronExpr, now.getTime()), this.workerName)
-			} else {
-				const scheduledHandler = this.getHandler('scheduled')
-				if (scheduledHandler) {
-					this.cronTimer = startCronScheduler(crons, scheduledHandler as any, this.env, this.workerName)
-				}
-			}
-		}
+		if (!this.cronEnabled) return
+		const crons = this.config.triggers?.crons ?? []
+		if (crons.length === 0) return
+		const executor = this.threadExecutor
+		this.cronTimer = startCronTimer(crons, (cronExpr, now) => executor.executeScheduled(cronExpr, now.getTime()), this.workerName)
 	}
 
 	private _persistAndRethrow(source: 'scheduled' | 'email' | 'queue', err: unknown): never {
@@ -409,30 +178,25 @@ export class Generation {
 		throw err
 	}
 
-	/** Stop queue consumers and cron scheduler */
 	stopConsumers(): void {
-		for (const consumer of this.queueConsumers) {
-			consumer.stop()
-		}
-		this.queueConsumers = []
 		if (this.cronTimer) {
 			clearInterval(this.cronTimer)
 			this.cronTimer = null
 		}
 	}
 
-	/** Transition to draining — stops consumers, clears alarm timers, keeps in-flight requests alive */
+	/** Transition to draining — stops consumers + alarm timers, keeps in-flight requests alive. */
 	drain(): void {
 		if (this.state === 'stopped') return
 		this.state = 'draining'
 		this.stopConsumers()
-		// Clear alarm timers — new generation restores them from DB via _restoreAlarms()
+		// New generation restores alarms from DB via `_restoreAlarms()`.
 		for (const entry of this.registry.durableObjects) {
 			entry.namespace.clearAlarmTimers()
 		}
 	}
 
-	/** Force-stop: drain + destroy all DO namespaces + abort workflows */
+	/** Force-stop: drain + destroy all DO namespaces + abort workflows + terminate the worker. */
 	stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): void {
 		if (this.state === 'stopped') return
 		this.drain()
@@ -454,15 +218,14 @@ export class Generation {
 		for (const entry of this.registry.workflows) {
 			entry.binding.abortRunning()
 		}
-		this.threadExecutor?.dispose()
+		this.threadExecutor.dispose()
 	}
 
-	/** Check if this generation has no more work */
 	isIdle(): boolean {
 		if (this.activeRequests > 0) return false
-		if ((this.threadExecutor?.pendingWaitUntil() ?? 0) > 0) return false
+		if (this.threadExecutor.pendingWaitUntil() > 0) return false
 		for (const entry of this.registry.durableObjects) {
-			// Check if any DO instances still have active WebSockets
+			// Active WebSockets on DO instances keep the generation alive.
 			const ns = entry.namespace as any
 			if (ns.instances) {
 				for (const [, instance] of ns.instances as Map<string, any>) {
@@ -474,7 +237,6 @@ export class Generation {
 		return true
 	}
 
-	/** Get info for dashboard */
 	getInfo(): GenerationInfo {
 		const durableObjects = this.registry.durableObjects.map(entry => {
 			const executors = entry.namespace._listActiveExecutors()
@@ -493,35 +255,6 @@ export class Generation {
 			durableObjects,
 		}
 	}
-}
-
-/**
- * Stitch a pre-captured caller stack onto an error whose async stack was
- * destroyed by .then()/.catch() boundaries (e.g. Hono's dispatch) or by
- * ALS.run() in Bun/JSC.
- *
- * Only appends if the error's stack looks truncated (few frames or contains
- * processTicksAndRejections). Strips lopata runtime frames from the
- * captured stack so only user/library code is shown.
- */
-function stitchAsyncStack(err: Error, callerError: Error | null): void {
-	if (!callerError) return
-	if (!err.stack || !callerError.stack) return
-	// Already stitched
-	if (err.stack.includes('--- async ---')) return
-
-	const errFrames = err.stack.split('\n').filter(l => l.trim().startsWith('at '))
-	// Only stitch when the stack looks truncated (≤5 real frames or has processTicksAndRejections)
-	const looksShort = errFrames.length <= 5 || err.stack.includes('processTicksAndRejections')
-	if (!looksShort) return
-
-	const callerLines = callerError.stack.split('\n').slice(1)
-
-	// Strip lopata runtime frames — keep only user/library code
-	const filtered = callerLines.filter(l => !l.includes('/lopata/src/'))
-	if (filtered.length === 0) return
-
-	err.stack += '\n    --- async ---\n' + filtered.join('\n')
 }
 
 /** Bun HMR + browser well-known probes that shouldn't get spans. */

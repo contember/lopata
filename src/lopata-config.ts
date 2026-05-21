@@ -1,8 +1,6 @@
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
-export type WorkerIsolation = 'in-process' | 'thread'
-
 export interface LopataConfig {
 	/** Path to the main worker's wrangler config (HTTP entrypoint) */
 	main: string
@@ -22,16 +20,6 @@ export interface LopataConfig {
 	 * - "isolated" — each DO instance runs in a separate Bun Worker thread (faithful to CF production)
 	 */
 	isolation?: 'dev' | 'isolated'
-	/**
-	 * Main worker isolation:
-	 * - "in-process" (default) — the worker module runs in the same process as lopata
-	 * - "thread" — the worker module runs in a Bun Worker thread, terminated and respawned on every reload
-	 *
-	 * Thread mode invalidates the entire module graph on reload, so edits to any
-	 * file the worker imports (transitively) always take effect. Required on Bun
-	 * >= 1.3.14 where the in-process module cache can't be invalidated reliably.
-	 */
-	workerIsolation?: WorkerIsolation
 	/** AI SQL generation config for the D1 console */
 	ai?: {
 		/** OpenRouter API key (fallback: OPENROUTER_API_KEY env var) */

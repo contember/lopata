@@ -5,5 +5,4 @@ export default defineConfig({
 	workers: [
 		{ name: 'aux', config: './aux/wrangler.jsonc' },
 	],
-	workerIsolation: 'thread',
 })

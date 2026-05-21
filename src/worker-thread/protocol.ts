@@ -49,6 +49,8 @@ export interface WorkerInitConfig {
 	/** Worker name from `lopata.config.ts` (or single-worker wrangler config). Used
 	 *  for span attribution + error attribution; mirrors `Generation.workerName`. */
 	workerName?: string
+	/** Browser Rendering local dev config (Chrome wsEndpoint or executable path). */
+	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
 }
 
 /** Names of the worker handlers we know how to invoke via RPC. */

@@ -1,78 +1,18 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import type { WranglerConfig } from './config'
-import { buildEnv, setGlobalEnv, wireClassRefs, wireServiceBindings } from './env'
-import { ExecutionContext } from './execution-context'
+import { buildEnv, wireServiceBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
-import type { WorkerIsolation } from './lopata-config'
-import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
 import { WorkerThreadExecutor } from './worker-thread/executor'
 
 /**
- * Sentinel for thread-mode DO namespaces. Their real class lives in the DO
- * worker thread; the namespace only checks `_class` for truthiness and the
- * executor factory reads `className` from config, so an empty class suffices.
+ * Sentinel for DO namespaces in thread-mode generations. Their real class
+ * lives in the DO worker thread; the namespace only checks `_class` for
+ * truthiness and the WorkerExecutorFactory reads the `className` from config,
+ * so an empty class suffices.
  */
 const EXTERNAL_DO_CLASS = class {} as any // eslint-disable-line @typescript-eslint/no-explicit-any
-
-function isEntrypointClass(exp: unknown): exp is new(ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
-	return typeof exp === 'function' && exp.prototype
-		&& typeof exp.prototype.fetch === 'function'
-}
-
-/**
- * Detect and patch web frameworks (Hono, etc.) that use .then()/.catch()
- * for request dispatch. This breaks async stack traces in Bun because
- * errors that propagate through .then() callbacks lose their async context.
- *
- * err.stack is set once at Error creation and doesn't change, but Bun
- * appends async frames (callers) only when the error is caught via `await`,
- * not via `.catch()`. The user's error handler may re-throw inside .catch(),
- * which creates a new rejection without those async frames.
- *
- * Fix: wrap each route handler with try/catch to snapshot err.stack
- * (which includes async frames at that point) before the error enters
- * the .then()/.catch() chain. If the error handler re-throws, we
- * restore the full stack.
- */
-function patchFrameworkDispatch(defaultExport: Record<string, unknown>): void {
-	if (typeof defaultExport.fetch !== 'function') return
-
-	// Detect Hono by characteristic properties
-	const isHono = 'routes' in defaultExport && 'router' in defaultExport && '_basePath' in defaultExport
-	if (!isHono) return
-
-	const app = defaultExport as Record<string, any>
-	const routes: { handler: Function }[] = app.routes
-	if (!Array.isArray(routes)) return
-
-	// Wrap each route handler to capture err.stack before .then() destroys it
-	for (const route of routes) {
-		const orig = route.handler
-		route.handler = async function(this: unknown, c: unknown, next: unknown) {
-			try {
-				return await orig.call(this, c, next)
-			} catch (err: unknown) {
-				// Save the full stack (with async frames) before .then()/.catch() strips them
-				if (err instanceof Error) {
-					;(err as any).__asyncStack = err.stack
-				}
-				throw err
-			}
-		}
-	}
-
-	// Patch error handler: if the user's handler re-throws, restore the saved stack
-	const origErrorHandler = app.errorHandler
-	app.errorHandler = (err: unknown, c: unknown) => {
-		if (err instanceof Error && (err as any).__asyncStack) {
-			err.stack = (err as any).__asyncStack
-			delete (err as any).__asyncStack
-		}
-		return origErrorHandler(err, c)
-	}
-}
 
 export class GenerationManager {
 	private generations = new Map<number, Generation>()
@@ -94,8 +34,7 @@ export class GenerationManager {
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
 	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
-	readonly workerIsolation: WorkerIsolation
-	/** @internal Path to the wrangler config file (for isolated mode worker threads) */
+	/** @internal Path to the wrangler config file (DO worker threads re-load it). */
 	_configPath: string = ''
 
 	constructor(
@@ -109,7 +48,6 @@ export class GenerationManager {
 			executorFactory?: DOExecutorFactory
 			configPath?: string
 			browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
-			workerIsolation?: WorkerIsolation
 		},
 	) {
 		this.config = config
@@ -122,7 +60,6 @@ export class GenerationManager {
 		this.executorFactory = options?.executorFactory
 		this.browserConfig = options?.browserConfig
 		this._configPath = options?.configPath ?? ''
-		this.workerIsolation = options?.workerIsolation ?? 'in-process'
 	}
 
 	/** The currently active generation (receives new requests) */
@@ -161,122 +98,17 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
-		if (this.workerIsolation === 'thread') {
-			return this._doReloadThread()
-		}
+		this.executorFactory?.configure?.(this.workerPath, this._configPath)
 
-		// 1. Configure executor factory with module/config paths (for isolated mode)
-		if (this.executorFactory && 'configure' in this.executorFactory) {
-			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
-		}
-
-		// 2. Build new env with fresh binding instances (same underlying DB)
-		//    Reuse existing DO namespaces to preserve WebSocket connections across reloads
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
-
-		// Update shared namespace map
-		for (const entry of registry.durableObjects) {
-			this._doNamespaces.set(entry.className, entry.namespace)
-		}
-
-		// 3. Update globalEnv BEFORE importing the worker module so that
-		//    top-level `import { env } from "cloudflare:workers"` sees bindings
-		//    during module evaluation (main worker only).
-		if (this.isMain) {
-			setGlobalEnv(env)
-		}
-
-		// 3a. Invalidate every cached user-code module under baseDir. The
-		//     `?v=<ts>` cache-bust below only invalidates the entry; static
-		//     imports inside it would otherwise resolve through Bun's module
-		//     registry to the cached transitive modules — so edits to any
-		//     file other than the entry itself would silently no-op. See
-		//     `tests/hmr-e2e.test.ts` "transitive dep change" cases.
-		invalidateUserModules(this.baseDir)
-
-		// 4. Import fresh worker module using cache-busting query string
-		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)
-
-		// 5. Wire DO and Workflow class references
-		wireClassRefs(registry, workerModule, env, this.workerRegistry, this.nextGenId)
-
-		// 5. Validate default export (or service worker fetch handler)
-		const defaultExport = workerModule.default
-		const classBasedExport = isEntrypointClass(defaultExport)
-		const swHandlers = (globalThis as any).__lopata_sw_handlers as { fetch?: (event: any) => void } | undefined
-		const hasServiceWorkerFetch = !!swHandlers?.fetch
-
-		if (!classBasedExport && !defaultExport?.fetch && !hasServiceWorkerFetch) {
-			throw new Error(
-				'Worker module must export a default object with a fetch() method, a class with a fetch() method on its prototype, or use addEventListener("fetch", handler)',
-			)
-		}
-
-		// 5b. Patch frameworks that use .then()/.catch() for dispatch (e.g. Hono)
-		// This destroys async stack traces in Bun. We replace their fetch with an
-		// async wrapper so errors propagate through proper await chains.
-		if (!classBasedExport) {
-			patchFrameworkDispatch(defaultExport)
-		}
-
-		// 6. Create new generation
-		const genId = this.nextGenId++
-		const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config, this.workerName, this.cronEnabled)
-		this.generations.set(genId, gen)
-
-		// 7. Drain old generation
-		const oldGenId = this._activeGenId
-		if (oldGenId !== null) {
-			const oldGen = this.generations.get(oldGenId)
-			if (oldGen && oldGen.state === 'active') {
-				oldGen.drain()
-				if (oldGen.isIdle()) {
-					// No in-flight work — stop immediately
-					this._stopGeneration(oldGenId)
-				} else {
-					// Poll for idle state, with grace period as hard maximum
-					oldGen.drainPollTimer = setInterval(() => {
-						if (oldGen.isIdle()) {
-							this._stopGeneration(oldGenId)
-						}
-					}, 200)
-					oldGen.drainTimer = setTimeout(() => {
-						this._stopGeneration(oldGenId)
-					}, this.gracePeriodMs)
-				}
-			}
-		}
-
-		// 8. Mark new generation as active
-		this._activeGenId = genId
-
-		// 9. Start consumers + cron on new generation
-		gen.startConsumers()
-
-		return gen
-	}
-
-	private async _doReloadThread(): Promise<Generation> {
 		// Stateful bindings (DO namespaces, queue producers, workflows,
 		// service bindings, email, browser, containers) live in main — the worker
-		// RPCs into them. Stateless ones duplicate in the thread (see thread-env.ts).
-		// Static assets stay main-side for the auto-serve fallback.
-		if (this.executorFactory && 'configure' in this.executorFactory) {
-			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
-		}
+		// RPCs into them. Stateless ones duplicate in the thread. Static assets
+		// stay main-side for the auto-serve fallback.
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
 		for (const entry of registry.durableObjects) {
 			this._doNamespaces.set(entry.className, entry.namespace)
-		}
-		// DO class refs themselves live in the worker thread — but the namespace's
-		// `_class` field gates `get(id)` and the WorkerExecutorFactory only reads
-		// the className from config. `EXTERNAL_DO_CLASS` satisfies the gate; the
-		// DO worker thread loads the real class from `modulePath` itself.
-		for (const entry of registry.durableObjects) {
 			entry.namespace._setClass(EXTERNAL_DO_CLASS, env, this.nextGenId)
 		}
-		// Workflow + container class wiring still needs the real user code on main
-		// (state machine here invokes the class); deferred to a follow-up.
 		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
@@ -284,6 +116,7 @@ export class GenerationManager {
 			config: this.config,
 			baseDir: this.baseDir,
 			workerName: this.workerName,
+			browserConfig: this.browserConfig,
 			mainEnv: env,
 		})
 		try {
@@ -294,7 +127,7 @@ export class GenerationManager {
 		}
 
 		const genId = this.nextGenId++
-		const gen = new Generation(genId, {}, null, false, env, registry, this.config, this.workerName, this.cronEnabled, executor)
+		const gen = new Generation(genId, env, registry, this.config, executor, this.workerName, this.cronEnabled)
 		this.generations.set(genId, gen)
 
 		const oldGenId = this._activeGenId

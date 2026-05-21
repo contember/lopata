@@ -48,4 +48,6 @@ export interface DOExecutor {
 
 export interface DOExecutorFactory {
 	create(config: ExecutorConfig): DOExecutor
+	/** Tell the factory where user code lives (only used by worker-thread DO executors). */
+	configure?(modulePath: string, configPath: string): void
 }

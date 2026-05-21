@@ -137,6 +137,16 @@ export class CFWebSocket extends EventTarget {
 		}
 	}
 
+	/**
+	 * Deliver `evt` to local listeners if the peer is already `accept()`ed;
+	 * otherwise queue it for replay. Centralises the "dispatch or queue" branch
+	 * that every bridge implementation otherwise inlines.
+	 */
+	dispatchOrQueue(evt: WSEvent): void {
+		if (this._accepted) this._dispatchWSEvent(evt)
+		else this._eventQueue.push(evt)
+	}
+
 	/** @internal */
 	_dispatchWSEvent(evt: WSEvent): void {
 		switch (evt.type) {

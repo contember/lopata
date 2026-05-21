@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { AiBinding } from '../bindings/ai'
 import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
+import { BrowserBinding } from '../bindings/browser'
 import { openD1Database } from '../bindings/d1'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
@@ -34,6 +35,7 @@ export interface ThreadEnvOptions {
 	config: WranglerConfig
 	baseDir: string
 	rpc: RpcClient
+	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
 }
 
 export interface ThreadEnvBuilt {
@@ -45,7 +47,7 @@ export interface ThreadEnvBuilt {
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 }
 
-export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): ThreadEnvBuilt {
+export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
 	const dataDir = path.join(baseDir, '.lopata')
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
@@ -129,6 +131,10 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Thre
 		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
 	}
 
+	if (config.browser) {
+		env[config.browser.binding] = new BrowserBinding(browserConfig ?? {})
+	}
+
 	if (config.ai) {
 		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
 		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
@@ -169,7 +175,15 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request | string | URL, init?: RequestInit): Promise<Response> {
 	const url = input instanceof URL ? input.toString() : input
 	const request = typeof url === 'string' ? new Request(url, init) : url
-	return deserializeResponse(await rpc.callFetch(target, request))
+	const serialized = await rpc.callFetch(target, request)
+	const response = deserializeResponse(serialized) as Response & { webSocket?: { __bridgedWsId: string } }
+	// If the binding's response came with a WebSocket peer, main already adopted
+	// it under `webSocketId`. Tag the response so `entry.ts` re-uses that same id
+	// when shipping the response back up (instead of allocating a new peer).
+	if (serialized.webSocketId) {
+		response.webSocket = { __bridgedWsId: serialized.webSocketId }
+	}
+	return response
 }
 
 /**

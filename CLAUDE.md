@@ -28,12 +28,33 @@ Pure TypeScript runtime that runs Cloudflare Worker code in Bun with local bindi
 ```
 CLI (src/cli.ts) → dev command (src/cli/dev.ts)
   → GenerationManager (src/generation-manager.ts) — manages hot-reload
-    → Generation (src/generation.ts) — immutable worker module state
-      → buildEnv() (src/env.ts) — creates all binding instances
-      → wireClassRefs() (src/env.ts) — connects DO/Workflow classes to namespaces
+    → buildEnv() (src/env.ts) — stateful bindings live on main
+    → wireServiceBindings() (src/env.ts) — wires service-binding proxies
+    → WorkerThreadExecutor (src/worker-thread/executor.ts) — spawns Bun Worker per generation
+    → Generation (src/generation.ts) — thread-only fetch/scheduled/email
   → Bun.serve() on :8787
-    → Generation.callFetch() — wraps request in tracing span → worker.fetch(req, env, ctx)
+    → Generation.callFetch() — wraps request in tracing span → executor.executeFetch()
+       → user module imported inside the Worker thread (src/worker-thread/entry.ts)
 ```
+
+### Worker-thread isolation (`src/worker-thread/`)
+
+User code runs in a Bun `Worker` spawned per generation. Reload = terminate + respawn,
+which gives correct transitive HMR for free (the whole module graph is rebuilt).
+
+- `executor.ts` / `entry.ts` — main↔worker RPC over `postMessage` + structured clone.
+- `thread-env.ts` — stateless bindings (KV, R2, D1, AI, …) are recreated in the
+  worker; stateful ones (DO/queue/email/workflow/service) become Proxies that
+  RPC into the main env via `binding-call` / `binding-fetch`.
+- `main-ws-bridge.ts` / `ws-bridge.ts` — WebSocket peers shipped in
+  `Response{status:101, webSocket}` get bridged: the worker keeps the user-facing
+  half, main owns the half handed to `Bun.serve.upgrade`. Events are buffered
+  per-wsId until both sides are wired.
+- DO worker threads (`src/bindings/do-executor-worker.ts` + `do-worker-entry.ts`)
+  participate in the same pattern — when a DO's fetch returns a `Response{webSocket}`,
+  the DO worker forwards events through to main, which adopts that peer and
+  ships its id back so the caller's user-worker reuses the same main-side
+  CFWebSocket.
 
 ### Module shimming (`src/plugin.ts`)
 
@@ -56,7 +77,12 @@ Each binding is a class implementing the CF API. All state persists to SQLite (`
 
 ### Environment building (`src/env.ts`)
 
-`buildEnv()` creates the `env` object with all binding instances. `wireClassRefs()` runs after worker module import to find exported DO/Workflow classes and connect them to their namespaces via `_setClass(cls, env)`. A mutable `globalEnv` reference is shared across module graphs via `setGlobalEnv()`.
+`buildEnv()` creates the main-side `env` with stateful binding instances (DO
+namespaces, queue producers, workflows, service bindings, …). DO/Workflow
+classes are loaded inside the worker thread (where user code lives); main only
+installs a sentinel class on the namespace to satisfy the wired-check.
+`wireServiceBindings()` patches service-binding proxies after the worker
+registry knows about every worker.
 
 ### Multi-worker & service bindings
 
@@ -64,7 +90,11 @@ Each binding is a class implementing the CF API. All state persists to SQLite (`
 
 ### Generation & hot-reload (`src/generation-manager.ts`)
 
-`GenerationManager.reload()` creates a fresh `Generation` with serialized queue (no overlapping reloads). Drains old generation, waits grace period, then force-stops. `patchFrameworkDispatch()` wraps Hono handlers to preserve async stacks destroyed by `.then()/.catch()`.
+`GenerationManager.reload()` creates a fresh `Generation` with serialized queue
+(no overlapping reloads). Each generation owns its own `WorkerThreadExecutor`;
+reload drains the previous generation and terminates its Worker after a grace
+period. Worker termination is what makes transitive HMR correct: the next
+generation's Worker re-imports every user module from disk.
 
 ### Tracing (`src/tracing/`)
 
@@ -81,7 +111,7 @@ Five sub-plugins: `modules-plugin` (resolves virtual CF modules via `globalThis.
 ### Config system
 
 - **Wrangler config** (`src/config.ts`): parses `wrangler.toml`/`.jsonc`/`.json`, defines all binding types, supports env overrides
-- **Lopata config** (`src/lopata-config.ts`): multi-worker orchestration, isolation modes (`dev` = in-process DO, `isolated` = worker threads), browser/cron config
+- **Lopata config** (`src/lopata-config.ts`): multi-worker orchestration, browser/cron config (workers always run in their own Bun Worker thread; the legacy `isolation: 'dev'/'isolated'` DO toggle is gone)
 
 ## Testing patterns
 

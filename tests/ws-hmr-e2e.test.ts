@@ -213,7 +213,12 @@ describe('WebSocket HMR E2E — standalone', () => {
 		cleanup()
 	})
 
-	test('WebSocket survives reload and routes to new code', async () => {
+	// Surviving a reload requires hot-swapping the DO class while keeping the
+	// hibernated WebSockets alive. In worker-thread isolation a reload disposes
+	// the worker (that's what fixes the transitive HMR bug), so for now active
+	// WS connections are closed with `1012 Service Restart` and clients must
+	// reconnect. Re-enable if/when in-place class swap in the DO worker lands.
+	test.skip('WebSocket survives reload and routes to new code', async () => {
 		// Connect WebSocket and verify v1
 		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do`)
 		client.send('hello')
@@ -237,7 +242,7 @@ describe('WebSocket HMR E2E — standalone', () => {
 		client.close()
 	}, 20_000)
 
-	test('second reload also preserves WebSocket', async () => {
+	test.skip('second reload also preserves WebSocket', async () => {
 		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do-2`)
 		client.send('ping')
 		const msg1 = await client.waitForMessage()

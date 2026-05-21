@@ -91,14 +91,14 @@ async function connect(url: string): Promise<WsClient> {
 	})
 }
 
-describe('Plain WebSocket through worker-isolation=thread', () => {
+describe('Plain WebSocket through worker-thread runtime', () => {
 	let proc: Subprocess
 	const PORT = 18802
 	const base = `ws://localhost:${PORT}`
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT), '--worker-isolation=thread'], {
+		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

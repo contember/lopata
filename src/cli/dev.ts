@@ -25,7 +25,7 @@ import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase } from '../db'
 import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
-import { loadLopataConfig, type WorkerIsolation } from '../lopata-config'
+import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
 import { handleS3ProxyRequest, matchS3Path } from '../s3/proxy'
@@ -50,11 +50,9 @@ export async function run(ctx: CliContext, args: string[]) {
 		listen: { type: 'string' },
 		host: { type: 'boolean' },
 		port: { type: 'string' },
-		'worker-isolation': { type: 'string' },
 	})
 	const envFlag = ctx.envName
 	const portFlag = values.port
-	const workerIsolationFlag = parseWorkerIsolation(values['worker-isolation'])
 
 	const baseDir = process.cwd()
 	const watchers: FileWatcher[] = []
@@ -71,15 +69,12 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
 		setLopataConfig(lopataConfig)
 
-		const workerIsolation = workerIsolationFlag ?? lopataConfig.workerIsolation ?? 'in-process'
-
 		if (lopataConfig.isolation && lopataConfig.isolation !== 'dev' && lopataConfig.isolation !== 'isolated') {
 			console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}", using "dev"`)
 		}
-		// Thread-mode main workers can't host DO classes (user code lives in the
-		// worker thread), so we force isolated DOs there — each DO gets its own
-		// thread that loads user code itself.
-		const executorFactory = await makeExecutorFactory(lopataConfig.isolation === 'isolated' || workerIsolation === 'thread')
+		// DOs always run in worker threads now — main thread can't host the user
+		// classes since the worker entry imports user code in its own thread.
+		const executorFactory = await makeExecutorFactory()
 
 		registry = new WorkerRegistry()
 
@@ -89,10 +84,6 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log(`[lopata] Main worker: ${mainConfig.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(mainConfig)
 
-		if (workerIsolation === 'thread') {
-			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
-		}
-
 		const mainManager = new GenerationManager(mainConfig, mainBaseDir, {
 			workerName: mainConfig.name,
 			workerRegistry: registry,
@@ -101,7 +92,6 @@ export async function run(ctx: CliContext, args: string[]) {
 			executorFactory,
 			configPath: lopataConfig.main,
 			browserConfig: lopataConfig.browser,
-			workerIsolation,
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
@@ -120,7 +110,6 @@ export async function run(ctx: CliContext, args: string[]) {
 				cron: lopataConfig.cron,
 				executorFactory,
 				configPath: workerDef.config,
-				workerIsolation,
 			})
 			registry.register(workerDef.name, auxManager)
 
@@ -229,18 +218,13 @@ export async function run(ctx: CliContext, args: string[]) {
 			console.log(`[lopata] Watching ${extraDir} for changes (extra)`)
 		}
 	} else {
-		// ─── Single-worker mode (current behavior) ────────────────────
+		// ─── Single-worker mode ────────────────────────────────────────
 		const config = await autoLoadConfig(baseDir, envFlag)
 		console.log(`[lopata] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(config)
 
-		const workerIsolation = workerIsolationFlag ?? 'in-process'
-		if (workerIsolation === 'thread') {
-			console.log('[lopata] Worker isolation: thread (Bun Worker per generation)')
-		}
-		const executorFactory = await makeExecutorFactory(workerIsolation === 'thread')
+		const executorFactory = await makeExecutorFactory()
 		manager = new GenerationManager(config, baseDir, {
-			workerIsolation,
 			executorFactory,
 			configPath: findConfigPath(baseDir),
 		})
@@ -468,11 +452,10 @@ export async function run(ctx: CliContext, args: string[]) {
 				}
 
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
-				if (cfSocket._peer?._accepted) {
-					cfSocket._peer._dispatchWSEvent({ type: 'message', data: typeof message === 'string' ? message : message.buffer as ArrayBuffer })
-				} else if (cfSocket._peer) {
-					cfSocket._peer._eventQueue.push({ type: 'message', data: typeof message === 'string' ? message : message.buffer as ArrayBuffer })
-				}
+				cfSocket._peer?.dispatchOrQueue({
+					type: 'message',
+					data: typeof message === 'string' ? message : message.buffer as ArrayBuffer,
+				})
 			},
 			close(ws, code, reason) {
 				const data = ws.data as unknown as Record<string, unknown>
@@ -487,12 +470,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
 				if (cfSocket._peer && cfSocket._peer.readyState !== 3 /* CLOSED */) {
-					const evt = { type: 'close' as const, code: code ?? 1000, reason: reason ?? '', wasClean: true }
-					if (cfSocket._peer._accepted) {
-						cfSocket._peer._dispatchWSEvent(evt)
-					} else {
-						cfSocket._peer._eventQueue.push(evt)
-					}
+					cfSocket._peer.dispatchOrQueue({ type: 'close', code: code ?? 1000, reason: reason ?? '', wasClean: true })
 					cfSocket._peer.readyState = 3
 				}
 				cfSocket.readyState = 3
@@ -538,17 +516,9 @@ function resolveWorkerParam(url: URL, registry: WorkerRegistry | undefined, fall
 	return target
 }
 
-async function makeExecutorFactory(needsIsolated: boolean): Promise<import('../bindings/do-executor').DOExecutorFactory | undefined> {
-	if (!needsIsolated) return undefined
+async function makeExecutorFactory(): Promise<import('../bindings/do-executor').DOExecutorFactory> {
 	const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
-	console.log('[lopata] DO isolation: isolated (Worker threads)')
 	return new WorkerExecutorFactory()
-}
-
-function parseWorkerIsolation(flag: string | undefined): WorkerIsolation | undefined {
-	if (flag === undefined) return undefined
-	if (flag === 'in-process' || flag === 'thread') return flag
-	throw new Error(`Invalid --worker-isolation value "${flag}" (expected "in-process" or "thread")`)
 }
 
 function matchGlob(text: string, pattern: string): boolean {

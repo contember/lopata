@@ -55,6 +55,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const { buildWorkerEnv } = await import('./do-worker-env')
 	const { DurableObjectStateImpl, DurableObjectIdImpl } = await import('./durable-object')
 	const { BridgeWebSocket } = await import('./do-websocket-bridge')
+	const { CFWebSocket } = await import('./websocket-pair')
+	const { generateId } = await import('../tracing/context')
 
 	const config = await loadConfig(workerConfig.configPath)
 	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir)
@@ -84,6 +86,14 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const bridgedWebSockets = new Map<string, InstanceType<typeof BridgeWebSocket>>()
 
+	/**
+	 * Client peers from `Response{webSocket}` returned by the DO's own fetch().
+	 * Each one's events are forwarded to the main thread so the real client sees
+	 * them; messages from the real client are dispatched onto the user-facing
+	 * server peer (`client._peer`).
+	 */
+	const fetchBridgedSockets = new Map<string, InstanceType<typeof CFWebSocket>>()
+
 	// Wire alarm callback
 	state.storage._setAlarmCallback((time: number | null) => {
 		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
@@ -106,15 +116,49 @@ async function initWorker(workerConfig: WorkerConfig) {
 						body: cmd.body,
 					})
 					const response = await fetchFn.call(instance, request)
-					const resBody = response.body ? await response.arrayBuffer() : null
+					const clientWs = (response as { webSocket?: unknown }).webSocket
+					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
+					const resBody = !hasWebSocket && response.body ? await response.arrayBuffer() : null
 					const resHeaders: [string, string][] = []
 					response.headers.forEach((v: string, k: string) => resHeaders.push([k, v]))
+
+					let fetchWebSocketId: string | undefined
+					if (hasWebSocket) {
+						const ws = clientWs as InstanceType<typeof CFWebSocket>
+						fetchWebSocketId = generateId(8)
+						fetchBridgedSockets.set(fetchWebSocketId, ws)
+						// Forward bytes the user sent on `server` (which dispatch as
+						// `message` events on `client`) up to main. Listeners must be
+						// attached BEFORE accept() so the flush of any queued events
+						// (e.g. user already called server.send() before returning)
+						// reaches them.
+						ws.addEventListener('message', (ev: Event) => {
+							const data = (ev as MessageEvent).data
+							postMessage({ type: 'fetch-ws-outgoing', wsId: fetchWebSocketId!, data } satisfies DOMainMessage)
+						})
+						ws.addEventListener('close', (ev: Event) => {
+							const ce = ev as CloseEvent
+							postMessage(
+								{
+									type: 'fetch-ws-close-out',
+									wsId: fetchWebSocketId!,
+									code: ce.code ?? 1000,
+									reason: ce.reason ?? '',
+									wasClean: ce.wasClean ?? true,
+								} satisfies DOMainMessage,
+							)
+							fetchBridgedSockets.delete(fetchWebSocketId!)
+						})
+						ws.accept()
+					}
+
 					return {
 						type: 'fetch',
 						status: response.status,
 						statusText: response.statusText,
 						headers: resHeaders,
 						body: resBody,
+						fetchWebSocketId,
 					}
 				} finally {
 					state._exit()
@@ -212,6 +256,19 @@ async function initWorker(workerConfig: WorkerConfig) {
 		} else if (msg.type === 'ws-error') {
 			const ws = bridgedWebSockets.get(msg.wsId)
 			if (ws) ws._onError()
+		} else if (msg.type === 'fetch-ws-incoming') {
+			// Real client wrote bytes → deliver to the user's `server` peer.
+			const client = fetchBridgedSockets.get(msg.wsId)
+			client?._peer?.dispatchOrQueue({ type: 'message', data: msg.data })
+		} else if (msg.type === 'fetch-ws-close-in') {
+			const client = fetchBridgedSockets.get(msg.wsId)
+			const server = client?._peer
+			if (server) {
+				server.dispatchOrQueue({ type: 'close', code: msg.code, reason: msg.reason, wasClean: msg.wasClean })
+				server.readyState = 3
+			}
+			if (client) client.readyState = 3
+			fetchBridgedSockets.delete(msg.wsId)
 		}
 	}
 

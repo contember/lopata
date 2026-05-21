@@ -25,14 +25,14 @@ function cleanup() {
 	} catch {}
 }
 
-describe('Workflows in worker-isolation=thread mode', () => {
+describe('Workflows (worker-thread runtime)', () => {
 	let proc: Subprocess
 	const PORT = 18805
 	const base = `http://localhost:${PORT}`
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT), '--worker-isolation=thread'], {
+		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

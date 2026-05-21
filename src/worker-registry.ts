@@ -50,7 +50,12 @@ export class WorkerRegistry {
 		if (!gen) {
 			throw new Error(`Worker "${workerName}" has no active generation (failed to load?)`)
 		}
-		return { workerModule: gen.workerModule, env: gen.env, threadExecutor: gen.threadExecutor }
+		// `workerModule` is only consumed by the in-process fallback in
+		// `ServiceBinding.fetch` (used by the vite-plugin main worker which
+		// exposes a different adapter shape with its own workerModule).
+		// Thread-mode Generations don't carry one — fall back to `{}`.
+		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule ?? {}
+		return { workerModule, env: gen.env, threadExecutor: gen.threadExecutor }
 	}
 
 	/** List all registered managers (for dashboard) */

@@ -26,14 +26,14 @@ function cleanup() {
 	} catch {}
 }
 
-describe('Stateful bindings in worker-isolation=thread mode', () => {
+describe('Stateful bindings (worker-thread runtime)', () => {
 	let proc: Subprocess
 	const PORT = 18801
 	const base = `http://localhost:${PORT}`
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT), '--worker-isolation=thread'], {
+		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

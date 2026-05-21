@@ -25,14 +25,14 @@ function cleanup() {
 	} catch {}
 }
 
-describe('Durable Objects in worker-isolation=thread mode', () => {
+describe('Durable Objects (worker-thread runtime)', () => {
 	let proc: Subprocess
 	const PORT = 18804
 	const base = `http://localhost:${PORT}`
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT), '--worker-isolation=thread'], {
+		proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

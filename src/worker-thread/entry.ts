@@ -28,17 +28,19 @@ function post(msg: WorkerMessage): void {
 }
 
 async function serializeResponse(response: Response, ws: WorkerWsBridge): Promise<SerializedResponse> {
-	const cfSocket = (response as ResponseWithWebSocket).webSocket
-	if (response.status === 101 && cfSocket instanceof CFWebSocket) {
+	const cfSocket = (response as ResponseWithWebSocket).webSocket as
+		| CFWebSocket
+		| { __bridgedWsId: string }
+		| undefined
+	if (response.status === 101 && cfSocket) {
 		const headers: [string, string][] = []
 		response.headers.forEach((v, k) => headers.push([k, v]))
-		return {
-			status: response.status,
-			statusText: response.statusText,
-			headers,
-			body: null,
-			webSocketId: ws.register(cfSocket),
+		const base = { status: response.status, statusText: response.statusText, headers, body: null }
+		if (cfSocket instanceof CFWebSocket) {
+			return { ...base, webSocketId: ws.register(cfSocket) }
 		}
+		// Peer was adopted on main during a nested binding fetch — just reship its id.
+		return { ...base, webSocketId: cfSocket.__bridgedWsId }
 	}
 	return serializeResponseShared(response)
 }
@@ -66,7 +68,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const rpc = new RpcClient(post)
 	const wsBridge = new WorkerWsBridge(post)
-	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
+	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built
 
 	const workerModule = await import(init.modulePath)

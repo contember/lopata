@@ -42,9 +42,9 @@ export class WorkerWsBridge {
 		}
 		this._sockets.set(wsId, { userPeer, closed: false })
 
-		// Accept the shipped side so its event listeners fire; we attach
-		// forwarding listeners that propagate outgoing user code → main.
-		shipped.accept()
+		// Register forwarding listeners BEFORE accepting — `accept()` flushes
+		// any queued events (e.g. messages the user already sent via the server
+		// peer before returning the response), and we'd lose them otherwise.
 		shipped.addEventListener('message', (ev: Event) => {
 			const data = (ev as MessageEvent).data
 			this._post({ type: 'ws-worker-send', wsId, data })
@@ -54,6 +54,7 @@ export class WorkerWsBridge {
 			this._post({ type: 'ws-worker-close', wsId, code: ce.code, reason: ce.reason })
 			this._sockets.delete(wsId)
 		})
+		shipped.accept()
 
 		return wsId
 	}
@@ -62,12 +63,7 @@ export class WorkerWsBridge {
 	deliverClientMessage(wsId: string, data: string | ArrayBuffer): void {
 		const entry = this._sockets.get(wsId)
 		if (!entry || entry.closed) return
-		const peer = entry.userPeer
-		if (peer._accepted) {
-			peer._dispatchWSEvent({ type: 'message', data })
-		} else {
-			peer._eventQueue.push({ type: 'message', data })
-		}
+		entry.userPeer.dispatchOrQueue({ type: 'message', data })
 	}
 
 	/** Main delivered a close from the real client → fire close on the user's peer. */
@@ -75,14 +71,8 @@ export class WorkerWsBridge {
 		const entry = this._sockets.get(wsId)
 		if (!entry || entry.closed) return
 		entry.closed = true
-		const peer = entry.userPeer
-		const evt = { type: 'close' as const, code, reason, wasClean }
-		if (peer._accepted) {
-			peer._dispatchWSEvent(evt)
-		} else {
-			peer._eventQueue.push(evt)
-		}
-		peer.readyState = 3 // CLOSED
+		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
+		entry.userPeer.readyState = 3 // CLOSED
 		this._sockets.delete(wsId)
 	}
 }

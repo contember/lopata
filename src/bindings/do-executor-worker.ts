@@ -8,6 +8,7 @@
 import { dirname, resolve } from 'node:path'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
+import { CFWebSocket, type WSEvent } from './websocket-pair'
 
 // --- Message protocol ---
 
@@ -21,7 +22,15 @@ export type DOCommand =
 
 /** Results returned from worker to main thread */
 export type DOResult =
-	| { type: 'fetch'; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer | null }
+	| {
+		type: 'fetch'
+		status: number
+		statusText: string
+		headers: [string, string][]
+		body: ArrayBuffer | null
+		/** Set when the DO's fetch handler returned a `Response{status:101, webSocket}`. */
+		fetchWebSocketId?: string
+	}
 	| { type: 'rpc-call'; value: unknown }
 	| { type: 'rpc-get'; value: unknown }
 	| { type: 'alarm' }
@@ -34,6 +43,9 @@ export type DOWorkerMessage =
 	| { type: 'ws-message'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'ws-close'; wsId: string; code: number; reason: string; wasClean: boolean }
 	| { type: 'ws-error'; wsId: string }
+	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
+	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
@@ -42,6 +54,9 @@ export type DOMainMessage =
 	| { type: 'result'; id: number; result: DOResult }
 	| { type: 'alarm-set'; time: number | null }
 	| { type: 'ws-bridge'; payload: WsBridgeOutbound }
+	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
+	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'fetch-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
 
 // --- Pending command tracking ---
 
@@ -66,6 +81,12 @@ export class WorkerExecutor implements DOExecutor {
 	private _blocked = false
 	private _wsCount = 0
 	private _bridgedWebSockets = new Map<string, WebSocket>()
+	/**
+	 * Main-side CFWebSockets that proxy a `Response{webSocket}` returned by the
+	 * DO worker's fetch handler. Each entry's `_peer` is a `FetchDoBridgePeer`
+	 * that forwards outgoing bytes (Bun.serve → here) down to the DO worker.
+	 */
+	private _fetchBridgedSockets = new Map<string, CFWebSocket>()
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
@@ -135,6 +156,20 @@ export class WorkerExecutor implements DOExecutor {
 				case 'ws-bridge':
 					this._handleWsBridge(msg.payload)
 					break
+
+				case 'fetch-ws-outgoing': {
+					this._fetchBridgedSockets.get(msg.wsId)?.dispatchOrQueue({ type: 'message', data: msg.data })
+					break
+				}
+
+				case 'fetch-ws-close-out': {
+					const cfSocket = this._fetchBridgedSockets.get(msg.wsId)
+					if (!cfSocket) break
+					cfSocket.dispatchOrQueue({ type: 'close', code: msg.code, reason: msg.reason, wasClean: msg.wasClean })
+					cfSocket.readyState = 3
+					this._fetchBridgedSockets.delete(msg.wsId)
+					break
+				}
 			}
 		}
 
@@ -276,12 +311,33 @@ export class WorkerExecutor implements DOExecutor {
 
 		if (result.type !== 'fetch') throw new Error('Unexpected result type')
 
-		// Reconstruct Response
-		return new Response(result.body, {
+		const init: ResponseInit & { webSocket?: CFWebSocket } = {
 			status: result.status,
 			statusText: result.statusText,
 			headers: result.headers,
-		})
+		}
+
+		if (result.fetchWebSocketId) {
+			init.webSocket = this._adoptFetchWebSocket(result.fetchWebSocketId)
+		}
+
+		return new Response(result.body, init)
+	}
+
+	/**
+	 * Build a main-side CFWebSocket pair that bridges back to the DO worker's
+	 * client peer. The CFWebSocket returned here is what `Bun.serve.upgrade`
+	 * receives via the binding-fetch round-trip; its peer forwards every event
+	 * down to the DO worker so the user's `server.send()` reaches the real
+	 * client and vice versa.
+	 */
+	private _adoptFetchWebSocket(wsId: string): CFWebSocket {
+		const cfSocket = new CFWebSocket()
+		const bridgePeer = new FetchDoBridgePeer(wsId, msg => this._worker?.postMessage(msg))
+		cfSocket._peer = bridgePeer
+		bridgePeer._peer = cfSocket
+		this._fetchBridgedSockets.set(wsId, cfSocket)
+		return cfSocket
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
@@ -350,6 +406,42 @@ export class WorkerExecutor implements DOExecutor {
 		}
 		this._pending.clear()
 		this._bridgedWebSockets.clear()
+		this._fetchBridgedSockets.clear()
+	}
+}
+
+/**
+ * Peer that lives next to a main-side CFWebSocket and forwards every dispatched
+ * event back to the DO worker thread (where the user's `server` peer can pick
+ * it up). Mirrors `BridgeWebSocketPeer` in worker-thread/main-ws-bridge but
+ * targets the DO executor's worker instead of the main user-worker thread.
+ */
+class FetchDoBridgePeer extends CFWebSocket {
+	private _post: (msg: DOWorkerMessage) => void
+	private _wsId: string
+
+	constructor(wsId: string, post: (msg: DOWorkerMessage) => void) {
+		super()
+		this._wsId = wsId
+		this._post = post
+		this._accepted = true
+		this.readyState = CFWebSocket.OPEN
+	}
+
+	override _dispatchWSEvent(evt: WSEvent): void {
+		if (evt.type === 'message' && evt.data !== undefined) {
+			this._post({ type: 'fetch-ws-incoming', wsId: this._wsId, data: evt.data })
+			return
+		}
+		if (evt.type === 'close') {
+			this._post({
+				type: 'fetch-ws-close-in',
+				wsId: this._wsId,
+				code: evt.code ?? 1000,
+				reason: evt.reason ?? '',
+				wasClean: evt.wasClean ?? true,
+			})
+		}
 	}
 }
 

@@ -14,6 +14,7 @@
  */
 
 import { CFWebSocket, type WSEvent } from '../bindings/websocket-pair'
+import { generateId } from '../tracing/context'
 import type { WorkerCommand } from './protocol'
 
 class BridgeWebSocketPeer extends CFWebSocket {
@@ -26,8 +27,9 @@ class BridgeWebSocketPeer extends CFWebSocket {
 		this._wsId = wsId
 		this._post = post
 		this._onForget = onForget
-		// `cli/dev.ts:467` requires `_accepted` so it dispatches inbound messages
-		// without queuing — we're always ready to forward to the worker.
+		// The message handler in cli/dev.ts forwards inbound bytes by calling
+		// `_dispatchWSEvent` directly only when `_accepted` is true — keep it
+		// pinned so we're always ready to relay to the worker.
 		this._accepted = true
 		this.readyState = CFWebSocket.OPEN
 	}
@@ -53,6 +55,13 @@ class BridgeWebSocketPeer extends CFWebSocket {
 export class MainWsBridge {
 	/** wsId → cfSocket (the side handed to `Bun.serve.upgrade`). */
 	private _sockets = new Map<string, CFWebSocket>()
+	/**
+	 * Events that arrived from the worker before `createSocket()` was called for
+	 * their wsId. Happens when the worker dispatches queued events during
+	 * `accept()` (e.g. a `server.send()` issued before the response is shipped)
+	 * — the post races ahead of the binding-fetch / fetch result.
+	 */
+	private _pendingEvents = new Map<string, WSEvent[]>()
 	private _post: (cmd: WorkerCommand) => void
 
 	constructor(post: (cmd: WorkerCommand) => void) {
@@ -65,29 +74,59 @@ export class MainWsBridge {
 		cfSocket._peer = peer
 		peer._peer = cfSocket
 		this._sockets.set(wsId, cfSocket)
+		const pending = this._pendingEvents.get(wsId)
+		if (pending) {
+			cfSocket._eventQueue.push(...pending)
+			this._pendingEvents.delete(wsId)
+		}
 		return cfSocket
+	}
+
+	/**
+	 * Adopt an already-real `CFWebSocket` (typically the client peer returned
+	 * from a DO/service binding inside `_dispatchBindingFetch`). The peer is
+	 * already wired to its server counterpart, so we just need to keep it
+	 * addressable by id when the worker echoes the response back up.
+	 */
+	adoptExisting(ws: CFWebSocket): string {
+		const wsId = generateId(8)
+		this._sockets.set(wsId, ws)
+		return wsId
+	}
+
+	/** Look up a previously-adopted or created CFWebSocket. */
+	getSocket(wsId: string): CFWebSocket | undefined {
+		return this._sockets.get(wsId)
 	}
 
 	deliverWorkerSend(wsId: string, data: string | ArrayBuffer): void {
 		const cfSocket = this._sockets.get(wsId)
-		if (!cfSocket) return
-		if (cfSocket._accepted) {
-			cfSocket._dispatchWSEvent({ type: 'message', data })
-		} else {
-			cfSocket._eventQueue.push({ type: 'message', data })
+		const evt: WSEvent = { type: 'message', data }
+		if (!cfSocket) {
+			this._bufferPending(wsId, evt)
+			return
 		}
+		cfSocket.dispatchOrQueue(evt)
 	}
 
 	deliverWorkerClose(wsId: string, code: number, reason: string): void {
 		const cfSocket = this._sockets.get(wsId)
-		if (!cfSocket) return
 		const evt: WSEvent = { type: 'close', code, reason, wasClean: true }
-		if (cfSocket._accepted) {
-			cfSocket._dispatchWSEvent(evt)
-		} else {
-			cfSocket._eventQueue.push(evt)
+		if (!cfSocket) {
+			this._bufferPending(wsId, evt)
+			return
 		}
+		cfSocket.dispatchOrQueue(evt)
 		this._sockets.delete(wsId)
+	}
+
+	private _bufferPending(wsId: string, evt: WSEvent): void {
+		let q = this._pendingEvents.get(wsId)
+		if (!q) {
+			q = []
+			this._pendingEvents.set(wsId, q)
+		}
+		q.push(evt)
 	}
 
 	/**
@@ -98,13 +137,11 @@ export class MainWsBridge {
 	disposeAll(): void {
 		for (const cfSocket of this._sockets.values()) {
 			if (cfSocket.readyState === CFWebSocket.CLOSED) continue
-			const evt: WSEvent = { type: 'close', code: 1012, reason: 'Service Restart', wasClean: true }
-			if (cfSocket._accepted) {
-				cfSocket._dispatchWSEvent(evt)
-			} else {
-				cfSocket._eventQueue.push(evt)
-			}
+			cfSocket.dispatchOrQueue({ type: 'close', code: 1012, reason: 'Service Restart', wasClean: true })
 		}
 		this._sockets.clear()
+		// Drop anything still queued for a wsId that never reached createSocket
+		// (e.g. binding-fetch errored after the worker pushed events).
+		this._pendingEvents.clear()
 	}
 }
