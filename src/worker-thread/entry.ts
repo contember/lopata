@@ -11,7 +11,7 @@ import type { SerializedError, SerializedResponse, WorkerCommand, WorkerHandlerN
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-client'
 import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
-import { buildThreadEnv } from './thread-env'
+import { buildThreadEnv, startThreadQueueConsumers } from './thread-env'
 import { WorkerWsBridge } from './ws-bridge'
 
 declare var self: Worker
@@ -64,7 +64,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const rpc = new RpcClient(post)
 	const wsBridge = new WorkerWsBridge(post)
-	const { env, workflows } = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
+	const { env, db, workflows } = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc })
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
@@ -75,6 +75,8 @@ async function initRuntime(init: WorkerInitConfig) {
 		wf.binding._setClass(cls, env)
 		wf.binding.resumeInterrupted()
 	}
+
+	startThreadQueueConsumers(init.config, db, env, workerModule)
 
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
