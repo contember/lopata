@@ -405,18 +405,30 @@ export function wireClassRefs(
 		console.log(`[lopata] Wired container config: ${entry.className} (image: ${entry.image})`)
 	}
 
-	// Wire service bindings
+	wireServiceBindings(registry, workerModule, env, workerRegistry)
+}
+
+/**
+ * Service-binding wiring extracted so thread-mode generations (which skip
+ * `wireClassRefs` entirely — DO/Workflow classes live in the worker) can
+ * still resolve cross-worker fetches through the registry.
+ */
+export function wireServiceBindings(
+	registry: ClassRegistry,
+	workerModule: Record<string, unknown>,
+	env: Record<string, unknown>,
+	workerRegistry?: WorkerRegistry,
+) {
 	for (const entry of registry.serviceBindings) {
 		const wire = entry.proxy._wire as ((resolver: () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void) | undefined
-		if (wire) {
-			if (workerRegistry) {
-				// Resolve through registry (handles both self-ref and cross-worker)
-				wire(() => workerRegistry.resolveTarget(entry.serviceName))
-			} else {
-				// Backward compat: self-reference
-				wire(() => ({ workerModule, env }))
-			}
-			console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
+		if (!wire) continue
+		if (workerRegistry) {
+			// Resolve through registry (handles both self-ref and cross-worker)
+			wire(() => workerRegistry.resolveTarget(entry.serviceName))
+		} else {
+			// Backward compat: self-reference
+			wire(() => ({ workerModule, env }))
 		}
+		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 	}
 }

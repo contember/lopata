@@ -1,4 +1,12 @@
 import type { GenerationManager } from './generation-manager'
+import type { WorkerThreadExecutor } from './worker-thread/executor'
+
+export interface ResolvedTarget {
+	workerModule: Record<string, unknown>
+	env: Record<string, unknown>
+	/** Set when the target worker runs in a Bun Worker thread; service-binding fetches RPC through it. */
+	threadExecutor: WorkerThreadExecutor | null
+}
 
 /**
  * Central registry holding all worker GenerationManagers, keyed by worker name.
@@ -33,7 +41,7 @@ export class WorkerRegistry {
 	 * Lazily resolve a target worker's module and env from its active generation.
 	 * Called on each service binding invocation so hot-reloaded workers are picked up.
 	 */
-	resolveTarget(workerName: string): { workerModule: Record<string, unknown>; env: Record<string, unknown> } {
+	resolveTarget(workerName: string): ResolvedTarget {
 		const manager = this.managers.get(workerName)
 		if (!manager) {
 			throw new Error(`Worker "${workerName}" is not registered in the worker registry`)
@@ -42,7 +50,7 @@ export class WorkerRegistry {
 		if (!gen) {
 			throw new Error(`Worker "${workerName}" has no active generation (failed to load?)`)
 		}
-		return { workerModule: gen.workerModule, env: gen.env }
+		return { workerModule: gen.workerModule, env: gen.env, threadExecutor: gen.threadExecutor }
 	}
 
 	/** List all registered managers (for dashboard) */

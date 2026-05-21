@@ -68,6 +68,8 @@ export type WorkerCommand =
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
+	| { type: 'binding-fetch-result'; id: number; response: SerializedResponse }
+	| { type: 'binding-fetch-error'; id: number; error: SerializedError }
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
@@ -85,6 +87,7 @@ export type WorkerMessage =
 	| { type: 'email-result'; id: number }
 	| { type: 'email-error'; id: number; error: SerializedError; noHandler?: boolean }
 	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }
+	| { type: 'binding-fetch'; id: number; target: BindingTarget; request: SerializedRequest }
 	// `ctx.waitUntil(p)` and its settlement. Main keeps a counter so reload drain
 	// waits for background work the response no longer carries.
 	| { type: 'wait-until-add' }

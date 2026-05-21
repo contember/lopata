@@ -30,8 +30,16 @@ const SERVICE_BINDING_DEFAULTS: Required<ServiceBindingLimits> = {
 // Internal properties that should be forwarded to the ServiceBinding instance
 const INTERNAL_PROPS = new Set(['_wire', 'isWired', '_subrequestCount'])
 
+/** Target shape returned by the service binding's resolver. */
+export interface ServiceBindingResolved {
+	workerModule: Record<string, unknown>
+	env: Record<string, unknown>
+	/** Set when the target runs in a Bun Worker thread — `.fetch()` RPCs through it. */
+	threadExecutor?: { executeFetch(request: Request): Promise<Response> } | null
+}
+
 export class ServiceBinding {
-	private _resolver: (() => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) | null = null
+	private _resolver: (() => ServiceBindingResolved) | null = null
 	private _entrypoint: string | undefined
 	private _serviceName: string
 	private _limits: Required<ServiceBindingLimits>
@@ -47,12 +55,12 @@ export class ServiceBinding {
 	}
 
 	_wire(
-		resolverOrModule: (() => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) | Record<string, unknown>,
+		resolverOrModule: (() => ServiceBindingResolved) | Record<string, unknown>,
 		env?: Record<string, unknown>,
 	): void {
 		if (typeof resolverOrModule === 'function' && env === undefined) {
 			// New API: resolver function
-			this._resolver = resolverOrModule as () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }
+			this._resolver = resolverOrModule as () => ServiceBindingResolved
 		} else {
 			// Legacy API: _wire(workerModule, env)
 			const workerModule = resolverOrModule as Record<string, unknown>
@@ -65,7 +73,7 @@ export class ServiceBinding {
 		return this._resolver !== null
 	}
 
-	private _resolve(): { workerModule: Record<string, unknown>; env: Record<string, unknown> } {
+	private _resolve(): ServiceBindingResolved {
 		if (!this._resolver) {
 			throw new Error(`Service binding "${this._serviceName}" is not wired — target worker not loaded`)
 		}
@@ -108,20 +116,25 @@ export class ServiceBinding {
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
 		this._checkSubrequestLimit()
+		const url = input instanceof URL ? input.toString() : input
+		const request = typeof url === 'string' ? new Request(url, init) : url
+
+		const resolved = this._resolve()
+		// Thread-mode target: RPC into its worker. The trace context propagates
+		// through `executor.executeFetch` via the active span.
+		if (resolved.threadExecutor) {
+			return resolved.threadExecutor.executeFetch(request)
+		}
+
 		const execCtx = new ExecutionContext(this._props)
 		const target = this._getTarget(execCtx)
 		if (!target?.fetch || typeof target.fetch !== 'function') {
 			throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
 		}
-		const url = input instanceof URL ? input.toString() : input
-		const request = typeof url === 'string' ? new Request(url, init) : url
-		// Class-based entrypoints receive (request) — env/ctx via constructor
-		// Object-based entrypoints receive (request, env, ctx)
-		const { workerModule, env } = this._resolve()
+		const { workerModule, env } = resolved
 		const def = workerModule.default
 		const isClass = this._entrypoint || (typeof def === 'function' && def.prototype?.fetch)
 
-		// Propagate trace context to target worker so child spans link correctly
 		const parentCtx = getActiveContext()
 		const doCall = async () => {
 			const response = isClass

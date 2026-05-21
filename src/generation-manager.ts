@@ -1,7 +1,7 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import type { WranglerConfig } from './config'
-import { buildEnv, setGlobalEnv, wireClassRefs } from './env'
+import { buildEnv, setGlobalEnv, wireClassRefs, wireServiceBindings } from './env'
 import { ExecutionContext } from './execution-context'
 import { Generation, type GenerationInfo } from './generation'
 import type { WorkerIsolation } from './lopata-config'
@@ -258,6 +258,9 @@ export class GenerationManager {
 		for (const entry of registry.durableObjects) {
 			this._doNamespaces.set(entry.className, entry.namespace)
 		}
+		// DO + Workflow class wiring needs user code (lives in the worker);
+		// service bindings only need the registry, so we can wire them here.
+		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
 			modulePath: this.workerPath,

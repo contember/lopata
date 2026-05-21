@@ -80,6 +80,10 @@ export function buildThreadEnv({ config, baseDir, rpc }: ThreadEnvOptions): Reco
 		env[email.name] = makeSendEmailProxy(email.name, rpc)
 	}
 
+	for (const svc of config.services ?? []) {
+		env[svc.binding] = makeServiceBindingProxy(svc.binding, rpc)
+	}
+
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
 		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
@@ -132,6 +136,25 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 		return new Response(raw as ReadableStream).arrayBuffer()
 	}
 	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
+}
+
+function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
+	const target: BindingTarget = { binding: bindingName }
+	return {
+		fetch: async (input: Request | string | URL, init?: RequestInit): Promise<Response> => {
+			const url = input instanceof URL ? input.toString() : input
+			const request = typeof url === 'string' ? new Request(url, init) : url
+			const serialized = await rpc.callFetch(target, request)
+			return new Response(serialized.body, {
+				status: serialized.status,
+				statusText: serialized.statusText,
+				headers: serialized.headers,
+			})
+		},
+		connect: () => {
+			throw new Error(`Service binding "${bindingName}": connect() (TCP sockets) is not supported in local dev mode`)
+		},
+	}
 }
 
 function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {

@@ -14,7 +14,15 @@ import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
 import { MainWsBridge } from './main-ws-bridge'
-import type { BindingTarget, ParentSpanContext, SerializedError, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
+import type {
+	BindingTarget,
+	ParentSpanContext,
+	SerializedError,
+	SerializedRequest,
+	SerializedResponse,
+	WorkerCommand,
+	WorkerMessage,
+} from './protocol'
 
 function serializeError(e: unknown): SerializedError {
 	const err = e instanceof Error ? e : new Error(String(e))
@@ -165,6 +173,9 @@ export class WorkerThreadExecutor {
 			case 'binding-call':
 				this._dispatchBindingCall(msg.id, msg.target, msg.method, msg.args)
 				break
+			case 'binding-fetch':
+				this._dispatchBindingFetch(msg.id, msg.target, msg.request)
+				break
 			case 'wait-until-add':
 				this._pendingWaitUntil++
 				break
@@ -231,6 +242,28 @@ export class WorkerThreadExecutor {
 			this._send({ type: 'binding-result', id, value })
 		} catch (e) {
 			this._send({ type: 'binding-error', id, error: serializeError(e) })
+		}
+	}
+
+	private async _dispatchBindingFetch(id: number, target: BindingTarget, req: SerializedRequest): Promise<void> {
+		try {
+			const resolved = this._resolveBinding(target)
+			const fetch = resolved.fetch
+			if (typeof fetch !== 'function') {
+				throw new Error(`Binding "${target.binding}" has no fetch() method`)
+			}
+			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
+			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, request)
+			const headers: [string, string][] = []
+			response.headers.forEach((v, k) => headers.push([k, v]))
+			const body = response.body ? await response.arrayBuffer() : null
+			this._send({
+				type: 'binding-fetch-result',
+				id,
+				response: { status: response.status, statusText: response.statusText, headers, body },
+			})
+		} catch (e) {
+			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
 	}
 
