@@ -1,2 +1,5 @@
-FROM docker.io/cloudflare/sandbox:0.7.4
+# `cloudflare/sandbox` publishes amd64 only — pin the platform so Apple
+# Silicon hosts pull the amd64 manifest and run it under Rosetta/QEMU
+# instead of failing the build with "no match for platform in manifest".
+FROM --platform=linux/amd64 docker.io/cloudflare/sandbox:0.7.4
 EXPOSE 8080
