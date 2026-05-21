@@ -327,6 +327,9 @@ async function mediaUpload(form) {
 
 <h2>Workflow</h2>
 <div class="section">
+  <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem">
+    The fixture workflow runs step 1, then blocks on <code>step.waitForEvent('wait for approval', {type:'approval'})</code> — so a fresh instance stays at <code>waiting</code> until you send an approval event. Approving with <code>{approved:true}</code> finishes step 2 and the workflow goes to <code>complete</code>; <code>{approved:false}</code> short-circuits to <code>{status:'rejected'}</code>.
+  </p>
   <form onsubmit="api('POST','/workflow',{input:formVal('wf-input')});return false">
     <label>Input <input id="wf-input" value="hello workflow"></label>
     <button type="submit">Create instance</button>
@@ -335,6 +338,10 @@ async function mediaUpload(form) {
     <label>Instance ID <input id="wf-id" placeholder="paste instance id"></label>
     <button type="submit" class="secondary">Get status</button>
   </form>
+  <div style="margin-top:0.5rem">
+    <button onclick="api('POST','/workflow/'+formVal('wf-id')+'/event',{type:'approval',payload:{approved:true}})">Approve</button>
+    <button onclick="api('POST','/workflow/'+formVal('wf-id')+'/event',{type:'approval',payload:{approved:false}})" class="secondary">Reject</button>
+  </div>
 </div>
 
 <h2>WebSocket</h2>
