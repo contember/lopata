@@ -336,6 +336,53 @@ async function mediaUpload(form) {
     <button type="submit" class="secondary">Get status</button>
   </form>
 </div>
+
+<h2>WebSocket</h2>
+<div class="section">
+  <p style="color:#888;font-size:0.85rem;margin-bottom:0.75rem">
+    <code>/ws/echo</code> exercises the plain-worker WS bridge; <code>/ws/counter/&lt;name&gt;</code> opens a WS through the Counter DO and broadcasts on every increment/decrement.
+  </p>
+  <div>
+    <label>Counter name <input id="ws-name" value="alice"></label>
+    <button onclick="wsConnect()">Connect</button>
+    <button onclick="wsSend('inc')" class="secondary">+1</button>
+    <button onclick="wsSend('dec')" class="secondary">-1</button>
+    <button onclick="wsSend('reset')" class="secondary">reset</button>
+    <button onclick="wsClose()" class="secondary">Disconnect</button>
+  </div>
+  <div>
+    <label>Echo message <input id="ws-echo" value="hello"></label>
+    <button onclick="wsEcho()">Send /ws/echo</button>
+  </div>
+  <pre id="ws-log" class="result" style="max-height:10rem;overflow:auto"></pre>
+</div>
+<script>
+let wsCounter = null;
+function wsLog(msg) {
+  const el = document.getElementById('ws-log');
+  el.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg + '\\n' + el.textContent;
+}
+function wsConnect() {
+  wsClose();
+  const name = encodeURIComponent(formVal('ws-name') || 'alice');
+  wsCounter = new WebSocket('ws://' + location.host + '/ws/counter/' + name);
+  wsCounter.onopen = () => wsLog('counter open');
+  wsCounter.onmessage = (ev) => wsLog('counter: ' + ev.data);
+  wsCounter.onclose = (ev) => wsLog('counter closed (' + ev.code + ')');
+}
+function wsSend(cmd) {
+  if (wsCounter && wsCounter.readyState === 1) wsCounter.send(cmd);
+}
+function wsClose() {
+  if (wsCounter) wsCounter.close();
+  wsCounter = null;
+}
+function wsEcho() {
+  const ws = new WebSocket('ws://' + location.host + '/ws/echo');
+  ws.onopen = () => ws.send(formVal('ws-echo') || 'hello');
+  ws.onmessage = (ev) => { wsLog('echo: ' + ev.data); ws.close(); };
+}
+</script>
   `)
 }
 
@@ -348,6 +395,29 @@ export default {
 		// ── Index ──
 		if (path === '/' && method === 'GET') {
 			return indexPage()
+		}
+
+		// ── Plain-worker WebSocket echo ──
+		if (path === '/ws/echo') {
+			if (request.headers.get('Upgrade') !== 'websocket') {
+				return new Response('Expected websocket', { status: 426 })
+			}
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
+			server.accept()
+			server.addEventListener('message', (event: MessageEvent) => {
+				const data = event.data
+				server.send(typeof data === 'string' ? `echo:${data}` : data)
+			})
+			return new Response(null, { status: 101, webSocket: client } as any)
+		}
+
+		// ── Counter DO over WebSocket ──
+		const counterWsMatch = path.match(/^\/ws\/counter\/([^/]+)$/)
+		if (counterWsMatch) {
+			const name = decodeURIComponent(counterWsMatch[1]!)
+			const stub = env.COUNTER.get(env.COUNTER.idFromName(name))
+			return stub.fetch(request)
 		}
 
 		// ── KV ──
