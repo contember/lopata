@@ -38,6 +38,17 @@ export function runWithContext<T>(ctx: SpanContext, fn: () => T): T {
 	return storage.run(ctx, fn)
 }
 
+/**
+ * Adopt a parent (traceId + spanId) sent across an isolate boundary —
+ * `fetchStack` and `subrequests` refs can't cross postMessage, so we re-seed
+ * empty ones and let sub-spans created on this side share them via
+ * `getActiveContext`.
+ */
+export function runWithParentContext<T>(parent: { traceId: string; spanId: string } | undefined, fn: () => T): T {
+	if (!parent) return fn()
+	return storage.run({ traceId: parent.traceId, spanId: parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, fn)
+}
+
 export function generateId(byteCount = 8): string {
 	const bytes = new Uint8Array(byteCount)
 	crypto.getRandomValues(bytes)

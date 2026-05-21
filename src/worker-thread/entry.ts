@@ -1,15 +1,18 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
+import { ForwardableEmailMessage } from '../bindings/email'
+import { createScheduledController } from '../bindings/scheduled'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
-import { runWithContext } from '../tracing/context'
+import { getDatabase } from '../db'
+import { runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
 import type {
-	ParentSpanContext,
 	SerializedError,
 	SerializedRequest,
 	SerializedResponse,
 	WorkerCommand,
+	WorkerHandlerName,
 	WorkerInitConfig,
 	WorkerMessage,
 } from './protocol'
@@ -95,8 +98,8 @@ async function initRuntime(init: WorkerInitConfig) {
 		throw new Error('Worker module does not export a fetch handler')
 	}
 
-	/** Resolve the named handler ('scheduled' / 'email' / 'queue') honoring class- vs object-based exports. */
-	function resolveHandler(name: 'scheduled' | 'email' | 'queue', ctx: WorkerExecutionContext): ((...args: unknown[]) => Promise<unknown>) | null {
+	/** Resolve a named handler honoring class- vs object-based exports. */
+	function resolveHandler(name: WorkerHandlerName, ctx: WorkerExecutionContext): ((...args: unknown[]) => Promise<unknown>) | null {
 		if (typeof defaultExport === 'function' && defaultExport.prototype) {
 			const fn = defaultExport.prototype[name]
 			if (typeof fn !== 'function') return null
@@ -113,7 +116,6 @@ async function initRuntime(init: WorkerInitConfig) {
 		const ctx = new WorkerExecutionContext(post)
 		const handler = resolveHandler('scheduled', ctx)
 		if (!handler) return { ok: false, noHandler: true }
-		const { createScheduledController } = await import('../bindings/scheduled')
 		const controller = createScheduledController(cronExpr, scheduledTime)
 		await handler(controller, env, ctx)
 		return { ok: true }
@@ -123,18 +125,14 @@ async function initRuntime(init: WorkerInitConfig) {
 		const ctx = new WorkerExecutionContext(post)
 		const handler = resolveHandler('email', ctx)
 		if (!handler) return { ok: false, noHandler: true }
-		const { ForwardableEmailMessage } = await import('../bindings/email')
-		const { getDatabase } = await import('../db')
 		const message = new ForwardableEmailMessage(getDatabase(), messageId, from, to, raw)
 		await handler(message, env, ctx)
 		return { ok: true }
 	}
 
-	function withParent<T>(parent: ParentSpanContext | undefined, fn: () => Promise<T>): Promise<T> {
-		if (!parent) return fn()
-		return runWithContext({ traceId: parent.traceId, spanId: parent.spanId, fetchStack: { current: null }, subrequests: { count: 0 } }, fn)
-	}
-
+	// When `noHandler:true` the `error.message` field is a wire-format placeholder —
+	// the main-side executor resolves with `ok:false` rather than rejecting, so the
+	// message is never surfaced to user code.
 	self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 		const cmd = event.data
 		if (rpc.handle(cmd)) return
@@ -142,7 +140,7 @@ async function initRuntime(init: WorkerInitConfig) {
 			case 'fetch':
 				try {
 					const request = await deserializeRequest(cmd.request)
-					const response = await withParent(cmd.parent, () => callFetch(request))
+					const response = await runWithParentContext(cmd.parent, () => callFetch(request))
 					const serialized = await serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 				} catch (e) {
@@ -151,8 +149,8 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'scheduled':
 				try {
-					const result = await withParent(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
-					if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'No scheduled handler defined' }, noHandler: true })
+					const result = await runWithParentContext(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
+					if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
 					else post({ type: 'scheduled-result', id: cmd.id })
 				} catch (e) {
 					post({ type: 'scheduled-error', id: cmd.id, error: serializeError(e) })
@@ -160,8 +158,8 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'email':
 				try {
-					const result = await withParent(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, new Uint8Array(cmd.raw)))
-					if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'No email handler defined' }, noHandler: true })
+					const result = await runWithParentContext(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, cmd.raw))
+					if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
 					else post({ type: 'email-result', id: cmd.id })
 				} catch (e) {
 					post({ type: 'email-error', id: cmd.id, error: serializeError(e) })

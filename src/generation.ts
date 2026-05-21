@@ -2,7 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { ForwardableEmailMessage } from './bindings/email'
 import { QueueConsumer } from './bindings/queue'
-import { createScheduledController, cronMatchesDate, parseCron, startCronScheduler } from './bindings/scheduled'
+import { createScheduledController, startCronScheduler, startCronTimer } from './bindings/scheduled'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -321,9 +321,7 @@ export class Generation {
 					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
 				})
 			} catch (err) {
-				console.error('[lopata] Scheduled handler error:', err)
-				persistError(err, 'scheduled', this.workerName)
-				throw err
+				this._persistAndRethrow('scheduled', err)
 			}
 		})
 	}
@@ -373,9 +371,7 @@ export class Generation {
 					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
 				})
 			} catch (err) {
-				console.error('[lopata] Email handler error:', err)
-				persistError(err, 'email', this.workerName)
-				throw err
+				this._persistAndRethrow('email', err)
 			}
 		})
 	}
@@ -396,7 +392,8 @@ export class Generation {
 			const crons = this.config.triggers?.crons ?? []
 			if (crons.length === 0) return
 			if (this.threadExecutor) {
-				this.cronTimer = this._startThreadCronScheduler(crons, this.threadExecutor)
+				const executor = this.threadExecutor
+				this.cronTimer = startCronTimer(crons, (cronExpr, now) => executor.executeScheduled(cronExpr, now.getTime()), this.workerName)
 			} else {
 				const scheduledHandler = this.getHandler('scheduled')
 				if (scheduledHandler) {
@@ -406,27 +403,10 @@ export class Generation {
 		}
 	}
 
-	private _startThreadCronScheduler(crons: string[], executor: WorkerThreadExecutor): ReturnType<typeof setInterval> {
-		const parsed = crons.map(parseCron)
-		const workerName = this.workerName
-		return setInterval(() => {
-			const now = new Date()
-			for (const cron of parsed) {
-				if (!cronMatchesDate(cron, now)) continue
-				console.log(`[lopata] Cron triggered: ${cron.expression}`)
-				startSpan({
-					name: 'scheduled',
-					kind: 'server',
-					attributes: { cron: cron.expression },
-					workerName,
-				}, async () => {
-					await executor.executeScheduled(cron.expression, now.getTime())
-				}).catch(err => {
-					console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
-					persistError(err, 'scheduled', workerName)
-				})
-			}
-		}, 60_000)
+	private _persistAndRethrow(source: 'scheduled' | 'email' | 'queue', err: unknown): never {
+		console.error(`[lopata] ${source} handler error:`, err)
+		persistError(err, source, this.workerName)
+		throw err
 	}
 
 	/** Stop queue consumers and cron scheduler */

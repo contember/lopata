@@ -290,11 +290,9 @@ export class WorkerThreadExecutor {
 		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 
 		const id = this._nextId++
-		// `raw` is a Uint8Array; postMessage needs an ArrayBuffer for the wire.
-		const rawBuf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) as ArrayBuffer
 		return new Promise((resolve, reject) => {
 			this._pendingHandlers.set(id, { resolve, reject })
-			this._send({ type: 'email', id, messageId, from, to, raw: rawBuf, parent })
+			this._send({ type: 'email', id, messageId, from, to, raw, parent })
 		})
 	}
 

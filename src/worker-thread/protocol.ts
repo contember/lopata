@@ -48,6 +48,9 @@ export interface WorkerInitConfig {
 	baseDir: string
 }
 
+/** Names of the worker handlers we know how to invoke via RPC. */
+export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
+
 export interface BindingTarget {
 	binding: string
 	/**
@@ -62,7 +65,7 @@ export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext }
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
-	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: ArrayBuffer; parent?: ParentSpanContext }
+	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| { type: 'binding-result'; id: number; value: unknown }
 	| { type: 'binding-error'; id: number; error: SerializedError }
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us

@@ -271,37 +271,46 @@ export function createScheduledController(cron: string, scheduledTime: number): 
 
 type ScheduledHandler = (controller: ScheduledController, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>
 
+/**
+ * Generic cron timer. `invoke` is called with the matched expression and the
+ * tick time; the caller decides how to dispatch (in-process handler vs RPC).
+ */
+export function startCronTimer(
+	crons: string[],
+	invoke: (cronExpr: string, now: Date) => Promise<unknown>,
+	workerName?: string,
+): NodeJS.Timer {
+	const parsed = crons.map(parseCron)
+
+	// Check every 60 seconds, aligned to the start of each minute
+	return setInterval(() => {
+		const now = new Date()
+		for (const cron of parsed) {
+			if (!cronMatchesDate(cron, now)) continue
+			console.log(`[lopata] Cron triggered: ${cron.expression}`)
+			startSpan({
+				name: 'scheduled',
+				kind: 'server',
+				attributes: { cron: cron.expression },
+				workerName,
+			}, () => invoke(cron.expression, now)).catch((err) => {
+				console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
+				persistError(err, 'scheduled', workerName)
+			})
+		}
+	}, 60_000)
+}
+
 export function startCronScheduler(
 	crons: string[],
 	handler: ScheduledHandler,
 	env: Record<string, unknown>,
 	workerName?: string,
 ): NodeJS.Timer {
-	const parsed = crons.map(parseCron)
-
-	// Check every 60 seconds, aligned to the start of each minute
-	const interval = setInterval(() => {
-		const now = new Date()
-		for (const cron of parsed) {
-			if (cronMatchesDate(cron, now)) {
-				const controller = createScheduledController(cron.expression, now.getTime())
-				const ctx = new ExecutionContext()
-				console.log(`[lopata] Cron triggered: ${cron.expression}`)
-				startSpan({
-					name: 'scheduled',
-					kind: 'server',
-					attributes: { cron: cron.expression },
-					workerName,
-				}, async () => {
-					await handler(controller, env, ctx)
-					await ctx._awaitAll()
-				}).catch((err) => {
-					console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
-					persistError(err, 'scheduled', workerName)
-				})
-			}
-		}
-	}, 60_000)
-
-	return interval
+	return startCronTimer(crons, async (cronExpr, now) => {
+		const controller = createScheduledController(cronExpr, now.getTime())
+		const ctx = new ExecutionContext()
+		await handler(controller, env, ctx)
+		await ctx._awaitAll()
+	}, workerName)
 }
