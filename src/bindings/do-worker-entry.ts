@@ -80,7 +80,32 @@ async function initWorker(workerConfig: WorkerConfig) {
 	}
 
 	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
+
+	// If this DO has a matching `containers` entry in wrangler config, spin up
+	// a `ContainerRuntime` so `ContainerBase` instances can start their image.
+	// Mirrors the wiring `InProcessExecutor` used to do on main.
+	const containerEntry = config.containers?.find(c => c.class_name === workerConfig.namespaceName)
+	let containerRuntime: import('./container').ContainerRuntime | undefined
+	if (containerEntry) {
+		const { ContainerRuntime, ContainerContext } = await import('./container')
+		const { DockerManager } = await import('./container-docker')
+		containerRuntime = new ContainerRuntime(
+			workerConfig.namespaceName,
+			id.toString(),
+			containerEntry.image,
+			new DockerManager(),
+		)
+		state.container = new ContainerContext(containerRuntime)
+	}
+
 	const instance = new (cls as any)(state, env)
+
+	if (containerRuntime) {
+		const { ContainerBase } = await import('./container')
+		if (instance instanceof ContainerBase) {
+			instance._wireRuntime(containerRuntime)
+		}
+	}
 
 	state._setInstanceResolver(() => instance)
 
