@@ -58,24 +58,28 @@ async function startViteServer(port: number): Promise<Subprocess> {
 async function waitForOutput(proc: Subprocess, marker: string, timeoutMs: number): Promise<void> {
 	const decoder = new TextDecoder()
 	let output = ''
-	const deadline = Date.now() + timeoutMs
-	let resolved = false
+	let onFound!: () => void
+	const found = new Promise<void>(resolve => {
+		onFound = resolve
+	})
 
-	// Read both stdout and stderr concurrently — Vite prints to both
+	// Read stdout and stderr concurrently (the dev server prints to both) and
+	// resolve `found` the instant the marker shows up in either. We do NOT
+	// `Promise.all` the readers — one stream stays open for the server's
+	// lifetime, so its read() never completes, and awaiting it would hang the
+	// whole wait until the timeout even on a successful boot. Readers run
+	// detached; the race below bounds the wait.
 	const readStream = async (stream: ReadableStream<Uint8Array>) => {
 		const reader = stream.getReader()
 		try {
-			while (!resolved) {
-				const result = await Promise.race([
-					reader.read(),
-					new Promise<{ done: true; value: undefined }>(r => setTimeout(() => r({ done: true, value: undefined }), Math.max(0, deadline - Date.now()))),
-				])
-				if (result.done) break
-				if (result.value) {
-					output += decoder.decode(result.value)
+			for (;;) {
+				const { done, value } = await reader.read()
+				if (done) break
+				if (value) {
+					output += decoder.decode(value)
 				}
 				if (output.includes(marker)) {
-					resolved = true
+					onFound()
 					return
 				}
 			}
@@ -84,14 +88,23 @@ async function waitForOutput(proc: Subprocess, marker: string, timeoutMs: number
 		}
 	}
 
+	void readStream(proc.stdout as ReadableStream<Uint8Array>).catch(() => {})
+	void readStream(proc.stderr as ReadableStream<Uint8Array>).catch(() => {})
+
+	let timedOut = false
 	await Promise.race([
-		Promise.all([readStream(proc.stdout as ReadableStream<Uint8Array>), readStream(proc.stderr as ReadableStream<Uint8Array>)]),
-		new Promise<void>((_, reject) =>
-			setTimeout(() => reject(new Error(`Server did not produce "${marker}" within ${timeoutMs}ms. Output:\n${output}`)), timeoutMs)
+		found,
+		new Promise<void>(resolve =>
+			setTimeout(() => {
+				timedOut = true
+				resolve()
+			}, timeoutMs)
 		),
 	])
 
-	if (!resolved) {
+	// Final authoritative check: if the marker landed in the captured output the
+	// boot succeeded, regardless of which promise won the race.
+	if (timedOut && !output.includes(marker)) {
 		proc.kill()
 		throw new Error(`Server did not produce "${marker}" within ${timeoutMs}ms. Output:\n${output}`)
 	}
