@@ -17,6 +17,7 @@ import {
 	setRouteDispatcher,
 	setWorkerRegistry,
 } from '../api'
+import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
@@ -56,6 +57,13 @@ export async function run(ctx: CliContext, args: string[]) {
 
 	const baseDir = process.cwd()
 	const watchers: FileWatcher[] = []
+
+	// Reap orphan containers left behind by previous lopata runs that crashed
+	// or were `kill -9`'d before the exit handler fired. Silently does nothing
+	// if docker isn't installed or nothing matches the label filter.
+	reapOrphanContainers().then(count => {
+		if (count > 0) console.log(`[lopata] Reaped ${count} orphan container(s) from previous run(s)`)
+	}).catch(() => {})
 
 	// Try to load lopata.config.ts for multi-worker mode
 	const lopataConfig = await loadLopataConfig(baseDir)

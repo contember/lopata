@@ -4,6 +4,7 @@ import { AiBinding } from './bindings/ai'
 import { SqliteAnalyticsEngine } from './bindings/analytics-engine'
 import { BrowserBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
+import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
 import { DockerManager } from './bindings/container-docker'
 import { openD1Database } from './bindings/d1'
 import type { DOExecutorFactory } from './bindings/do-executor'
@@ -390,8 +391,13 @@ export function wireClassRefs(
 		console.log(`[lopata] Wired Workflow class: ${entry.className}`)
 	}
 
-	// Wire container configs onto namespaces
-	const dockerManager = new DockerManager()
+	// Wire container configs onto namespaces. Main-side path goes through the
+	// cleanup registry directly (no postMessage needed — this *is* main).
+	const dockerManager = new DockerManager({
+		onRegister: registerContainer,
+		onRemove: unregisterContainer,
+		labels: containerLabels(),
+	})
 	for (const entry of registry.containers) {
 		entry.namespace._setContainerConfig({
 			className: entry.className,

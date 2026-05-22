@@ -17,42 +17,34 @@ export interface DockerContainerInfo {
 	ports: Record<string, string>
 }
 
-// Track active containers for cleanup on process exit
-const activeContainers = new Set<string>()
-let cleanupRegistered = false
-
-function registerCleanup() {
-	if (cleanupRegistered) return
-	cleanupRegistered = true
-
-	const cleanup = () => {
-		for (const name of activeContainers) {
-			try {
-				Bun.spawnSync(['docker', 'rm', '-f', name])
-			} catch {
-				// best-effort cleanup
-			}
-		}
-		activeContainers.clear()
-	}
-
-	process.on('SIGINT', () => {
-		cleanup()
-		process.exit(130)
-	})
-	process.on('SIGTERM', () => {
-		cleanup()
-		process.exit(143)
-	})
-	process.on('exit', cleanup)
-}
-
 // Image build cache: tag -> { mtime }
 const imageCache = new Map<string, { mtime: number }>()
 
 const DOCKER_JSON_FORMAT = '{{json .}}'
 
+export interface DockerManagerOptions {
+	/** Called after a container is successfully created via `run()`. */
+	onRegister?: (name: string) => void
+	/** Called after a container is removed via `remove()`. */
+	onRemove?: (name: string) => void
+	/**
+	 * Labels passed to every `docker run` (`--label key=value`).
+	 * Cleanup uses these to detect orphans from crashed processes.
+	 */
+	labels?: Record<string, string>
+}
+
 export class DockerManager {
+	private _onRegister?: (name: string) => void
+	private _onRemove?: (name: string) => void
+	private _labels?: Record<string, string>
+
+	constructor(options?: DockerManagerOptions) {
+		this._onRegister = options?.onRegister
+		this._onRemove = options?.onRemove
+		this._labels = options?.labels
+	}
+
 	/**
 	 * Build an image from a Dockerfile, with lazy mtime-based caching.
 	 * Skips rebuild if the Dockerfile hasn't changed since last build.
@@ -80,9 +72,14 @@ export class DockerManager {
 	 * Run a container and return its container ID.
 	 */
 	async run(options: DockerRunOptions): Promise<string> {
-		registerCleanup()
-
 		const args: string[] = ['docker', 'run', '-d', '--name', options.name]
+
+		// Labels (orphan reaping etc.)
+		if (this._labels) {
+			for (const [key, value] of Object.entries(this._labels)) {
+				args.push('--label', `${key}=${value}`)
+			}
+		}
 
 		// Port mappings
 		for (const [containerPort, hostPort] of options.ports) {
@@ -120,7 +117,7 @@ export class DockerManager {
 		}
 
 		const containerId = result.stdout.toString().trim()
-		activeContainers.add(options.name)
+		this._onRegister?.(options.name)
 		return containerId
 	}
 
@@ -202,7 +199,7 @@ export class DockerManager {
 	 */
 	async remove(name: string): Promise<void> {
 		await $`docker rm -f ${name}`.quiet().nothrow()
-		activeContainers.delete(name)
+		this._onRemove?.(name)
 	}
 
 	/**

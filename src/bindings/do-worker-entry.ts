@@ -59,6 +59,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const { generateId } = await import('../tracing/context')
 	const { ContainerBase, ContainerContext, ContainerRuntime } = await import('./container')
 	const { DockerManager } = await import('./container-docker')
+	const { containerLabels } = await import('./container-cleanup')
 
 	const config = await loadConfig(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
@@ -90,11 +91,21 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const containerEntry = config.containers?.find(c => c.class_name === workerConfig.namespaceName)
 	let containerRuntime: InstanceType<typeof ContainerRuntime> | undefined
 	if (containerEntry) {
+		// `DockerManager` itself stays per-worker (the hot path is `docker
+		// inspect` polling — no point routing every health check through
+		// main). Cleanup tracking, however, lives on main: the worker posts
+		// `container-registered` / `container-removed` so main's `exit`
+		// handler can rm -f everything regardless of which worker spawned it.
+		const dockerManager = new DockerManager({
+			onRegister: name => postMessage({ type: 'container-registered', name } satisfies DOMainMessage),
+			onRemove: name => postMessage({ type: 'container-removed', name } satisfies DOMainMessage),
+			labels: containerLabels(),
+		})
 		containerRuntime = new ContainerRuntime(
 			workerConfig.namespaceName,
 			id.toString(),
 			containerEntry.image,
-			new DockerManager(),
+			dockerManager,
 		)
 		state.container = new ContainerContext(containerRuntime)
 	}

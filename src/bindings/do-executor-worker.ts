@@ -7,6 +7,7 @@
 
 import { dirname, resolve } from 'node:path'
 import { serializeError } from '../worker-thread/protocol'
+import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
 import { CFWebSocket, type WSEvent } from './websocket-pair'
@@ -83,6 +84,14 @@ export type DOMainMessage =
 	/** Stateful env-binding RPC from the DO worker (e.g. `this.env.FAILING.greet(name)`). */
 	| { type: 'env-call'; id: number; binding: string; method: string; args: unknown[] }
 	| { type: 'env-fetch'; id: number; binding: string; request: SerializedEnvRequest }
+	/**
+	 * Container lifecycle notifications. Main owns the active-container Set so
+	 * one centralized `exit` handler can `docker rm -f` everything, regardless
+	 * of which DO worker created it. The label-based reaper handles processes
+	 * that die before the handler runs.
+	 */
+	| { type: 'container-registered'; name: string }
+	| { type: 'container-removed'; name: string }
 
 // --- Pending command tracking ---
 
@@ -203,6 +212,14 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'env-fetch':
 					this._dispatchEnvFetch(msg.id, msg.binding, msg.request)
+					break
+
+				case 'container-registered':
+					registerContainer(msg.name)
+					break
+
+				case 'container-removed':
+					unregisterContainer(msg.name)
 					break
 			}
 		}
