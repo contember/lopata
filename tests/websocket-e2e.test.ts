@@ -9,6 +9,21 @@ const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+async function allocateFreePort(): Promise<number> {
+	const server = Bun.serve({
+		port: 0,
+		fetch() {
+			return new Response()
+		},
+	})
+	const port = server.port
+	server.stop(true)
+	if (!port || port <= 0) {
+		throw new Error('Failed to allocate port')
+	}
+	return port
+}
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
@@ -187,19 +202,19 @@ function cleanup() {
 
 // ─── Test suites ────────────────────────────────────────────────────────
 
-function defineWebSocketTests(port: number) {
-	const base = `ws://localhost:${port}`
-	const httpBase = `http://localhost:${port}`
+function defineWebSocketTests(getPort: () => number) {
+	const base = () => `ws://localhost:${getPort()}`
+	const httpBase = () => `http://localhost:${getPort()}`
 
 	describe('Plain worker WebSocket', () => {
 		test('upgrade establishes connection', async () => {
-			const client = await connectWS(`${base}/ws/plain`)
+			const client = await connectWS(`${base()}/ws/plain`)
 			expect(client.ws.readyState).toBe(WebSocket.OPEN)
 			client.close()
 		})
 
 		test('echo string message', async () => {
-			const client = await connectWS(`${base}/ws/plain`)
+			const client = await connectWS(`${base()}/ws/plain`)
 			client.send('hello')
 			const msg = await client.waitForMessage()
 			expect(msg).toBe('echo:hello')
@@ -207,7 +222,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('echo binary message (ArrayBuffer)', async () => {
-			const client = await connectWS(`${base}/ws/plain`)
+			const client = await connectWS(`${base()}/ws/plain`)
 			const data = new Uint8Array([1, 2, 3, 4])
 			client.send(data.buffer)
 			const msg = await client.waitForMessage()
@@ -216,14 +231,14 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('server-initiated message', async () => {
-			const client = await connectWS(`${base}/ws/plain-server-push`)
+			const client = await connectWS(`${base()}/ws/plain-server-push`)
 			const msg = await client.waitForMessage()
 			expect(msg).toBe('hello-from-server')
 			client.close()
 		})
 
 		test('close from client', async () => {
-			const client = await connectWS(`${base}/ws/plain`)
+			const client = await connectWS(`${base()}/ws/plain`)
 			const closePromise = client.waitForClose()
 			client.close(1000, 'done')
 			const ev = await closePromise
@@ -231,7 +246,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('close from server', async () => {
-			const client = await connectWS(`${base}/ws/plain-server-close`)
+			const client = await connectWS(`${base()}/ws/plain-server-close`)
 			const closePromise = client.waitForClose()
 			client.send('close-me')
 			const ev = await closePromise
@@ -242,13 +257,13 @@ function defineWebSocketTests(port: number) {
 
 	describe('DO Standard API', () => {
 		test('upgrade to DO establishes connection', async () => {
-			const client = await connectWS(`${base}/ws/do-standard/std-conn-test`)
+			const client = await connectWS(`${base()}/ws/do-standard/std-conn-test`)
 			expect(client.ws.readyState).toBe(WebSocket.OPEN)
 			client.close()
 		})
 
 		test('echo via addEventListener', async () => {
-			const client = await connectWS(`${base}/ws/do-standard/std-echo-test`)
+			const client = await connectWS(`${base()}/ws/do-standard/std-echo-test`)
 			client.send('hello-do')
 			const msg = await client.waitForMessage()
 			expect(msg).toBe('echo:hello-do')
@@ -257,13 +272,13 @@ function defineWebSocketTests(port: number) {
 
 		test('broadcast to multiple connections', async () => {
 			const doName = 'std-broadcast-test'
-			const client1 = await connectWS(`${base}/ws/do-standard/${doName}`)
-			const client2 = await connectWS(`${base}/ws/do-standard/${doName}`)
+			const client1 = await connectWS(`${base()}/ws/do-standard/${doName}`)
+			const client2 = await connectWS(`${base()}/ws/do-standard/${doName}`)
 
 			// Give connections time to register
 			await new Promise(r => setTimeout(r, 200))
 
-			await fetch(`${httpBase}/ws/do-standard/${doName}/broadcast`, {
+			await fetch(`${httpBase()}/ws/do-standard/${doName}/broadcast`, {
 				method: 'POST',
 				body: 'hello-all',
 			})
@@ -278,7 +293,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('close propagation', async () => {
-			const client = await connectWS(`${base}/ws/do-standard/std-close-test`)
+			const client = await connectWS(`${base()}/ws/do-standard/std-close-test`)
 			const closePromise = client.waitForClose()
 			client.close(1000, 'goodbye')
 			const ev = await closePromise
@@ -288,13 +303,13 @@ function defineWebSocketTests(port: number) {
 
 	describe('DO Hibernation API', () => {
 		test('upgrade establishes connection', async () => {
-			const client = await connectWS(`${base}/ws/do-hibernation/hib-conn-test`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/hib-conn-test`)
 			expect(client.ws.readyState).toBe(WebSocket.OPEN)
 			client.close()
 		})
 
 		test('echo via webSocketMessage handler', async () => {
-			const client = await connectWS(`${base}/ws/do-hibernation/hib-echo-test`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/hib-echo-test`)
 			client.send('hello-hib')
 			const msg = await client.waitForMessage()
 			expect(msg).toBe('echo:hello-hib')
@@ -304,9 +319,9 @@ function defineWebSocketTests(port: number) {
 		test('auto-response (ping → pong) skips handler', async () => {
 			const doName = 'hib-auto-resp-test'
 			// Configure auto-response via HTTP
-			await fetch(`${httpBase}/ws/do-hibernation/${doName}/setup-auto-response`)
+			await fetch(`${httpBase()}/ws/do-hibernation/${doName}/setup-auto-response`)
 
-			const client = await connectWS(`${base}/ws/do-hibernation/${doName}`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/${doName}`)
 
 			// Auto-response
 			client.send('ping')
@@ -322,7 +337,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('serializeAttachment / deserializeAttachment', async () => {
-			const client = await connectWS(`${base}/ws/do-hibernation/hib-attach-test`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/hib-attach-test`)
 
 			client.send('set-attachment:mydata')
 			const ack = await client.waitForMessage()
@@ -336,7 +351,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('binary echo via hibernation handler', async () => {
-			const client = await connectWS(`${base}/ws/do-hibernation/hib-binary-test`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/hib-binary-test`)
 			const data = new Uint8Array([10, 20, 30])
 			client.send(data.buffer)
 			const msg = await client.waitForMessage()
@@ -346,18 +361,18 @@ function defineWebSocketTests(port: number) {
 
 		test('getWebSockets returns active connections', async () => {
 			const doName = 'hib-count-test'
-			const client1 = await connectWS(`${base}/ws/do-hibernation/${doName}`)
-			const client2 = await connectWS(`${base}/ws/do-hibernation/${doName}`)
+			const client1 = await connectWS(`${base()}/ws/do-hibernation/${doName}`)
+			const client2 = await connectWS(`${base()}/ws/do-hibernation/${doName}`)
 
 			await new Promise(r => setTimeout(r, 200))
 
-			const res1 = await fetch(`${httpBase}/ws/do-hibernation/${doName}/count`)
+			const res1 = await fetch(`${httpBase()}/ws/do-hibernation/${doName}/count`)
 			expect(await res1.text()).toBe('2')
 
 			client1.close()
 			await new Promise(r => setTimeout(r, 200))
 
-			const res2 = await fetch(`${httpBase}/ws/do-hibernation/${doName}/count`)
+			const res2 = await fetch(`${httpBase()}/ws/do-hibernation/${doName}/count`)
 			expect(await res2.text()).toBe('1')
 
 			client2.close()
@@ -365,21 +380,21 @@ function defineWebSocketTests(port: number) {
 
 		test('tags filter getWebSockets and broadcast', async () => {
 			const doName = 'hib-tag-test'
-			const clientA1 = await connectWS(`${base}/ws/do-hibernation/${doName}?tag=room:a`)
-			const clientB1 = await connectWS(`${base}/ws/do-hibernation/${doName}?tag=room:b`)
-			const clientA2 = await connectWS(`${base}/ws/do-hibernation/${doName}?tag=room:a`)
+			const clientA1 = await connectWS(`${base()}/ws/do-hibernation/${doName}?tag=room:a`)
+			const clientB1 = await connectWS(`${base()}/ws/do-hibernation/${doName}?tag=room:b`)
+			const clientA2 = await connectWS(`${base()}/ws/do-hibernation/${doName}?tag=room:a`)
 
 			await new Promise(r => setTimeout(r, 200))
 
 			// Verify count by tag
-			const countA = await fetch(`${httpBase}/ws/do-hibernation/${doName}/count?tag=room:a`)
+			const countA = await fetch(`${httpBase()}/ws/do-hibernation/${doName}/count?tag=room:a`)
 			expect(await countA.text()).toBe('2')
 
-			const countB = await fetch(`${httpBase}/ws/do-hibernation/${doName}/count?tag=room:b`)
+			const countB = await fetch(`${httpBase()}/ws/do-hibernation/${doName}/count?tag=room:b`)
 			expect(await countB.text()).toBe('1')
 
 			// Broadcast to room:a only
-			await fetch(`${httpBase}/ws/do-hibernation/${doName}/broadcast?tag=room:a`, {
+			await fetch(`${httpBase()}/ws/do-hibernation/${doName}/broadcast?tag=room:a`, {
 				method: 'POST',
 				body: 'hello-a',
 			})
@@ -403,7 +418,7 @@ function defineWebSocketTests(port: number) {
 		})
 
 		test('close triggers webSocketClose handler', async () => {
-			const client = await connectWS(`${base}/ws/do-hibernation/hib-close-test`)
+			const client = await connectWS(`${base()}/ws/do-hibernation/hib-close-test`)
 			const closePromise = client.waitForClose()
 			client.close(1000, 'bye')
 			const ev = await closePromise
@@ -416,10 +431,11 @@ function defineWebSocketTests(port: number) {
 
 describe('WebSocket E2E — standalone', () => {
 	let proc: Subprocess
-	const PORT = 18787
+	let PORT = 0
 
 	beforeAll(async () => {
 		cleanup()
+		PORT = await allocateFreePort()
 		proc = await startStandaloneServer(PORT)
 	}, 90_000) // > startStandaloneServer's 60s marker wait, so the hook doesn't die before a slow CI boot completes
 
@@ -428,18 +444,18 @@ describe('WebSocket E2E — standalone', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(PORT)
+	defineWebSocketTests(() => PORT)
 })
 
 // ─── Vite mode ──────────────────────────────────────────────────────────
 
 describe('WebSocket E2E — vite', () => {
 	let proc: Subprocess
-
-	const PORT = 18788
+	let PORT = 0
 
 	beforeAll(async () => {
 		cleanup()
+		PORT = await allocateFreePort()
 		proc = await startViteServer(PORT)
 	}, 90_000)
 
@@ -448,5 +464,5 @@ describe('WebSocket E2E — vite', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(PORT)
+	defineWebSocketTests(() => PORT)
 })
