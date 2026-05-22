@@ -779,11 +779,23 @@ const STUB_PROPS = new Set(['id', 'name', 'fetch'])
 
 // --- Namespace ---
 
+/**
+ * Placeholder class handed to `ExecutorConfig.cls` for external (thread-mode)
+ * namespaces. The factory in this case (`WorkerExecutorFactory`) never reads
+ * `cls`; this class throws on accidental instantiation by any other factory.
+ */
+const _externalClassSentinel = class ExternalDurableObject {
+	constructor() {
+		throw new Error('Durable Object is wired in thread mode; its real class lives in the worker thread, not main.')
+	}
+}
+
 export class DurableObjectNamespaceImpl {
 	private _executors = new Map<string, DOExecutor>()
 	private _stubs = new Map<string, unknown>()
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
+	private _externalClassName?: string
 	private _env?: Record<string, unknown>
 	private db: Database
 	private namespaceName: string
@@ -835,9 +847,35 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = cls
+		this._externalClassName = undefined
 		this._env = env
 		this._generationId = generationId
 		// Restore persisted alarms on startup
+		this._restoreAlarms()
+	}
+
+	/**
+	 * Thread-mode counterpart of `_setClass`: the real DO class lives in a worker
+	 * thread, so main only stores the className for diagnostics and treats the
+	 * namespace as wired. Must be used with an executor factory that does not
+	 * need the JS class on main (e.g. `WorkerExecutorFactory`).
+	 */
+	_setExternalClass(className: string, env: Record<string, unknown>, generationId?: number) {
+		for (const [idStr, executor] of this._executors) {
+			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
+				// Hot-swap: worker-thread executors reload by re-importing the user module.
+				executor.reloadClass(_externalClassSentinel as any, env)
+			} else {
+				executor.dispose().catch(() => {})
+				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
+			}
+		}
+
+		this._class = undefined
+		this._externalClassName = className
+		this._env = env
+		this._generationId = generationId
 		this._restoreAlarms()
 	}
 
@@ -916,7 +954,7 @@ export class DurableObjectNamespaceImpl {
 	/** @internal Get or create a DO executor by id string */
 	private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
 		if (this._executors.has(idStr)) return this._executors.get(idStr)!
-		if (!this._class) return null
+		if (!this._isWired()) return null
 
 		// Use provided doId, or look up known id (preserves name after eviction), or create new
 		const id = doId ?? this._knownIds.get(idStr) ?? new DurableObjectIdImpl(idStr)
@@ -931,7 +969,7 @@ export class DurableObjectNamespaceImpl {
 			id,
 			db: this.db,
 			namespaceName: this.namespaceName,
-			cls: this._class,
+			cls: this._class ?? (_externalClassSentinel as any),
 			env: this._env ?? {},
 			dataDir: this.dataDir,
 			limits: this.limits,
@@ -1041,9 +1079,15 @@ export class DurableObjectNamespaceImpl {
 		return rows.map(r => r.id)
 	}
 
-	/** Whether the DO class defines an alarm() handler */
+	/** Whether the DO class defines an alarm() handler. Always false in thread mode (real class lives in worker). */
 	hasAlarmHandler(): boolean {
+		if (this._externalClassName !== undefined) return false
 		return typeof this._class?.prototype?.alarm === 'function'
+	}
+
+	/** @internal Whether the namespace is wired (class set, in-process or external). */
+	private _isWired(): boolean {
+		return this._class !== undefined || this._externalClassName !== undefined
 	}
 
 	/** @internal Trigger the alarm handler immediately (used by dashboard) */
@@ -1144,7 +1188,7 @@ export class DurableObjectNamespaceImpl {
 		// Return cached stub if available — stub survives eviction
 		if (this._stubs.has(idStr)) return this._stubs.get(idStr)!
 
-		if (!this._class) throw new Error('DurableObject class not wired yet. Call _setClass() first.')
+		if (!this._isWired()) throw new Error('DurableObject class not wired yet. Call _setClass() first.')
 
 		// Store the known id (preserves name)
 		this._knownIds.set(idStr, id)

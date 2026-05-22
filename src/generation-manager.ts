@@ -6,14 +6,6 @@ import { Generation, type GenerationInfo } from './generation'
 import type { WorkerRegistry } from './worker-registry'
 import { WorkerThreadExecutor } from './worker-thread/executor'
 
-/**
- * Sentinel for DO namespaces in thread-mode generations. Their real class
- * lives in the DO worker thread; the namespace only checks `_class` for
- * truthiness and the WorkerExecutorFactory reads the `className` from config,
- * so an empty class suffices.
- */
-const EXTERNAL_DO_CLASS = class {} as any // eslint-disable-line @typescript-eslint/no-explicit-any
-
 export class GenerationManager {
 	private generations = new Map<number, Generation>()
 	private nextGenId = 1
@@ -107,7 +99,7 @@ export class GenerationManager {
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
 		for (const entry of registry.durableObjects) {
 			this._doNamespaces.set(entry.className, entry.namespace)
-			entry.namespace._setClass(EXTERNAL_DO_CLASS, env, this.nextGenId)
+			entry.namespace._setExternalClass(entry.className, env, this.nextGenId)
 		}
 		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
