@@ -49,8 +49,6 @@ export class Generation {
 	activeRequests = 0
 
 	private cronTimer: NodeJS.Timer | ReturnType<typeof setInterval> | null = null
-	drainTimer: ReturnType<typeof setTimeout> | null = null
-	drainPollTimer: ReturnType<typeof setInterval> | null = null
 
 	constructor(
 		id: number,
@@ -201,14 +199,6 @@ export class Generation {
 		if (this.state === 'stopped') return
 		this.drain()
 		this.state = 'stopped'
-		if (this.drainTimer) {
-			clearTimeout(this.drainTimer)
-			this.drainTimer = null
-		}
-		if (this.drainPollTimer) {
-			clearInterval(this.drainPollTimer)
-			this.drainPollTimer = null
-		}
 		for (const entry of this.registry.durableObjects) {
 			// Skip destroy for namespaces shared with the next generation
 			if (!sharedNamespaces?.has(entry.namespace)) {

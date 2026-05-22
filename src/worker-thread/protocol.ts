@@ -46,6 +46,13 @@ export function serializeError(e: unknown): SerializedError {
 	return { message: err.message, stack: err.stack, name: err.name }
 }
 
+export function deserializeError(err: SerializedError): Error {
+	const e = new Error(err.message)
+	if (err.stack) e.stack = err.stack
+	e.name = err.name ?? 'Error'
+	return e
+}
+
 export interface WorkerInitConfig {
 	modulePath: string
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
@@ -70,6 +77,59 @@ export interface BindingTarget {
 	instanceId?: string
 }
 
+/**
+ * Unified cross-thread RPC frame. Used in both directions:
+ *  - user-worker → main (`WorkerThreadExecutor`): stateful binding access from the user's worker
+ *  - DO-worker → main (`WorkerExecutor`): same, from a DO instance worker
+ *
+ * `parent` propagates trace context so spans created on the receiving side
+ * (including spans inside *further* nested cross-thread hops) link back to the
+ * caller's active span. Without it nested service-binding calls float at root.
+ */
+export interface RpcCallRequest {
+	type: 'rpc-call'
+	id: number
+	target: BindingTarget
+	method: string
+	args: unknown[]
+	parent?: ParentSpanContext
+}
+
+export interface RpcFetchRequest {
+	type: 'rpc-fetch'
+	id: number
+	target: BindingTarget
+	request: SerializedRequest
+	parent?: ParentSpanContext
+}
+
+export interface RpcCallReply {
+	type: 'rpc-call-result'
+	id: number
+	value: unknown
+}
+
+export interface RpcCallErrorReply {
+	type: 'rpc-call-error'
+	id: number
+	error: SerializedError
+}
+
+export interface RpcFetchReply {
+	type: 'rpc-fetch-result'
+	id: number
+	response: SerializedResponse
+}
+
+export interface RpcFetchErrorReply {
+	type: 'rpc-fetch-error'
+	id: number
+	error: SerializedError
+}
+
+export type RpcRequest = RpcCallRequest | RpcFetchRequest
+export type RpcReply = RpcCallReply | RpcCallErrorReply | RpcFetchReply | RpcFetchErrorReply
+
 /** Main → worker */
 export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
@@ -78,10 +138,10 @@ export type WorkerCommand =
 	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext; props?: Record<string, unknown> }
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
-	| { type: 'binding-result'; id: number; value: unknown }
-	| { type: 'binding-error'; id: number; error: SerializedError }
-	| { type: 'binding-fetch-result'; id: number; response: SerializedResponse }
-	| { type: 'binding-fetch-error'; id: number; error: SerializedError }
+	| RpcCallReply
+	| RpcCallErrorReply
+	| RpcFetchReply
+	| RpcFetchErrorReply
 	// RPC method call into the worker's user-defined entrypoint class.
 	// Sent from main when a `ServiceBinding` RPC callable resolves a target
 	// whose entrypoint class lives in a worker thread. `props` carries the
@@ -114,8 +174,8 @@ export type WorkerMessage =
 	| { type: 'email-error'; id: number; error: SerializedError; noHandler?: boolean }
 	| { type: 'entrypoint-rpc-result'; id: number; value: unknown }
 	| { type: 'entrypoint-rpc-error'; id: number; error: SerializedError }
-	| { type: 'binding-call'; id: number; target: BindingTarget; method: string; args: unknown[] }
-	| { type: 'binding-fetch'; id: number; target: BindingTarget; request: SerializedRequest }
+	| RpcCallRequest
+	| RpcFetchRequest
 	// `ctx.waitUntil(p)` and its settlement. Main keeps a counter so reload drain
 	// waits for background work the response no longer carries.
 	| { type: 'wait-until-add' }

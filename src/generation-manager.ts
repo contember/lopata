@@ -127,24 +127,24 @@ export class GenerationManager {
 			const oldGen = this.generations.get(oldGenId)
 			if (oldGen && oldGen.state === 'active') {
 				oldGen.drain()
-				if (oldGen.isIdle()) {
-					this._stopGeneration(oldGenId)
-				} else {
-					oldGen.drainPollTimer = setInterval(() => {
-						if (oldGen.isIdle()) {
-							this._stopGeneration(oldGenId)
-						}
-					}, 200)
-					oldGen.drainTimer = setTimeout(() => {
-						this._stopGeneration(oldGenId)
-					}, this.gracePeriodMs)
-				}
+				this._scheduleDrainAndStop(oldGenId, oldGen)
 			}
 		}
 
 		this._activeGenId = genId
 		gen.startConsumers()
 		return gen
+	}
+
+	private _scheduleDrainAndStop(genId: number, gen: Generation): void {
+		if (gen.isIdle()) {
+			this._stopGeneration(genId)
+			return
+		}
+		void Promise.race([
+			waitUntilIdle(gen),
+			sleep(this.gracePeriodMs),
+		]).then(() => this._stopGeneration(genId))
 	}
 
 	private _stopGeneration(genId: number): void {
@@ -183,5 +183,15 @@ export class GenerationManager {
 	/** List all generations for dashboard */
 	list(): GenerationInfo[] {
 		return Array.from(this.generations.values()).map(g => g.getInfo())
+	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitUntilIdle(gen: Generation, pollMs = 200): Promise<void> {
+	while (gen.state !== 'stopped' && !gen.isIdle()) {
+		await sleep(pollMs)
 	}
 }

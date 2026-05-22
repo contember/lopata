@@ -5,13 +5,13 @@ import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { getDatabase } from '../db'
-import { runWithParentContext } from '../tracing/context'
+import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
-import type { SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
+import type { ParentSpanContext, SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
 import { serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
-import { RpcClient } from './rpc-client'
+import { RpcClient } from './rpc-shared'
 import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
@@ -62,7 +62,11 @@ async function initRuntime(init: WorkerInitConfig) {
 	// Route all tracing operations through main so the dashboard's subscribers fire.
 	setTraceStoreOverride(new RemoteTraceStore(post))
 
-	const rpc = new RpcClient(post)
+	const getParent = (): ParentSpanContext | undefined => {
+		const active = getActiveContext()
+		return active ? { traceId: active.traceId, spanId: active.spanId } : undefined
+	}
+	const rpc = new RpcClient(post, getParent)
 	const wsBridge = new WorkerWsBridge(post)
 	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built
@@ -141,7 +145,7 @@ async function initRuntime(init: WorkerInitConfig) {
 	// message is never surfaced to user code.
 	self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 		const cmd = event.data
-		if (rpc.handle(cmd)) return
+		if (rpc.handle(cmd as { type: string })) return
 		switch (cmd.type) {
 			case 'fetch':
 				try {

@@ -8,34 +8,23 @@
  */
 
 import { dirname, resolve } from 'node:path'
-import { EmailMessage } from '../bindings/email'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
 import { MainWsBridge } from './main-ws-bridge'
-import type { BindingTarget, ParentSpanContext, SerializedRequest, SerializedResponse, WorkerCommand, WorkerMessage } from './protocol'
-import { serializeError } from './protocol'
-import { deserializeRequest, deserializeResponse, serializeRequest, serializeResponse } from './serialize'
-
-/**
- * Restore class identities that structured-clone strips. Worker proxies tag
- * such args with `__lopata_class` so we can rebuild the real instance here.
- */
-function reifyArgs(args: unknown[]): unknown[] {
-	return args.map(reifyArg)
-}
-
-function reifyArg(arg: unknown): unknown {
-	if (arg && typeof arg === 'object' && '__lopata_class' in arg) {
-		const tag = (arg as { __lopata_class: string }).__lopata_class
-		if (tag === 'EmailMessage') {
-			const { from, to, raw } = arg as unknown as { from: string; to: string; raw: unknown }
-			return new EmailMessage(from, to, raw as Uint8Array | ArrayBuffer | string)
-		}
-	}
-	return arg
-}
+import type {
+	BindingTarget,
+	ParentSpanContext,
+	RpcCallRequest,
+	RpcFetchRequest,
+	RpcReply,
+	SerializedResponse,
+	WorkerCommand,
+	WorkerMessage,
+} from './protocol'
+import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
+import { deserializeResponse, serializeRequest } from './serialize'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
@@ -92,6 +81,10 @@ export class WorkerThreadExecutor {
 
 	private _send(cmd: WorkerCommand): void {
 		this._worker.postMessage(cmd)
+	}
+
+	private _postReply = (reply: RpcReply): void => {
+		this._send(reply)
 	}
 
 	private _handleMessage(msg: WorkerMessage): void {
@@ -179,11 +172,11 @@ export class WorkerThreadExecutor {
 				}
 				break
 			}
-			case 'binding-call':
-				this._dispatchBindingCall(msg.id, msg.target, msg.method, msg.args)
+			case 'rpc-call':
+				this._dispatchRpcCall(msg)
 				break
-			case 'binding-fetch':
-				this._dispatchBindingFetch(msg.id, msg.target, msg.request)
+			case 'rpc-fetch':
+				this._dispatchRpcFetch(msg)
 				break
 			case 'wait-until-add':
 				this._pendingWaitUntil++
@@ -225,7 +218,7 @@ export class WorkerThreadExecutor {
 		return this._pendingWaitUntil
 	}
 
-	private _resolveBinding(target: BindingTarget): Record<string, unknown> {
+	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {
 		const binding = this._mainEnv[target.binding]
 		if (binding == null) {
 			throw new Error(`Binding "${target.binding}" not found on main env`)
@@ -240,44 +233,26 @@ export class WorkerThreadExecutor {
 		return (get as (id: string) => Record<string, unknown>).call(binding, target.instanceId)
 	}
 
-	private async _dispatchBindingCall(id: number, target: BindingTarget, method: string, args: unknown[]): Promise<void> {
-		try {
-			const resolved = this._resolveBinding(target)
-			const fn = resolved[method]
-			if (typeof fn !== 'function') {
-				throw new Error(`Binding "${target.binding}" has no method "${method}"`)
-			}
-			const value = await (fn as (...a: unknown[]) => unknown).call(resolved, ...reifyArgs(args))
-			// Drop the result if the executor was torn down while the call was
-			// in flight — the worker is gone, posting would either error or
-			// deliver to a recycled thread.
-			if (this._disposed) return
-			this._send({ type: 'binding-result', id, value })
-		} catch (e) {
-			if (this._disposed) return
-			this._send({ type: 'binding-error', id, error: serializeError(e) })
-		}
+	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
+		return dispatchRpcCall(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed,
+		})
 	}
 
-	private async _dispatchBindingFetch(id: number, target: BindingTarget, req: SerializedRequest): Promise<void> {
-		try {
-			const resolved = this._resolveBinding(target)
-			const fetch = resolved.fetch
-			if (typeof fetch !== 'function') {
-				throw new Error(`Binding "${target.binding}" has no fetch() method`)
-			}
-			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, deserializeRequest(req))
-			if (this._disposed) return
-			const serialized = await serializeResponse(response)
-			const ws = (response as ResponseWithWebSocket).webSocket
-			if (response.status === 101 && ws instanceof CFWebSocket) {
-				serialized.webSocketId = this._wsBridge.adoptExisting(ws)
-			}
-			this._send({ type: 'binding-fetch-result', id, response: serialized })
-		} catch (e) {
-			if (this._disposed) return
-			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
-		}
+	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
+		return dispatchRpcFetch(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed,
+			decorateResponse: (response, serialized) => {
+				const ws = (response as ResponseWithWebSocket).webSocket
+				if (response.status === 101 && ws instanceof CFWebSocket) {
+					serialized.webSocketId = this._wsBridge.adoptExisting(ws)
+				}
+			},
+		})
 	}
 
 	/** Resolves when the worker has imported the user module successfully. */
