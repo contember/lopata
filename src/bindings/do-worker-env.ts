@@ -12,83 +12,59 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
+import { getActiveContext } from '../tracing/context'
+import type { BindingTarget, ParentSpanContext, RpcCallRequest, RpcFetchRequest } from '../worker-thread/protocol'
+import { RpcClient } from '../worker-thread/rpc-shared'
+import { deserializeResponse } from '../worker-thread/serialize'
+import type { DOMainMessage } from './do-executor-worker'
 import { openD1Database } from './d1'
-import type { DOMainMessage, DOWorkerMessage, SerializedEnvResponse } from './do-executor-worker'
 import { DurableObjectNamespaceImpl } from './durable-object'
 import { SqliteKVNamespace } from './kv'
 import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
 import { makeBindingProxy } from './rpc-stub'
 
-/**
- * Minimal RPC helper for DO-worker → main bridges. Each call posts a
- * message with a fresh id and resolves when main echoes back the result.
- */
-export interface DoEnvRpc {
-	call(binding: string, method: string, args: unknown[]): Promise<unknown>
-	callFetch(binding: string, request: Request): Promise<SerializedEnvResponse>
-	/** Handle an inbound `env-*` reply from main; returns true if consumed. */
-	handle(msg: DOWorkerMessage): boolean
-}
-
-export function createDoEnvRpc(post: (msg: DOMainMessage) => void): DoEnvRpc {
-	const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
-	let nextId = 1
-
-	return {
-		call(binding, method, args) {
-			const id = nextId++
-			return new Promise<unknown>((resolve, reject) => {
-				pending.set(id, { resolve, reject })
-				post({ type: 'env-call', id, binding, method, args })
-			})
-		},
-		async callFetch(binding, request) {
-			const id = nextId++
-			const headers: [string, string][] = []
-			request.headers.forEach((v, k) => headers.push([k, v]))
-			const body = request.body ? await request.arrayBuffer() : null
-			return new Promise<SerializedEnvResponse>((resolve, reject) => {
-				pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-				post({ type: 'env-fetch', id, binding, request: { url: request.url, method: request.method, headers, body } })
-			})
-		},
-		handle(msg) {
-			switch (msg.type) {
-				case 'env-call-result':
-				case 'env-fetch-result': {
-					const p = pending.get(msg.id)
-					if (!p) return true
-					pending.delete(msg.id)
-					p.resolve(msg.type === 'env-call-result' ? msg.value : msg.response)
-					return true
-				}
-				case 'env-call-error':
-				case 'env-fetch-error': {
-					const p = pending.get(msg.id)
-					if (!p) return true
-					pending.delete(msg.id)
-					const err = new Error(msg.message)
-					if (msg.stack) err.stack = msg.stack
-					if (msg.name) err.name = msg.name
-					p.reject(err)
-					return true
-				}
-				default:
-					return false
-			}
-		},
+/** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
+export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
+	const getParent = (): ParentSpanContext | undefined => {
+		const active = getActiveContext()
+		return active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 	}
+	return new RpcClient(req => post(req as RpcCallRequest | RpcFetchRequest), getParent)
 }
 
-function makeEnvBindingProxy(binding: string, rpc: DoEnvRpc): Record<string, unknown> {
+function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, unknown> {
+	const target: BindingTarget = { binding }
 	return makeBindingProxy({
 		fetch: async (input, init) => {
 			const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
-			const r = await rpc.callFetch(binding, req)
-			return new Response(r.body, { status: r.status, statusText: r.statusText, headers: r.headers })
+			const r = await rpc.callFetch(target, req)
+			return deserializeResponse(r)
 		},
-		call: (prop, args) => rpc.call(binding, prop, args),
+		call: (prop, args) => rpc.call(target, prop, args),
+	})
+}
+
+/**
+ * Stub for cross-Durable-Object access from within a DO worker thread.
+ *
+ * Cross-DO RPC requires routing into a different worker's singleton namespace
+ * (alarms, in-memory cache, hibernation WSs all live there). That plumbing is
+ * not implemented; constructing a private namespace inside this worker would
+ * silently duplicate state. Throw loud and eager instead — the moment user
+ * code touches `this.env.OTHER_DO.anything`, fail with a clear message naming
+ * the binding and class.
+ */
+function makeCrossDoStub(bindingName: string, className: string): Record<string, unknown> {
+	const fail = (): never => {
+		throw new Error(
+			`Cross-Durable-Object calls in thread isolation are not supported. The binding "${bindingName}" resolves to DO class "${className}", which lives in a different Worker thread. (To use it, refactor to call via a Service Binding, or run lopata in in-process mode.)`,
+		)
+	}
+	return new Proxy({} as Record<string, unknown>, {
+		get(_obj, _prop) {
+			return fail()
+		},
 	})
 }
 
@@ -103,7 +79,8 @@ function makeEnvBindingProxy(binding: string, rpc: DoEnvRpc): Record<string, unk
 export function buildWorkerEnv(
 	config: WranglerConfig,
 	dataDir: string,
-	rpc: DoEnvRpc,
+	rpc: RpcClient,
+	hostNamespaceName: string,
 ): { db: Database; env: Record<string, unknown>; doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -132,11 +109,18 @@ export function buildWorkerEnv(
 		env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, dataDir)
 	}
 
-	// Durable Objects — each runs in-process within this worker thread
+	// Durable Objects — only the binding that points at *this* worker's own DO
+	// class gets a real local namespace. Every other DO binding points at a
+	// singleton in a different worker thread; constructing a private namespace
+	// here would silently duplicate state. Substitute a loud-throw stub.
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, dataDir)
-		env[doBinding.name] = namespace
-		doNamespaces.push({ className: doBinding.class_name, namespace })
+		if (doBinding.class_name === hostNamespaceName) {
+			const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, dataDir)
+			env[doBinding.name] = namespace
+			doNamespaces.push({ className: doBinding.class_name, namespace })
+		} else {
+			env[doBinding.name] = makeCrossDoStub(doBinding.name, doBinding.class_name)
+		}
 	}
 
 	// D1 databases

@@ -63,12 +63,14 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const config = await loadConfig(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
-	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc)
+	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc, workerConfig.namespaceName)
 
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
 
-	// Wire DO classes for nested DOs
+	// Wire the host DO class — `buildWorkerEnv` only emits an entry for the
+	// binding whose `class_name` matches this worker's namespace (the only one
+	// with a real local namespace; cross-DO bindings are loud-throw stubs).
 	for (const entry of doNamespaces) {
 		const cls = workerModule[entry.className]
 		if (cls) {
@@ -259,8 +261,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	self.onmessage = async (event: MessageEvent<DOWorkerMessage>) => {
 		const msg = event.data
 
-		// Env-binding RPC results from main (service-binding fetches, etc.)
-		if (envRpc.handle(msg)) return
+		// Env-binding RPC replies from main (service-binding fetches, etc.)
+		if (envRpc.handle(msg as { type: string })) return
 
 		if (msg.type === 'command') {
 			try {

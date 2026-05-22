@@ -6,7 +6,8 @@
  */
 
 import { dirname, resolve } from 'node:path'
-import { serializeError } from '../worker-thread/protocol'
+import type { BindingTarget, RpcCallRequest, RpcFetchRequest, RpcReply } from '../worker-thread/protocol'
+import { dispatchRpcCall, dispatchRpcFetch } from '../worker-thread/rpc-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
@@ -39,22 +40,6 @@ export type DOResult =
 	| { type: 'ws-created'; wsId: string }
 	| { type: 'error'; message: string; stack?: string; name?: string }
 
-/** Serialized Request payload for env-binding RPC fetches. */
-export interface SerializedEnvRequest {
-	url: string
-	method: string
-	headers: [string, string][]
-	body: ArrayBuffer | null
-}
-
-/** Serialized Response payload for env-binding RPC fetch results. */
-export interface SerializedEnvResponse {
-	status: number
-	statusText: string
-	headers: [string, string][]
-	body: ArrayBuffer | null
-}
-
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
 	| { type: 'command'; id: number; command: DOCommand }
@@ -64,12 +49,8 @@ export type DOWorkerMessage =
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
-	/** Result of a DO-worker-side `this.env.X.method(...)` proxy call. */
-	| { type: 'env-call-result'; id: number; value: unknown }
-	| { type: 'env-call-error'; id: number; message: string; stack?: string; name?: string }
-	/** Result of a DO-worker-side `this.env.X.fetch(req)` proxy call. */
-	| { type: 'env-fetch-result'; id: number; response: SerializedEnvResponse }
-	| { type: 'env-fetch-error'; id: number; message: string; stack?: string; name?: string }
+	// Unified cross-thread binding-RPC replies — see `worker-thread/protocol.ts`.
+	| RpcReply
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
@@ -81,9 +62,12 @@ export type DOMainMessage =
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
-	/** Stateful env-binding RPC from the DO worker (e.g. `this.env.FAILING.greet(name)`). */
-	| { type: 'env-call'; id: number; binding: string; method: string; args: unknown[] }
-	| { type: 'env-fetch'; id: number; binding: string; request: SerializedEnvRequest }
+	// Unified cross-thread binding-RPC requests — see `worker-thread/protocol.ts`.
+	// The DO-worker calls `this.env.<binding>.method(...)` / `.fetch(...)`; main
+	// resolves the binding from its env, runs the call under the caller's trace
+	// context, and ships the reply back.
+	| RpcCallRequest
+	| RpcFetchRequest
 	/**
 	 * Container lifecycle notifications. Main owns the active-container Set so
 	 * one centralized `exit` handler can `docker rm -f` everything, regardless
@@ -206,12 +190,12 @@ export class WorkerExecutor implements DOExecutor {
 					break
 				}
 
-				case 'env-call':
-					this._dispatchEnvCall(msg.id, msg.binding, msg.method, msg.args)
+				case 'rpc-call':
+					this._dispatchRpcCall(msg)
 					break
 
-				case 'env-fetch':
-					this._dispatchEnvFetch(msg.id, msg.binding, msg.request)
+				case 'rpc-fetch':
+					this._dispatchRpcFetch(msg)
 					break
 
 				case 'container-registered':
@@ -392,46 +376,33 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	/**
-	 * Resolve a binding name against the main-side env and invoke a method on
-	 * it. Used when the DO worker calls `this.env.X.someMethod(...)` for any
-	 * stateful binding (service binding RPC, email send, workflow create, …).
+	 * Resolve a binding from main's env. DO-worker channel never carries
+	 * `instanceId` (env-binding access only — no DO-stub redirection).
 	 */
-	private async _dispatchEnvCall(id: number, binding: string, method: string, args: unknown[]): Promise<void> {
-		if (this._disposed) return
-		try {
-			const target = this._config.env[binding] as Record<string, unknown> | undefined
-			if (!target) throw new Error(`Binding "${binding}" not found on main env`)
-			const fn = target[method]
-			if (typeof fn !== 'function') throw new Error(`Binding "${binding}" has no method "${method}"`)
-			const value = await (fn as (...a: unknown[]) => unknown).call(target, ...args)
-			this._worker?.postMessage({ type: 'env-call-result', id, value } satisfies DOWorkerMessage)
-		} catch (e) {
-			const err = serializeError(e)
-			this._worker?.postMessage({ type: 'env-call-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
-		}
+	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {
+		const binding = this._config.env[target.binding] as Record<string, unknown> | undefined
+		if (!binding) throw new Error(`Binding "${target.binding}" not found on main env`)
+		return binding
 	}
 
-	private async _dispatchEnvFetch(id: number, binding: string, req: SerializedEnvRequest): Promise<void> {
-		if (this._disposed) return
-		try {
-			const target = this._config.env[binding] as { fetch?: (r: Request) => Promise<Response> } | undefined
-			if (!target?.fetch) throw new Error(`Binding "${binding}" has no fetch() method`)
-			const request = new Request(req.url, { method: req.method, headers: req.headers, body: req.body })
-			const response = await target.fetch(request)
-			const headers: [string, string][] = []
-			response.headers.forEach((v, k) => headers.push([k, v]))
-			const body = response.body ? await response.arrayBuffer() : null
-			this._worker?.postMessage(
-				{
-					type: 'env-fetch-result',
-					id,
-					response: { status: response.status, statusText: response.statusText, headers, body },
-				} satisfies DOWorkerMessage,
-			)
-		} catch (e) {
-			const err = serializeError(e)
-			this._worker?.postMessage({ type: 'env-fetch-error', id, message: err.message, stack: err.stack, name: err.name } satisfies DOWorkerMessage)
-		}
+	private _postReply = (reply: RpcReply): void => {
+		this._worker?.postMessage(reply satisfies DOWorkerMessage)
+	}
+
+	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
+		return dispatchRpcCall(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed && this._worker !== null,
+		})
+	}
+
+	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
+		return dispatchRpcFetch(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed && this._worker !== null,
+		})
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
