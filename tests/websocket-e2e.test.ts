@@ -37,7 +37,10 @@ async function startStandaloneServer(port: number): Promise<Subprocess> {
 		stderr: 'pipe',
 	})
 
-	await waitForOutput(proc, 'Server running', 15_000)
+	// 60s, not 15s: on loaded CI runners the dev server's first compile + DO
+	// wiring can push "Server running" just past a 15s deadline (the marker
+	// then shows up in the timeout's own captured output), flaking the release.
+	await waitForOutput(proc, 'Server running', 60_000)
 	return proc
 }
 
@@ -405,7 +408,7 @@ describe('WebSocket E2E — standalone', () => {
 	beforeAll(async () => {
 		cleanup()
 		proc = await startStandaloneServer(PORT)
-	}, 20_000)
+	}, 90_000) // > startStandaloneServer's 60s marker wait, so the hook doesn't die before a slow CI boot completes
 
 	afterAll(() => {
 		proc?.kill()
