@@ -27,6 +27,7 @@ import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
+import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget } from './protocol'
 import type { RpcClient } from './rpc-client'
 import { deserializeResponse } from './serialize'
@@ -77,15 +78,23 @@ export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEn
 	}
 
 	for (const kv of config.kv_namespaces ?? []) {
-		env[kv.binding] = new SqliteKVNamespace(db, kv.id)
+		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
+			type: 'kv',
+			name: kv.binding,
+			methods: ['get', 'getWithMetadata', 'put', 'delete', 'list'],
+		})
 	}
 
 	for (const r2 of config.r2_buckets ?? []) {
-		env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, dataDir)
+		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, dataDir), {
+			type: 'r2',
+			name: r2.binding,
+			methods: ['get', 'put', 'delete', 'list', 'head', 'createMultipartUpload'],
+		})
 	}
 
 	for (const d1 of config.d1_databases ?? []) {
-		env[d1.binding] = openD1Database(dataDir, d1.database_name)
+		env[d1.binding] = instrumentD1(openD1Database(dataDir, d1.database_name), d1.binding)
 	}
 
 	for (const producer of config.queues?.producers ?? []) {
@@ -126,15 +135,26 @@ export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEn
 
 	if (config.assets?.binding) {
 		const assetsDir = path.resolve(baseDir, config.assets.directory)
-		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
+		env[config.assets.binding] = instrumentBinding(
+			new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling),
+			{ type: 'assets', name: config.assets.binding, methods: ['fetch'] },
+		)
 	}
 
 	if (config.images) {
-		env[config.images.binding] = new ImagesBinding()
+		env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
+			type: 'images',
+			name: config.images.binding,
+			methods: ['info'],
+		})
 	}
 
 	if (config.media) {
-		env[config.media.binding] = new MediaBinding()
+		env[config.media.binding] = instrumentBinding(new MediaBinding(), {
+			type: 'media',
+			name: config.media.binding,
+			methods: [],
+		})
 	}
 
 	for (const hd of config.hyperdrive ?? []) {
@@ -142,17 +162,29 @@ export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEn
 	}
 
 	if (config.browser) {
-		env[config.browser.binding] = new BrowserBinding(browserConfig ?? {})
+		env[config.browser.binding] = instrumentBinding(new BrowserBinding(browserConfig ?? {}), {
+			type: 'browser',
+			name: config.browser.binding,
+			methods: ['launch', 'connect', 'sessions'],
+		})
 	}
 
 	if (config.ai) {
 		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
 		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
-		env[config.ai.binding] = new AiBinding(db, accountId, apiToken)
+		env[config.ai.binding] = instrumentBinding(new AiBinding(db, accountId, apiToken), {
+			type: 'ai',
+			name: config.ai.binding,
+			methods: ['run', 'models'],
+		})
 	}
 
 	for (const ae of config.analytics_engine_datasets ?? []) {
-		env[ae.binding] = new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding)
+		env[ae.binding] = instrumentBinding(new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding), {
+			type: 'analytics_engine',
+			name: ae.binding,
+			methods: ['writeDataPoint'],
+		})
 	}
 
 	if (config.version_metadata) {
