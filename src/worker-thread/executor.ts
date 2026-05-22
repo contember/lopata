@@ -57,7 +57,7 @@ export class WorkerThreadExecutor {
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
-	private _pendingWaitUntil = 0
+	private _pendingWaitUntil = new Set<number>()
 	private _wsBridge: WsHostBridge<WorkerCommand>
 
 	constructor(options: WorkerThreadExecutorOptions) {
@@ -183,12 +183,10 @@ export class WorkerThreadExecutor {
 				this._dispatchRpcFetch(msg)
 				break
 			case 'wait-until-add':
-				this._pendingWaitUntil++
+				this._pendingWaitUntil.add(msg.id)
 				break
 			case 'wait-until-settle':
-				// `Math.max(0, ...)` guards against any future double-post slipping
-				// through (e.g. if the worker handler gains a second listener).
-				this._pendingWaitUntil = Math.max(0, this._pendingWaitUntil - 1)
+				this._pendingWaitUntil.delete(msg.id)
 				break
 			case 'trace-span-insert':
 				getTraceStore().insertSpan(msg.span)
@@ -219,7 +217,7 @@ export class WorkerThreadExecutor {
 
 	/** Background `waitUntil` promises still in flight on the worker side. */
 	pendingWaitUntil(): number {
-		return this._pendingWaitUntil
+		return this._pendingWaitUntil.size
 	}
 
 	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {

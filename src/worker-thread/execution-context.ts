@@ -7,6 +7,12 @@
 import { logIfRejected } from '../execution-context'
 import type { WorkerMessage } from './protocol'
 
+// Worker-thread-global wait-until id sequence. Ids never cross thread
+// boundaries (each generation has its own worker), so a module-level counter
+// is enough to keep main's `_pendingWaitUntil` Set unambiguous across
+// concurrent fetches.
+let nextWaitUntilId = 1
+
 export class WorkerExecutionContext {
 	/** @internal Reserved for Phase 7 service-binding `props` wiring; currently always `{}`. */
 	readonly props: Record<string, unknown>
@@ -18,9 +24,10 @@ export class WorkerExecutionContext {
 	}
 
 	waitUntil(promise: Promise<unknown>): void {
-		this._post({ type: 'wait-until-add' })
+		const id = nextWaitUntilId++
+		this._post({ type: 'wait-until-add', id })
 		logIfRejected(promise).finally(() => {
-			this._post({ type: 'wait-until-settle' })
+			this._post({ type: 'wait-until-settle', id })
 		})
 	}
 

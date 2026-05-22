@@ -176,10 +176,11 @@ export type WorkerMessage =
 	| { type: 'entrypoint-rpc-error'; id: number; error: SerializedError }
 	| RpcCallRequest
 	| RpcFetchRequest
-	// `ctx.waitUntil(p)` and its settlement. Main keeps a counter so reload drain
-	// waits for background work the response no longer carries.
-	| { type: 'wait-until-add' }
-	| { type: 'wait-until-settle' }
+	// `ctx.waitUntil(p)` and its settlement. Main tracks in-flight ids so reload
+	// drain waits for background work the response no longer carries. Per-id
+	// (vs. counter) makes double-add/double-settle impossible to silently desync.
+	| { type: 'wait-until-add'; id: number }
+	| { type: 'wait-until-settle'; id: number }
 	// Trace store forwarding. The worker holds a `RemoteTraceStore` that posts
 	// each operation here; main writes to the single real `TraceStore` so the
 	// dashboard's subscribers fire normally.
