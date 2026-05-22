@@ -91,6 +91,7 @@ export class WorkerThreadExecutor {
 	}
 
 	private _handleMessage(msg: WorkerMessage): void {
+		if (this._disposed) return
 		switch (msg.type) {
 			case 'need-init':
 				this._send({
