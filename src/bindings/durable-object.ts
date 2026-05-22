@@ -1025,6 +1025,14 @@ export class DurableObjectNamespaceImpl {
 		return result
 	}
 
+	/** @internal Whether any executor in this namespace currently holds at least one accepted WebSocket. */
+	hasActiveWebSockets(): boolean {
+		for (const executor of this._executors.values()) {
+			if (executor.activeWebSocketCount() > 0) return true
+		}
+		return false
+	}
+
 	/** @internal List all instance IDs in this namespace (from DB). */
 	_listInstanceIds(): string[] {
 		const rows = this.db

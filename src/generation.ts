@@ -225,14 +225,7 @@ export class Generation {
 		if (this.activeRequests > 0) return false
 		if (this.threadExecutor.pendingWaitUntil() > 0) return false
 		for (const entry of this.registry.durableObjects) {
-			// Active WebSockets on DO instances keep the generation alive.
-			const ns = entry.namespace as any
-			if (ns.instances) {
-				for (const [, instance] of ns.instances as Map<string, any>) {
-					const state = instance.ctx
-					if (state.getWebSockets().length > 0) return false
-				}
-			}
+			if (entry.namespace.hasActiveWebSockets()) return false
 		}
 		return true
 	}
