@@ -50,7 +50,9 @@ export async function serializeResponse(response: Response): Promise<SerializedR
 		const kind = contentType.startsWith('text/event-stream') ? 'SSE' : 'chunked'
 		warnOnce(
 			`res:${kind}:${contentType || 'unknown'}`,
-			`[lopata] streaming response body (${kind}, content-type "${contentType || 'unknown'}") is being fully buffered to cross the worker-thread boundary; streaming semantics will not be preserved.`,
+			`[lopata] streaming response body (${kind}, content-type "${
+				contentType || 'unknown'
+			}") is being fully buffered to cross the worker-thread boundary; streaming semantics will not be preserved.`,
 		)
 	}
 	const body = response.body ? await response.arrayBuffer() : null

@@ -4,7 +4,7 @@ import type { WranglerConfig } from './config'
 import { buildEnv, wireServiceBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
 import type { WorkerRegistry } from './worker-registry'
-import { WorkerThreadExecutor, type WorkerReadyInfo } from './worker-thread/executor'
+import { type WorkerReadyInfo, WorkerThreadExecutor } from './worker-thread/executor'
 
 export class GenerationManager {
 	private generations = new Map<number, Generation>()
