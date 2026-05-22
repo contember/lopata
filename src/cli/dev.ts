@@ -69,8 +69,14 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
 		setLopataConfig(lopataConfig)
 
-		if (lopataConfig.isolation && lopataConfig.isolation !== 'dev' && lopataConfig.isolation !== 'isolated') {
-			console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}", using "dev"`)
+		if (lopataConfig.isolation) {
+			if (lopataConfig.isolation === 'dev' || lopataConfig.isolation === 'isolated') {
+				console.warn(
+					`[lopata] "isolation" is deprecated and has no effect — workers always run in their own Bun Worker thread. Remove it from lopata.config.ts.`,
+				)
+			} else {
+				console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}" — has no effect`)
+			}
 		}
 		// DOs always run in worker threads now — main thread can't host the user
 		// classes since the worker entry imports user code in its own thread.
