@@ -1,17 +1,9 @@
 import type { GenerationManager } from './generation-manager'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
-export interface ResolvedTarget {
-	/**
-	 * Present for the in-process / vite-plugin adapter path. `null` for
-	 * thread-mode generations whose user code lives in a Bun Worker — callers
-	 * must short-circuit on `threadExecutor` before touching this.
-	 */
-	workerModule: Record<string, unknown> | null
-	env: Record<string, unknown>
-	/** Set when the target worker runs in a Bun Worker thread; service-binding fetches RPC through it. */
-	threadExecutor: WorkerThreadExecutor | null
-}
+export type ResolvedTarget =
+	| { kind: 'thread'; env: Record<string, unknown>; executor: WorkerThreadExecutor }
+	| { kind: 'in-process'; env: Record<string, unknown>; workerModule: Record<string, unknown> }
 
 /**
  * Central registry holding all worker GenerationManagers, keyed by worker name.
@@ -55,14 +47,15 @@ export class WorkerRegistry {
 		if (!gen) {
 			throw new Error(`Worker "${workerName}" has no active generation (failed to load?)`)
 		}
-		// `workerModule` is only consumed by the in-process fallback in
-		// `ServiceBinding.fetch` (used by the vite-plugin main worker which
-		// exposes a different adapter shape with its own workerModule).
-		// Thread-mode Generations don't carry one — return `null` so callers
-		// that forget the `threadExecutor` short-circuit fail loudly instead
-		// of silently using an empty module.
-		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule ?? null
-		return { workerModule, env: gen.env, threadExecutor: gen.threadExecutor }
+		const threadExecutor = (gen as unknown as { threadExecutor?: WorkerThreadExecutor }).threadExecutor
+		if (threadExecutor) {
+			return { kind: 'thread', env: gen.env, executor: threadExecutor }
+		}
+		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule
+		if (!workerModule) {
+			throw new Error(`Worker "${workerName}" generation has neither a thread executor nor a workerModule`)
+		}
+		return { kind: 'in-process', env: gen.env, workerModule }
 	}
 
 	/** List all registered managers (for dashboard) */

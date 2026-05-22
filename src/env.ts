@@ -429,8 +429,8 @@ export function wireServiceBindings(
 			// Resolve through registry (handles both self-ref and cross-worker)
 			wire(() => workerRegistry.resolveTarget(entry.serviceName))
 		} else {
-			// Backward compat: self-reference (no thread executor in this path)
-			wire(() => ({ workerModule, env, threadExecutor: null }))
+			// Backward compat: self-reference, in-process
+			wire(() => ({ kind: 'in-process', workerModule, env }))
 		}
 		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 	}

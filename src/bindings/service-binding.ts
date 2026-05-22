@@ -91,7 +91,7 @@ export class ServiceBinding {
 			// Legacy API: _wire(workerModule, env)
 			const workerModule = resolverOrModule as Record<string, unknown>
 			const capturedEnv = env!
-			this._resolver = () => ({ workerModule, env: capturedEnv, threadExecutor: null })
+			this._resolver = () => ({ kind: 'in-process', workerModule, env: capturedEnv })
 		}
 	}
 
@@ -123,14 +123,14 @@ export class ServiceBinding {
 	}
 
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
-		const { workerModule, env } = this._resolve()
-		if (!workerModule) {
+		const resolved = this._resolve()
+		if (resolved.kind !== 'in-process') {
 			throw new Error(
-				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through threadExecutor`,
+				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through the thread executor`,
 			)
 		}
 		const execCtx = ctx ?? new ExecutionContext(this._props)
-		return resolveEntrypointTarget(workerModule, this._entrypoint, execCtx, env)
+		return resolveEntrypointTarget(resolved.workerModule, this._entrypoint, execCtx, resolved.env)
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
@@ -139,11 +139,8 @@ export class ServiceBinding {
 		const request = typeof url === 'string' ? new Request(url, init) : url
 
 		const resolved = this._resolve()
-		// Thread-mode target: RPC into its worker. Trace context flows via
-		// `executor.executeFetch → getActiveContext() → ParentSpanContext` over
-		// postMessage; don't wrap in `runWithContext` here (would double-parent).
-		if (resolved.threadExecutor) {
-			return resolved.threadExecutor.executeFetch(request, this._props)
+		if (resolved.kind === 'thread') {
+			return resolved.executor.executeFetch(request, this._props)
 		}
 
 		const execCtx = new ExecutionContext(this._props)
@@ -151,10 +148,8 @@ export class ServiceBinding {
 		if (!target?.fetch || typeof target.fetch !== 'function') {
 			throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
 		}
-		// `_getTarget` already threw above if `workerModule` was null, so the
-		// non-null assertion is safe here.
 		const { workerModule, env } = resolved
-		const def = workerModule!.default
+		const def = workerModule.default
 		const isClass = this._entrypoint || (typeof def === 'function' && def.prototype?.fetch)
 
 		const parentCtx = getActiveContext()
@@ -208,11 +203,9 @@ export class ServiceBinding {
 				const rpcCallable = (...args: unknown[]) => {
 					self._checkSubrequestLimit()
 					warnInvalidRpcArgs(args, prop)
-					// Thread-mode target: RPC into its worker. The class instance lives
-					// in the target's thread, so we can't construct it locally.
 					const resolved = self._resolve()
-					if (resolved.threadExecutor) {
-						return resolved.threadExecutor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
+					if (resolved.kind === 'thread') {
+						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
 					const target = self._getTarget()
