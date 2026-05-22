@@ -199,11 +199,7 @@ export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEn
 }
 
 function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
-	const target: BindingTarget = { binding: bindingName }
-	return {
-		send: (message: unknown, options?: unknown) => rpc.call(target, 'send', [message, options]),
-		sendBatch: (messages: unknown, options?: unknown) => rpc.call(target, 'sendBatch', [messages, options]),
-	}
+	return makeRpcProxy({ binding: bindingName }, rpc)
 }
 
 async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuffer | string> {
@@ -275,19 +271,18 @@ function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
 
 function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
 	const target: BindingTarget = { binding: bindingName }
-	return {
-		send: async (message: unknown) => {
-			// Structured-clone strips EmailMessage's class identity, so tag it and
-			// let main rebuild via `reifyArgs` in executor.ts.
-			const arg = message instanceof EmailMessage
-				? {
-					__lopata_class: 'EmailMessage' as const,
-					from: message.from,
-					to: message.to,
-					raw: await materializeEmailRaw(message.raw),
-				}
-				: message
-			return rpc.call(target, 'send', [arg])
-		},
+	const taggedSend = async (message: unknown) => {
+		// Structured-clone strips EmailMessage's class identity, so tag it and
+		// let main rebuild via `reifyArgs` in executor.ts.
+		const arg = message instanceof EmailMessage
+			? {
+				__lopata_class: 'EmailMessage' as const,
+				from: message.from,
+				to: message.to,
+				raw: await materializeEmailRaw(message.raw),
+			}
+			: message
+		return rpc.call(target, 'send', [arg])
 	}
+	return makeRpcProxy(target, rpc, { send: taggedSend })
 }
