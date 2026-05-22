@@ -248,8 +248,13 @@ export class WorkerThreadExecutor {
 				throw new Error(`Binding "${target.binding}" has no method "${method}"`)
 			}
 			const value = await (fn as (...a: unknown[]) => unknown).call(resolved, ...reifyArgs(args))
+			// Drop the result if the executor was torn down while the call was
+			// in flight — the worker is gone, posting would either error or
+			// deliver to a recycled thread.
+			if (this._disposed) return
 			this._send({ type: 'binding-result', id, value })
 		} catch (e) {
+			if (this._disposed) return
 			this._send({ type: 'binding-error', id, error: serializeError(e) })
 		}
 	}
@@ -262,6 +267,7 @@ export class WorkerThreadExecutor {
 				throw new Error(`Binding "${target.binding}" has no fetch() method`)
 			}
 			const response = await (fetch as (r: Request) => Promise<Response>).call(resolved, deserializeRequest(req))
+			if (this._disposed) return
 			const serialized = await serializeResponse(response)
 			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
@@ -269,6 +275,7 @@ export class WorkerThreadExecutor {
 			}
 			this._send({ type: 'binding-fetch-result', id, response: serialized })
 		} catch (e) {
+			if (this._disposed) return
 			this._send({ type: 'binding-fetch-error', id, error: serializeError(e) })
 		}
 	}
