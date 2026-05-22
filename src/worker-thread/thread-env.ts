@@ -104,6 +104,16 @@ export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEn
 		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc)
 	}
 
+	// Container DOs whose class isn't already declared under `durable_objects`
+	// — main's `buildEnv` synthesises a DO namespace for them, so we need the
+	// matching proxy in the worker env or the binding is missing at runtime.
+	const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name))
+	for (const container of config.containers ?? []) {
+		if (doClassNames.has(container.class_name)) continue
+		const bindingName = container.name ?? container.class_name
+		env[bindingName] = makeDONamespaceProxy(bindingName, rpc)
+	}
+
 	// Workflows live entirely in the worker thread — class refs and the
 	// state machine are both here; main never sees the binding. Caller wires
 	// the class once the user module is imported.
