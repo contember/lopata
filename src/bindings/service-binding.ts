@@ -73,8 +73,15 @@ export class ServiceBinding {
 	}
 
 	private _checkSubrequestLimit(): void {
-		this._subrequestCount++
-		if (this._subrequestCount > this._limits.maxSubrequests) {
+		// Prefer the per-top-level-request counter on the active span context so
+		// the budget resets each incoming request (Cloudflare semantics). Fall
+		// back to the per-binding counter only when there is no request context
+		// (direct or programmatic use, e.g. tests) — otherwise the count would
+		// leak across the whole dev-server lifetime and eventually 500 every
+		// asset request that goes through a service binding.
+		const requestCounter = getActiveContext()?.subrequests
+		const count = requestCounter ? ++requestCounter.count : ++this._subrequestCount
+		if (count > this._limits.maxSubrequests) {
 			throw new Error(
 				`Service binding "${this._serviceName}": subrequest limit exceeded (max ${this._limits.maxSubrequests})`,
 			)

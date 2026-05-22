@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createServiceBinding } from '../src/bindings/service-binding'
+import { runWithContext } from '../src/tracing/context'
 
 describe('Service Binding', () => {
 	// Mock worker module with default fetch handler
@@ -458,6 +459,31 @@ describe('Service Binding', () => {
 		test('subrequest count can be read', () => {
 			const proxy = createServiceBinding('my-worker', undefined, { maxSubrequests: 100 })
 			expect(proxy._subrequestCount).toBe(0)
+		})
+
+		test('budget is per top-level request, not per binding lifetime', async () => {
+			const proxy = createServiceBinding('my-worker', undefined, { maxSubrequests: 3 })
+			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
+			const fetch = proxy.fetch as Function
+
+			// A top-level request is a root span context with its own counter ref.
+			const requestCtx = () => ({ traceId: 't', spanId: 's', fetchStack: { current: null }, subrequests: { count: 0 } })
+
+			// First request: 3 subrequests fit the budget, the 4th exceeds it.
+			await runWithContext(requestCtx(), async () => {
+				await fetch('http://localhost/1')
+				await fetch('http://localhost/2')
+				await fetch('http://localhost/3')
+				expect(fetch('http://localhost/4')).rejects.toThrow('subrequest limit exceeded')
+			})
+
+			// A fresh request gets a fresh budget — the count does not leak across
+			// requests (the bug that 500'd every asset after ~1000 lifetime calls).
+			await runWithContext(requestCtx(), async () => {
+				await fetch('http://localhost/1')
+				await fetch('http://localhost/2')
+				await fetch('http://localhost/3')
+			})
 		})
 	})
 

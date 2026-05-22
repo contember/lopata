@@ -7,6 +7,14 @@ export interface FetchStackRef {
 	current: Error | null
 }
 
+/** Mutable subrequest counter shared across all spans in the same trace.
+ *  Scopes the binding subrequest budget to a single top-level request, the
+ *  way Cloudflare resets the budget per incoming request: a fresh ref is
+ *  minted at the root span and inherited by every child span. */
+export interface SubrequestCounterRef {
+	count: number
+}
+
 export interface SpanContext {
 	traceId: string
 	spanId: string
@@ -16,6 +24,8 @@ export interface SpanContext {
 	 *  call still contains the user's code frames — we stitch it onto caught
 	 *  errors. */
 	fetchStack: FetchStackRef
+	/** Per-top-level-request subrequest counter, shared across the trace. */
+	subrequests: SubrequestCounterRef
 }
 
 const storage = new AsyncLocalStorage<SpanContext>()

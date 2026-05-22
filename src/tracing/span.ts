@@ -41,9 +41,14 @@ export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>):
 	// fetch call-site stacks captured in sub-spans are visible in the root
 	// span's error handler.
 	const fetchStack = parent?.fetchStack ?? { current: null }
+	// Subrequest budget is per top-level request: a root span (no parent) mints
+	// a fresh counter; child spans inherit it. This resets the budget on each
+	// incoming request, matching Cloudflare — instead of leaking across the
+	// whole dev-server lifetime.
+	const subrequests = parent?.subrequests ?? { count: 0 }
 
 	try {
-		const result = await runWithContext({ traceId, spanId, fetchStack }, () => fn())
+		const result = await runWithContext({ traceId, spanId, fetchStack, subrequests }, () => fn())
 		if (result instanceof Response && result.status >= 500) {
 			store.setSpanStatus(spanId, 'error', `HTTP ${result.status}`)
 		}
@@ -95,9 +100,10 @@ export function startSyncSpan<T>(opts: SpanOptions, fn: () => T): T {
 
 	store.insertSpan(span)
 	const fetchStack = parent?.fetchStack ?? { current: null }
+	const subrequests = parent?.subrequests ?? { count: 0 }
 
 	try {
-		const result = runWithContext({ traceId, spanId, fetchStack }, fn)
+		const result = runWithContext({ traceId, spanId, fetchStack, subrequests }, fn)
 		const currentStatus = store.getSpanStatus(spanId)
 		store.endSpan(spanId, Date.now(), currentStatus === 'error' ? 'error' : 'ok')
 		return result
