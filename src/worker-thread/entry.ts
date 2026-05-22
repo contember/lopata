@@ -69,7 +69,9 @@ async function initRuntime(init: WorkerInitConfig) {
 	const rpc = new RpcClient(post, getParent)
 	const wsBridge = new WsGuestBridge<WorkerMessage>(post, {
 		remoteMessage: (wsId, data) => ({ type: 'ws-worker-send', wsId, data }),
-		remoteClose: (wsId, code, reason) => ({ type: 'ws-worker-close', wsId, code, reason }),
+		// User-worker channel doesn't propagate wasClean — drop it (matches the
+		// pre-refactor wire format in `protocol.ts`).
+		remoteClose: (wsId, code, reason, _wasClean) => ({ type: 'ws-worker-close', wsId, code, reason }),
 	})
 	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built

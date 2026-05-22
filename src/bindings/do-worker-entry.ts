@@ -56,7 +56,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const { DurableObjectStateImpl, DurableObjectIdImpl } = await import('./durable-object')
 	const { BridgeWebSocket } = await import('./do-websocket-bridge')
 	const { CFWebSocket } = await import('./websocket-pair')
-	const { generateId } = await import('../tracing/context')
+	const { WsGuestBridge } = await import('../worker-thread/ws-bridge-shared')
 	const { ContainerBase, ContainerContext, ContainerRuntime } = await import('./container')
 	const { DockerManager } = await import('./container-docker')
 	const { containerLabels } = await import('./container-cleanup')
@@ -123,12 +123,14 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const bridgedWebSockets = new Map<string, InstanceType<typeof BridgeWebSocket>>()
 
 	/**
-	 * Client peers from `Response{webSocket}` returned by the DO's own fetch().
-	 * Each one's events are forwarded to the main thread so the real client sees
-	 * them; messages from the real client are dispatched onto the user-facing
-	 * server peer (`client._peer`).
+	 * Bridge for `Response{webSocket}` returned by the DO's own fetch(). Forwards
+	 * the user-facing peer's events up to main and dispatches inbound real-client
+	 * events onto the user-facing peer.
 	 */
-	const fetchBridgedSockets = new Map<string, InstanceType<typeof CFWebSocket>>()
+	const fetchWsBridge = new WsGuestBridge<DOMainMessage>(msg => postMessage(msg), {
+		remoteMessage: (wsId, data) => ({ type: 'fetch-ws-outgoing', wsId, data }),
+		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'fetch-ws-close-out', wsId, code, reason, wasClean }),
+	})
 
 	// Wire alarm callback
 	state.storage._setAlarmCallback((time: number | null) => {
@@ -160,32 +162,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 					let fetchWebSocketId: string | undefined
 					if (hasWebSocket) {
-						const ws = clientWs as InstanceType<typeof CFWebSocket>
-						fetchWebSocketId = generateId(8)
-						fetchBridgedSockets.set(fetchWebSocketId, ws)
-						// Forward bytes the user sent on `server` (which dispatch as
-						// `message` events on `client`) up to main. Listeners must be
-						// attached BEFORE accept() so the flush of any queued events
-						// (e.g. user already called server.send() before returning)
-						// reaches them.
-						ws.addEventListener('message', (ev: Event) => {
-							const data = (ev as MessageEvent).data
-							postMessage({ type: 'fetch-ws-outgoing', wsId: fetchWebSocketId!, data } satisfies DOMainMessage)
-						})
-						ws.addEventListener('close', (ev: Event) => {
-							const ce = ev as CloseEvent
-							postMessage(
-								{
-									type: 'fetch-ws-close-out',
-									wsId: fetchWebSocketId!,
-									code: ce.code ?? 1000,
-									reason: ce.reason ?? '',
-									wasClean: ce.wasClean ?? true,
-								} satisfies DOMainMessage,
-							)
-							fetchBridgedSockets.delete(fetchWebSocketId!)
-						})
-						ws.accept()
+						fetchWebSocketId = fetchWsBridge.register(clientWs as InstanceType<typeof CFWebSocket>)
 					}
 
 					return {
@@ -296,18 +273,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 			const ws = bridgedWebSockets.get(msg.wsId)
 			if (ws) ws._onError()
 		} else if (msg.type === 'fetch-ws-incoming') {
-			// Real client wrote bytes → deliver to the user's `server` peer.
-			const client = fetchBridgedSockets.get(msg.wsId)
-			client?._peer?.dispatchOrQueue({ type: 'message', data: msg.data })
+			fetchWsBridge.deliverClientMessage(msg.wsId, msg.data)
 		} else if (msg.type === 'fetch-ws-close-in') {
-			const client = fetchBridgedSockets.get(msg.wsId)
-			const server = client?._peer
-			if (server) {
-				server.dispatchOrQueue({ type: 'close', code: msg.code, reason: msg.reason, wasClean: msg.wasClean })
-				server.readyState = 3
-			}
-			if (client) client.readyState = 3
-			fetchBridgedSockets.delete(msg.wsId)
+			fetchWsBridge.deliverClientClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
 		}
 	}
 

@@ -39,7 +39,7 @@ export interface WsHostEnvelopes<O> {
 export interface WsGuestEnvelopes<O> {
 	/** User-facing peer sent bytes → forward to real client via host. */
 	remoteMessage(wsId: string, data: string | ArrayBuffer): O
-	remoteClose(wsId: string, code: number, reason: string): O
+	remoteClose(wsId: string, code: number, reason: string, wasClean: boolean): O
 }
 
 /**
@@ -218,7 +218,7 @@ export class WsGuestBridge<O> {
 		})
 		shipped.addEventListener('close', (ev: Event) => {
 			const ce = ev as CloseEvent
-			this._post(this._envelopes.remoteClose(wsId, ce.code, ce.reason))
+			this._post(this._envelopes.remoteClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
 			this._sockets.delete(wsId)
 		})
 		shipped.accept()
