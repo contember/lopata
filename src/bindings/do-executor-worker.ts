@@ -94,6 +94,7 @@ export class WorkerExecutor implements DOExecutor {
 	private _worker: Worker | null = null
 	private _ready: Promise<void> | null = null
 	private _readyResolve: (() => void) | null = null
+	private _readyReject: ((err: Error) => void) | null = null
 	private _pending = new Map<number, PendingCommand>()
 	private _nextId = 1
 	private _disposed = false
@@ -119,8 +120,9 @@ export class WorkerExecutor implements DOExecutor {
 		const config = this._config
 		const worker = new Worker(WORKER_ENTRY_PATH)
 
-		this._ready = new Promise<void>((resolve) => {
+		this._ready = new Promise<void>((resolve, reject) => {
 			this._readyResolve = resolve
+			this._readyReject = reject
 		})
 
 		this._fetchBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
@@ -153,15 +155,17 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'result': {
 					if (msg.id === -1 && msg.result.type === 'error') {
-						// Worker init error — reject all pending and the ready promise
+						// Worker init error — reject all pending and the ready promise so
+						// awaiting callers surface the real cause instead of a generic
+						// "Worker terminated" after `_disposed` flips.
 						const error = new Error(msg.result.message)
 						if (msg.result.stack) error.stack = msg.result.stack
+						error.name = msg.result.name ?? 'Error'
 						for (const [, pending] of this._pending) {
 							pending.reject(error)
 						}
 						this._pending.clear()
-						// Resolve ready so _sendCommand doesn't hang forever
-						this._readyResolve?.()
+						this._readyReject?.(error)
 						this._disposed = true
 						break
 					}
