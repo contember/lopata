@@ -30,6 +30,7 @@ import { parseDevVars } from '../env'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget } from './protocol'
 import type { RpcClient } from './rpc-client'
+import { tagCloneable } from './rpc-shared'
 import { deserializeResponse } from './serialize'
 
 export interface ThreadEnvOptions {
@@ -273,14 +274,13 @@ function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string,
 	const target: BindingTarget = { binding: bindingName }
 	const taggedSend = async (message: unknown) => {
 		// Structured-clone strips EmailMessage's class identity, so tag it and
-		// let main rebuild via `reifyArgs` in executor.ts.
+		// let main rebuild via `reifyArgs` (registered reviver in email.ts).
 		const arg = message instanceof EmailMessage
-			? {
-				__lopata_class: 'EmailMessage' as const,
+			? tagCloneable('EmailMessage', {
 				from: message.from,
 				to: message.to,
 				raw: await materializeEmailRaw(message.raw),
-			}
+			})
 			: message
 		return rpc.call(target, 'send', [arg])
 	}

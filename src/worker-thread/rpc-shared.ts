@@ -12,7 +12,6 @@
  * context, serialize the result. This module hosts that half.
  */
 
-import { EmailMessage } from '../bindings/email'
 import { runWithParentContext } from '../tracing/context'
 import type {
 	BindingTarget,
@@ -31,9 +30,24 @@ import { deserializeError, serializeError } from './protocol'
 import { deserializeRequest, serializeRequest, serializeResponse } from './serialize'
 
 /**
- * Restore class identities that structured-clone strips. Worker proxies tag
- * such args with `__lopata_class` so we can rebuild the real instance here.
+ * Cross-thread class-identity registry. `structuredClone` (Bun postMessage)
+ * strips class prototypes — bindings whose RPC args/returns rely on class
+ * identity register a reviver here, and the sender side wraps instances with
+ * `tagCloneable` to ship them over the wire.
  */
+type Reviver = (raw: Record<string, unknown>) => unknown
+const revivers = new Map<string, Reviver>()
+
+export function registerCloneable(tag: string, revive: Reviver): void {
+	revivers.set(tag, revive)
+}
+
+/** Sender-side tag: produces a structured-clone-safe payload that the
+ *  receiver rebuilds via the registered reviver. */
+export function tagCloneable<T extends Record<string, unknown>>(tag: string, payload: T): T & { __lopata_class: string } {
+	return { ...payload, __lopata_class: tag }
+}
+
 export function reifyArgs(args: unknown[]): unknown[] {
 	return args.map(reifyArg)
 }
@@ -41,10 +55,8 @@ export function reifyArgs(args: unknown[]): unknown[] {
 function reifyArg(arg: unknown): unknown {
 	if (arg && typeof arg === 'object' && '__lopata_class' in arg) {
 		const tag = (arg as { __lopata_class: string }).__lopata_class
-		if (tag === 'EmailMessage') {
-			const { from, to, raw } = arg as unknown as { from: string; to: string; raw: unknown }
-			return new EmailMessage(from, to, raw as Uint8Array | ArrayBuffer | string)
-		}
+		const revive = revivers.get(tag)
+		if (revive) return revive(arg as Record<string, unknown>)
 	}
 	return arg
 }
