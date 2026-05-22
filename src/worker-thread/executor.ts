@@ -12,7 +12,6 @@ import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-p
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
-import { MainWsBridge } from './main-ws-bridge'
 import type {
 	BindingTarget,
 	ParentSpanContext,
@@ -25,6 +24,7 @@ import type {
 } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
 import { deserializeResponse, serializeRequest } from './serialize'
+import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
@@ -58,7 +58,7 @@ export class WorkerThreadExecutor {
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = 0
-	private _wsBridge: MainWsBridge
+	private _wsBridge: WsHostBridge<WorkerCommand>
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -69,7 +69,10 @@ export class WorkerThreadExecutor {
 		})
 
 		this._worker = new Worker(WORKER_ENTRY)
-		this._wsBridge = new MainWsBridge(cmd => this._send(cmd))
+		this._wsBridge = new WsHostBridge<WorkerCommand>(cmd => this._send(cmd), {
+			clientMessage: (wsId, data) => ({ type: 'ws-client-message', wsId, data }),
+			clientClose: (wsId, code, reason, wasClean) => ({ type: 'ws-client-close', wsId, code, reason, wasClean }),
+		})
 		this._worker.onmessage = (event: MessageEvent<WorkerMessage>) => this._handleMessage(event.data)
 		this._worker.onerror = (event) => {
 			const err = new Error(`Worker thread error: ${event.message ?? 'unknown'}`)
@@ -205,10 +208,10 @@ export class WorkerThreadExecutor {
 				getTraceStore().insertError(msg.error)
 				break
 			case 'ws-worker-send':
-				this._wsBridge.deliverWorkerSend(msg.wsId, msg.data)
+				this._wsBridge.deliverRemoteMessage(msg.wsId, msg.data)
 				break
 			case 'ws-worker-close':
-				this._wsBridge.deliverWorkerClose(msg.wsId, msg.code, msg.reason)
+				this._wsBridge.deliverRemoteClose(msg.wsId, msg.code, msg.reason, true)
 				break
 		}
 	}
@@ -289,7 +292,7 @@ export class WorkerThreadExecutor {
 			// If the id was adopted earlier (e.g. WS came back through a DO/service
 			// binding fetch), reuse that real CFWebSocket so `Bun.serve.upgrade`
 			// gets the actual peer instead of a fresh bridge.
-			response.webSocket = this._wsBridge.getSocket(serialized.webSocketId) ?? this._wsBridge.createSocket(serialized.webSocketId)
+			response.webSocket = this._wsBridge.getSocket(serialized.webSocketId) ?? this._wsBridge.register(serialized.webSocketId)
 		}
 		return response
 	}

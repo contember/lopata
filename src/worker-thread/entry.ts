@@ -15,7 +15,7 @@ import { RpcClient } from './rpc-shared'
 import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
-import { WorkerWsBridge } from './ws-bridge'
+import { WsGuestBridge } from './ws-bridge-shared'
 
 declare var self: Worker
 
@@ -23,7 +23,7 @@ function post(msg: WorkerMessage): void {
 	postMessage(msg)
 }
 
-async function serializeResponse(response: Response, ws: WorkerWsBridge): Promise<SerializedResponse> {
+async function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): Promise<SerializedResponse> {
 	const cfSocket = (response as ResponseWithWebSocket).webSocket as
 		| CFWebSocket
 		| { __bridgedWsId: string }
@@ -67,7 +67,10 @@ async function initRuntime(init: WorkerInitConfig) {
 		return active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 	}
 	const rpc = new RpcClient(post, getParent)
-	const wsBridge = new WorkerWsBridge(post)
+	const wsBridge = new WsGuestBridge<WorkerMessage>(post, {
+		remoteMessage: (wsId, data) => ({ type: 'ws-worker-send', wsId, data }),
+		remoteClose: (wsId, code, reason) => ({ type: 'ws-worker-close', wsId, code, reason }),
+	})
 	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built
 
