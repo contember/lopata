@@ -224,13 +224,22 @@ export async function run(ctx: CliContext, args: string[]) {
 		setDashboardConfig(config)
 
 		const executorFactory = await makeExecutorFactory()
+		// Even in single-worker mode we need a registry so service bindings that
+		// reference the worker by name (self-bindings) resolve to its own
+		// thread executor instead of an empty `workerModule`.
+		registry = new WorkerRegistry()
 		manager = new GenerationManager(config, baseDir, {
+			workerName: config.name,
+			workerRegistry: registry,
+			isMain: true,
 			executorFactory,
 			configPath: findConfigPath(baseDir),
 		})
+		registry.register(config.name, manager, true)
 		const firstGen = await manager.reload()
 		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
+		setWorkerRegistry(registry)
 
 		// File watcher — watch the source directory
 		const srcDir = path.dirname(path.resolve(baseDir, config.main))

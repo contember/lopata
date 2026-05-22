@@ -124,6 +124,11 @@ export class ServiceBinding {
 
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
 		const { workerModule, env } = this._resolve()
+		if (!workerModule) {
+			throw new Error(
+				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through threadExecutor`,
+			)
+		}
 		const execCtx = ctx ?? new ExecutionContext(this._props)
 		return resolveEntrypointTarget(workerModule, this._entrypoint, execCtx, env)
 	}
@@ -146,8 +151,10 @@ export class ServiceBinding {
 		if (!target?.fetch || typeof target.fetch !== 'function') {
 			throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
 		}
+		// `_getTarget` already threw above if `workerModule` was null, so the
+		// non-null assertion is safe here.
 		const { workerModule, env } = resolved
-		const def = workerModule.default
+		const def = workerModule!.default
 		const isClass = this._entrypoint || (typeof def === 'function' && def.prototype?.fetch)
 
 		const parentCtx = getActiveContext()

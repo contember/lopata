@@ -2,7 +2,12 @@ import type { GenerationManager } from './generation-manager'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
 export interface ResolvedTarget {
-	workerModule: Record<string, unknown>
+	/**
+	 * Present for the in-process / vite-plugin adapter path. `null` for
+	 * thread-mode generations whose user code lives in a Bun Worker — callers
+	 * must short-circuit on `threadExecutor` before touching this.
+	 */
+	workerModule: Record<string, unknown> | null
 	env: Record<string, unknown>
 	/** Set when the target worker runs in a Bun Worker thread; service-binding fetches RPC through it. */
 	threadExecutor: WorkerThreadExecutor | null
@@ -53,8 +58,10 @@ export class WorkerRegistry {
 		// `workerModule` is only consumed by the in-process fallback in
 		// `ServiceBinding.fetch` (used by the vite-plugin main worker which
 		// exposes a different adapter shape with its own workerModule).
-		// Thread-mode Generations don't carry one — fall back to `{}`.
-		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule ?? {}
+		// Thread-mode Generations don't carry one — return `null` so callers
+		// that forget the `threadExecutor` short-circuit fail loudly instead
+		// of silently using an empty module.
+		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule ?? null
 		return { workerModule, env: gen.env, threadExecutor: gen.threadExecutor }
 	}
 
