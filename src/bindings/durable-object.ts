@@ -796,6 +796,13 @@ export class DurableObjectNamespaceImpl {
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
 	private _externalClassName?: string
+	/**
+	 * In thread mode the real DO class isn't available on main. The user-worker
+	 * introspects its prototype and reports `alarm()` presence back through the
+	 * `'ready'` message; `GenerationManager` forwards it via `_setAlarmHandlerHint`.
+	 * Read by `hasAlarmHandler()` when `_externalClassName` is set.
+	 */
+	private _externalAlarmHandler?: boolean
 	private _env?: Record<string, unknown>
 	private db: Database
 	private namespaceName: string
@@ -882,6 +889,15 @@ export class DurableObjectNamespaceImpl {
 	/** Set container config for this namespace (makes it a container namespace) */
 	_setContainerConfig(config: ContainerConfig) {
 		this._containerConfig = config
+	}
+
+	/**
+	 * Hint for thread-mode namespaces: whether the (worker-side) DO class defines
+	 * an `alarm()` handler. Called by `GenerationManager` after the worker's
+	 * `'ready'` message lands. Idempotent — overwrites on each reload.
+	 */
+	_setAlarmHandlerHint(value: boolean) {
+		this._externalAlarmHandler = value
 	}
 
 	/** @internal Restore all persisted alarms for this namespace */
@@ -1079,9 +1095,16 @@ export class DurableObjectNamespaceImpl {
 		return rows.map(r => r.id)
 	}
 
-	/** Whether the DO class defines an alarm() handler. Always false in thread mode (real class lives in worker). */
+	/**
+	 * Whether the DO class defines an alarm() handler. In thread mode the class
+	 * lives on the worker, so main relies on the hint shipped through the
+	 * worker's `'ready'` message (see `_setAlarmHandlerHint`). Returns `false`
+	 * during the brief window between `_setExternalClass` and the hint arriving.
+	 */
 	hasAlarmHandler(): boolean {
-		if (this._externalClassName !== undefined) return false
+		if (this._externalClassName !== undefined) {
+			return this._externalAlarmHandler ?? false
+		}
 		return typeof this._class?.prototype?.alarm === 'function'
 	}
 

@@ -45,10 +45,15 @@ export interface WorkerThreadExecutorOptions {
 	mainEnv: Record<string, unknown>
 }
 
+export interface WorkerReadyInfo {
+	/** className → whether the user's DO class defines an `alarm()` handler. */
+	doAlarmHandlers: Record<string, boolean>
+}
+
 export class WorkerThreadExecutor {
 	private _worker: Worker
-	private _ready: Promise<void>
-	private _readyResolve!: () => void
+	private _ready: Promise<WorkerReadyInfo>
+	private _readyResolve!: (info: WorkerReadyInfo) => void
 	private _readyReject!: (err: Error) => void
 	private _pending = new Map<number, Pending<SerializedResponse>>()
 	private _pendingHandlers = new Map<number, Pending<HandlerResult>>()
@@ -63,7 +68,7 @@ export class WorkerThreadExecutor {
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
 		this._mainEnv = options.mainEnv
-		this._ready = new Promise<void>((res, rej) => {
+		this._ready = new Promise<WorkerReadyInfo>((res, rej) => {
 			this._readyResolve = res
 			this._readyReject = rej
 		})
@@ -106,7 +111,7 @@ export class WorkerThreadExecutor {
 				})
 				break
 			case 'ready':
-				this._readyResolve()
+				this._readyResolve({ doAlarmHandlers: msg.doAlarmHandlers })
 				break
 			case 'init-error': {
 				const err = new Error(msg.error.message)
@@ -258,7 +263,7 @@ export class WorkerThreadExecutor {
 	}
 
 	/** Resolves when the worker has imported the user module successfully. */
-	ready(): Promise<void> {
+	ready(): Promise<WorkerReadyInfo> {
 		return this._ready
 	}
 

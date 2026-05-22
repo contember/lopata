@@ -362,6 +362,38 @@ describe('DurableObjectNamespace', () => {
 		const stub2 = ns2.get(id) as any
 		expect(await stub2.getCount()).toBe(2)
 	})
+
+	describe('hasAlarmHandler', () => {
+		test('in-process: detects alarm() on the wired class', () => {
+			class WithAlarm extends DurableObjectBase {
+				async alarm() {}
+			}
+			class WithoutAlarm extends DurableObjectBase {}
+
+			const withNs = new DurableObjectNamespaceImpl(db, 'WithAlarm', undefined, { evictionTimeoutMs: 0 })
+			withNs._setClass(WithAlarm, {})
+			const withoutNs = new DurableObjectNamespaceImpl(db, 'WithoutAlarm', undefined, { evictionTimeoutMs: 0 })
+			withoutNs._setClass(WithoutAlarm, {})
+
+			expect(withNs.hasAlarmHandler()).toBe(true)
+			expect(withoutNs.hasAlarmHandler()).toBe(false)
+		})
+
+		test('thread mode: defers to _setAlarmHandlerHint', () => {
+			const ns = new DurableObjectNamespaceImpl(db, 'ThreadDO', undefined, { evictionTimeoutMs: 0 })
+			ns._setExternalClass('ThreadDO', {})
+
+			// Before the hint arrives: defaults to false (matches pre-fix behavior).
+			expect(ns.hasAlarmHandler()).toBe(false)
+
+			ns._setAlarmHandlerHint(true)
+			expect(ns.hasAlarmHandler()).toBe(true)
+
+			// Idempotent / overwrites — simulates hot-reload removing the handler.
+			ns._setAlarmHandlerHint(false)
+			expect(ns.hasAlarmHandler()).toBe(false)
+		})
+	})
 })
 
 describe('DurableObject Alarms', () => {

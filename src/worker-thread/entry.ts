@@ -79,6 +79,25 @@ async function initRuntime(init: WorkerInitConfig) {
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
 
+	// Introspect DO + container classes for `alarm()` so main's
+	// `DurableObjectNamespaceImpl.hasAlarmHandler()` returns the right value in
+	// thread mode (main itself doesn't load the user module, so without this
+	// hint it would shortcircuit to `false`).
+	const doAlarmHandlers: Record<string, boolean> = {}
+	const collectAlarmHandler = (className: string) => {
+		if (doAlarmHandlers[className] !== undefined) return
+		const cls = (workerModule as Record<string, unknown>)[className] as
+			| { prototype?: { alarm?: unknown } }
+			| undefined
+		doAlarmHandlers[className] = typeof cls?.prototype?.alarm === 'function'
+	}
+	for (const binding of init.config.durable_objects?.bindings ?? []) {
+		collectAlarmHandler(binding.class_name)
+	}
+	for (const container of init.config.containers ?? []) {
+		collectAlarmHandler(container.class_name)
+	}
+
 	wireWorkflows(built, workerModule)
 	// `Worker.terminate()` (called on reload) clears the consumer's setInterval
 	// timers, so no graceful-shutdown handle is needed here.
@@ -196,5 +215,5 @@ async function initRuntime(init: WorkerInitConfig) {
 		}
 	}
 
-	post({ type: 'ready' })
+	post({ type: 'ready', doAlarmHandlers })
 }

@@ -4,7 +4,7 @@ import type { WranglerConfig } from './config'
 import { buildEnv, wireServiceBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
 import type { WorkerRegistry } from './worker-registry'
-import { WorkerThreadExecutor } from './worker-thread/executor'
+import { WorkerThreadExecutor, type WorkerReadyInfo } from './worker-thread/executor'
 
 export class GenerationManager {
 	private generations = new Map<number, Generation>()
@@ -111,11 +111,20 @@ export class GenerationManager {
 			browserConfig: this.browserConfig,
 			mainEnv: env,
 		})
+		let readyInfo: WorkerReadyInfo
 		try {
-			await executor.ready()
+			readyInfo = await executor.ready()
 		} catch (err) {
 			executor.dispose()
 			throw err
+		}
+		// Forward `alarm()` introspection from the user-worker to each namespace
+		// so the dashboard's "trigger alarm" UI shows up in thread mode. (Main
+		// itself can't introspect — the user module is only loaded inside the
+		// worker.)
+		for (const entry of registry.durableObjects) {
+			const hasAlarm = readyInfo.doAlarmHandlers[entry.className] ?? false
+			entry.namespace._setAlarmHandlerHint(hasAlarm)
 		}
 
 		const genId = this.nextGenId++

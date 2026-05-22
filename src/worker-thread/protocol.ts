@@ -164,7 +164,16 @@ export type WorkerCommand =
 /** Worker → main */
 export type WorkerMessage =
 	| { type: 'need-init' }
-	| { type: 'ready' }
+	/**
+	 * Sent after the user module imports successfully.
+	 *
+	 * `doAlarmHandlers` maps each DO/container class name declared in the
+	 * wrangler config to whether its prototype defines an `alarm()` method. Main
+	 * uses it to forward `_setAlarmHandlerHint` to each namespace — without this,
+	 * thread-mode `hasAlarmHandler()` would always return `false` (the main-side
+	 * namespace doesn't load the user module). Missing exports report `false`.
+	 */
+	| { type: 'ready'; doAlarmHandlers: Record<string, boolean> }
 	| { type: 'init-error'; error: SerializedError }
 	| { type: 'fetch-result'; id: number; response: SerializedResponse }
 	| { type: 'fetch-error'; id: number; error: SerializedError }
