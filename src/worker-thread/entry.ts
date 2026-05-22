@@ -80,10 +80,9 @@ async function initRuntime(init: WorkerInitConfig) {
 	const defaultExport = workerModule.default
 
 	wireWorkflows(built, workerModule)
-	// Capture for a future graceful-shutdown command — `Worker.terminate()`
-	// kills timers regardless, but holding the array keeps the option open.
-	const _queueConsumers = startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
-	void _queueConsumers
+	// `Worker.terminate()` (called on reload) clears the consumer's setInterval
+	// timers, so no graceful-shutdown handle is needed here.
+	startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
 
 	const invokeEntrypointRpc = async (
 		entrypoint: string | undefined,
