@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { DOExecutor, DOExecutorFactory } from '../src/bindings/do-executor'
 import {
 	DurableObjectBase,
 	DurableObjectIdImpl,
@@ -1826,5 +1827,89 @@ describe('transactionSync', () => {
 		})
 		// kv write committed
 		expect(storage.kv.get('key')).toBe('kv-value')
+	})
+})
+
+describe('Executor crash recovery', () => {
+	// Fake executor whose backing "worker" we can declare dead via `isDisposed()`,
+	// to exercise the namespace's recreate-on-next-access path without a real
+	// Worker crash.
+	class FakeExecutor implements DOExecutor {
+		disposed = false
+		disposeCount = 0
+		constructor(readonly serial: number) {}
+		async executeFetch(): Promise<Response> {
+			return new Response(`ok-${this.serial}`)
+		}
+		async executeRpc(): Promise<unknown> {
+			return null
+		}
+		async executeRpcGet(): Promise<unknown> {
+			return null
+		}
+		async executeAlarm(): Promise<void> {}
+		isActive() {
+			return false
+		}
+		isBlocked() {
+			return false
+		}
+		activeWebSocketCount() {
+			return 0
+		}
+		isAborted() {
+			return false
+		}
+		isDisposed() {
+			return this.disposed
+		}
+		async dispose() {
+			this.disposeCount++
+			this.disposed = true
+		}
+	}
+
+	class FakeFactory implements DOExecutorFactory {
+		created: FakeExecutor[] = []
+		create(): DOExecutor {
+			const e = new FakeExecutor(this.created.length)
+			this.created.push(e)
+			return e
+		}
+	}
+
+	test('a disposed (crashed) executor is dropped and recreated on next access', async () => {
+		const factory = new FakeFactory()
+		const ns = new DurableObjectNamespaceImpl(db, 'CrashDO', undefined, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const stub = ns.get(ns.idFromName('a')) as unknown as { fetch(input: Request): Promise<Response> }
+
+		expect(await (await stub.fetch(new Request('http://do/'))).text()).toBe('ok-0')
+		expect(factory.created.length).toBe(1)
+
+		// Simulate the worker crashing under this executor.
+		factory.created[0]!.disposed = true
+
+		// Next access must drop the dead executor (disposing it) and create a fresh
+		// one — not post to the terminated worker (which would hang).
+		expect(await (await stub.fetch(new Request('http://do/'))).text()).toBe('ok-1')
+		expect(factory.created.length).toBe(2)
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+	})
+
+	test('the idle reaper evicts a dead executor', async () => {
+		const factory = new FakeFactory()
+		const ns = new DurableObjectNamespaceImpl(db, 'CrashDO2', undefined, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const stub = ns.get(ns.idFromName('b')) as unknown as { fetch(input: Request): Promise<Response> }
+		await stub.fetch(new Request('http://do/'))
+
+		factory.created[0]!.disposed = true
+		;(ns as any)._evictIdle()
+
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+		// A fresh executor is created on the next access.
+		await stub.fetch(new Request('http://do/'))
+		expect(factory.created.length).toBe(2)
 	})
 })

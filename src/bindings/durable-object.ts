@@ -969,7 +969,15 @@ export class DurableObjectNamespaceImpl {
 
 	/** @internal Get or create a DO executor by id string */
 	private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
-		if (this._executors.has(idStr)) return this._executors.get(idStr)!
+		const existing = this._executors.get(idStr)
+		if (existing) {
+			// A crashed worker leaves a dead executor behind; drop it so the access
+			// below recreates a fresh one instead of posting to a terminated Worker.
+			if (!existing.isDisposed?.()) return existing
+			existing.dispose().catch(() => {})
+			this._executors.delete(idStr)
+			this._lastActivity.delete(idStr)
+		}
 		if (!this._isWired()) return null
 
 		// Use provided doId, or look up known id (preserves name after eviction), or create new
@@ -1012,6 +1020,13 @@ export class DurableObjectNamespaceImpl {
 		for (const [idStr, lastActivity] of this._lastActivity) {
 			const executor = this._executors.get(idStr)
 			if (!executor) continue
+			// Drop dead executors (crashed Worker) immediately so they don't linger.
+			if (executor.isDisposed?.()) {
+				executor.dispose().catch(() => {})
+				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
+				continue
+			}
 			// Evict aborted instances immediately (once they have no active requests)
 			if (executor.isAborted() && !executor.isActive()) {
 				executor.dispose().catch(() => {})

@@ -12,6 +12,10 @@ export interface ExecutorConfig {
 	limits?: DurableObjectLimits
 	containerConfig?: ContainerConfig
 	onAlarmSet?: (time: number | null) => void
+	/** @internal Worker-thread DO executors re-import the user module + config
+	 *  inside their Bun Worker; the factory injects these paths. */
+	_modulePath?: string
+	_configPath?: string
 }
 
 export interface DOExecutor {
@@ -38,6 +42,11 @@ export interface DOExecutor {
 
 	/** Whether the instance has been aborted */
 	isAborted(): boolean
+
+	/** Whether the underlying executor is dead (e.g. its Worker crashed). A
+	 *  disposed executor is unusable — the namespace drops it and recreates a
+	 *  fresh one on next access. Optional: executors that can't die report `false`. */
+	isDisposed?(): boolean
 
 	/** Hot-swap the DO class and env without disposing (preserves WebSocket connections) */
 	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown): void

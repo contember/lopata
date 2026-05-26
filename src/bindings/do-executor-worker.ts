@@ -212,13 +212,22 @@ export class WorkerExecutor implements DOExecutor {
 			}
 		}
 
-		worker.onerror = (event) => {
-			// Reject all pending commands
-			const error = new Error(`Worker error: ${event.message}`)
-			for (const [id, pending] of this._pending) {
+		worker.onerror = (event: ErrorEvent) => {
+			if (this._disposed) return
+			// Mark dead so the namespace drops this executor and recreates a fresh
+			// one on next access (see `isDisposed()` + `_getOrCreateExecutor`),
+			// instead of posting to a terminated Worker (which would hang). Mirrors
+			// the init-error path above.
+			this._disposed = true
+			this._worker = null
+			const detail = event.error?.stack ?? event.message ?? 'unknown'
+			const error = new Error(`Worker error: ${detail}`)
+			this._readyReject?.(error)
+			for (const [, pending] of this._pending) {
 				pending.reject(error)
 			}
 			this._pending.clear()
+			this._fetchBridge?.disposeAll()
 		}
 
 		this._worker = worker
@@ -226,11 +235,11 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	private _resolveModulePath(): string {
-		return (this._config as any)._modulePath ?? ''
+		return this._config._modulePath ?? ''
 	}
 
 	private _resolveConfigPath(): string {
-		return (this._config as any)._configPath ?? ''
+		return this._config._configPath ?? ''
 	}
 
 	private _resolveDataDir(): string {
@@ -447,6 +456,10 @@ export class WorkerExecutor implements DOExecutor {
 		return false // Worker-thread DOs don't support abort
 	}
 
+	isDisposed(): boolean {
+		return this._disposed
+	}
+
 	async dispose(): Promise<void> {
 		this._disposed = true
 		if (this._worker) {
@@ -481,9 +494,10 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 
 	create(config: ExecutorConfig): DOExecutor {
 		// Attach paths to the config for the executor to use
-		const extendedConfig = config as any
-		extendedConfig._modulePath = this._modulePath ?? ''
-		extendedConfig._configPath = this._configPath ?? ''
-		return new WorkerExecutor(extendedConfig)
+		return new WorkerExecutor({
+			...config,
+			_modulePath: this._modulePath ?? '',
+			_configPath: this._configPath ?? '',
+		})
 	}
 }
