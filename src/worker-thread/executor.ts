@@ -19,13 +19,14 @@ import type {
 	RpcFetchRequest,
 	RpcReply,
 	SerializedError,
+	SerializedRequest,
 	SerializedResponse,
 	WorkerCommand,
 	WorkerMessage,
 } from './protocol'
-import { deserializeError } from './protocol'
+import { deserializeError, serializeError } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from './rpc-shared'
-import { deserializeResponse, serializeRequest } from './serialize'
+import { deserializeResponse, serializeRequestShell } from './serialize'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
@@ -80,6 +81,10 @@ export class WorkerThreadExecutor {
 	/** Open response-body pumps started by `dispatchRpcFetch` (main → worker
 	 *  reverse-streaming path for service-binding fetches). */
 	private _rpcStreams = new RpcStreamRegistry()
+	/** Outbound request-body pumps for the top-level fetch path (main → worker).
+	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
+	 *  stops the source reader. */
+	private _topRequestStreams = new RpcStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -124,6 +129,7 @@ export class WorkerThreadExecutor {
 		this._streams.clear()
 		this._pendingStreamEvents.clear()
 		this._rpcStreams.disposeAll()
+		this._topRequestStreams.disposeAll()
 		this._wsBridge.disposeAll()
 	}
 
@@ -229,6 +235,9 @@ export class WorkerThreadExecutor {
 				break
 			case 'rpc-stream-cancel':
 				this._rpcStreams.cancel(msg.streamId)
+				break
+			case 'req-stream-cancel':
+				this._topRequestStreams.cancel(msg.streamId)
 				break
 			case 'wait-until-add':
 				this._pendingWaitUntil.add(msg.id)
@@ -364,6 +373,30 @@ export class WorkerThreadExecutor {
 		}, this._rpcStreams)
 	}
 
+	private _pumpTopRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+		const reader = body.getReader()
+		this._topRequestStreams.register(streamId, reader)
+		void (async () => {
+			try {
+				while (true) {
+					const { done, value } = await reader.read()
+					if (this._disposed) return
+					if (done) break
+					if (value && value.byteLength > 0) {
+						this._send({ type: 'req-stream-chunk', streamId, chunk: value })
+					}
+				}
+				if (this._disposed) return
+				this._send({ type: 'req-stream-end', streamId })
+			} catch (e) {
+				if (this._disposed) return
+				this._send({ type: 'req-stream-error', streamId, error: serializeError(e) })
+			} finally {
+				this._topRequestStreams.complete(streamId)
+			}
+		})()
+	}
+
 	/** Resolves when the worker has imported the user module successfully. */
 	ready(): Promise<WorkerReadyInfo> {
 		return this._ready
@@ -377,6 +410,7 @@ export class WorkerThreadExecutor {
 	private async _sendAndAwait<T>(
 		map: Map<number, Pending<T>>,
 		build: (id: number, parent: ParentSpanContext | undefined) => WorkerCommand,
+		afterPost?: () => void,
 	): Promise<T> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
@@ -386,12 +420,27 @@ export class WorkerThreadExecutor {
 		return new Promise<T>((resolve, reject) => {
 			map.set(id, { resolve, reject })
 			this._send(build(id, parent))
+			afterPost?.()
 		})
 	}
 
 	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
-		const req = await serializeRequest(request)
-		const serialized = await this._sendAndAwait(this._pending, (id, parent) => ({ type: 'fetch', id, request: req, parent, props }))
+		const shell = serializeRequestShell(request)
+		const body = request.body
+		const req: SerializedRequest = body
+			? { ...shell, body: null, streamId: this._topRequestStreams.allocateId() }
+			: { ...shell, body: null }
+		// `afterPost` fires after `_sendAndAwait` posts the 'fetch' command so
+		// the worker sees the streamId before any `req-stream-chunk` arrives.
+		// (The receiver buffers events for unknown streamIds, but ordering the
+		// pump after the post keeps the slow-path off the hot path.)
+		const serialized = await this._sendAndAwait(
+			this._pending,
+			(id, parent) => ({ type: 'fetch', id, request: req, parent, props }),
+			() => {
+				if (body && req.streamId !== undefined) this._pumpTopRequestBody(req.streamId, body)
+			},
+		)
 
 		let response: ResponseWithWebSocket
 		if (serialized.streamId !== undefined) {

@@ -23,6 +23,15 @@ export interface SerializedRequest {
 	method: string
 	headers: [string, string][]
 	body: ArrayBuffer | null
+	/**
+	 * When set, the body is streamed (not buffered): `body` is `null` and the
+	 * sender pumps chunk messages keyed by this id. The channel decides which
+	 * message family (`req-stream-*` for top-level main→worker fetch,
+	 * `rpc-req-stream-*` for cross-thread binding fetch, `do-req-stream-*` for
+	 * main→DO-worker fetch). Receiver reconstructs a `ReadableStream` and uses
+	 * it as the rebuilt Request's body.
+	 */
+	streamId?: number
 }
 
 export interface SerializedResponse {
@@ -217,6 +226,14 @@ export type WorkerCommand =
 	// disconnected). Tell the worker to cancel its reader so an unbounded
 	// source (e.g. SSE) stops pumping instead of running forever.
 	| { type: 'stream-cancel'; id: number }
+	// Request-body streaming for the top-level user-worker fetch (main → worker).
+	// Mirrors `stream-chunk` / `stream-end` / `stream-error` in the opposite
+	// direction. Allows large or unbounded request bodies (uploads, streaming
+	// proxies) to reach user code incrementally instead of being buffered into
+	// an ArrayBuffer before crossing the worker boundary.
+	| { type: 'req-stream-chunk'; streamId: number; chunk: Uint8Array }
+	| { type: 'req-stream-end'; streamId: number }
+	| { type: 'req-stream-error'; streamId: number; error: SerializedError }
 
 /** Worker → main */
 export type WorkerMessage =
@@ -273,3 +290,6 @@ export type WorkerMessage =
 	| { type: 'stream-chunk'; id: number; chunk: Uint8Array }
 	| { type: 'stream-end'; id: number }
 	| { type: 'stream-error'; id: number; error: SerializedError }
+	// Worker → main: user code cancelled the reconstructed request body
+	// (e.g. `request.body.cancel()`). Stop the source pump on main.
+	| { type: 'req-stream-cancel'; streamId: number }

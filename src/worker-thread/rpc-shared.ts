@@ -31,7 +31,7 @@ import type {
 	SerializedResponse,
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
-import { deserializeRequest, serializeRequest, serializeResponse } from './serialize'
+import { deserializeRequest, serializeRequest } from './serialize'
 
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 

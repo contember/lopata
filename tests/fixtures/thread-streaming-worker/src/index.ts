@@ -1,3 +1,7 @@
+// Module-level counter — observable in the /req-cancel response. Used by the
+// request-streaming test to assert the worker observed the partial body.
+let reqCancelObserved = 0
+
 export default {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
@@ -72,6 +76,46 @@ export default {
 		if (url.pathname === '/echo' && request.method === 'POST') {
 			const body = await request.arrayBuffer()
 			return new Response(body)
+		}
+
+		// Read the request body chunk-by-chunk; for each chunk emit a response
+		// chunk encoding its arrival time. The test proves request-side streaming
+		// by checking that response-chunk arrivals are spaced out in time — they
+		// can't be if the request body is buffered up front.
+		if (url.pathname === '/echo-incremental' && request.method === 'POST') {
+			if (!request.body) return new Response('no body', { status: 400 })
+			const reader = request.body.getReader()
+			const encoder = new TextEncoder()
+			const stream = new ReadableStream<Uint8Array>({
+				async start(controller) {
+					try {
+						let n = 0
+						while (true) {
+							const { done, value } = await reader.read()
+							if (done) break
+							if (value?.length) {
+								controller.enqueue(encoder.encode(`chunk-${n++}-len-${value.length}-at-${Date.now()}\n`))
+							}
+						}
+						controller.close()
+					} catch (e) {
+						controller.error(e)
+					}
+				},
+			})
+			return new Response(stream, { headers: { 'content-type': 'text/plain' } })
+		}
+
+		// Counts request-body cancellations. /req-cancel cancels its own reader
+		// after the first chunk and bumps the cancel counter — used to assert the
+		// worker→main cancel reached the source pump.
+		if (url.pathname === '/req-cancel' && request.method === 'POST') {
+			if (!request.body) return new Response('no body', { status: 400 })
+			const reader = request.body.getReader()
+			const first = await reader.read() // pull one chunk so the source is engaged
+			await reader.cancel('user cancel')
+			reqCancelObserved++
+			return new Response(`cancelled-after-${first.done ? 'done' : 'chunk'}-total-${reqCancelObserved}`)
 		}
 
 		// Crash the worker thread mid-request: schedule an uncaught throw and never
