@@ -5,6 +5,8 @@
  * postMessage from the main thread (handshake), then initializes.
  */
 
+import { serializeError } from '../worker-thread/protocol'
+import { RpcStreamRegistry } from '../worker-thread/rpc-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
@@ -132,6 +134,31 @@ async function initWorker(workerConfig: WorkerConfig) {
 		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'fetch-ws-close-out', wsId, code, reason, wasClean }),
 	})
 
+	/** Active body pumps for streamed DO-fetch responses, keyed by `streamId`,
+	 *  so an inbound `do-stream-cancel` can stop the source reader. */
+	const fetchStreams = new RpcStreamRegistry()
+
+	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+		const reader = body.getReader()
+		fetchStreams.register(streamId, reader)
+		void (async () => {
+			try {
+				while (true) {
+					const { done, value } = await reader.read()
+					if (done) break
+					if (value && value.byteLength > 0) {
+						postMessage({ type: 'do-stream-chunk', streamId, chunk: value } satisfies DOMainMessage)
+					}
+				}
+				postMessage({ type: 'do-stream-end', streamId } satisfies DOMainMessage)
+			} catch (e) {
+				postMessage({ type: 'do-stream-error', streamId, error: serializeError(e) } satisfies DOMainMessage)
+			} finally {
+				fetchStreams.complete(streamId)
+			}
+		})()
+	}
+
 	// Wire alarm callback
 	state.storage._setAlarmCallback((time: number | null) => {
 		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
@@ -139,7 +166,20 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	// --- Command handler ---
 
-	async function handleCommand(cmd: DOCommand): Promise<DOResult> {
+	/**
+	 * Some commands need to perform side effects *after* their result message is
+	 * posted — specifically, streamed fetch responses must wait for main to see
+	 * the `streamId` on the `result` before chunk messages arrive (otherwise the
+	 * first chunks land before `start()` registers the controller and have to
+	 * sit in `_pendingStreamEvents`). The handler returns a continuation so the
+	 * dispatcher can post the result first and then start the pump.
+	 */
+	interface HandledCommand {
+		result: DOResult
+		afterPost?: () => void
+	}
+
+	async function handleCommand(cmd: DOCommand): Promise<HandledCommand> {
 		switch (cmd.type) {
 			case 'fetch': {
 				await state._enter()
@@ -156,7 +196,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 					const response = await fetchFn.call(instance, request)
 					const clientWs = (response as { webSocket?: unknown }).webSocket
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
-					const resBody = !hasWebSocket && response.body ? await response.arrayBuffer() : null
 					const resHeaders: [string, string][] = []
 					response.headers.forEach((v: string, k: string) => resHeaders.push([k, v]))
 
@@ -165,13 +204,25 @@ async function initWorker(workerConfig: WorkerConfig) {
 						fetchWebSocketId = fetchWsBridge.register(clientWs as InstanceType<typeof CFWebSocket>)
 					}
 
+					let streamId: number | undefined
+					let afterPost: (() => void) | undefined
+					if (!hasWebSocket && response.body) {
+						streamId = fetchStreams.allocateId()
+						const body = response.body
+						afterPost = () => pumpFetchBody(streamId!, body)
+					}
+
 					return {
-						type: 'fetch',
-						status: response.status,
-						statusText: response.statusText,
-						headers: resHeaders,
-						body: resBody,
-						fetchWebSocketId,
+						result: {
+							type: 'fetch',
+							status: response.status,
+							statusText: response.statusText,
+							headers: resHeaders,
+							body: null,
+							fetchWebSocketId,
+							streamId,
+						},
+						afterPost,
 					}
 				} finally {
 					state._exit()
@@ -186,7 +237,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 						throw new Error(`"${cmd.method}" is not a method on the Durable Object`)
 					}
 					const result = await val.call(instance, ...cmd.args)
-					return { type: 'rpc-call', value: result }
+					return { result: { type: 'rpc-call', value: result } }
 				} finally {
 					state._exit()
 				}
@@ -197,9 +248,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 				try {
 					const val = (instance as any)[cmd.prop]
 					if (typeof val === 'function') {
-						return { type: 'rpc-get', value: '__function__' }
+						return { result: { type: 'rpc-get', value: '__function__' } }
 					}
-					return { type: 'rpc-get', value: val }
+					return { result: { type: 'rpc-get', value: val } }
 				} finally {
 					state._exit()
 				}
@@ -215,7 +266,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 							isRetry: cmd.retryCount > 0,
 						})
 					}
-					return { type: 'alarm' }
+					return { result: { type: 'alarm' } }
 				} finally {
 					state._exit()
 				}
@@ -226,7 +277,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 					postMessage({ type: 'ws-bridge', payload: msg } satisfies DOMainMessage)
 				})
 				bridgedWebSockets.set(cmd.wsId, bridgeWs)
-				return { type: 'ws-created', wsId: cmd.wsId }
+				return { result: { type: 'ws-created', wsId: cmd.wsId } }
 			}
 
 			default:
@@ -243,8 +294,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 		if (msg.type === 'command') {
 			try {
-				const result = await handleCommand(msg.command)
+				const { result, afterPost } = await handleCommand(msg.command)
 				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
+				// Post-result side effects: for streamed fetch responses, start the
+				// body pump *after* `result` ships so main has registered the
+				// `streamId` before any chunk arrives.
+				afterPost?.()
 			} catch (e) {
 				const error = e instanceof Error ? e : new Error(String(e))
 				postMessage(
@@ -260,6 +315,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 					} satisfies DOMainMessage,
 				)
 			}
+		} else if (msg.type === 'do-stream-cancel') {
+			fetchStreams.cancel(msg.streamId)
 		} else if (msg.type === 'ws-message') {
 			const ws = bridgedWebSockets.get(msg.wsId)
 			if (ws) ws._onMessage(msg.data)
