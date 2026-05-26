@@ -15,7 +15,6 @@ import { runMigrations } from '../db'
 import { getActiveContext } from '../tracing/context'
 import type { BindingTarget, ParentSpanContext, RpcCallRequest, RpcFetchRequest } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
-import { deserializeResponse } from '../worker-thread/serialize'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectNamespaceImpl } from './durable-object'
@@ -39,7 +38,7 @@ function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, un
 		fetch: async (input, init) => {
 			const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
 			const r = await rpc.callFetch(target, req)
-			return deserializeResponse(r)
+			return rpc.makeResponse(r)
 		},
 		call: (prop, args) => rpc.call(target, prop, args),
 	})

@@ -24,7 +24,7 @@ import type {
 	WorkerMessage,
 } from './protocol'
 import { deserializeError } from './protocol'
-import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from './rpc-shared'
 import { deserializeResponse, serializeRequest } from './serialize'
 import { WsHostBridge } from './ws-bridge-shared'
 
@@ -77,6 +77,9 @@ export class WorkerThreadExecutor {
 	/** Stream events that arrived before the matching ReadableStream's `start`
 	 *  registered its controller (mirrors the WS `_pendingEvents` race guard). */
 	private _pendingStreamEvents = new Map<number, StreamEvent[]>()
+	/** Open response-body pumps started by `dispatchRpcFetch` (main → worker
+	 *  reverse-streaming path for service-binding fetches). */
+	private _rpcStreams = new RpcStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -120,6 +123,7 @@ export class WorkerThreadExecutor {
 		}
 		this._streams.clear()
 		this._pendingStreamEvents.clear()
+		this._rpcStreams.disposeAll()
 		this._wsBridge.disposeAll()
 	}
 
@@ -222,6 +226,9 @@ export class WorkerThreadExecutor {
 				break
 			case 'rpc-fetch':
 				this._dispatchRpcFetch(msg)
+				break
+			case 'rpc-stream-cancel':
+				this._rpcStreams.cancel(msg.streamId)
 				break
 			case 'wait-until-add':
 				this._pendingWaitUntil.add(msg.id)
@@ -354,7 +361,7 @@ export class WorkerThreadExecutor {
 					serialized.webSocketId = this._wsBridge.adoptExisting(ws)
 				}
 			},
-		})
+		}, this._rpcStreams)
 	}
 
 	/** Resolves when the worker has imported the user module successfully. */

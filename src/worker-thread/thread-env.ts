@@ -31,7 +31,6 @@ import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget } from './protocol'
 import type { RpcClient } from './rpc-client'
 import { tagCloneable } from './rpc-shared'
-import { deserializeResponse } from './serialize'
 
 export interface ThreadEnvOptions {
 	config: WranglerConfig
@@ -215,7 +214,7 @@ async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request 
 	const url = input instanceof URL ? input.toString() : input
 	const request = typeof url === 'string' ? new Request(url, init) : url
 	const serialized = await rpc.callFetch(target, request)
-	const response = deserializeResponse(serialized) as Response & { webSocket?: { __bridgedWsId: string } }
+	const response = rpc.makeResponse(serialized) as Response & { webSocket?: { __bridgedWsId: string } }
 	// If the binding's response came with a WebSocket peer, main already adopted
 	// it under `webSocketId`. Tag the response so `entry.ts` re-uses that same id
 	// when shipping the response back up (instead of allocating a new peer).

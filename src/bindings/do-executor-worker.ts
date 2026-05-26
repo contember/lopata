@@ -6,8 +6,8 @@
  */
 
 import { dirname, resolve } from 'node:path'
-import type { BindingTarget, RpcCallRequest, RpcFetchRequest, RpcReply } from '../worker-thread/protocol'
-import { dispatchRpcCall, dispatchRpcFetch } from '../worker-thread/rpc-shared'
+import type { BindingTarget, RpcCallRequest, RpcFetchRequest, RpcReply, RpcStreamCancel } from '../worker-thread/protocol'
+import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from '../worker-thread/rpc-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
@@ -69,6 +69,7 @@ export type DOMainMessage =
 	// context, and ships the reply back.
 	| RpcCallRequest
 	| RpcFetchRequest
+	| RpcStreamCancel
 	/**
 	 * Container lifecycle notifications. Main owns the active-container Set so
 	 * one centralized `exit` handler can `docker rm -f` everything, regardless
@@ -108,6 +109,9 @@ export class WorkerExecutor implements DOExecutor {
 	 * down to the DO worker as `fetch-ws-incoming` / `fetch-ws-close-in`.
 	 */
 	private _fetchBridge: WsHostBridge<DOWorkerMessage> | null = null
+	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
+	 *  RPC `.fetch()` invoked from inside the DO worker). */
+	private _rpcStreams = new RpcStreamRegistry()
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
@@ -202,6 +206,10 @@ export class WorkerExecutor implements DOExecutor {
 					this._dispatchRpcFetch(msg)
 					break
 
+				case 'rpc-stream-cancel':
+					this._rpcStreams.cancel(msg.streamId)
+					break
+
 				case 'container-registered':
 					registerContainer(msg.name)
 					break
@@ -228,6 +236,7 @@ export class WorkerExecutor implements DOExecutor {
 			}
 			this._pending.clear()
 			this._fetchBridge?.disposeAll()
+			this._rpcStreams.disposeAll()
 		}
 
 		this._worker = worker
@@ -400,7 +409,7 @@ export class WorkerExecutor implements DOExecutor {
 			resolveBinding: this._resolveBinding,
 			post: this._postReply,
 			isAlive: () => !this._disposed && this._worker !== null,
-		})
+		}, this._rpcStreams)
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
@@ -474,6 +483,7 @@ export class WorkerExecutor implements DOExecutor {
 		this._pending.clear()
 		this._bridgedWebSockets.clear()
 		this._fetchBridge?.disposeAll()
+		this._rpcStreams.disposeAll()
 	}
 }
 

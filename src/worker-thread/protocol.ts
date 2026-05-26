@@ -135,8 +135,50 @@ export interface RpcFetchErrorReply {
 	error: SerializedError
 }
 
-export type RpcRequest = RpcCallRequest | RpcFetchRequest
-export type RpcReply = RpcCallReply | RpcCallErrorReply | RpcFetchReply | RpcFetchErrorReply
+/**
+ * Reverse-direction streaming for {@link RpcFetchReply}. When main's
+ * `dispatchRpcFetch` resolves a response with a body, it ships headers + a
+ * `streamId` immediately and pumps the body via these messages so SSE / chunked
+ * responses returned from a service binding reach the caller incrementally
+ * instead of waiting for the source to finish.
+ *
+ * Direction: main → worker (mirrors `stream-chunk` / `stream-end` /
+ * `stream-error` which carry the worker → main top-level fetch path).
+ *
+ * Id space: independent counter inside `dispatchRpcFetch`; carried in
+ * {@link SerializedResponse}.streamId on the matching `rpc-fetch-result`.
+ */
+export interface RpcStreamChunk {
+	type: 'rpc-stream-chunk'
+	streamId: number
+	chunk: Uint8Array
+}
+export interface RpcStreamEnd {
+	type: 'rpc-stream-end'
+	streamId: number
+}
+export interface RpcStreamError {
+	type: 'rpc-stream-error'
+	streamId: number
+	error: SerializedError
+}
+
+/** worker → main: the caller cancelled the reconstructed response body
+ *  (consumer dropped, AbortController, etc). Main stops the source reader. */
+export interface RpcStreamCancel {
+	type: 'rpc-stream-cancel'
+	streamId: number
+}
+
+export type RpcRequest = RpcCallRequest | RpcFetchRequest | RpcStreamCancel
+export type RpcReply =
+	| RpcCallReply
+	| RpcCallErrorReply
+	| RpcFetchReply
+	| RpcFetchErrorReply
+	| RpcStreamChunk
+	| RpcStreamEnd
+	| RpcStreamError
 
 /** Main → worker */
 export type WorkerCommand =
@@ -150,6 +192,9 @@ export type WorkerCommand =
 	| RpcCallErrorReply
 	| RpcFetchReply
 	| RpcFetchErrorReply
+	| RpcStreamChunk
+	| RpcStreamEnd
+	| RpcStreamError
 	// RPC method call into the worker's user-defined entrypoint class.
 	// Sent from main when a `ServiceBinding` RPC callable resolves a target
 	// whose entrypoint class lives in a worker thread. `props` carries the
@@ -197,6 +242,7 @@ export type WorkerMessage =
 	| { type: 'entrypoint-rpc-error'; id: number; error: SerializedError }
 	| RpcCallRequest
 	| RpcFetchRequest
+	| RpcStreamCancel
 	// `ctx.waitUntil(p)` and its settlement. Main tracks in-flight ids so reload
 	// drain waits for background work the response no longer carries. Per-id
 	// (vs. counter) makes double-add/double-settle impossible to silently desync.
