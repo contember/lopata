@@ -84,6 +84,35 @@ export class StreamDO {
 			return new Response(String(this.cancelCount), { headers: { 'content-type': 'text/plain' } })
 		}
 
+		if (url.pathname === '/echo-incremental' && request.method === 'POST') {
+			if (!request.body) return new Response('no body', { status: 400 })
+			const reader = request.body.getReader()
+			const encoder = new TextEncoder()
+			const stream = new ReadableStream<Uint8Array>({
+				async start(controller) {
+					try {
+						let n = 0
+						while (true) {
+							const { done, value } = await reader.read()
+							if (done) break
+							if (value?.length) {
+								controller.enqueue(encoder.encode(`chunk-${n++}-len-${value.length}-at-${Date.now()}\n`))
+							}
+						}
+						controller.close()
+					} catch (e) {
+						controller.error(e)
+					}
+				},
+			})
+			return new Response(stream, { headers: { 'content-type': 'text/plain' } })
+		}
+
+		if (url.pathname === '/echo' && request.method === 'POST') {
+			const body = await request.arrayBuffer()
+			return new Response(body)
+		}
+
 		return new Response('do: not found', { status: 404 })
 	}
 }
@@ -96,7 +125,13 @@ export default {
 		const id = env.STREAM.idFromName('singleton')
 		const stub = env.STREAM.get(id)
 		const doUrl = `http://do${url.pathname}${url.search}`
-		const doRes = await stub.fetch(doUrl)
+		const init: RequestInit = { method: request.method, headers: request.headers }
+		if (request.body) {
+			init.body = request.body
+			// @ts-expect-error half-duplex marker for streaming request body forward
+			init.duplex = 'half'
+		}
+		const doRes = await stub.fetch(doUrl, init)
 		// Forward body + headers + status without buffering.
 		return new Response(doRes.body, {
 			status: doRes.status,

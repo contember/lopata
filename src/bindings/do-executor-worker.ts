@@ -29,7 +29,20 @@ import { CFWebSocket } from './websocket-pair'
 
 /** Commands sent from main thread to worker */
 export type DOCommand =
-	| { type: 'fetch'; url: string; method: string; headers: [string, string][]; body: ArrayBuffer | null }
+	| {
+		type: 'fetch'
+		url: string
+		method: string
+		headers: [string, string][]
+		body: ArrayBuffer | null
+		/**
+		 * When set, the request body is streamed: `body` is `null` and main pumps
+		 * `do-req-stream-*` for this id so the DO worker reconstructs a
+		 * `ReadableStream` for the rebuilt `Request`. Allows large uploads /
+		 * streaming proxies to reach `instance.fetch()` incrementally.
+		 */
+		streamId?: number
+	}
 	| { type: 'rpc-call'; method: string; args: unknown[] }
 	| { type: 'rpc-get'; prop: string }
 	| { type: 'alarm'; retryCount: number }
@@ -88,6 +101,35 @@ export interface DoStreamCancel {
 	streamId: number
 }
 
+/**
+ * Forward-direction streaming for the DOCommand 'fetch' request body (main →
+ * DO worker). Main ships the 'fetch' command with `streamId` set and pumps
+ * the body via these messages so the DO worker reconstructs a
+ * `ReadableStream` for the rebuilt `Request`.
+ *
+ * Id space: per-`WorkerExecutor`, independent of the response-side `streamId`
+ * (`DoStreamChunk`) and the env-binding RPC stream registries.
+ */
+export interface DoReqStreamChunk {
+	type: 'do-req-stream-chunk'
+	streamId: number
+	chunk: Uint8Array
+}
+export interface DoReqStreamEnd {
+	type: 'do-req-stream-end'
+	streamId: number
+}
+export interface DoReqStreamError {
+	type: 'do-req-stream-error'
+	streamId: number
+	error: SerializedError
+}
+/** DO worker → main: instance code cancelled the reconstructed request body. */
+export interface DoReqStreamCancel {
+	type: 'do-req-stream-cancel'
+	streamId: number
+}
+
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
 	| { type: 'command'; id: number; command: DOCommand }
@@ -101,6 +143,10 @@ export type DOWorkerMessage =
 	| RpcReply
 	/** Caller-side cancel for a streamed DO-fetch response body. */
 	| DoStreamCancel
+	/** Body chunks for a streamed DO-fetch *request* body (main → DO worker). */
+	| DoReqStreamChunk
+	| DoReqStreamEnd
+	| DoReqStreamError
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
@@ -126,6 +172,8 @@ export type DOMainMessage =
 	| DoStreamChunk
 	| DoStreamEnd
 	| DoStreamError
+	/** Instance-side cancel for a streamed DO-fetch request body. */
+	| DoReqStreamCancel
 	/**
 	 * Container lifecycle notifications. Main owns the active-container Set so
 	 * one centralized `exit` handler can `docker rm -f` everything, regardless
@@ -268,6 +316,10 @@ export class WorkerExecutor implements DOExecutor {
 	private _fetchStreams = new DoFetchStreamReceiver((streamId) => {
 		this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
 	})
+	/** Outbound request-body pumps for DO-fetch (main → DO worker). A
+	 *  `do-req-stream-cancel` from the DO worker (instance code cancelled the
+	 *  body) stops the source reader. */
+	private _fetchRequestStreams = new RpcStreamRegistry()
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
@@ -390,6 +442,10 @@ export class WorkerExecutor implements DOExecutor {
 					this._fetchStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
 					break
 
+				case 'do-req-stream-cancel':
+					this._fetchRequestStreams.cancel(msg.streamId)
+					break
+
 				case 'container-registered':
 					registerContainer(msg.name)
 					break
@@ -419,6 +475,7 @@ export class WorkerExecutor implements DOExecutor {
 			this._rpcStreams.disposeAll()
 			this._rpcRequestStreams.disposeAll(error)
 			this._fetchStreams.disposeAll(error)
+			this._fetchRequestStreams.disposeAll()
 		}
 
 		this._worker = worker
@@ -535,18 +592,29 @@ export class WorkerExecutor implements DOExecutor {
 	// --- DOExecutor interface ---
 
 	async executeFetch(request: Request): Promise<Response> {
-		// Serialize Request
 		const headers: [string, string][] = []
 		request.headers.forEach((v, k) => headers.push([k, v]))
-		const body = request.body ? await request.arrayBuffer() : null
+		const body = request.body
+		const streamId = body ? this._fetchRequestStreams.allocateId() : undefined
 
-		const result = await this._sendCommand({
+		// `_sendCommand` posts the 'fetch' command first; the request-body pump
+		// kicks off afterward so the DO worker has registered the streamId
+		// before any chunk arrives. (Chunks for an unknown streamId are still
+		// buffered on the receiver side, so order is correctness — not safety.)
+		const resultPromise = this._sendCommand({
 			type: 'fetch',
 			url: request.url,
 			method: request.method,
 			headers,
-			body,
+			body: null,
+			streamId,
 		})
+
+		if (body && streamId !== undefined) {
+			this._pumpFetchRequestBody(streamId, body)
+		}
+
+		const result = await resultPromise
 
 		if (result.type !== 'fetch') throw new Error('Unexpected result type')
 
@@ -567,6 +635,33 @@ export class WorkerExecutor implements DOExecutor {
 		}
 
 		return new Response(result.body, init)
+	}
+
+	private _pumpFetchRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+		const reader = body.getReader()
+		this._fetchRequestStreams.register(streamId, reader)
+		void (async () => {
+			try {
+				while (true) {
+					const { done, value } = await reader.read()
+					if (this._disposed || !this._worker) return
+					if (done) break
+					if (value && value.byteLength > 0) {
+						this._worker.postMessage({ type: 'do-req-stream-chunk', streamId, chunk: value } satisfies DOWorkerMessage)
+					}
+				}
+				if (this._disposed || !this._worker) return
+				this._worker.postMessage({ type: 'do-req-stream-end', streamId } satisfies DOWorkerMessage)
+			} catch (e) {
+				if (this._disposed || !this._worker) return
+				const err = e instanceof Error ? e : new Error(String(e))
+				this._worker.postMessage(
+					{ type: 'do-req-stream-error', streamId, error: { message: err.message, stack: err.stack, name: err.name } } satisfies DOWorkerMessage,
+				)
+			} finally {
+				this._fetchRequestStreams.complete(streamId)
+			}
+		})()
 	}
 
 	/**
@@ -592,11 +687,16 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
-		return dispatchRpcFetch(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed && this._worker !== null,
-		}, this._rpcStreams, this._rpcRequestStreams)
+		return dispatchRpcFetch(
+			req,
+			{
+				resolveBinding: this._resolveBinding,
+				post: this._postReply,
+				isAlive: () => !this._disposed && this._worker !== null,
+			},
+			this._rpcStreams,
+			this._rpcRequestStreams,
+		)
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
@@ -671,7 +771,9 @@ export class WorkerExecutor implements DOExecutor {
 		this._bridgedWebSockets.clear()
 		this._fetchBridge?.disposeAll()
 		this._rpcStreams.disposeAll()
+		this._rpcRequestStreams.disposeAll(error)
 		this._fetchStreams.disposeAll(error)
+		this._fetchRequestStreams.disposeAll()
 	}
 }
 
