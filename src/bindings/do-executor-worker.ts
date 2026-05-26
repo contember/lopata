@@ -6,7 +6,15 @@
  */
 
 import { dirname, resolve } from 'node:path'
-import type { BindingTarget, RpcCallRequest, RpcFetchRequest, RpcReply, RpcStreamCancel } from '../worker-thread/protocol'
+import type {
+	BindingTarget,
+	RpcCallRequest,
+	RpcFetchRequest,
+	RpcReply,
+	RpcStreamCancel,
+	SerializedError,
+} from '../worker-thread/protocol'
+import { deserializeError } from '../worker-thread/protocol'
 import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from '../worker-thread/rpc-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
@@ -34,12 +42,48 @@ export type DOResult =
 		body: ArrayBuffer | null
 		/** Set when the DO's fetch handler returned a `Response{status:101, webSocket}`. */
 		fetchWebSocketId?: string
+		/**
+		 * When set, the body is streamed: `body` is `null` and the DO worker pumps
+		 * `do-stream-chunk` / `do-stream-end` / `do-stream-error` for this id so
+		 * main can reconstruct a `ReadableStream` and ship headers immediately.
+		 * Mutually exclusive with `fetchWebSocketId`.
+		 */
+		streamId?: number
 	}
 	| { type: 'rpc-call'; value: unknown }
 	| { type: 'rpc-get'; value: unknown }
 	| { type: 'alarm' }
 	| { type: 'ws-created'; wsId: string }
 	| { type: 'error'; message: string; stack?: string; name?: string }
+
+/**
+ * Reverse-streaming for DO instance fetch responses (DO worker → main). When a
+ * DO `fetch()` returns a `Response` with a body, the worker ships the `result`
+ * with `streamId` set and pumps the body via these messages so SSE / chunked
+ * responses reach main (and onward to the caller) incrementally.
+ *
+ * Id space: per-`WorkerExecutor`. Independent of the `RpcStreamRegistry` used
+ * by env-binding fetches (those flow main → DO worker over the same channel).
+ */
+export interface DoStreamChunk {
+	type: 'do-stream-chunk'
+	streamId: number
+	chunk: Uint8Array
+}
+export interface DoStreamEnd {
+	type: 'do-stream-end'
+	streamId: number
+}
+export interface DoStreamError {
+	type: 'do-stream-error'
+	streamId: number
+	error: SerializedError
+}
+/** main → DO worker: caller dropped the reconstructed body — stop the pump. */
+export interface DoStreamCancel {
+	type: 'do-stream-cancel'
+	streamId: number
+}
 
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
@@ -52,6 +96,8 @@ export type DOWorkerMessage =
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
 	// Unified cross-thread binding-RPC replies — see `worker-thread/protocol.ts`.
 	| RpcReply
+	/** Caller-side cancel for a streamed DO-fetch response body. */
+	| DoStreamCancel
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
@@ -70,6 +116,10 @@ export type DOMainMessage =
 	| RpcCallRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	/** Body chunks for a streamed DO-fetch response (see {@link DoStreamChunk}). */
+	| DoStreamChunk
+	| DoStreamEnd
+	| DoStreamError
 	/**
 	 * Container lifecycle notifications. Main owns the active-container Set so
 	 * one centralized `exit` handler can `docker rm -f` everything, regardless
@@ -84,6 +134,96 @@ export type DOMainMessage =
 interface PendingCommand {
 	resolve: (result: DOResult) => void
 	reject: (error: Error) => void
+}
+
+type DoStreamEvent =
+	| { kind: 'chunk'; chunk: Uint8Array }
+	| { kind: 'end' }
+	| { kind: 'error'; error: Error }
+
+/**
+ * Main-side reconstruction of DO-fetch response bodies. Each entry holds the
+ * `ReadableStream` controller for one streamed body and a small buffer for the
+ * race where `do-stream-chunk` arrives before `start()` registers the controller
+ * (the chunk event ships immediately after `result` and may overtake it on
+ * structured-clone overhead — handle the race by buffering then flushing on
+ * `start`).
+ *
+ * Receiver-only — for the sender (env-binding fetches the other way) the
+ * channel reuses the shared {@link RpcStreamRegistry}. The receive path here
+ * is small and tightly coupled to executor lifecycle, so we keep it local
+ * rather than parametrize the RpcClient that lives in worker-thread land.
+ */
+class DoFetchStreamReceiver {
+	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
+	private _pending = new Map<number, DoStreamEvent[]>()
+	private _cancel: (streamId: number) => void
+
+	constructor(cancel: (streamId: number) => void) {
+		this._cancel = cancel
+	}
+
+	build(streamId: number): ReadableStream<Uint8Array> {
+		return new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				this._controllers.set(streamId, controller)
+				const pending = this._pending.get(streamId)
+				if (pending) {
+					this._pending.delete(streamId)
+					for (const ev of pending) this._apply(streamId, controller, ev)
+				}
+			},
+			cancel: () => {
+				this._controllers.delete(streamId)
+				this._pending.delete(streamId)
+				this._cancel(streamId)
+			},
+		})
+	}
+
+	onEvent(streamId: number, ev: DoStreamEvent): void {
+		const controller = this._controllers.get(streamId)
+		if (!controller) {
+			let q = this._pending.get(streamId)
+			if (!q) {
+				q = []
+				this._pending.set(streamId, q)
+			}
+			q.push(ev)
+			return
+		}
+		this._apply(streamId, controller, ev)
+	}
+
+	private _apply(
+		streamId: number,
+		controller: ReadableStreamDefaultController<Uint8Array>,
+		ev: DoStreamEvent,
+	): void {
+		try {
+			if (ev.kind === 'chunk') {
+				controller.enqueue(ev.chunk)
+				return
+			}
+			if (ev.kind === 'end') controller.close()
+			else controller.error(ev.error)
+		} catch {
+			// Already closed/errored (consumer cancelled) — drop.
+		}
+		if (ev.kind !== 'chunk') this._controllers.delete(streamId)
+	}
+
+	/** Worker died / executor disposed — fail every open stream so awaiting
+	 *  consumers don't hang. */
+	disposeAll(err: Error): void {
+		for (const [, controller] of this._controllers) {
+			try {
+				controller.error(err)
+			} catch {}
+		}
+		this._controllers.clear()
+		this._pending.clear()
+	}
 }
 
 // --- WorkerExecutor ---
@@ -112,6 +252,10 @@ export class WorkerExecutor implements DOExecutor {
 	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
 	 *  RPC `.fetch()` invoked from inside the DO worker). */
 	private _rpcStreams = new RpcStreamRegistry()
+	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
+	private _fetchStreams = new DoFetchStreamReceiver((streamId) => {
+		this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
+	})
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
@@ -210,6 +354,18 @@ export class WorkerExecutor implements DOExecutor {
 					this._rpcStreams.cancel(msg.streamId)
 					break
 
+				case 'do-stream-chunk':
+					this._fetchStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+					break
+
+				case 'do-stream-end':
+					this._fetchStreams.onEvent(msg.streamId, { kind: 'end' })
+					break
+
+				case 'do-stream-error':
+					this._fetchStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+					break
+
 				case 'container-registered':
 					registerContainer(msg.name)
 					break
@@ -237,6 +393,7 @@ export class WorkerExecutor implements DOExecutor {
 			this._pending.clear()
 			this._fetchBridge?.disposeAll()
 			this._rpcStreams.disposeAll()
+			this._fetchStreams.disposeAll(error)
 		}
 
 		this._worker = worker
@@ -379,6 +536,11 @@ export class WorkerExecutor implements DOExecutor {
 			init.webSocket = this._fetchBridge.register(result.fetchWebSocketId)
 		}
 
+		if (result.streamId !== undefined) {
+			const stream = this._fetchStreams.build(result.streamId)
+			return new Response(stream, init)
+		}
+
 		return new Response(result.body, init)
 	}
 
@@ -484,6 +646,7 @@ export class WorkerExecutor implements DOExecutor {
 		this._bridgedWebSockets.clear()
 		this._fetchBridge?.disposeAll()
 		this._rpcStreams.disposeAll()
+		this._fetchStreams.disposeAll(error)
 	}
 }
 
