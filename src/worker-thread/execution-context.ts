@@ -14,7 +14,8 @@ import type { WorkerMessage } from './protocol'
 let nextWaitUntilId = 1
 
 export class WorkerExecutionContext {
-	/** @internal Reserved for Phase 7 service-binding `props` wiring; currently always `{}`. */
+	/** `ctx.props` — carries the calling worker's service-binding `props` for
+	 *  `entrypoint-rpc` / `fetch` dispatch; `{}` for top-level HTTP. */
 	readonly props: Record<string, unknown>
 	private _post: (msg: WorkerMessage) => void
 

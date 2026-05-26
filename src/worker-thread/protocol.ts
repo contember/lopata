@@ -33,6 +33,14 @@ export interface SerializedResponse {
 	/** When set, the response carries a WebSocket upgrade — main rebuilds a
 	 *  `CFWebSocket` whose peer bridges send/close to this id on the worker. */
 	webSocketId?: string
+	/**
+	 * When set, the body is streamed (not buffered): `body` is `null` and the
+	 * worker pumps `stream-chunk` / `stream-end` / `stream-error` for this id.
+	 * Main rebuilds a `ReadableStream` so SSE / chunked / otherwise-unbounded
+	 * responses reach the client incrementally instead of hanging on a never-
+	 * resolving `arrayBuffer()`.
+	 */
+	streamId?: number
 }
 
 export interface SerializedError {
@@ -160,6 +168,10 @@ export type WorkerCommand =
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'ws-client-close'; wsId: string; code: number; reason: string; wasClean: boolean }
+	// The reconstructed response stream was cancelled on main (client
+	// disconnected). Tell the worker to cancel its reader so an unbounded
+	// source (e.g. SSE) stops pumping instead of running forever.
+	| { type: 'stream-cancel'; id: number }
 
 /** Worker → main */
 export type WorkerMessage =
@@ -208,3 +220,10 @@ export type WorkerMessage =
 	// forwards to the real client.
 	| { type: 'ws-worker-send'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'ws-worker-close'; wsId: string; code: number; reason: string }
+	// Response-body streaming. The worker reads its `Response.body` reader and
+	// pumps chunks here; main enqueues them on the reconstructed `ReadableStream`
+	// it handed to `Bun.serve`. Chunks that arrive before main registers the
+	// stream controller are buffered (see `_pendingStreamEvents`).
+	| { type: 'stream-chunk'; id: number; chunk: Uint8Array }
+	| { type: 'stream-end'; id: number }
+	| { type: 'stream-error'; id: number; error: SerializedError }

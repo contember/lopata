@@ -12,7 +12,7 @@ import type { ParentSpanContext, SerializedResponse, WorkerCommand, WorkerHandle
 import { serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
-import { deserializeRequest, serializeResponse as serializeResponseShared } from './serialize'
+import { deserializeRequest } from './serialize'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
@@ -23,22 +23,60 @@ function post(msg: WorkerMessage): void {
 	postMessage(msg)
 }
 
-async function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): Promise<SerializedResponse> {
+/** Worker-thread-global stream id sequence. Ids never cross thread boundaries
+ *  (each generation has its own worker), so a module-level counter is enough. */
+let nextStreamId = 1
+/** Active response-body readers, keyed by stream id, so a `stream-cancel` from
+ *  main (client disconnected) can stop an unbounded source pumping forever. */
+const streamReaders = new Map<number, { cancel(reason?: unknown): Promise<unknown> }>()
+
+/**
+ * Serialize response status + headers only — the body is never buffered here.
+ * WS upgrades carry a `webSocketId`; every other body is streamed via a
+ * `streamId` (see `pumpResponseBody`). Buffering bodies via `arrayBuffer()` is
+ * what made unbounded responses (SSE, chunked) hang forever.
+ */
+function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): SerializedResponse {
 	const cfSocket = (response as ResponseWithWebSocket).webSocket as
 		| CFWebSocket
 		| { __bridgedWsId: string }
 		| undefined
+	const headers: [string, string][] = []
+	response.headers.forEach((v, k) => headers.push([k, v]))
+	const base = { status: response.status, statusText: response.statusText, headers, body: null }
 	if (response.status === 101 && cfSocket) {
-		const headers: [string, string][] = []
-		response.headers.forEach((v, k) => headers.push([k, v]))
-		const base = { status: response.status, statusText: response.statusText, headers, body: null }
 		if (cfSocket instanceof CFWebSocket) {
 			return { ...base, webSocketId: ws.register(cfSocket) }
 		}
 		// Peer was adopted on main during a nested binding fetch — just reship its id.
 		return { ...base, webSocketId: cfSocket.__bridgedWsId }
 	}
-	return serializeResponseShared(response)
+	if (response.body) {
+		return { ...base, streamId: nextStreamId++ }
+	}
+	return base
+}
+
+/** Pump a response body to main as `stream-chunk`s, terminated by `stream-end`
+ *  or `stream-error`. Started only after `fetch-result` is posted so main has
+ *  the `streamId` registered before chunks arrive. */
+function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+	const reader = body.getReader()
+	streamReaders.set(streamId, reader)
+	void (async () => {
+		try {
+			while (true) {
+				const { done, value } = await reader.read()
+				if (done) break
+				if (value && value.byteLength > 0) post({ type: 'stream-chunk', id: streamId, chunk: value })
+			}
+			post({ type: 'stream-end', id: streamId })
+		} catch (e) {
+			post({ type: 'stream-error', id: streamId, error: serializeError(e) })
+		} finally {
+			streamReaders.delete(streamId)
+		}
+	})()
 }
 
 self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
@@ -174,8 +212,11 @@ async function initRuntime(init: WorkerInitConfig) {
 				try {
 					const request = deserializeRequest(cmd.request)
 					const response = await runWithParentContext(cmd.parent, () => callFetch(request, cmd.props))
-					const serialized = await serializeResponse(response, wsBridge)
+					const serialized = serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
+					if (serialized.streamId !== undefined && response.body) {
+						pumpResponseBody(serialized.streamId, response.body)
+					}
 				} catch (e) {
 					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
 				}
@@ -204,6 +245,14 @@ async function initRuntime(init: WorkerInitConfig) {
 			case 'ws-client-close':
 				wsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
 				break
+			case 'stream-cancel': {
+				const reader = streamReaders.get(cmd.id)
+				if (reader) {
+					streamReaders.delete(cmd.id)
+					reader.cancel().catch(() => {})
+				}
+				break
+			}
 			case 'entrypoint-rpc':
 				try {
 					const value = await runWithParentContext(cmd.parent, () => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props))

@@ -18,10 +18,12 @@ import type {
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcReply,
+	SerializedError,
 	SerializedResponse,
 	WorkerCommand,
 	WorkerMessage,
 } from './protocol'
+import { deserializeError } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
 import { deserializeResponse, serializeRequest } from './serialize'
 import { WsHostBridge } from './ws-bridge-shared'
@@ -34,6 +36,11 @@ interface Pending<T> {
 }
 
 type HandlerResult = { ok: true } | { ok: false; noHandler: true }
+
+type StreamEvent =
+	| { kind: 'chunk'; chunk: Uint8Array }
+	| { kind: 'end' }
+	| { kind: 'error'; error: SerializedError }
 
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
@@ -64,6 +71,12 @@ export class WorkerThreadExecutor {
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
 	private _wsBridge: WsHostBridge<WorkerCommand>
+	/** Open response-body streams (streamId → controller of the ReadableStream
+	 *  handed to Bun.serve). */
+	private _streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
+	/** Stream events that arrived before the matching ReadableStream's `start`
+	 *  registered its controller (mirrors the WS `_pendingEvents` race guard). */
+	private _pendingStreamEvents = new Map<number, StreamEvent[]>()
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -79,12 +92,35 @@ export class WorkerThreadExecutor {
 			clientClose: (wsId, code, reason, wasClean) => ({ type: 'ws-client-close', wsId, code, reason, wasClean }),
 		})
 		this._worker.onmessage = (event: MessageEvent<WorkerMessage>) => this._handleMessage(event.data)
-		this._worker.onerror = (event) => {
-			const err = new Error(`Worker thread error: ${event.message ?? 'unknown'}`)
-			this._readyReject(err)
-			for (const [, pending] of this._pending) pending.reject(err)
-			this._pending.clear()
+		this._worker.onerror = (event: ErrorEvent) => {
+			if (this._disposed) return
+			this._disposed = true
+			// `event.message` is frequently empty for Bun worker errors — prefer the
+			// real stack when the runtime attaches one so the user gets a usable trace.
+			const detail = event.error?.stack ?? event.message ?? 'unknown'
+			this._failAll(new Error(`Worker thread error: ${detail}`))
 		}
+	}
+
+	/** Reject every outstanding promise and tear down bridges. Shared by `onerror`
+	 *  (worker crashed) and `dispose()` (planned teardown). */
+	private _failAll(err: Error): void {
+		this._readyReject(err)
+		for (const [, pending] of this._pending) pending.reject(err)
+		for (const [, pending] of this._pendingHandlers) pending.reject(err)
+		for (const [, pending] of this._pendingRpc) pending.reject(err)
+		this._pending.clear()
+		this._pendingHandlers.clear()
+		this._pendingRpc.clear()
+		// Break open response streams so consumers see an error instead of hanging.
+		for (const [, controller] of this._streams) {
+			try {
+				controller.error(err)
+			} catch {}
+		}
+		this._streams.clear()
+		this._pendingStreamEvents.clear()
+		this._wsBridge.disposeAll()
 	}
 
 	private _send(cmd: WorkerCommand): void {
@@ -217,7 +253,66 @@ export class WorkerThreadExecutor {
 			case 'ws-worker-close':
 				this._wsBridge.deliverRemoteClose(msg.wsId, msg.code, msg.reason, true)
 				break
+			case 'stream-chunk':
+				this._onStreamEvent(msg.id, { kind: 'chunk', chunk: msg.chunk })
+				break
+			case 'stream-end':
+				this._onStreamEvent(msg.id, { kind: 'end' })
+				break
+			case 'stream-error':
+				this._onStreamEvent(msg.id, { kind: 'error', error: msg.error })
+				break
 		}
+	}
+
+	/** Build the main-side `ReadableStream` for a streamed response. Registers
+	 *  its controller on `start` and drains any chunks that raced ahead. Cancel
+	 *  (client disconnected) tells the worker to stop pumping. */
+	private _makeResponseStream(streamId: number): ReadableStream<Uint8Array> {
+		return new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				this._streams.set(streamId, controller)
+				const pending = this._pendingStreamEvents.get(streamId)
+				if (pending) {
+					this._pendingStreamEvents.delete(streamId)
+					for (const ev of pending) this._applyStreamEvent(streamId, controller, ev)
+				}
+			},
+			cancel: () => {
+				this._streams.delete(streamId)
+				this._pendingStreamEvents.delete(streamId)
+				if (!this._disposed) this._send({ type: 'stream-cancel', id: streamId })
+			},
+		})
+	}
+
+	private _onStreamEvent(streamId: number, ev: StreamEvent): void {
+		const controller = this._streams.get(streamId)
+		if (!controller) {
+			// Raced ahead of `start()` — buffer until the controller registers.
+			let q = this._pendingStreamEvents.get(streamId)
+			if (!q) {
+				q = []
+				this._pendingStreamEvents.set(streamId, q)
+			}
+			q.push(ev)
+			return
+		}
+		this._applyStreamEvent(streamId, controller, ev)
+	}
+
+	private _applyStreamEvent(streamId: number, controller: ReadableStreamDefaultController<Uint8Array>, ev: StreamEvent): void {
+		try {
+			if (ev.kind === 'chunk') {
+				controller.enqueue(ev.chunk)
+				return
+			}
+			if (ev.kind === 'end') controller.close()
+			else controller.error(deserializeError(ev.error))
+		} catch {
+			// Controller already closed/errored (e.g. consumer cancelled) — ignore.
+		}
+		if (ev.kind !== 'chunk') this._streams.delete(streamId)
 	}
 
 	/** Background `waitUntil` promises still in flight on the worker side. */
@@ -291,7 +386,19 @@ export class WorkerThreadExecutor {
 		const req = await serializeRequest(request)
 		const serialized = await this._sendAndAwait(this._pending, (id, parent) => ({ type: 'fetch', id, request: req, parent, props }))
 
-		const response = deserializeResponse(serialized) as ResponseWithWebSocket
+		let response: ResponseWithWebSocket
+		if (serialized.streamId !== undefined) {
+			// Streamed body — hand Bun.serve a ReadableStream fed by the worker's
+			// `stream-chunk` messages, so the response resolves on headers (TTFB
+			// preserved) and the body flows incrementally.
+			response = new Response(this._makeResponseStream(serialized.streamId), {
+				status: serialized.status,
+				statusText: serialized.statusText,
+				headers: serialized.headers,
+			}) as ResponseWithWebSocket
+		} else {
+			response = deserializeResponse(serialized) as ResponseWithWebSocket
+		}
 		if (serialized.webSocketId) {
 			// If the id was adopted earlier (e.g. WS came back through a DO/service
 			// binding fetch), reuse that real CFWebSocket so `Bun.serve.upgrade`
@@ -317,13 +424,6 @@ export class WorkerThreadExecutor {
 		if (this._disposed) return
 		this._disposed = true
 		this._worker.terminate()
-		const err = new Error('Worker thread terminated')
-		for (const [, pending] of this._pending) pending.reject(err)
-		for (const [, pending] of this._pendingHandlers) pending.reject(err)
-		for (const [, pending] of this._pendingRpc) pending.reject(err)
-		this._pending.clear()
-		this._pendingHandlers.clear()
-		this._pendingRpc.clear()
-		this._wsBridge.disposeAll()
+		this._failAll(new Error('Worker thread terminated'))
 	}
 }
