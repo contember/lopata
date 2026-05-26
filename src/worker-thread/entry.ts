@@ -13,6 +13,7 @@ import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
 import { deserializeRequest } from './serialize'
+import { OutboundStreamRegistry, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
@@ -23,72 +24,14 @@ function post(msg: WorkerMessage): void {
 	postMessage(msg)
 }
 
-/** Worker-thread-global stream id sequence. Ids never cross thread boundaries
- *  (each generation has its own worker), so a module-level counter is enough. */
-let nextStreamId = 1
-/** Active response-body readers, keyed by stream id, so a `stream-cancel` from
- *  main (client disconnected) can stop an unbounded source pumping forever. */
-const streamReaders = new Map<number, { cancel(reason?: unknown): Promise<unknown> }>()
-
-type RequestStreamEvent =
-	| { kind: 'chunk'; chunk: Uint8Array }
-	| { kind: 'end' }
-	| { kind: 'error'; error: Error }
-
-/** Active reconstructed top-level request bodies (main → worker). Chunks that
- *  arrive before user code reaches `request.body.getReader()` queue here. */
-const requestStreamControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
-const requestStreamPending = new Map<number, RequestStreamEvent[]>()
-
-function buildRequestStream(streamId: number): ReadableStream<Uint8Array> {
-	return new ReadableStream<Uint8Array>({
-		start: (controller) => {
-			requestStreamControllers.set(streamId, controller)
-			const pending = requestStreamPending.get(streamId)
-			if (pending) {
-				requestStreamPending.delete(streamId)
-				for (const ev of pending) applyRequestStreamEvent(streamId, controller, ev)
-			}
-		},
-		cancel: () => {
-			requestStreamControllers.delete(streamId)
-			requestStreamPending.delete(streamId)
-			post({ type: 'req-stream-cancel', streamId })
-		},
-	})
-}
-
-function applyRequestStreamEvent(
-	streamId: number,
-	controller: ReadableStreamDefaultController<Uint8Array>,
-	ev: RequestStreamEvent,
-): void {
-	try {
-		if (ev.kind === 'chunk') {
-			controller.enqueue(ev.chunk)
-			return
-		}
-		if (ev.kind === 'end') controller.close()
-		else controller.error(ev.error)
-	} catch {
-		// Already closed/errored (user code cancelled) — drop.
-	}
-	if (ev.kind !== 'chunk') requestStreamControllers.delete(streamId)
-}
-
-function onRequestStreamEvent(streamId: number, ev: RequestStreamEvent): void {
-	const controller = requestStreamControllers.get(streamId)
-	if (!controller) {
-		let q = requestStreamPending.get(streamId)
-		if (!q) {
-			q = []
-			requestStreamPending.set(streamId, q)
-		}
-		q.push(ev)
-		return
-	}
-	applyRequestStreamEvent(streamId, controller, ev)
-}
+/** Outbound response-body pumps for the top-level fetch response (worker →
+ *  main). Inbound `stream-cancel` (client disconnected) stops the source. */
+const responseStreams = new OutboundStreamRegistry()
+/** Active reconstructed top-level request bodies (main → worker). Chunks
+ *  arriving before user code pulls the body queue inside the receiver. */
+const requestStreams = new StreamReceiver((streamId) => {
+	post({ type: 'req-stream-cancel', streamId })
+})
 
 /**
  * Serialize response status + headers only — the body is never buffered here.
@@ -112,7 +55,7 @@ function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>)
 		return { ...base, webSocketId: cfSocket.__bridgedWsId }
 	}
 	if (response.body) {
-		return { ...base, streamId: nextStreamId++ }
+		return { ...base, streamId: responseStreams.allocateId() }
 	}
 	return base
 }
@@ -122,7 +65,7 @@ function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>)
  *  the `streamId` registered before chunks arrive. */
 function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): void {
 	const reader = body.getReader()
-	streamReaders.set(streamId, reader)
+	responseStreams.register(streamId, reader)
 	void (async () => {
 		try {
 			while (true) {
@@ -134,7 +77,7 @@ function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): v
 		} catch (e) {
 			post({ type: 'stream-error', id: streamId, error: serializeError(e) })
 		} finally {
-			streamReaders.delete(streamId)
+			responseStreams.complete(streamId)
 		}
 	})()
 }
@@ -270,7 +213,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		switch (cmd.type) {
 			case 'fetch':
 				try {
-					const reqBody = cmd.request.streamId !== undefined ? buildRequestStream(cmd.request.streamId) : undefined
+					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
 					const request = deserializeRequest(cmd.request, reqBody)
 					const response = await runWithParentContext(cmd.parent, () => callFetch(request, cmd.props))
 					const serialized = serializeResponse(response, wsBridge)
@@ -306,22 +249,17 @@ async function initRuntime(init: WorkerInitConfig) {
 			case 'ws-client-close':
 				wsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
 				break
-			case 'stream-cancel': {
-				const reader = streamReaders.get(cmd.id)
-				if (reader) {
-					streamReaders.delete(cmd.id)
-					reader.cancel().catch(() => {})
-				}
+			case 'stream-cancel':
+				responseStreams.cancel(cmd.id)
 				break
-			}
 			case 'req-stream-chunk':
-				onRequestStreamEvent(cmd.streamId, { kind: 'chunk', chunk: cmd.chunk })
+				requestStreams.push(cmd.streamId, cmd.chunk)
 				break
 			case 'req-stream-end':
-				onRequestStreamEvent(cmd.streamId, { kind: 'end' })
+				requestStreams.end(cmd.streamId)
 				break
 			case 'req-stream-error':
-				onRequestStreamEvent(cmd.streamId, { kind: 'error', error: deserializeError(cmd.error) })
+				requestStreams.error(cmd.streamId, deserializeError(cmd.error))
 				break
 			case 'entrypoint-rpc':
 				try {

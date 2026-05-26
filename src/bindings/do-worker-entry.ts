@@ -6,7 +6,7 @@
  */
 
 import { deserializeError, serializeError } from '../worker-thread/protocol'
-import { RpcStreamRegistry } from '../worker-thread/rpc-shared'
+import { OutboundStreamRegistry, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
@@ -136,65 +136,13 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	/** Active body pumps for streamed DO-fetch responses, keyed by `streamId`,
 	 *  so an inbound `do-stream-cancel` can stop the source reader. */
-	const fetchStreams = new RpcStreamRegistry()
-
-	type RequestStreamEvent =
-		| { kind: 'chunk'; chunk: Uint8Array }
-		| { kind: 'end' }
-		| { kind: 'error'; error: Error }
+	const fetchStreams = new OutboundStreamRegistry()
 
 	/** Active reconstructed DO-fetch request bodies (main → DO worker). Chunks
-	 *  arriving before the controller registers queue here. */
-	const requestStreamControllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
-	const requestStreamPending = new Map<number, RequestStreamEvent[]>()
-
-	function buildRequestStream(streamId: number): ReadableStream<Uint8Array> {
-		return new ReadableStream<Uint8Array>({
-			start: (controller) => {
-				requestStreamControllers.set(streamId, controller)
-				const pending = requestStreamPending.get(streamId)
-				if (pending) {
-					requestStreamPending.delete(streamId)
-					for (const ev of pending) applyRequestStreamEvent(streamId, controller, ev)
-				}
-			},
-			cancel: () => {
-				requestStreamControllers.delete(streamId)
-				requestStreamPending.delete(streamId)
-				postMessage({ type: 'do-req-stream-cancel', streamId } satisfies DOMainMessage)
-			},
-		})
-	}
-
-	function applyRequestStreamEvent(
-		streamId: number,
-		controller: ReadableStreamDefaultController<Uint8Array>,
-		ev: RequestStreamEvent,
-	): void {
-		try {
-			if (ev.kind === 'chunk') {
-				controller.enqueue(ev.chunk)
-				return
-			}
-			if (ev.kind === 'end') controller.close()
-			else controller.error(ev.error)
-		} catch {}
-		if (ev.kind !== 'chunk') requestStreamControllers.delete(streamId)
-	}
-
-	function onRequestStreamEvent(streamId: number, ev: RequestStreamEvent): void {
-		const controller = requestStreamControllers.get(streamId)
-		if (!controller) {
-			let q = requestStreamPending.get(streamId)
-			if (!q) {
-				q = []
-				requestStreamPending.set(streamId, q)
-			}
-			q.push(ev)
-			return
-		}
-		applyRequestStreamEvent(streamId, controller, ev)
-	}
+	 *  arriving before the controller registers queue inside the receiver. */
+	const requestStreams = new StreamReceiver((streamId) => {
+		postMessage({ type: 'do-req-stream-cancel', streamId } satisfies DOMainMessage)
+	})
 
 	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>): void {
 		const reader = body.getReader()
@@ -246,7 +194,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 					if (typeof fetchFn !== 'function') {
 						throw new Error('Durable Object does not implement fetch()')
 					}
-					const reqBody = cmd.streamId !== undefined ? buildRequestStream(cmd.streamId) : cmd.body
+					const reqBody = cmd.streamId !== undefined ? requestStreams.open(cmd.streamId) : cmd.body
 					const request = new Request(cmd.url, {
 						method: cmd.method,
 						headers: cmd.headers,
@@ -377,11 +325,11 @@ async function initWorker(workerConfig: WorkerConfig) {
 		} else if (msg.type === 'do-stream-cancel') {
 			fetchStreams.cancel(msg.streamId)
 		} else if (msg.type === 'do-req-stream-chunk') {
-			onRequestStreamEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+			requestStreams.push(msg.streamId, msg.chunk)
 		} else if (msg.type === 'do-req-stream-end') {
-			onRequestStreamEvent(msg.streamId, { kind: 'end' })
+			requestStreams.end(msg.streamId)
 		} else if (msg.type === 'do-req-stream-error') {
-			onRequestStreamEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+			requestStreams.error(msg.streamId, deserializeError(msg.error))
 		} else if (msg.type === 'ws-message') {
 			const ws = bridgedWebSockets.get(msg.wsId)
 			if (ws) ws._onMessage(msg.data)

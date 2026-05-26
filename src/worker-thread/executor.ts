@@ -18,15 +18,15 @@ import type {
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcReply,
-	SerializedError,
 	SerializedRequest,
 	SerializedResponse,
 	WorkerCommand,
 	WorkerMessage,
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
-import { dispatchRpcCall, dispatchRpcFetch, RpcRequestStreamReceiver, RpcStreamRegistry } from './rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
+import { OutboundStreamRegistry, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
@@ -37,11 +37,6 @@ interface Pending<T> {
 }
 
 type HandlerResult = { ok: true } | { ok: false; noHandler: true }
-
-type StreamEvent =
-	| { kind: 'chunk'; chunk: Uint8Array }
-	| { kind: 'end' }
-	| { kind: 'error'; error: SerializedError }
 
 export interface WorkerThreadExecutorOptions {
 	modulePath: string
@@ -72,25 +67,25 @@ export class WorkerThreadExecutor {
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
 	private _wsBridge: WsHostBridge<WorkerCommand>
-	/** Open response-body streams (streamId → controller of the ReadableStream
-	 *  handed to Bun.serve). */
-	private _streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
-	/** Stream events that arrived before the matching ReadableStream's `start`
-	 *  registered its controller (mirrors the WS `_pendingEvents` race guard). */
-	private _pendingStreamEvents = new Map<number, StreamEvent[]>()
-	/** Open response-body pumps started by `dispatchRpcFetch` (main → worker
+	/** Reconstructed response bodies fed by `stream-chunk` from the worker
+	 *  (top-level fetch response → main). */
+	private _responseStreams = new StreamReceiver((streamId) => {
+		if (this._disposed) return
+		this._send({ type: 'stream-cancel', id: streamId })
+	})
+	/** Outbound response-body pumps started by `dispatchRpcFetch` (main → worker
 	 *  reverse-streaming path for service-binding fetches). */
-	private _rpcStreams = new RpcStreamRegistry()
+	private _rpcStreams = new OutboundStreamRegistry()
 	/** Receiver state for request-body streams arriving from the worker on the
 	 *  unified RPC channel (worker → main service-binding fetch with body). */
-	private _rpcRequestStreams = new RpcRequestStreamReceiver((streamId) => {
+	private _rpcRequestStreams = new StreamReceiver((streamId) => {
 		if (this._disposed) return
 		this._send({ type: 'rpc-req-stream-cancel', streamId })
 	})
 	/** Outbound request-body pumps for the top-level fetch path (main → worker).
 	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
 	 *  stops the source reader. */
-	private _topRequestStreams = new RpcStreamRegistry()
+	private _topRequestStreams = new OutboundStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._initConfig = options
@@ -126,14 +121,7 @@ export class WorkerThreadExecutor {
 		this._pending.clear()
 		this._pendingHandlers.clear()
 		this._pendingRpc.clear()
-		// Break open response streams so consumers see an error instead of hanging.
-		for (const [, controller] of this._streams) {
-			try {
-				controller.error(err)
-			} catch {}
-		}
-		this._streams.clear()
-		this._pendingStreamEvents.clear()
+		this._responseStreams.disposeAll(err)
 		this._rpcStreams.disposeAll()
 		this._rpcRequestStreams.disposeAll(err)
 		this._topRequestStreams.disposeAll()
@@ -244,13 +232,13 @@ export class WorkerThreadExecutor {
 				this._rpcStreams.cancel(msg.streamId)
 				break
 			case 'rpc-req-stream-chunk':
-				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+				this._rpcRequestStreams.push(msg.streamId, msg.chunk)
 				break
 			case 'rpc-req-stream-end':
-				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'end' })
+				this._rpcRequestStreams.end(msg.streamId)
 				break
 			case 'rpc-req-stream-error':
-				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+				this._rpcRequestStreams.error(msg.streamId, deserializeError(msg.error))
 				break
 			case 'req-stream-cancel':
 				this._topRequestStreams.cancel(msg.streamId)
@@ -286,65 +274,15 @@ export class WorkerThreadExecutor {
 				this._wsBridge.deliverRemoteClose(msg.wsId, msg.code, msg.reason, true)
 				break
 			case 'stream-chunk':
-				this._onStreamEvent(msg.id, { kind: 'chunk', chunk: msg.chunk })
+				this._responseStreams.push(msg.id, msg.chunk)
 				break
 			case 'stream-end':
-				this._onStreamEvent(msg.id, { kind: 'end' })
+				this._responseStreams.end(msg.id)
 				break
 			case 'stream-error':
-				this._onStreamEvent(msg.id, { kind: 'error', error: msg.error })
+				this._responseStreams.error(msg.id, deserializeError(msg.error))
 				break
 		}
-	}
-
-	/** Build the main-side `ReadableStream` for a streamed response. Registers
-	 *  its controller on `start` and drains any chunks that raced ahead. Cancel
-	 *  (client disconnected) tells the worker to stop pumping. */
-	private _makeResponseStream(streamId: number): ReadableStream<Uint8Array> {
-		return new ReadableStream<Uint8Array>({
-			start: (controller) => {
-				this._streams.set(streamId, controller)
-				const pending = this._pendingStreamEvents.get(streamId)
-				if (pending) {
-					this._pendingStreamEvents.delete(streamId)
-					for (const ev of pending) this._applyStreamEvent(streamId, controller, ev)
-				}
-			},
-			cancel: () => {
-				this._streams.delete(streamId)
-				this._pendingStreamEvents.delete(streamId)
-				if (!this._disposed) this._send({ type: 'stream-cancel', id: streamId })
-			},
-		})
-	}
-
-	private _onStreamEvent(streamId: number, ev: StreamEvent): void {
-		const controller = this._streams.get(streamId)
-		if (!controller) {
-			// Raced ahead of `start()` — buffer until the controller registers.
-			let q = this._pendingStreamEvents.get(streamId)
-			if (!q) {
-				q = []
-				this._pendingStreamEvents.set(streamId, q)
-			}
-			q.push(ev)
-			return
-		}
-		this._applyStreamEvent(streamId, controller, ev)
-	}
-
-	private _applyStreamEvent(streamId: number, controller: ReadableStreamDefaultController<Uint8Array>, ev: StreamEvent): void {
-		try {
-			if (ev.kind === 'chunk') {
-				controller.enqueue(ev.chunk)
-				return
-			}
-			if (ev.kind === 'end') controller.close()
-			else controller.error(deserializeError(ev.error))
-		} catch {
-			// Controller already closed/errored (e.g. consumer cancelled) — ignore.
-		}
-		if (ev.kind !== 'chunk') this._streams.delete(streamId)
 	}
 
 	/** Background `waitUntil` promises still in flight on the worker side. */
@@ -468,7 +406,7 @@ export class WorkerThreadExecutor {
 			// Streamed body — hand Bun.serve a ReadableStream fed by the worker's
 			// `stream-chunk` messages, so the response resolves on headers (TTFB
 			// preserved) and the body flows incrementally.
-			response = new Response(this._makeResponseStream(serialized.streamId), {
+			response = new Response(this._responseStreams.open(serialized.streamId), {
 				status: serialized.status,
 				statusText: serialized.statusText,
 				headers: serialized.headers,

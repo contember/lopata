@@ -18,7 +18,8 @@ import type {
 	SerializedError,
 } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
-import { dispatchRpcCall, dispatchRpcFetch, RpcRequestStreamReceiver, RpcStreamRegistry } from '../worker-thread/rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch } from '../worker-thread/rpc-shared'
+import { OutboundStreamRegistry, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
@@ -190,96 +191,6 @@ interface PendingCommand {
 	reject: (error: Error) => void
 }
 
-type DoStreamEvent =
-	| { kind: 'chunk'; chunk: Uint8Array }
-	| { kind: 'end' }
-	| { kind: 'error'; error: Error }
-
-/**
- * Main-side reconstruction of DO-fetch response bodies. Each entry holds the
- * `ReadableStream` controller for one streamed body and a small buffer for the
- * race where `do-stream-chunk` arrives before `start()` registers the controller
- * (the chunk event ships immediately after `result` and may overtake it on
- * structured-clone overhead — handle the race by buffering then flushing on
- * `start`).
- *
- * Receiver-only — for the sender (env-binding fetches the other way) the
- * channel reuses the shared {@link RpcStreamRegistry}. The receive path here
- * is small and tightly coupled to executor lifecycle, so we keep it local
- * rather than parametrize the RpcClient that lives in worker-thread land.
- */
-class DoFetchStreamReceiver {
-	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
-	private _pending = new Map<number, DoStreamEvent[]>()
-	private _cancel: (streamId: number) => void
-
-	constructor(cancel: (streamId: number) => void) {
-		this._cancel = cancel
-	}
-
-	build(streamId: number): ReadableStream<Uint8Array> {
-		return new ReadableStream<Uint8Array>({
-			start: (controller) => {
-				this._controllers.set(streamId, controller)
-				const pending = this._pending.get(streamId)
-				if (pending) {
-					this._pending.delete(streamId)
-					for (const ev of pending) this._apply(streamId, controller, ev)
-				}
-			},
-			cancel: () => {
-				this._controllers.delete(streamId)
-				this._pending.delete(streamId)
-				this._cancel(streamId)
-			},
-		})
-	}
-
-	onEvent(streamId: number, ev: DoStreamEvent): void {
-		const controller = this._controllers.get(streamId)
-		if (!controller) {
-			let q = this._pending.get(streamId)
-			if (!q) {
-				q = []
-				this._pending.set(streamId, q)
-			}
-			q.push(ev)
-			return
-		}
-		this._apply(streamId, controller, ev)
-	}
-
-	private _apply(
-		streamId: number,
-		controller: ReadableStreamDefaultController<Uint8Array>,
-		ev: DoStreamEvent,
-	): void {
-		try {
-			if (ev.kind === 'chunk') {
-				controller.enqueue(ev.chunk)
-				return
-			}
-			if (ev.kind === 'end') controller.close()
-			else controller.error(ev.error)
-		} catch {
-			// Already closed/errored (consumer cancelled) — drop.
-		}
-		if (ev.kind !== 'chunk') this._controllers.delete(streamId)
-	}
-
-	/** Worker died / executor disposed — fail every open stream so awaiting
-	 *  consumers don't hang. */
-	disposeAll(err: Error): void {
-		for (const [, controller] of this._controllers) {
-			try {
-				controller.error(err)
-			} catch {}
-		}
-		this._controllers.clear()
-		this._pending.clear()
-	}
-}
-
 // --- WorkerExecutor ---
 
 const WORKER_ENTRY_PATH = resolve(dirname(new URL(import.meta.url).pathname), 'do-worker-entry.ts')
@@ -305,21 +216,21 @@ export class WorkerExecutor implements DOExecutor {
 	private _fetchBridge: WsHostBridge<DOWorkerMessage> | null = null
 	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
 	 *  RPC `.fetch()` invoked from inside the DO worker). */
-	private _rpcStreams = new RpcStreamRegistry()
+	private _rpcStreams = new OutboundStreamRegistry()
 	/** Receiver state for request-body streams arriving from the DO worker on
 	 *  the unified RPC channel (DO-worker → main env-binding fetch with body). */
-	private _rpcRequestStreams = new RpcRequestStreamReceiver((streamId) => {
+	private _rpcRequestStreams = new StreamReceiver((streamId) => {
 		if (this._disposed) return
 		this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
 	})
 	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
-	private _fetchStreams = new DoFetchStreamReceiver((streamId) => {
+	private _fetchStreams = new StreamReceiver((streamId) => {
 		this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
 	})
 	/** Outbound request-body pumps for DO-fetch (main → DO worker). A
 	 *  `do-req-stream-cancel` from the DO worker (instance code cancelled the
 	 *  body) stops the source reader. */
-	private _fetchRequestStreams = new RpcStreamRegistry()
+	private _fetchRequestStreams = new OutboundStreamRegistry()
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
@@ -419,27 +330,27 @@ export class WorkerExecutor implements DOExecutor {
 					break
 
 				case 'rpc-req-stream-chunk':
-					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+					this._rpcRequestStreams.push(msg.streamId, msg.chunk)
 					break
 
 				case 'rpc-req-stream-end':
-					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'end' })
+					this._rpcRequestStreams.end(msg.streamId)
 					break
 
 				case 'rpc-req-stream-error':
-					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+					this._rpcRequestStreams.error(msg.streamId, deserializeError(msg.error))
 					break
 
 				case 'do-stream-chunk':
-					this._fetchStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+					this._fetchStreams.push(msg.streamId, msg.chunk)
 					break
 
 				case 'do-stream-end':
-					this._fetchStreams.onEvent(msg.streamId, { kind: 'end' })
+					this._fetchStreams.end(msg.streamId)
 					break
 
 				case 'do-stream-error':
-					this._fetchStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+					this._fetchStreams.error(msg.streamId, deserializeError(msg.error))
 					break
 
 				case 'do-req-stream-cancel':
@@ -630,7 +541,7 @@ export class WorkerExecutor implements DOExecutor {
 		}
 
 		if (result.streamId !== undefined) {
-			const stream = this._fetchStreams.build(result.streamId)
+			const stream = this._fetchStreams.open(result.streamId)
 			return new Response(stream, init)
 		}
 
