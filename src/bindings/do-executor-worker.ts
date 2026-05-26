@@ -11,11 +11,14 @@ import type {
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcReply,
+	RpcReqStreamChunk,
+	RpcReqStreamEnd,
+	RpcReqStreamError,
 	RpcStreamCancel,
 	SerializedError,
 } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
-import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from '../worker-thread/rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch, RpcRequestStreamReceiver, RpcStreamRegistry } from '../worker-thread/rpc-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
@@ -116,6 +119,9 @@ export type DOMainMessage =
 	| RpcCallRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	| RpcReqStreamChunk
+	| RpcReqStreamEnd
+	| RpcReqStreamError
 	/** Body chunks for a streamed DO-fetch response (see {@link DoStreamChunk}). */
 	| DoStreamChunk
 	| DoStreamEnd
@@ -252,6 +258,12 @@ export class WorkerExecutor implements DOExecutor {
 	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
 	 *  RPC `.fetch()` invoked from inside the DO worker). */
 	private _rpcStreams = new RpcStreamRegistry()
+	/** Receiver state for request-body streams arriving from the DO worker on
+	 *  the unified RPC channel (DO-worker → main env-binding fetch with body). */
+	private _rpcRequestStreams = new RpcRequestStreamReceiver((streamId) => {
+		if (this._disposed) return
+		this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
+	})
 	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
 	private _fetchStreams = new DoFetchStreamReceiver((streamId) => {
 		this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
@@ -354,6 +366,18 @@ export class WorkerExecutor implements DOExecutor {
 					this._rpcStreams.cancel(msg.streamId)
 					break
 
+				case 'rpc-req-stream-chunk':
+					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+					break
+
+				case 'rpc-req-stream-end':
+					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'end' })
+					break
+
+				case 'rpc-req-stream-error':
+					this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
+					break
+
 				case 'do-stream-chunk':
 					this._fetchStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
 					break
@@ -393,6 +417,7 @@ export class WorkerExecutor implements DOExecutor {
 			this._pending.clear()
 			this._fetchBridge?.disposeAll()
 			this._rpcStreams.disposeAll()
+			this._rpcRequestStreams.disposeAll(error)
 			this._fetchStreams.disposeAll(error)
 		}
 
@@ -571,7 +596,7 @@ export class WorkerExecutor implements DOExecutor {
 			resolveBinding: this._resolveBinding,
 			post: this._postReply,
 			isAlive: () => !this._disposed && this._worker !== null,
-		}, this._rpcStreams)
+		}, this._rpcStreams, this._rpcRequestStreams)
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {

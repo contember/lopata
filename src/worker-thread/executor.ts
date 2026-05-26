@@ -25,7 +25,7 @@ import type {
 	WorkerMessage,
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
-import { dispatchRpcCall, dispatchRpcFetch, RpcStreamRegistry } from './rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch, RpcRequestStreamReceiver, RpcStreamRegistry } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
 import { WsHostBridge } from './ws-bridge-shared'
 
@@ -81,6 +81,12 @@ export class WorkerThreadExecutor {
 	/** Open response-body pumps started by `dispatchRpcFetch` (main → worker
 	 *  reverse-streaming path for service-binding fetches). */
 	private _rpcStreams = new RpcStreamRegistry()
+	/** Receiver state for request-body streams arriving from the worker on the
+	 *  unified RPC channel (worker → main service-binding fetch with body). */
+	private _rpcRequestStreams = new RpcRequestStreamReceiver((streamId) => {
+		if (this._disposed) return
+		this._send({ type: 'rpc-req-stream-cancel', streamId })
+	})
 	/** Outbound request-body pumps for the top-level fetch path (main → worker).
 	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
 	 *  stops the source reader. */
@@ -129,6 +135,7 @@ export class WorkerThreadExecutor {
 		this._streams.clear()
 		this._pendingStreamEvents.clear()
 		this._rpcStreams.disposeAll()
+		this._rpcRequestStreams.disposeAll(err)
 		this._topRequestStreams.disposeAll()
 		this._wsBridge.disposeAll()
 	}
@@ -235,6 +242,15 @@ export class WorkerThreadExecutor {
 				break
 			case 'rpc-stream-cancel':
 				this._rpcStreams.cancel(msg.streamId)
+				break
+			case 'rpc-req-stream-chunk':
+				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'chunk', chunk: msg.chunk })
+				break
+			case 'rpc-req-stream-end':
+				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'end' })
+				break
+			case 'rpc-req-stream-error':
+				this._rpcRequestStreams.onEvent(msg.streamId, { kind: 'error', error: deserializeError(msg.error) })
 				break
 			case 'req-stream-cancel':
 				this._topRequestStreams.cancel(msg.streamId)
@@ -360,17 +376,22 @@ export class WorkerThreadExecutor {
 	}
 
 	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
-		return dispatchRpcFetch(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed,
-			decorateResponse: (response, serialized) => {
-				const ws = (response as ResponseWithWebSocket).webSocket
-				if (response.status === 101 && ws instanceof CFWebSocket) {
-					serialized.webSocketId = this._wsBridge.adoptExisting(ws)
-				}
+		return dispatchRpcFetch(
+			req,
+			{
+				resolveBinding: this._resolveBinding,
+				post: this._postReply,
+				isAlive: () => !this._disposed,
+				decorateResponse: (response, serialized) => {
+					const ws = (response as ResponseWithWebSocket).webSocket
+					if (response.status === 101 && ws instanceof CFWebSocket) {
+						serialized.webSocketId = this._wsBridge.adoptExisting(ws)
+					}
+				},
 			},
-		}, this._rpcStreams)
+			this._rpcStreams,
+			this._rpcRequestStreams,
+		)
 	}
 
 	private _pumpTopRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {

@@ -93,6 +93,60 @@ describe('Response streaming through service-binding (cross-thread)', () => {
 		expect(bytes[bytes.length - 1]).toBe(67)
 	}, 20_000)
 
+	test('request body chunks reach the bound worker incrementally', async () => {
+		const count = 5
+		const delay = 80
+		const encoder = new TextEncoder()
+		const stream = new ReadableStream<Uint8Array>({
+			async start(controller) {
+				for (let i = 0; i < count; i++) {
+					controller.enqueue(encoder.encode(`x-${i}\n`))
+					if (i < count - 1) await new Promise(r => setTimeout(r, delay))
+				}
+				controller.close()
+			},
+		})
+		const res = await fetch(`${base}/echo-incremental`, {
+			method: 'POST',
+			body: stream,
+			duplex: 'half',
+		})
+		const { text, arrivals } = await readChunks(res)
+		for (let i = 0; i < count; i++) {
+			expect(text).toContain(`chunk-${i}-`)
+		}
+		expect(arrivals.length).toBeGreaterThan(1)
+		const spread = arrivals[arrivals.length - 1]! - arrivals[0]!
+		expect(spread).toBeGreaterThan((count - 1) * delay * 0.4)
+	}, 15_000)
+
+	test('large request body through a service binding round-trips intact', async () => {
+		const size = 4 * 1024 * 1024
+		const chunk = new Uint8Array(64 * 1024).fill(69) // 'E'
+		let sent = 0
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent >= size) {
+					controller.close()
+					return
+				}
+				const remaining = size - sent
+				const out = remaining < chunk.length ? chunk.subarray(0, remaining) : chunk
+				controller.enqueue(out)
+				sent += out.length
+			},
+		})
+		const res = await fetch(`${base}/echo`, {
+			method: 'POST',
+			body: stream,
+			duplex: 'half',
+		})
+		const buf = new Uint8Array(await res.arrayBuffer())
+		expect(buf.byteLength).toBe(size)
+		expect(buf[0]).toBe(69)
+		expect(buf[buf.length - 1]).toBe(69)
+	}, 20_000)
+
 	test('cancel propagates: dropping the response body cancels the source', async () => {
 		// Baseline: how many times has the source been cancelled so far?
 		const before = Number(await (await fetch(`${base}/cancel-count`)).text())

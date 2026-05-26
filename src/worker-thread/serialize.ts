@@ -15,17 +15,6 @@ export function serializeRequestShell(request: Request): Omit<SerializedRequest,
 	return { url: request.url, method: request.method, headers }
 }
 
-/**
- * Legacy buffering serializer for paths that still ship the request body as an
- * ArrayBuffer. Newer paths use {@link serializeRequestShell} + a channel-specific
- * stream pump so request bodies cross the worker boundary incrementally.
- */
-export async function serializeRequest(request: Request): Promise<SerializedRequest> {
-	const shell = serializeRequestShell(request)
-	const body = request.body ? await request.arrayBuffer() : null
-	return { ...shell, body }
-}
-
 export function deserializeRequest(req: SerializedRequest, body?: ReadableStream<Uint8Array> | null): Request {
 	return new Request(req.url, {
 		method: req.method,

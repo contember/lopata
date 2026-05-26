@@ -76,6 +76,39 @@ export default {
 			return new Response(String(cancelCount), { headers: { 'content-type': 'text/plain' } })
 		}
 
+		// Read the request body chunk-by-chunk and echo per-chunk arrival times.
+		// Used to prove that request bodies cross the service-binding boundary
+		// incrementally instead of buffering at the rpc-fetch hop.
+		if (url.pathname === '/echo-incremental' && request.method === 'POST') {
+			if (!request.body) return new Response('no body', { status: 400 })
+			const reader = request.body.getReader()
+			const encoder = new TextEncoder()
+			const stream = new ReadableStream<Uint8Array>({
+				async start(controller) {
+					try {
+						let n = 0
+						while (true) {
+							const { done, value } = await reader.read()
+							if (done) break
+							if (value?.length) {
+								controller.enqueue(encoder.encode(`chunk-${n++}-len-${value.length}-at-${Date.now()}\n`))
+							}
+						}
+						controller.close()
+					} catch (e) {
+						controller.error(e)
+					}
+				},
+			})
+			return new Response(stream, { headers: { 'content-type': 'text/plain' } })
+		}
+
+		// Read the full body for round-trip-intact verification on the binding hop.
+		if (url.pathname === '/echo' && request.method === 'POST') {
+			const body = await request.arrayBuffer()
+			return new Response(body)
+		}
+
 		return new Response('aux: not found', { status: 404 })
 	},
 }

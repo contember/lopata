@@ -179,7 +179,50 @@ export interface RpcStreamCancel {
 	streamId: number
 }
 
-export type RpcRequest = RpcCallRequest | RpcFetchRequest | RpcStreamCancel
+/**
+ * Forward-direction streaming for {@link RpcFetchRequest}'s body. The sender
+ * (worker-side `RpcClient.callFetch`) ships the request shell + a
+ * `requestStreamId` immediately and pumps the body via these messages so
+ * uploads / streaming proxies reach the binding's `fetch()` incrementally
+ * instead of waiting for the full body to buffer.
+ *
+ * Direction: sender → receiver of the unified RPC channel. For the
+ * user-worker channel that's worker → main; for the DO-worker channel that's
+ * DO worker → main. Both `WorkerThreadExecutor` and `WorkerExecutor` host an
+ * inbound request-stream receiver and route these messages into it.
+ *
+ * Id space: independent counter inside the sending `RpcClient`; carried in
+ * {@link SerializedRequest}.streamId on the matching `rpc-fetch`.
+ */
+export interface RpcReqStreamChunk {
+	type: 'rpc-req-stream-chunk'
+	streamId: number
+	chunk: Uint8Array
+}
+export interface RpcReqStreamEnd {
+	type: 'rpc-req-stream-end'
+	streamId: number
+}
+export interface RpcReqStreamError {
+	type: 'rpc-req-stream-error'
+	streamId: number
+	error: SerializedError
+}
+
+/** receiver → sender: the binding consumer cancelled the reconstructed
+ *  request body. Sender stops the source reader. */
+export interface RpcReqStreamCancel {
+	type: 'rpc-req-stream-cancel'
+	streamId: number
+}
+
+export type RpcRequest =
+	| RpcCallRequest
+	| RpcFetchRequest
+	| RpcStreamCancel
+	| RpcReqStreamChunk
+	| RpcReqStreamEnd
+	| RpcReqStreamError
 export type RpcReply =
 	| RpcCallReply
 	| RpcCallErrorReply
@@ -188,6 +231,7 @@ export type RpcReply =
 	| RpcStreamChunk
 	| RpcStreamEnd
 	| RpcStreamError
+	| RpcReqStreamCancel
 
 /** Main → worker */
 export type WorkerCommand =
@@ -204,6 +248,7 @@ export type WorkerCommand =
 	| RpcStreamChunk
 	| RpcStreamEnd
 	| RpcStreamError
+	| RpcReqStreamCancel
 	// RPC method call into the worker's user-defined entrypoint class.
 	// Sent from main when a `ServiceBinding` RPC callable resolves a target
 	// whose entrypoint class lives in a worker thread. `props` carries the
@@ -260,6 +305,9 @@ export type WorkerMessage =
 	| RpcCallRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	| RpcReqStreamChunk
+	| RpcReqStreamEnd
+	| RpcReqStreamError
 	// `ctx.waitUntil(p)` and its settlement. Main tracks in-flight ids so reload
 	// drain waits for background work the response no longer carries. Per-id
 	// (vs. counter) makes double-add/double-settle impossible to silently desync.

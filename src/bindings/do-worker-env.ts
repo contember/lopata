@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { getActiveContext } from '../tracing/context'
-import type { BindingTarget, ParentSpanContext, RpcCallRequest, RpcFetchRequest } from '../worker-thread/protocol'
+import type { BindingTarget, ParentSpanContext } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
@@ -29,7 +29,7 @@ export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
 		const active = getActiveContext()
 		return active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 	}
-	return new RpcClient(req => post(req as RpcCallRequest | RpcFetchRequest), getParent)
+	return new RpcClient(req => post(req as DOMainMessage), getParent)
 }
 
 function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, unknown> {

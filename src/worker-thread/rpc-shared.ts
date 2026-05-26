@@ -23,6 +23,10 @@ import type {
 	RpcFetchReply,
 	RpcFetchRequest,
 	RpcReply,
+	RpcReqStreamCancel,
+	RpcReqStreamChunk,
+	RpcReqStreamEnd,
+	RpcReqStreamError,
 	RpcStreamCancel,
 	RpcStreamChunk,
 	RpcStreamEnd,
@@ -31,7 +35,7 @@ import type {
 	SerializedResponse,
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
-import { deserializeRequest, serializeRequest } from './serialize'
+import { deserializeRequest, serializeRequestShell } from './serialize'
 
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 
@@ -116,6 +120,93 @@ export class RpcStreamRegistry {
 	}
 }
 
+type RpcRequestStreamEvent =
+	| { kind: 'chunk'; chunk: Uint8Array }
+	| { kind: 'end' }
+	| { kind: 'error'; error: ReturnType<typeof deserializeError> }
+
+/**
+ * Receiver-side state for inbound request-body streams on the unified RPC
+ * channel. The sender (`RpcClient.callFetch`) ships `rpc-fetch` with
+ * `requestStreamId` and pumps chunks via `rpc-req-stream-*`; the receiver
+ * reconstructs a `ReadableStream` for the rebuilt `Request` and posts
+ * `rpc-req-stream-cancel` if the binding consumer drops the body.
+ *
+ * One per channel (each executor owns its own). Mirrors the inline
+ * receiver pattern used in `WorkerThreadExecutor._streams` / `DoFetchStreamReceiver`
+ * for response bodies — kept separate to match the existing channel-bound
+ * registries rather than introducing a cross-cutting abstraction.
+ */
+export class RpcRequestStreamReceiver {
+	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
+	private _pending = new Map<number, RpcRequestStreamEvent[]>()
+	private _cancel: (streamId: number) => void
+
+	constructor(cancel: (streamId: number) => void) {
+		this._cancel = cancel
+	}
+
+	build(streamId: number): ReadableStream<Uint8Array> {
+		return new ReadableStream<Uint8Array>({
+			start: (controller) => {
+				this._controllers.set(streamId, controller)
+				const pending = this._pending.get(streamId)
+				if (pending) {
+					this._pending.delete(streamId)
+					for (const ev of pending) this._apply(streamId, controller, ev)
+				}
+			},
+			cancel: () => {
+				this._controllers.delete(streamId)
+				this._pending.delete(streamId)
+				this._cancel(streamId)
+			},
+		})
+	}
+
+	onEvent(streamId: number, ev: RpcRequestStreamEvent): void {
+		const controller = this._controllers.get(streamId)
+		if (!controller) {
+			let q = this._pending.get(streamId)
+			if (!q) {
+				q = []
+				this._pending.set(streamId, q)
+			}
+			q.push(ev)
+			return
+		}
+		this._apply(streamId, controller, ev)
+	}
+
+	private _apply(
+		streamId: number,
+		controller: ReadableStreamDefaultController<Uint8Array>,
+		ev: RpcRequestStreamEvent,
+	): void {
+		try {
+			if (ev.kind === 'chunk') {
+				controller.enqueue(ev.chunk)
+				return
+			}
+			if (ev.kind === 'end') controller.close()
+			else controller.error(ev.error)
+		} catch {
+			// Already closed/errored (consumer cancelled) — drop.
+		}
+		if (ev.kind !== 'chunk') this._controllers.delete(streamId)
+	}
+
+	disposeAll(err: Error): void {
+		for (const [, controller] of this._controllers) {
+			try {
+				controller.error(err)
+			} catch {}
+		}
+		this._controllers.clear()
+		this._pending.clear()
+	}
+}
+
 export async function dispatchRpcCall(req: RpcCallRequest, hooks: RpcDispatchHooks): Promise<void> {
 	try {
 		const resolved = hooks.resolveBinding(req.target)
@@ -140,11 +231,16 @@ export async function dispatchRpcCall(req: RpcCallRequest, hooks: RpcDispatchHoo
  * `rpc-stream-error`. WS upgrades (status 101) are short-circuited — they
  * carry `webSocketId`, not a body stream. Body-less responses ship without a
  * `streamId` and no pump.
+ *
+ * The request body is reconstructed from the inbound request-stream messages
+ * when `req.request.streamId` is set, so streaming uploads / proxies reach the
+ * binding's `fetch()` incrementally.
  */
 export async function dispatchRpcFetch(
 	req: RpcFetchRequest,
 	hooks: RpcDispatchHooks,
 	streams: RpcStreamRegistry,
+	requestStreams: RpcRequestStreamReceiver,
 ): Promise<void> {
 	let response: Response
 	try {
@@ -153,7 +249,8 @@ export async function dispatchRpcFetch(
 		if (typeof fetch !== 'function') {
 			throw new Error(`Binding "${req.target.binding}" has no fetch() method`)
 		}
-		const request = deserializeRequest(req.request)
+		const body = req.request.streamId !== undefined ? requestStreams.build(req.request.streamId) : undefined
+		const request = deserializeRequest(req.request, body)
 		response = await runWithParentContext(
 			req.parent,
 			() => (fetch as (r: Request) => Promise<Response>).call(resolved, request),
@@ -244,16 +341,36 @@ type StreamEvent =
 export class RpcClient {
 	private _pending = new Map<number, PendingCall>()
 	private _nextId = 1
-	private _post: (req: RpcCallRequest | RpcFetchRequest | RpcStreamCancel) => void
+	private _post: (
+		req:
+			| RpcCallRequest
+			| RpcFetchRequest
+			| RpcStreamCancel
+			| RpcReqStreamChunk
+			| RpcReqStreamEnd
+			| RpcReqStreamError,
+	) => void
 	private _getParent: () => ParentSpanContext | undefined
 	/** Active reconstructed streams, keyed by `streamId`. Filled when the
 	 *  stream controller registers on `start`; events that arrive earlier are
 	 *  buffered in `_pendingStreamEvents`. */
 	private _streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
 	private _pendingStreamEvents = new Map<number, StreamEvent[]>()
+	/** Outbound request-body pumps started by `callFetch`. A receiver-side
+	 *  `rpc-req-stream-cancel` arrives via `handle()` and stops the source
+	 *  reader so an unbounded upload doesn't pump forever. */
+	private _requestStreams = new RpcStreamRegistry()
 
 	constructor(
-		post: (req: RpcCallRequest | RpcFetchRequest | RpcStreamCancel) => void,
+		post: (
+			req:
+				| RpcCallRequest
+				| RpcFetchRequest
+				| RpcStreamCancel
+				| RpcReqStreamChunk
+				| RpcReqStreamEnd
+				| RpcReqStreamError,
+		) => void,
 		getParent: () => ParentSpanContext | undefined,
 	) {
 		this._post = post
@@ -268,13 +385,42 @@ export class RpcClient {
 		})
 	}
 
-	async callFetch(target: BindingTarget, request: Request): Promise<SerializedResponse> {
-		const req = await serializeRequest(request)
+	callFetch(target: BindingTarget, request: Request): Promise<SerializedResponse> {
+		const shell = serializeRequestShell(request)
+		const body = request.body
 		const id = this._nextId++
-		return new Promise<SerializedResponse>((resolve, reject) => {
+		const serialized: SerializedRequest = body
+			? { ...shell, body: null, streamId: this._requestStreams.allocateId() }
+			: { ...shell, body: null }
+		const promise = new Promise<SerializedResponse>((resolve, reject) => {
 			this._pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-			this._post({ type: 'rpc-fetch', id, target, request: req, parent: this._getParent() })
+			this._post({ type: 'rpc-fetch', id, target, request: serialized, parent: this._getParent() })
 		})
+		if (body && serialized.streamId !== undefined) {
+			this._pumpRequestBody(serialized.streamId, body)
+		}
+		return promise
+	}
+
+	private _pumpRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+		const reader = body.getReader()
+		this._requestStreams.register(streamId, reader)
+		void (async () => {
+			try {
+				while (true) {
+					const { done, value } = await reader.read()
+					if (done) break
+					if (value && value.byteLength > 0) {
+						this._post({ type: 'rpc-req-stream-chunk', streamId, chunk: value } satisfies RpcReqStreamChunk)
+					}
+				}
+				this._post({ type: 'rpc-req-stream-end', streamId } satisfies RpcReqStreamEnd)
+			} catch (e) {
+				this._post({ type: 'rpc-req-stream-error', streamId, error: serializeError(e) } satisfies RpcReqStreamError)
+			} finally {
+				this._requestStreams.complete(streamId)
+			}
+		})()
 	}
 
 	/**
@@ -385,6 +531,11 @@ export class RpcClient {
 				this._onStreamEvent(m.streamId, { kind: 'error', error: deserializeError(m.error) })
 				return true
 			}
+			case 'rpc-req-stream-cancel': {
+				const m = msg as RpcReqStreamCancel
+				this._requestStreams.cancel(m.streamId)
+				return true
+			}
 			default:
 				return false
 		}
@@ -400,5 +551,6 @@ export class RpcClient {
 		}
 		this._streams.clear()
 		this._pendingStreamEvents.clear()
+		this._requestStreams.disposeAll()
 	}
 }
