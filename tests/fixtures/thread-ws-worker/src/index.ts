@@ -45,6 +45,10 @@ export default {
 			return new Response(null, { status: 101, webSocket: client } as any)
 		}
 
+		if (url.pathname === '/ws/bad') {
+			return new Response(null, { status: 101, webSocket: {} } as any)
+		}
+
 		return new Response('not found', { status: 404 })
 	},
 }

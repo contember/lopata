@@ -52,7 +52,14 @@ function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>)
 			return { ...base, webSocketId: ws.register(cfSocket) }
 		}
 		// Peer was adopted on main during a nested binding fetch — just reship its id.
-		return { ...base, webSocketId: cfSocket.__bridgedWsId }
+		const bridgedId = (cfSocket as { __bridgedWsId?: unknown }).__bridgedWsId
+		if (typeof bridgedId !== 'string' || bridgedId.length === 0) {
+			throw new Error(
+				'Response.webSocket is not a CFWebSocket and has no __bridgedWsId — '
+					+ 'lopata can only ship WebSockets created via `new WebSocketPair()` or returned from a binding fetch.',
+			)
+		}
+		return { ...base, webSocketId: bridgedId }
 	}
 	if (response.body) {
 		return { ...base, streamId: responseStreams.allocateId() }

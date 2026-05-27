@@ -141,4 +141,15 @@ describe('Plain WebSocket through worker-thread runtime', () => {
 		expect(ev.code).toBe(4000)
 		expect(ev.reason).toBe('server-closed')
 	})
+
+	test('malformed Response.webSocket fails loudly instead of shipping undefined', async () => {
+		const res = await fetch(`${base}/ws/bad`, {
+			headers: { Upgrade: 'websocket', Connection: 'upgrade' },
+		}).catch((e: Error) => ({ status: 0, errMsg: e.message })) as Response | { status: 0; errMsg: string }
+		if ('errMsg' in res) {
+			expect(res.errMsg).toMatch(/./)
+		} else {
+			expect(res.status).not.toBe(101)
+		}
+	})
 })
