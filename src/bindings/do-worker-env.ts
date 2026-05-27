@@ -125,18 +125,16 @@ export function buildWorkerEnv(
 		env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, dataDir)
 	}
 
-	// Durable Objects — only the binding that points at *this* worker's own DO
-	// class gets a real local namespace. Every other DO binding points at a
-	// singleton in a different worker thread; constructing a private namespace
-	// here would silently duplicate state. Substitute a loud-throw stub.
+	// Durable Objects — every DO binding routes via main, including the binding
+	// that points at *this* worker's own DO class. Constructing a local
+	// namespace here (even for the host class) silently forks instance state:
+	// `this.env.SELF_DO.get(idFromName('A'))` would build a fresh in-process
+	// `DurableObjectStateImpl` parallel to main's executor for the same id,
+	// giving two singletons for one logical instance. The full fix requires
+	// extending env-RPC to carry `instanceId` + `instanceName` and routing
+	// through main's namespace; until that lands, throw loud and eager.
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		if (doBinding.class_name === hostNamespaceName) {
-			const namespace = new DurableObjectNamespaceImpl(db, doBinding.class_name, dataDir)
-			env[doBinding.name] = namespace
-			doNamespaces.push({ className: doBinding.class_name, namespace })
-		} else {
-			env[doBinding.name] = makeCrossDoStub(doBinding.name, doBinding.class_name)
-		}
+		env[doBinding.name] = makeCrossDoStub(doBinding.name, doBinding.class_name)
 	}
 
 	// D1 databases
