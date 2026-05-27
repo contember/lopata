@@ -259,4 +259,33 @@ describe('WebSocket HMR E2E — standalone', () => {
 
 		client.close()
 	}, 20_000)
+
+	// Counterpart to the unit test in `tests/ws-bridge-shared.test.ts` that
+	// asserts `WsHostBridge.disposeAll()` posts `1012 Service Restart`. This
+	// test drives the full pipeline: a real client WS, a worker reload, and
+	// the close frame surfacing back to the client.
+	test('reload closes connected WebSocket with 1012 Service Restart', async () => {
+		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do-reload-close`)
+
+		// Sanity-check the channel is live before we touch the source file —
+		// otherwise the close could be coming from the connection never having
+		// been accepted in the first place.
+		client.send('hello')
+		const hello = await client.waitForMessage()
+		expect(hello).toMatch(/^v\d+:hello$/)
+
+		output.mark()
+		// Bump VERSION to whichever value is currently in the file (the prior
+		// skipped tests don't run, but be tolerant in case ordering ever
+		// changes). We just need *some* mutation that triggers a reload.
+		const current = readFileSync(WORKER_SRC, 'utf-8')
+		const match = current.match(/VERSION = '(v\d+)'/)
+		if (!match) throw new Error('Could not find VERSION = vN in worker source')
+		const next = `v${Number(match[1]!.slice(1)) + 1}`
+		mutateWorkerSource(`VERSION = '${match[1]}'`, `VERSION = '${next}'`)
+
+		const closeEv = await client.waitForClose(10_000)
+		expect(closeEv.code).toBe(1012)
+		expect(closeEv.reason).toBe('Service Restart')
+	}, 20_000)
 })
