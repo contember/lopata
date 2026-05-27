@@ -120,6 +120,7 @@ export async function dispatchRpcFetch(
 	streams: OutboundStreamRegistry,
 	requestStreams: StreamReceiver,
 ): Promise<void> {
+	const reqStreamId = req.request.streamId
 	let response: Response
 	try {
 		const resolved = hooks.resolveBinding(req.target)
@@ -127,19 +128,28 @@ export async function dispatchRpcFetch(
 		if (typeof fetch !== 'function') {
 			throw new Error(`Binding "${req.target.binding}" has no fetch() method`)
 		}
-		const body = req.request.streamId !== undefined ? requestStreams.open(req.request.streamId) : undefined
+		const body = reqStreamId !== undefined ? requestStreams.open(reqStreamId) : undefined
 		const request = deserializeRequest(req.request, body)
 		response = await runWithParentContext(
 			req.parent,
 			() => (fetch as (r: Request) => Promise<Response>).call(resolved, request),
 		)
 	} catch (e) {
+		// Stop the sender from pumping into a request-body stream we will never
+		// consume — either we never opened a controller (resolve/fetch missing
+		// threw before requestStreams.open), or the binding's fetch errored
+		// without draining the body. Cancelling drops any buffered chunks and
+		// signals the sender to stop.
+		if (reqStreamId !== undefined) requestStreams.cancel(reqStreamId)
 		if (!hooks.isAlive()) return
 		hooks.post({ type: 'rpc-fetch-error', id: req.id, error: serializeError(e) } satisfies RpcFetchErrorReply)
 		return
 	}
 
-	if (!hooks.isAlive()) return
+	if (!hooks.isAlive()) {
+		if (reqStreamId !== undefined) requestStreams.cancel(reqStreamId)
+		return
+	}
 
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	const isWsUpgrade = response.status === 101 && cfSocket instanceof CFWebSocket
