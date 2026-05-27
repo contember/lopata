@@ -203,4 +203,47 @@ describe('WsGuestBridge', () => {
 		const lone = new CFWebSocket()
 		expect(() => bridge.register(lone)).toThrow(/has no peer/)
 	})
+
+	test('register warns when shipped peer was pre-accepted; later events still flow', () => {
+		const { client, server } = makePair()
+		client.accept()
+		server.accept()
+		server.send('lost-before-register')
+
+		const warnings: string[] = []
+		const origWarn = console.warn
+		console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+		try {
+			bridge.register(client)
+		} finally {
+			console.warn = origWarn
+		}
+
+		expect(warnings.length).toBe(1)
+		expect(warnings[0]).toMatch(/already accept\(\)ed/)
+
+		posted.length = 0
+		server.send('after-register')
+		expect(posted).toHaveLength(1)
+		expect(posted[0]).toMatchObject({ type: 'remote-message', data: 'after-register' })
+	})
+
+	test('register does not warn for the normal (not pre-accepted) path', () => {
+		const { client, server } = makePair()
+		server.accept()
+		server.send('queued-on-client')
+
+		const warnings: string[] = []
+		const origWarn = console.warn
+		console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(' '))
+		try {
+			bridge.register(client)
+		} finally {
+			console.warn = origWarn
+		}
+
+		expect(warnings).toEqual([])
+		expect(posted).toHaveLength(1)
+		expect(posted[0]).toMatchObject({ type: 'remote-message', data: 'queued-on-client' })
+	})
 })

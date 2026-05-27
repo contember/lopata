@@ -203,6 +203,13 @@ export class WsGuestBridge<O> {
 	 * be attached BEFORE `accept()` so the synchronous flush of any queued events
 	 * (e.g. the user already called `server.send()` before returning the response)
 	 * reaches the bridge instead of being lost.
+	 *
+	 * If the shipped peer was pre-accepted by user code (e.g. `client.accept()`
+	 * before returning the Response), any events dispatched between that
+	 * pre-accept and this `register()` call were emitted with no listeners
+	 * attached — they're already gone. We still attach listeners so anything
+	 * *after* this point flows correctly, and emit a console.warn so the user
+	 * knows to drop the early `accept()`.
 	 */
 	register(shipped: CFWebSocket): string {
 		const wsId = generateId(8)
@@ -211,6 +218,8 @@ export class WsGuestBridge<O> {
 			throw new Error('Response.webSocket has no peer — was it created via `new WebSocketPair()`?')
 		}
 		this._sockets.set(wsId, { userPeer, closed: false })
+
+		const wasPreAccepted = shipped._accepted
 
 		shipped.addEventListener('message', (ev: Event) => {
 			const data = (ev as MessageEvent).data
@@ -222,6 +231,14 @@ export class WsGuestBridge<O> {
 			this._sockets.delete(wsId)
 		})
 		shipped.accept()
+
+		if (wasPreAccepted) {
+			console.warn(
+				'[lopata] Response.webSocket was already accept()ed before returning; '
+					+ 'any events sent between accept() and the response return were lost. '
+					+ 'Remove the early accept() — lopata accepts the shipped peer for you.',
+			)
+		}
 
 		return wsId
 	}
