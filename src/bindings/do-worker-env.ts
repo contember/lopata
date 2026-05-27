@@ -17,23 +17,11 @@ import type { BindingTarget, ParentSpanContext } from '../worker-thread/protocol
 import { RpcClient } from '../worker-thread/rpc-shared'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
-import { DurableObjectNamespaceImpl } from './durable-object'
+import { DurableObjectIdImpl, DurableObjectNamespaceImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { SqliteKVNamespace } from './kv'
 import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
-import { makeBindingProxy, NON_RPC_PROPS } from './rpc-stub'
-
-/**
- * JS internals that probe a value without using it as an RPC target:
- * `console.log`, `String(x)`, `JSON.stringify(x)`, `await x`, `nodejs.util.inspect`.
- * Returning `undefined` for these lets debugging/introspection probes through;
- * only a direct method/property *use* via a non-internal name triggers the throw.
- */
-const PROBE_PROPS = new Set<string | symbol>([
-	...NON_RPC_PROPS,
-	'then', // also in NON_RPC_PROPS; listed for clarity
-	Symbol.for('nodejs.util.inspect.custom'),
-])
+import { makeBindingProxy } from './rpc-stub'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -44,57 +32,69 @@ export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
 	return new RpcClient(req => post(req as DOMainMessage), getParent)
 }
 
-function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, unknown> {
-	const target: BindingTarget = { binding }
-	return makeBindingProxy({
-		fetch: async (input, init) => {
-			const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
-			const r = await rpc.callFetch(target, req)
-			// WebSocket upgrade responses don't round-trip through this channel
-			// yet — main's DO-channel `_dispatchRpcFetch` has no `decorateResponse`
-			// hook to adopt the host peer, and `rpc.makeResponse` doesn't reattach
-			// a guest peer on the worker side. Returning the body-less Response
-			// would lead to silently-broken `response.webSocket === undefined`;
-			// throw with a clear message instead.
-			if (r.status === 101 || r.webSocketId !== undefined) {
-				throw new Error(
-					`WebSocket upgrade responses are not yet supported through DO env binding "${binding}". `
-						+ `(The binding's fetch returned status 101 with a \`webSocket\`. Open the WS from the DO's own fetch handler, `
-						+ `or from a non-DO worker.)`,
-				)
-			}
-			return rpc.makeResponse(r)
+function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): Record<string, unknown> {
+	return makeBindingProxy(
+		{
+			fetch: async (input, init) => {
+				const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
+				const r = await rpc.callFetch(target, req)
+				// WebSocket upgrade responses don't round-trip through this channel
+				// yet — main's DO-channel `_dispatchRpcFetch` has no `decorateResponse`
+				// hook to adopt the host peer, and `rpc.makeResponse` doesn't reattach
+				// a guest peer on the worker side. Returning the body-less Response
+				// would lead to silently-broken `response.webSocket === undefined`;
+				// throw with a clear message instead.
+				if (r.status === 101 || r.webSocketId !== undefined) {
+					throw new Error(
+						`WebSocket upgrade responses are not yet supported through DO env binding "${target.binding}". `
+							+ `(The binding's fetch returned status 101 with a \`webSocket\`. Open the WS from the DO's own fetch handler, `
+							+ `or from a non-DO worker.)`,
+					)
+				}
+				return rpc.makeResponse(r)
+			},
+			call: (prop, args) => rpc.call(target, prop, args),
 		},
-		call: (prop, args) => rpc.call(target, prop, args),
-	})
+		extras,
+	)
+}
+
+function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, unknown> {
+	return makeRpcProxy({ binding }, rpc)
+}
+
+function makeDoEnvStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): Record<string, unknown> {
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, { id, name: id.name })
 }
 
 /**
- * Stub for cross-Durable-Object access from within a DO worker thread.
- *
- * Cross-DO RPC requires routing into a different worker's singleton namespace
- * (alarms, in-memory cache, hibernation WSs all live there). That plumbing is
- * not implemented; constructing a private namespace inside this worker would
- * silently duplicate state. Throw loud and eager instead — the moment user
- * code touches `this.env.OTHER_DO.anything`, fail with a clear message naming
- * the binding and class.
+ * DO namespace proxy for use inside a DO worker thread. ID factories run
+ * locally (deterministic); `.get()` produces a stub that ships
+ * `{ binding, instanceId, instanceName }` to main, where the namespace's
+ * `.get()` resolves the singleton executor for that id. Mirrors the
+ * user-worker `makeDONamespaceProxy` shape.
  */
-function makeCrossDoStub(bindingName: string, className: string): Record<string, unknown> {
-	const fail = (): never => {
-		throw new Error(
-			`Cross-Durable-Object calls in thread isolation are not supported. The binding "${bindingName}" resolves to DO class "${className}", which lives in a different Worker thread. (To use it, refactor to call via a Service Binding, or run lopata in in-process mode.)`,
-		)
+function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+	const stubs = new Map<string, unknown>()
+	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
+	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
+	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
+	const get = (id: DurableObjectIdImpl) => {
+		const key = id.toString()
+		let stub = stubs.get(key)
+		if (!stub) {
+			stub = makeDoEnvStubProxy(bindingName, key, id, rpc)
+			stubs.set(key, stub)
+		}
+		return stub
 	}
-	return new Proxy({} as Record<string, unknown>, {
-		get(_obj, prop) {
-			// Promise-protocol / debugging / inspection probes must not throw —
-			// `console.log(this.env.OTHER_DO)`, `await this.env.OTHER_DO`,
-			// `JSON.stringify(...)`, and `String(...)` all hit the proxy through
-			// one of these props without intending to *use* the binding.
-			if (PROBE_PROPS.has(prop)) return undefined
-			return fail()
-		},
-	})
+	return {
+		idFromName,
+		idFromString,
+		newUniqueId,
+		get,
+		getByName: (name: string) => get(idFromName(name)),
+	}
 }
 
 /**
@@ -109,7 +109,7 @@ export function buildWorkerEnv(
 	config: WranglerConfig,
 	dataDir: string,
 	rpc: RpcClient,
-	hostNamespaceName: string,
+	_hostNamespaceName: string,
 ): { db: Database; env: Record<string, unknown>; doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -138,16 +138,23 @@ export function buildWorkerEnv(
 		env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, dataDir)
 	}
 
-	// Durable Objects — every DO binding routes via main, including the binding
-	// that points at *this* worker's own DO class. Constructing a local
-	// namespace here (even for the host class) silently forks instance state:
-	// `this.env.SELF_DO.get(idFromName('A'))` would build a fresh in-process
-	// `DurableObjectStateImpl` parallel to main's executor for the same id,
-	// giving two singletons for one logical instance. The full fix requires
-	// extending env-RPC to carry `instanceId` + `instanceName` and routing
-	// through main's namespace; until that lands, throw loud and eager.
+	// Durable Objects — every DO binding (including the host class) routes via
+	// main's namespace over env-RPC. The stub ships `{ instanceId, instanceName }`
+	// in `BindingTarget`; main's `_resolveBinding` reconstructs the
+	// `DurableObjectId` and resolves the singleton executor, so both self-DO
+	// and cross-DO access reach the same instance state main owns.
+	const doBindingNames = new Set<string>()
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		env[doBinding.name] = makeCrossDoStub(doBinding.name, doBinding.class_name)
+		env[doBinding.name] = makeDoEnvNamespaceProxy(doBinding.name, rpc)
+		doBindingNames.add(doBinding.name)
+	}
+	// Container DOs whose binding isn't already declared under `durable_objects`
+	// (main synthesises a DO namespace for them); the worker env needs the
+	// matching proxy or the binding is missing at runtime.
+	for (const container of config.containers ?? []) {
+		const bindingName = container.name ?? container.class_name
+		if (doBindingNames.has(bindingName)) continue
+		env[bindingName] = makeDoEnvNamespaceProxy(bindingName, rpc)
 	}
 
 	// D1 databases

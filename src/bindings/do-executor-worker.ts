@@ -24,6 +24,7 @@ import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
+import { DurableObjectIdImpl } from './durable-object'
 import { CFWebSocket } from './websocket-pair'
 
 // --- Message protocol ---
@@ -602,13 +603,20 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	/**
-	 * Resolve a binding from main's env. DO-worker channel never carries
-	 * `instanceId` (env-binding access only — no DO-stub redirection).
+	 * Resolve a binding from main's env. Mirrors the user-worker channel:
+	 * when `target.instanceId` is set, route through the namespace's `.get()`
+	 * so DO-stub redirection works (cross-DO and self-DO access via env-RPC).
 	 */
 	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {
 		const binding = this._config.env[target.binding] as Record<string, unknown> | undefined
 		if (!binding) throw new Error(`Binding "${target.binding}" not found on main env`)
-		return binding
+		if (target.instanceId === undefined) return binding
+		const get = binding.get
+		if (typeof get !== 'function') {
+			throw new Error(`Binding "${target.binding}" cannot resolve instance "${target.instanceId}" — no .get() method`)
+		}
+		const doId = new DurableObjectIdImpl(target.instanceId, target.instanceName)
+		return (get as (id: DurableObjectIdImpl) => Record<string, unknown>).call(binding, doId)
 	}
 
 	private _postReply = (reply: RpcReply): void => {
