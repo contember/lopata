@@ -7,7 +7,7 @@ import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
-import { NON_RPC_PROPS } from './rpc-stub'
+import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 
 // --- SQL Storage Cursor ---
 
@@ -1267,7 +1267,7 @@ export class DurableObjectNamespaceImpl {
 				const rpcCallable = (...args: unknown[]) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
 					self._lastActivity.set(idStr, self.clock.now())
-					return executor.executeRpc(String(prop), args)
+					return executor.executeRpc(String(prop), args).then((r) => wrapRpcReturnValue(r, String(prop)))
 				}
 
 				// Make it thenable for property access: `await stub.myProp`
@@ -1277,7 +1277,7 @@ export class DurableObjectNamespaceImpl {
 				) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
 					self._lastActivity.set(idStr, self.clock.now())
-					const promise = executor.executeRpcGet(String(prop))
+					const promise = executor.executeRpcGet(String(prop)).then((r) => wrapRpcReturnValue(r, String(prop)))
 					return promise.then(onFulfilled, onRejected)
 				}
 
