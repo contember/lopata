@@ -134,11 +134,13 @@ export class ServiceBinding {
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
-		this._checkSubrequestLimit()
 		const url = input instanceof URL ? input.toString() : input
 		const request = typeof url === 'string' ? new Request(url, init) : url
 
+		// Resolve first so a missing target throws the real error instead of
+		// burning a slot in the per-request subrequest budget on every failed call.
 		const resolved = this._resolve()
+		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
 			return resolved.executor.executeFetch(request, this._props)
 		}
@@ -201,9 +203,11 @@ export class ServiceBinding {
 				// If called as a function → RPC method call (always returns Promise)
 				// If awaited → RPC property read (returns Promise of the property value)
 				const rpcCallable = (...args: unknown[]) => {
-					self._checkSubrequestLimit()
 					warnInvalidRpcArgs(args, prop)
+					// Resolve first so a missing target throws the real error before
+					// the budget moves.
 					const resolved = self._resolve()
+					self._checkSubrequestLimit()
 					if (resolved.kind === 'thread') {
 						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
 							.then((r) => wrapRpcReturnValue(r, prop))
@@ -228,8 +232,9 @@ export class ServiceBinding {
 					onFulfilled?: ((value: unknown) => unknown) | null,
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
-					self._checkSubrequestLimit()
+					// Resolve before incrementing so a missing target doesn't burn budget.
 					const resolved = self._resolve()
+					self._checkSubrequestLimit()
 					if (resolved.kind === 'thread') {
 						const executor = resolved.executor
 						const entrypoint = self._entrypoint
