@@ -117,6 +117,13 @@ async function initRuntime(init: WorkerInitConfig) {
 	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built
 
+	// Make env visible to top-level `import { env } from 'cloudflare:workers'`
+	// in the user module — that import resolves to `globalEnv` from `src/env.ts`,
+	// which is empty until we publish it. Must happen BEFORE the dynamic import
+	// below.
+	const { setGlobalEnv } = await import('../env')
+	setGlobalEnv(env)
+
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
 

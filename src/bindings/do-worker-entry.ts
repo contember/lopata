@@ -79,6 +79,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc, workerConfig.namespaceName, envWsBridge)
 
+	// Publish env to `globalEnv` so top-level `import { env } from
+	// 'cloudflare:workers'` in the user module sees this DO worker's env (not
+	// an empty default). Must happen BEFORE the dynamic import below.
+	const { setGlobalEnv } = await import('../env')
+	setGlobalEnv(env)
+
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
 
