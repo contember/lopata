@@ -4,7 +4,7 @@
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import('./src/index')
-		durableNamespaces: 'Counter' | 'ErrorBridge' | 'SqlNotes'
+		durableNamespaces: 'Counter' | 'ErrorBridge' | 'SqlNotes' | 'HibernatingChat'
 	}
 	interface Env {
 		KV: KVNamespace
@@ -12,6 +12,7 @@ declare namespace Cloudflare {
 		COUNTER: DurableObjectNamespace<import('./src/index').Counter>
 		ERROR_BRIDGE: DurableObjectNamespace<import('./src/index').ErrorBridge>
 		SQL_NOTES: DurableObjectNamespace<import('./src/index').SqlNotes>
+		HIBERNATING_CHAT: DurableObjectNamespace<import('./src/index').HibernatingChat>
 		ECHO: Service
 		FAILING: Service
 		MY_CONTAINER: DurableObjectNamespace<import('./src/index').MyContainer>
