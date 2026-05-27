@@ -21,7 +21,19 @@ import { DurableObjectNamespaceImpl } from './durable-object'
 import { SqliteKVNamespace } from './kv'
 import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
-import { makeBindingProxy } from './rpc-stub'
+import { makeBindingProxy, NON_RPC_PROPS } from './rpc-stub'
+
+/**
+ * JS internals that probe a value without using it as an RPC target:
+ * `console.log`, `String(x)`, `JSON.stringify(x)`, `await x`, `nodejs.util.inspect`.
+ * Returning `undefined` for these lets debugging/introspection probes through;
+ * only a direct method/property *use* via a non-internal name triggers the throw.
+ */
+const PROBE_PROPS = new Set<string | symbol>([
+	...NON_RPC_PROPS,
+	'then', // also in NON_RPC_PROPS; listed for clarity
+	Symbol.for('nodejs.util.inspect.custom'),
+])
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -61,7 +73,12 @@ function makeCrossDoStub(bindingName: string, className: string): Record<string,
 		)
 	}
 	return new Proxy({} as Record<string, unknown>, {
-		get(_obj, _prop) {
+		get(_obj, prop) {
+			// Promise-protocol / debugging / inspection probes must not throw —
+			// `console.log(this.env.OTHER_DO)`, `await this.env.OTHER_DO`,
+			// `JSON.stringify(...)`, and `String(...)` all hit the proxy through
+			// one of these props without intending to *use* the binding.
+			if (PROBE_PROPS.has(prop)) return undefined
 			return fail()
 		},
 	})
