@@ -26,8 +26,7 @@ describe('GenerationManager.reload()', () => {
 		const manager = new GenerationManager(config, '/tmp', {})
 
 		let call = 0
-		const mockGen = { id: 1 } as unknown as import('../src/generation').Generation
-		// Override the private `_doReload` to control success/failure deterministically.
+		const mockGen = { id: 1 } as unknown as import('../src/generation').Generation // Override the private `_doReload` to control success/failure deterministically.
 		;(manager as unknown as { _doReload: () => Promise<unknown> })._doReload = async () => {
 			call++
 			if (call === 1) {

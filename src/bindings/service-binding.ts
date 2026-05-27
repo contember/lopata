@@ -243,8 +243,7 @@ export class ServiceBinding {
 							if (result.kind === 'function') {
 								// Property is a function on the entrypoint — hand back a function-stub
 								// that RPCs through to the worker thread on each call.
-								const remoteFn = (...callArgs: unknown[]) =>
-									executor.executeEntrypointRpc(entrypoint, prop, callArgs, props)
+								const remoteFn = (...callArgs: unknown[]) => executor.executeEntrypointRpc(entrypoint, prop, callArgs, props)
 								return createRpcFunctionStub(remoteFn, undefined)
 							}
 							return wrapRpcReturnValue(result.value, prop)

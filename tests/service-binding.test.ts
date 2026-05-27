@@ -472,9 +472,7 @@ describe('Service Binding', () => {
 			await expect(fetch('http://localhost/2')).rejects.toThrow('not wired')
 			await expect(fetch('http://localhost/3')).rejects.toThrow('not wired')
 
-			expect(proxy._subrequestCount).toBe(0)
-
-			// After wiring, the full budget is still available.
+			expect(proxy._subrequestCount).toBe(0) // After wiring, the full budget is still available.
 			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
 			await fetch('http://localhost/ok-1')
 			await fetch('http://localhost/ok-2')

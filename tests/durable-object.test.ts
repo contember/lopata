@@ -326,7 +326,7 @@ describe('DurableObjectNamespace', () => {
 		expect(await stub2.getCount()).toBe(1)
 	})
 
-	test('named id then nameless idFromString(sameHash) keeps each stub\'s id.name', () => {
+	test("named id then nameless idFromString(sameHash) keeps each stub's id.name", () => {
 		const namedId = ns.idFromName('alpha')
 		const namedStub = ns.get(namedId) as { id: { name?: string } }
 		expect(namedStub.id.name).toBe('alpha')
@@ -412,7 +412,7 @@ describe('DurableObjectNamespace', () => {
 			expect(ns.hasAlarmHandler()).toBe(false)
 		})
 
-		test('thread mode: _setExternalClass clears the previous generation\'s hint', () => {
+		test("thread mode: _setExternalClass clears the previous generation's hint", () => {
 			const ns = new DurableObjectNamespaceImpl(db, 'ThreadDO', undefined, { evictionTimeoutMs: 0 })
 			ns._setExternalClass('ThreadDO', {})
 			ns._setAlarmHandlerHint(true)
