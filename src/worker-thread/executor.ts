@@ -23,10 +23,10 @@ import type {
 	WorkerCommand,
 	WorkerMessage,
 } from './protocol'
-import { deserializeError, serializeError } from './protocol'
+import { deserializeError } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
-import { OutboundStreamRegistry, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
@@ -333,27 +333,21 @@ export class WorkerThreadExecutor {
 	}
 
 	private _pumpTopRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {
-		const reader = body.getReader()
-		this._topRequestStreams.register(streamId, reader)
-		void (async () => {
-			try {
-				while (true) {
-					const { done, value } = await reader.read()
-					if (this._disposed) return
-					if (done) break
-					if (value && value.byteLength > 0) {
-						this._send({ type: 'req-stream-chunk', streamId, chunk: value })
-					}
-				}
-				if (this._disposed) return
-				this._send({ type: 'req-stream-end', streamId })
-			} catch (e) {
-				if (this._disposed) return
-				this._send({ type: 'req-stream-error', streamId, error: serializeError(e) })
-			} finally {
-				this._topRequestStreams.complete(streamId)
-			}
-		})()
+		type Chunk = Extract<WorkerCommand, { type: 'req-stream-chunk' }>
+		type End = Extract<WorkerCommand, { type: 'req-stream-end' }>
+		type Err = Extract<WorkerCommand, { type: 'req-stream-error' }>
+		pumpStream<Chunk, End, Err>(
+			streamId,
+			body,
+			this._topRequestStreams,
+			cmd => this._send(cmd),
+			{
+				chunk: (id, chunk) => ({ type: 'req-stream-chunk', streamId: id, chunk }),
+				end: (id) => ({ type: 'req-stream-end', streamId: id }),
+				error: (id, error) => ({ type: 'req-stream-error', streamId: id, error }),
+			},
+			() => !this._disposed,
+		)
 	}
 
 	/** Resolves when the worker has imported the user module successfully. */

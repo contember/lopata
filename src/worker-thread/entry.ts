@@ -13,7 +13,7 @@ import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
 import { deserializeRequest } from './serialize'
-import { OutboundStreamRegistry, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
@@ -60,26 +60,19 @@ function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>)
 	return base
 }
 
+type StreamChunkMsg = Extract<WorkerMessage, { type: 'stream-chunk' }>
+type StreamEndMsg = Extract<WorkerMessage, { type: 'stream-end' }>
+type StreamErrorMsg = Extract<WorkerMessage, { type: 'stream-error' }>
+
 /** Pump a response body to main as `stream-chunk`s, terminated by `stream-end`
  *  or `stream-error`. Started only after `fetch-result` is posted so main has
  *  the `streamId` registered before chunks arrive. */
 function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): void {
-	const reader = body.getReader()
-	responseStreams.register(streamId, reader)
-	void (async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read()
-				if (done) break
-				if (value && value.byteLength > 0) post({ type: 'stream-chunk', id: streamId, chunk: value })
-			}
-			post({ type: 'stream-end', id: streamId })
-		} catch (e) {
-			post({ type: 'stream-error', id: streamId, error: serializeError(e) })
-		} finally {
-			responseStreams.complete(streamId)
-		}
-	})()
+	pumpStream<StreamChunkMsg, StreamEndMsg, StreamErrorMsg>(streamId, body, responseStreams, post, {
+		chunk: (id, chunk) => ({ type: 'stream-chunk', id, chunk }),
+		end: (id) => ({ type: 'stream-end', id }),
+		error: (id, error) => ({ type: 'stream-error', id, error }),
+	})
 }
 
 self.onmessage = async (event: MessageEvent<WorkerCommand>) => {

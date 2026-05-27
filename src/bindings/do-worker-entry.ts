@@ -5,8 +5,8 @@
  * postMessage from the main thread (handshake), then initializes.
  */
 
-import { deserializeError, serializeError } from '../worker-thread/protocol'
-import { OutboundStreamRegistry, StreamReceiver } from '../worker-thread/stream-shared'
+import { deserializeError } from '../worker-thread/protocol'
+import { OutboundStreamRegistry, pumpStream, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
@@ -145,24 +145,20 @@ async function initWorker(workerConfig: WorkerConfig) {
 	})
 
 	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>): void {
-		const reader = body.getReader()
-		fetchStreams.register(streamId, reader)
-		void (async () => {
-			try {
-				while (true) {
-					const { done, value } = await reader.read()
-					if (done) break
-					if (value && value.byteLength > 0) {
-						postMessage({ type: 'do-stream-chunk', streamId, chunk: value } satisfies DOMainMessage)
-					}
-				}
-				postMessage({ type: 'do-stream-end', streamId } satisfies DOMainMessage)
-			} catch (e) {
-				postMessage({ type: 'do-stream-error', streamId, error: serializeError(e) } satisfies DOMainMessage)
-			} finally {
-				fetchStreams.complete(streamId)
-			}
-		})()
+		type Chunk = Extract<DOMainMessage, { type: 'do-stream-chunk' }>
+		type End = Extract<DOMainMessage, { type: 'do-stream-end' }>
+		type Err = Extract<DOMainMessage, { type: 'do-stream-error' }>
+		pumpStream<Chunk, End, Err>(
+			streamId,
+			body,
+			fetchStreams,
+			msg => postMessage(msg),
+			{
+				chunk: (id, chunk) => ({ type: 'do-stream-chunk', streamId: id, chunk }),
+				end: (id) => ({ type: 'do-stream-end', streamId: id }),
+				error: (id, error) => ({ type: 'do-stream-error', streamId: id, error }),
+			},
+		)
 	}
 
 	// Wire alarm callback

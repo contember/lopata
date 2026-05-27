@@ -36,7 +36,7 @@ import type {
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
 import { deserializeRequest, serializeRequestShell } from './serialize'
-import { OutboundStreamRegistry, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
 
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 
@@ -170,27 +170,18 @@ function pumpRpcFetchBody(
 	hooks: RpcDispatchHooks,
 	streams: OutboundStreamRegistry,
 ): void {
-	const reader = body.getReader()
-	streams.register(streamId, reader)
-	void (async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read()
-				if (!hooks.isAlive()) return
-				if (done) break
-				if (value && value.byteLength > 0) {
-					hooks.post({ type: 'rpc-stream-chunk', streamId, chunk: value } satisfies RpcStreamChunk)
-				}
-			}
-			if (!hooks.isAlive()) return
-			hooks.post({ type: 'rpc-stream-end', streamId } satisfies RpcStreamEnd)
-		} catch (e) {
-			if (!hooks.isAlive()) return
-			hooks.post({ type: 'rpc-stream-error', streamId, error: serializeError(e) } satisfies RpcStreamError)
-		} finally {
-			streams.complete(streamId)
-		}
-	})()
+	pumpStream<RpcStreamChunk, RpcStreamEnd, RpcStreamError>(
+		streamId,
+		body,
+		streams,
+		hooks.post,
+		{
+			chunk: (id, chunk) => ({ type: 'rpc-stream-chunk', streamId: id, chunk }),
+			end: (id) => ({ type: 'rpc-stream-end', streamId: id }),
+			error: (id, error) => ({ type: 'rpc-stream-error', streamId: id, error }),
+		},
+		hooks.isAlive,
+	)
 }
 
 interface PendingCall {
@@ -219,24 +210,17 @@ function pumpRpcRequestBody(
 	post: RpcClientPost,
 	requestStreams: OutboundStreamRegistry,
 ): void {
-	const reader = body.getReader()
-	requestStreams.register(streamId, reader)
-	void (async () => {
-		try {
-			while (true) {
-				const { done, value } = await reader.read()
-				if (done) break
-				if (value && value.byteLength > 0) {
-					post({ type: 'rpc-req-stream-chunk', streamId, chunk: value } satisfies RpcReqStreamChunk)
-				}
-			}
-			post({ type: 'rpc-req-stream-end', streamId } satisfies RpcReqStreamEnd)
-		} catch (e) {
-			post({ type: 'rpc-req-stream-error', streamId, error: serializeError(e) } satisfies RpcReqStreamError)
-		} finally {
-			requestStreams.complete(streamId)
-		}
-	})()
+	pumpStream<RpcReqStreamChunk, RpcReqStreamEnd, RpcReqStreamError>(
+		streamId,
+		body,
+		requestStreams,
+		post,
+		{
+			chunk: (id, chunk) => ({ type: 'rpc-req-stream-chunk', streamId: id, chunk }),
+			end: (id) => ({ type: 'rpc-req-stream-end', streamId: id }),
+			error: (id, error) => ({ type: 'rpc-req-stream-error', streamId: id, error }),
+		},
+	)
 }
 
 /**

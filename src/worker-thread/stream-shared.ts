@@ -7,8 +7,14 @@
  * stop the reader. `StreamReceiver` reconstructs a `ReadableStream` on the
  * receiving end, buffering chunks that race ahead of `start()` (the controller
  * only registers when the consumer pulls the body, which on Bun lands after
- * the first chunk message in some interleavings).
+ * the first chunk message in some interleavings). `pumpStream` is the
+ * symmetric sender-side helper: it consumes a `ReadableStream`, registers the
+ * source reader so an inbound cancel can stop it, and posts channel-specific
+ * envelope messages until the body completes or errors.
  */
+
+import type { SerializedError } from './protocol'
+import { serializeError } from './protocol'
 
 export class OutboundStreamRegistry {
 	private _nextStreamId = 1
@@ -138,3 +144,53 @@ type StreamEvent =
 	| { kind: 'chunk'; chunk: Uint8Array }
 	| { kind: 'end' }
 	| { kind: 'error'; error: Error }
+
+/**
+ * Channel-specific envelope builders. Each callsite supplies its own message
+ * shapes (e.g. `{ type: 'stream-chunk', id, chunk }` vs `{ type:
+ * 'do-stream-chunk', streamId, chunk }`); the pump loop itself is identical.
+ */
+export interface PumpEnvelopes<TChunk, TEnd, TError> {
+	chunk: (streamId: number, chunk: Uint8Array) => TChunk
+	end: (streamId: number) => TEnd
+	error: (streamId: number, error: SerializedError) => TError
+}
+
+/**
+ * Read a body to completion and post channel-specific envelopes for each
+ * chunk + the terminator. The reader is registered with `registry` so an
+ * inbound cancel can stop the source; `complete()` runs on every exit path.
+ *
+ * `isAlive` is optional — worker-side callers omit it (worker termination
+ * kills the loop). Main-side callers pass a closure over their disposal flag
+ * so a posted message after teardown is dropped at the source (matches the
+ * pre-refactor main-side pumps).
+ */
+export function pumpStream<TChunk, TEnd, TError>(
+	streamId: number,
+	body: ReadableStream<Uint8Array>,
+	registry: OutboundStreamRegistry,
+	post: (msg: TChunk | TEnd | TError) => void,
+	envelopes: PumpEnvelopes<TChunk, TEnd, TError>,
+	isAlive?: () => boolean,
+): void {
+	const reader = body.getReader()
+	registry.register(streamId, reader)
+	void (async () => {
+		try {
+			while (true) {
+				const { done, value } = await reader.read()
+				if (isAlive && !isAlive()) return
+				if (done) break
+				if (value && value.byteLength > 0) post(envelopes.chunk(streamId, value))
+			}
+			if (isAlive && !isAlive()) return
+			post(envelopes.end(streamId))
+		} catch (e) {
+			if (isAlive && !isAlive()) return
+			post(envelopes.error(streamId, serializeError(e)))
+		} finally {
+			registry.complete(streamId)
+		}
+	})()
+}

@@ -19,7 +19,7 @@ import type {
 } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
 import { dispatchRpcCall, dispatchRpcFetch } from '../worker-thread/rpc-shared'
-import { OutboundStreamRegistry, StreamReceiver } from '../worker-thread/stream-shared'
+import { OutboundStreamRegistry, pumpStream, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
@@ -549,30 +549,18 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	private _pumpFetchRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {
-		const reader = body.getReader()
-		this._fetchRequestStreams.register(streamId, reader)
-		void (async () => {
-			try {
-				while (true) {
-					const { done, value } = await reader.read()
-					if (this._disposed || !this._worker) return
-					if (done) break
-					if (value && value.byteLength > 0) {
-						this._worker.postMessage({ type: 'do-req-stream-chunk', streamId, chunk: value } satisfies DOWorkerMessage)
-					}
-				}
-				if (this._disposed || !this._worker) return
-				this._worker.postMessage({ type: 'do-req-stream-end', streamId } satisfies DOWorkerMessage)
-			} catch (e) {
-				if (this._disposed || !this._worker) return
-				const err = e instanceof Error ? e : new Error(String(e))
-				this._worker.postMessage(
-					{ type: 'do-req-stream-error', streamId, error: { message: err.message, stack: err.stack, name: err.name } } satisfies DOWorkerMessage,
-				)
-			} finally {
-				this._fetchRequestStreams.complete(streamId)
-			}
-		})()
+		pumpStream<DoReqStreamChunk, DoReqStreamEnd, DoReqStreamError>(
+			streamId,
+			body,
+			this._fetchRequestStreams,
+			msg => this._worker?.postMessage(msg satisfies DOWorkerMessage),
+			{
+				chunk: (id, chunk) => ({ type: 'do-req-stream-chunk', streamId: id, chunk }),
+				end: (id) => ({ type: 'do-req-stream-end', streamId: id }),
+				error: (id, error) => ({ type: 'do-req-stream-error', streamId: id, error }),
+			},
+			() => !this._disposed,
+		)
 	}
 
 	/**
