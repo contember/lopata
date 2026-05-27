@@ -108,7 +108,13 @@ export class Generation {
 					response = await this.threadExecutor.executeFetch(request)
 				} else {
 					response = await this.threadExecutor.executeFetch(request)
-					if (response.status === 404) return assets.fetch(request)
+					if (response.status === 404) {
+						// Drop the worker's streaming body so the source pump on the
+						// other side stops — we're discarding this response in favour
+						// of the assets fallback.
+						response.body?.cancel().catch(() => {})
+						return assets.fetch(request)
+					}
 				}
 			}
 			const ws = (response as ResponseWithWebSocket).webSocket
