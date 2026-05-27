@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import {
 	_activeContainersSnapshot,
+	_selectOrphanNames,
 	containerLabels,
 	LOPATA_LABEL_KEY,
 	LOPATA_LABEL_VALUE,
@@ -43,6 +44,47 @@ describe('containerLabels()', () => {
 		const labels = containerLabels()
 		expect(labels[LOPATA_LABEL_KEY]).toBe(LOPATA_LABEL_VALUE)
 		expect(labels[LOPATA_PID_LABEL_KEY]).toBe(String(process.pid))
+	})
+})
+
+describe('_selectOrphanNames (orphan filter)', () => {
+	// `alive` is always called with pid > 0 — the caller guards against ≤0.
+	const aliveOnly = (pids: number[]) => (pid: number) => pids.includes(pid)
+
+	test('reaps container labeled lopata.pid=0 even when alive() would lie', () => {
+		// On POSIX `process.kill(0, 0)` signals the whole process group and
+		// succeeds — so a buggy `alive(0) === true` would keep the orphan
+		// alive forever. The filter must short-circuit pid ≤ 0 BEFORE calling
+		// `alive`, so this test passes an `alive` that returns true for
+		// everything and asserts the pid=0 row is still reaped.
+		const listOut = 'orphan-zero|0\n'
+		const alive = () => true
+		expect(_selectOrphanNames(listOut, alive)).toEqual(['orphan-zero'])
+	})
+
+	test('reaps containers with missing / unparseable pid labels', () => {
+		const listOut = ['no-pid|', 'garbage-pid|not-a-number', 'lone-name'].join('\n')
+		const orphans = _selectOrphanNames(listOut, aliveOnly([]))
+		expect(orphans).toEqual(['no-pid', 'garbage-pid', 'lone-name'])
+	})
+
+	test('keeps containers whose owner pid is alive', () => {
+		const listOut = ['alive-1|1111', 'dead-1|9999'].join('\n')
+		const orphans = _selectOrphanNames(listOut, aliveOnly([1111]))
+		expect(orphans).toEqual(['dead-1'])
+	})
+
+	test('treats negative pid labels as orphans', () => {
+		// Negative pid is invalid; alive() should not even be called for it.
+		const listOut = 'weird-neg|-1\n'
+		const alive = () => true
+		expect(_selectOrphanNames(listOut, alive)).toEqual(['weird-neg'])
+	})
+
+	test('ignores blank lines and lines without a name', () => {
+		const listOut = '\n\n|orphan-without-name\nrealname|1234\n'
+		const orphans = _selectOrphanNames(listOut, aliveOnly([1234]))
+		expect(orphans).toEqual([])
 	})
 })
 

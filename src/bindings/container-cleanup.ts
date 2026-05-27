@@ -84,6 +84,18 @@ export async function reapOrphanContainers(): Promise<number> {
 		return 0
 	}
 
+	const orphans = _selectOrphanNames(listOut, isProcessAlive)
+	if (orphans.length === 0) return 0
+	await $`docker rm -f ${orphans}`.quiet().nothrow()
+	return orphans.length
+}
+
+/**
+ * @internal Pure-function core of {@link reapOrphanContainers}, exported for
+ * tests. Parses the `docker ps` `{{.Names}}|{{.Label ...}}` table and returns
+ * the container names whose owner pid is unknown, unparseable, or dead.
+ */
+export function _selectOrphanNames(listOut: string, alive: (pid: number) => boolean): string[] {
 	const orphans: string[] = []
 	for (const line of listOut.split('\n')) {
 		if (!line) continue
@@ -92,17 +104,18 @@ export async function reapOrphanContainers(): Promise<number> {
 		const pidStr = sep === -1 ? '' : line.slice(sep + 1)
 		if (!name) continue
 		const pid = pidStr ? Number.parseInt(pidStr, 10) : Number.NaN
-		// Live pid → another lopata owns it. Missing/unparseable/dead → orphan.
-		if (Number.isFinite(pid) && isProcessAlive(pid)) continue
+		// Live pid → another lopata owns it. Missing/unparseable/dead/≤0 → orphan.
+		if (Number.isFinite(pid) && pid > 0 && alive(pid)) continue
 		orphans.push(name)
 	}
-
-	if (orphans.length === 0) return 0
-	await $`docker rm -f ${orphans}`.quiet().nothrow()
-	return orphans.length
+	return orphans
 }
 
 function isProcessAlive(pid: number): boolean {
+	// `process.kill(0, 0)` on POSIX signals the whole process group, which
+	// succeeds whenever the caller has a group — so pid 0 must NOT be treated
+	// as "alive". Negative pids are invalid; treat both as dead.
+	if (pid <= 0) return false
 	try {
 		process.kill(pid, 0)
 		return true
