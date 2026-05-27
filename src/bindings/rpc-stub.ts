@@ -32,7 +32,18 @@ export const NON_RPC_PROPS = new Set<string | symbol>([
 	Symbol.toStringTag,
 	Symbol.iterator,
 	Symbol.asyncIterator,
+	// `using` / `await using` declarations. The lookup happens on the proxy
+	// itself; without a special-case, Symbol-keyed names cross the worker
+	// boundary as RPC method names and crash with `DataCloneError`. ECMA-262
+	// requires the looked-up value to be callable when the resource is an
+	// object, so every proxy that exposes a `using`-disposable shape must
+	// return `noopDispose` for these symbols *before* hitting this set.
+	Symbol.dispose,
+	Symbol.asyncDispose,
 ])
+
+/** No-op disposer shared by every proxy that needs to satisfy `using` declarations. */
+export const noopDispose: () => void = () => {}
 
 /**
  * Build a Proxy that exposes `.fetch` (HTTP round-trip) and turns any other
@@ -56,6 +67,7 @@ export function makeBindingProxy(
 	const methodCache = new Map<string | symbol, unknown>()
 	return new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop) {
+			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
 			if (prop in extras) return extras[prop]
 			const cached = methodCache.get(prop)
@@ -77,7 +89,7 @@ const stubCache = new WeakMap<object, object>()
  * - Method calls: validate args → call → wrap return value
  * - Property access: thenable pattern, wraps returned RpcTarget/function values
  * - Filters `_`-prefixed properties (returns undefined)
- * - Symbol.dispose → no-op
+ * - Symbol.dispose / Symbol.asyncDispose → undefined (spec-defined no-op for `using`)
  * - dup() → new stub wrapping same target
  */
 export function createRpcStub(target: object): object {
@@ -86,12 +98,8 @@ export function createRpcStub(target: object): object {
 
 	const stub = new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop: string | symbol) {
+			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
-
-			// Symbol.dispose — no-op for `using` keyword compatibility
-			if (prop === Symbol.dispose) {
-				return () => {}
-			}
 
 			if (typeof prop === 'symbol') return undefined
 
@@ -154,8 +162,8 @@ export function createRpcStub(target: object): object {
 function createRpcStubUncached(target: object): object {
 	return new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop: string | symbol) {
+			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
-			if (prop === Symbol.dispose) return () => {}
 			if (typeof prop === 'symbol') return undefined
 			if (typeof prop === 'string' && prop.startsWith('_')) return undefined
 			if (prop === 'dup') return () => createRpcStubUncached(target)
@@ -204,7 +212,13 @@ export function createRpcFunctionStub(fn: Function, thisArg?: object): Function 
 	}
 
 	Object.defineProperty(stub, Symbol.dispose, {
-		value: () => {},
+		value: noopDispose,
+		writable: false,
+		configurable: true,
+	})
+
+	Object.defineProperty(stub, Symbol.asyncDispose, {
+		value: noopDispose,
 		writable: false,
 		configurable: true,
 	})
@@ -234,8 +248,7 @@ export function createRpcPromise(promise: Promise<unknown>): Promise<unknown> {
 				return method.bind(target)
 			}
 
-			// Symbol.dispose — no-op
-			if (prop === Symbol.dispose) return () => {}
+			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 
 			// dup() — new RpcPromise wrapping same promise
 			if (prop === 'dup') return () => createRpcPromise(promise)
