@@ -1069,9 +1069,17 @@ export class DurableObjectNamespaceImpl {
 			if (executor.activeWebSocketCount() === 0) {
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
 			}
 		}
-		this._lastActivity.clear()
+		// If any WS-holding executor survived, keep its _lastActivity entry and
+		// restart the eviction timer so it eventually gets reaped once the WS
+		// half-closes (no FIN). Otherwise the executor would linger forever.
+		if (this._executors.size > 0 && this._evictionTimeoutMs > 0) {
+			this._evictionTimer = setInterval(() => this._evictIdle(), 30_000)
+		} else {
+			this._lastActivity.clear()
+		}
 	}
 
 	/** @internal Get a raw instance for testing (no proxy) */
