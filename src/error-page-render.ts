@@ -150,6 +150,27 @@ function extractBindings(config: WranglerConfig): { name: string; type: string }
 
 // ─── Public API ──────────────────────────────────────────────────────────
 
+/**
+ * Stitch a captured caller stack onto a short async error so dev-time stacks
+ * show where the failing call originated. Mutates `err.stack` in place; no-op
+ * if either side is missing, already stitched, or `err.stack` looks deep.
+ */
+export function stitchAsyncStack(err: Error, callerError: Error | null): void {
+	if (!callerError) return
+	if (!err.stack || !callerError.stack) return
+	if (err.stack.includes('--- async ---')) return
+
+	const errFrames = err.stack.split('\n').filter(l => l.trim().startsWith('at '))
+	const looksShort = errFrames.length <= 5 || err.stack.includes('processTicksAndRejections')
+	if (!looksShort) return
+
+	const callerLines = callerError.stack.split('\n').slice(1)
+	const filtered = callerLines.filter(l => !l.includes('/lopata/src/'))
+	if (filtered.length === 0) return
+
+	err.stack += '\n    --- async ---\n' + filtered.join('\n')
+}
+
 export async function renderErrorPage(
 	error: unknown,
 	request: Request,

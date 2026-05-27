@@ -5,6 +5,7 @@ import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pa
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase } from './db'
+import { renderErrorPage, stitchAsyncStack } from './error-page-render'
 import { persistError, setSpanAttribute, startSpan } from './tracing/span'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
@@ -93,28 +94,35 @@ export class Generation {
 	}
 
 	private async _dispatchFetch(request: Request, server: Server<unknown>, url: URL): Promise<Response | undefined> {
-		const assets = this.registry.staticAssets
-		let response: Response
-		if (!assets || this.config.assets?.binding) {
-			response = await this.threadExecutor.executeFetch(request)
-		} else {
-			const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-			if (!workerFirst) {
-				const assetResponse = await assets.fetch(request)
-				if (assetResponse.status !== 404) return assetResponse
+		const callerStack = new Error('')
+		try {
+			const assets = this.registry.staticAssets
+			let response: Response
+			if (!assets || this.config.assets?.binding) {
 				response = await this.threadExecutor.executeFetch(request)
 			} else {
-				response = await this.threadExecutor.executeFetch(request)
-				if (response.status === 404) return assets.fetch(request)
+				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
+				if (!workerFirst) {
+					const assetResponse = await assets.fetch(request)
+					if (assetResponse.status !== 404) return assetResponse
+					response = await this.threadExecutor.executeFetch(request)
+				} else {
+					response = await this.threadExecutor.executeFetch(request)
+					if (response.status === 404) return assets.fetch(request)
+				}
 			}
+			const ws = (response as ResponseWithWebSocket).webSocket
+			if (response.status === 101 && ws instanceof CFWebSocket) {
+				const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
+				if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
+				return undefined
+			}
+			return response
+		} catch (err) {
+			if (err instanceof Error) stitchAsyncStack(err, callerStack)
+			console.error(`[lopata] Request error:\n${err instanceof Error ? err.stack : String(err)}`)
+			return renderErrorPage(err, request, this.env, this.config, this.workerName)
 		}
-		const ws = (response as ResponseWithWebSocket).webSocket
-		if (response.status === 101 && ws instanceof CFWebSocket) {
-			const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
-			if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
-			return undefined
-		}
-		return response
 	}
 
 	/** Handle manual /cdn-cgi/handler/scheduled trigger */

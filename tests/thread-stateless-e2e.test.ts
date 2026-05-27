@@ -75,4 +75,11 @@ describe('Stateless bindings (worker-thread runtime)', () => {
 		expect(res.status).toBe(200)
 		expect((await res.text()).trim()).toBe('static-asset-content')
 	})
+
+	test('user thrown error surfaces in the rendered error page (not a generic 500)', async () => {
+		const res = await fetch(`${base}/throw`)
+		expect(res.status).toBe(500)
+		const body = await res.text()
+		expect(body).toMatch(/user-fetch-kaboom/)
+	})
 })

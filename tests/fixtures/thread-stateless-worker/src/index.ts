@@ -41,6 +41,10 @@ export default {
 			return new Response(hit ? await hit.text() : 'missing')
 		}
 
+		if (url.pathname === '/throw') {
+			throw new Error('user-fetch-kaboom')
+		}
+
 		return new Response('not found', { status: 404 })
 	},
 }
