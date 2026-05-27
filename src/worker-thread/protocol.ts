@@ -270,6 +270,18 @@ export type WorkerCommand =
 		props?: Record<string, unknown>
 		parent?: ParentSpanContext
 	}
+	// RPC property read on the worker's entrypoint (`await env.SVC.someProp`).
+	// Mirrors `entrypoint-rpc` but reads the property instead of invoking it —
+	// the worker reports back whether the resolved member is a function (so
+	// main can hand back a function-stub that RPCs through) or a plain value.
+	| {
+		type: 'entrypoint-rpc-get'
+		id: number
+		entrypoint: string | undefined
+		property: string
+		props?: Record<string, unknown>
+		parent?: ParentSpanContext
+	}
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
@@ -309,6 +321,9 @@ export type WorkerMessage =
 	| { type: 'email-error'; id: number; error: SerializedError; noHandler?: boolean }
 	| { type: 'entrypoint-rpc-result'; id: number; value: unknown }
 	| { type: 'entrypoint-rpc-error'; id: number; error: SerializedError }
+	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'value'; value: unknown }
+	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'function' }
+	| { type: 'entrypoint-rpc-get-error'; id: number; error: SerializedError }
 	| RpcCallRequest
 	| RpcFetchRequest
 	| RpcStreamCancel

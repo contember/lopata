@@ -229,17 +229,34 @@ export class ServiceBinding {
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
 					self._checkSubrequestLimit()
-					const promise = new Promise<unknown>((resolve, reject) => {
+					const resolved = self._resolve()
+					if (resolved.kind === 'thread') {
+						const executor = resolved.executor
+						const entrypoint = self._entrypoint
+						const props = self._props
+						const promise = executor.executeEntrypointPropertyGet(entrypoint, prop, props).then((result) => {
+							if (result.kind === 'function') {
+								// Property is a function on the entrypoint — hand back a function-stub
+								// that RPCs through to the worker thread on each call.
+								const remoteFn = (...callArgs: unknown[]) =>
+									executor.executeEntrypointRpc(entrypoint, prop, callArgs, props)
+								return createRpcFunctionStub(remoteFn, undefined)
+							}
+							return wrapRpcReturnValue(result.value, prop)
+						})
+						return promise.then(onFulfilled, onRejected)
+					}
+					const promise = new Promise<unknown>((resolveP, rejectP) => {
 						try {
 							const target = self._getTarget()
 							const member = target[prop]
 							if (typeof member === 'function') {
-								resolve(createRpcFunctionStub(member as Function, target))
+								resolveP(createRpcFunctionStub(member as Function, target))
 							} else {
-								resolve(wrapRpcReturnValue(member, prop))
+								resolveP(wrapRpcReturnValue(member, prop))
 							}
 						} catch (e) {
-							reject(e)
+							rejectP(e)
 						}
 					})
 					return promise.then(onFulfilled, onRejected)

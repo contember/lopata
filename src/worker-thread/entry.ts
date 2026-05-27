@@ -159,6 +159,18 @@ async function initRuntime(init: WorkerInitConfig) {
 		return await (member as (...a: unknown[]) => unknown).call(target, ...args)
 	}
 
+	const invokeEntrypointPropertyGet = (
+		entrypoint: string | undefined,
+		property: string,
+		props?: Record<string, unknown>,
+	): { kind: 'value'; value: unknown } | { kind: 'function' } => {
+		const ctx = new WorkerExecutionContext(post, props)
+		const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
+		const member = target?.[property]
+		if (typeof member === 'function') return { kind: 'function' }
+		return { kind: 'value', value: member }
+	}
+
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
@@ -267,6 +279,18 @@ async function initRuntime(init: WorkerInitConfig) {
 					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'entrypoint-rpc-get':
+				try {
+					const result = runWithParentContext(cmd.parent, () => invokeEntrypointPropertyGet(cmd.entrypoint, cmd.property, cmd.props))
+					if (result.kind === 'function') {
+						post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'function' })
+					} else {
+						post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'value', value: result.value })
+					}
+				} catch (e) {
+					post({ type: 'entrypoint-rpc-get-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 		}

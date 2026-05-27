@@ -62,6 +62,7 @@ export class WorkerThreadExecutor {
 	private _pending = new Map<number, Pending<SerializedResponse>>()
 	private _pendingHandlers = new Map<number, Pending<HandlerResult>>()
 	private _pendingRpc = new Map<number, Pending<unknown>>()
+	private _pendingRpcGet = new Map<number, Pending<{ kind: 'value'; value: unknown } | { kind: 'function' }>>()
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
@@ -119,9 +120,11 @@ export class WorkerThreadExecutor {
 		for (const [, pending] of this._pending) pending.reject(err)
 		for (const [, pending] of this._pendingHandlers) pending.reject(err)
 		for (const [, pending] of this._pendingRpc) pending.reject(err)
+		for (const [, pending] of this._pendingRpcGet) pending.reject(err)
 		this._pending.clear()
 		this._pendingHandlers.clear()
 		this._pendingRpc.clear()
+		this._pendingRpcGet.clear()
 		this._responseStreams.disposeAll(err)
 		this._rpcStreams.disposeAll()
 		this._rpcRequestStreams.disposeAll(err)
@@ -202,6 +205,24 @@ export class WorkerThreadExecutor {
 				const p = this._pendingRpc.get(msg.id)
 				if (!p) break
 				this._pendingRpc.delete(msg.id)
+				const err = new Error(msg.error.message)
+				if (msg.error.stack) err.stack = msg.error.stack
+				err.name = msg.error.name ?? 'Error'
+				p.reject(err)
+				break
+			}
+			case 'entrypoint-rpc-get-result': {
+				const p = this._pendingRpcGet.get(msg.id)
+				if (p) {
+					this._pendingRpcGet.delete(msg.id)
+					p.resolve(msg.kind === 'function' ? { kind: 'function' } : { kind: 'value', value: msg.value })
+				}
+				break
+			}
+			case 'entrypoint-rpc-get-error': {
+				const p = this._pendingRpcGet.get(msg.id)
+				if (!p) break
+				this._pendingRpcGet.delete(msg.id)
 				const err = new Error(msg.error.message)
 				if (msg.error.stack) err.stack = msg.error.stack
 				err.name = msg.error.name ?? 'Error'
@@ -425,6 +446,21 @@ export class WorkerThreadExecutor {
 
 	executeEntrypointRpc(entrypoint: string | undefined, method: string, args: unknown[], props?: Record<string, unknown>): Promise<unknown> {
 		return this._sendAndAwait(this._pendingRpc, (id, parent) => ({ type: 'entrypoint-rpc', id, entrypoint, method, args, props, parent }))
+	}
+
+	executeEntrypointPropertyGet(
+		entrypoint: string | undefined,
+		property: string,
+		props?: Record<string, unknown>,
+	): Promise<{ kind: 'value'; value: unknown } | { kind: 'function' }> {
+		return this._sendAndAwait(this._pendingRpcGet, (id, parent) => ({
+			type: 'entrypoint-rpc-get',
+			id,
+			entrypoint,
+			property,
+			props,
+			parent,
+		}))
 	}
 
 	executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<HandlerResult> {
