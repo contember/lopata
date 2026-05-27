@@ -92,6 +92,13 @@ export interface BindingTarget {
 	 * resolves via `env[binding].get(instanceId)` before invoking `method`.
 	 */
 	instanceId?: string
+	/**
+	 * @internal For DO instance targets created via `idFromName(name)`: the
+	 * original name string. Main reconstructs `DurableObjectIdImpl(instanceId,
+	 * instanceName)` before calling `binding.get()` so `ctx.id.name` is
+	 * preserved across the thread boundary (matches the in-process path).
+	 */
+	instanceName?: string
 }
 
 /**

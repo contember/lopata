@@ -8,6 +8,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
@@ -302,7 +303,8 @@ export class WorkerThreadExecutor {
 		if (typeof get !== 'function') {
 			throw new Error(`Binding "${target.binding}" cannot resolve instance "${target.instanceId}" — no .get() method`)
 		}
-		return (get as (id: string) => Record<string, unknown>).call(binding, target.instanceId)
+		const doId = new DurableObjectIdImpl(target.instanceId, target.instanceName)
+		return (get as (id: DurableObjectIdImpl) => Record<string, unknown>).call(binding, doId)
 	}
 
 	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {

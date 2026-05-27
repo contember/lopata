@@ -235,7 +235,7 @@ function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<stri
 }
 
 function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {
-	return makeRpcProxy({ binding: bindingName, instanceId: idStr }, rpc, { id, name: id.name })
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, { id, name: id.name })
 }
 
 function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {

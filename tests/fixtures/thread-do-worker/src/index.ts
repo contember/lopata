@@ -18,6 +18,9 @@ export class Counter {
 			const stored = (await this.state.storage.get('value')) as number | undefined
 			return new Response(String(stored ?? 0))
 		}
+		if (url.pathname === '/name') {
+			return new Response(String(this.state.id.name ?? ''))
+		}
 		return new Response('not found', { status: 404 })
 	}
 
