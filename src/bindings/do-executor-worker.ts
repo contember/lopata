@@ -25,7 +25,7 @@ import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import type { WsBridgeOutbound } from './do-websocket-bridge'
 import { DurableObjectIdImpl } from './durable-object'
-import { CFWebSocket } from './websocket-pair'
+import { CFWebSocket, type ResponseWithWebSocket } from './websocket-pair'
 
 // --- Message protocol ---
 
@@ -237,6 +237,14 @@ export class WorkerExecutor implements DOExecutor {
 	 * down to the DO worker as `fetch-ws-incoming` / `fetch-ws-close-in`.
 	 */
 	private _fetchBridge: WsHostBridge<DOWorkerMessage> | null = null
+	/**
+	 * Main-side WS bridge for upstream CFWebSockets adopted from env-binding
+	 * fetches the DO worker initiated (e.g. `this.env.SVC.fetch('/ws')` returning
+	 * a 101). Direction is opposite of `_fetchBridge`: we already hold the real
+	 * CFWebSocket from main's `resolveBinding(...).fetch()`, the DO worker side
+	 * holds the synthetic user-facing peer.
+	 */
+	private _envBindingWsBridge: WsHostBridge<DOWorkerMessage> | null = null
 	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
 	 *  RPC `.fetch()` invoked from inside the DO worker). */
 	private _rpcStreams = new OutboundStreamRegistry()
@@ -274,6 +282,10 @@ export class WorkerExecutor implements DOExecutor {
 		this._fetchBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
 			clientMessage: (wsId, data) => ({ type: 'fetch-ws-incoming', wsId, data }),
 			clientClose: (wsId, code, reason, wasClean) => ({ type: 'fetch-ws-close-in', wsId, code, reason, wasClean }),
+		})
+		this._envBindingWsBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
+			clientMessage: (wsId, data) => ({ type: 'env-ws-incoming', wsId, data }),
+			clientClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-in', wsId, code, reason, wasClean }),
 		})
 
 		worker.onmessage = (event: MessageEvent<DOMainMessage>) => {
@@ -348,6 +360,14 @@ export class WorkerExecutor implements DOExecutor {
 					}
 					break
 
+				case 'env-ws-outgoing':
+					this._envBindingWsBridge?.deliverRemoteMessage(msg.wsId, msg.data)
+					break
+
+				case 'env-ws-close-out':
+					this._envBindingWsBridge?.deliverRemoteClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
+					break
+
 				case 'rpc-call':
 					this._dispatchRpcCall(msg)
 					break
@@ -416,6 +436,7 @@ export class WorkerExecutor implements DOExecutor {
 			this._acceptedFetchWsIds.clear()
 			this._wsCount = 0
 			this._fetchBridge?.disposeAll()
+			this._envBindingWsBridge?.disposeAll()
 			this._rpcStreams.disposeAll()
 			this._rpcRequestStreams.disposeAll(error)
 			this._fetchStreams.disposeAll(error)
@@ -653,6 +674,12 @@ export class WorkerExecutor implements DOExecutor {
 				resolveBinding: this._resolveBinding,
 				post: this._postReply,
 				isAlive: () => !this._disposed && this._worker !== null,
+				decorateResponse: (response, serialized) => {
+					const ws = (response as ResponseWithWebSocket).webSocket
+					if (response.status === 101 && ws instanceof CFWebSocket && this._envBindingWsBridge) {
+						serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws)
+					}
+				},
 			},
 			this._rpcStreams,
 			this._rpcRequestStreams,
@@ -732,6 +759,7 @@ export class WorkerExecutor implements DOExecutor {
 		this._acceptedFetchWsIds.clear()
 		this._wsCount = 0
 		this._fetchBridge?.disposeAll()
+		this._envBindingWsBridge?.disposeAll()
 		this._rpcStreams.disposeAll()
 		this._rpcRequestStreams.disposeAll(error)
 		this._fetchStreams.disposeAll(error)
