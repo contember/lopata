@@ -57,6 +57,13 @@ export class WsHostBridge<O> {
 	 * first message would be lost.
 	 */
 	private _pendingEvents = new Map<string, WSEvent[]>()
+	/**
+	 * Subset of `_sockets` that was adopted with `bridgeEvents: true` — outbound
+	 * `deliverRemoteMessage` must `cfSocket.send(data)` (dispatch on peer) for
+	 * these, instead of `dispatchOrQueue` (dispatch on the adopted socket
+	 * itself, which is the right behavior only for the `Bun.serve` passthrough).
+	 */
+	private _bridgedAdoptions = new Set<string>()
 	private _post: (msg: O) => void
 	private _envelopes: WsHostEnvelopes<O>
 
@@ -89,11 +96,39 @@ export class WsHostBridge<O> {
 	 * from a DO/service binding inside a nested binding fetch). The peer is
 	 * already wired to its server counterpart, so we just need to keep it
 	 * addressable by id when the guest echoes the response back up.
+	 *
+	 * For the *passthrough* use (user-worker channel): the guest never reads or
+	 * writes through this socket — main eventually hands the same `cfSocket`
+	 * to `Bun.serve.upgrade()`, which owns both directions.
+	 *
+	 * For the *guest-driven* use (DO-worker env-binding channel): pass
+	 * `bridgeEvents: true` so we accept the socket here, forward every inbound
+	 * message/close to the guest as `clientMessage` / `clientClose` envelopes,
+	 * and `deliverRemoteMessage` routes outbound bytes via `cfSocket.send`
+	 * (which dispatches on its real peer) instead of dispatching on the
+	 * adopted socket itself.
 	 */
-	adoptExisting(ws: CFWebSocket): string {
+	adoptExisting(ws: CFWebSocket, options: { bridgeEvents?: boolean } = {}): string {
 		const wsId = generateId(8)
 		this._sockets.set(wsId, ws)
+		if (options.bridgeEvents) {
+			this._wireBridgedAdoption(wsId, ws)
+		}
 		return wsId
+	}
+
+	private _wireBridgedAdoption(wsId: string, cfSocket: CFWebSocket): void {
+		cfSocket.addEventListener('message', (ev: Event) => {
+			const data = (ev as MessageEvent).data
+			this._post(this._envelopes.clientMessage(wsId, data))
+		})
+		cfSocket.addEventListener('close', (ev: Event) => {
+			const ce = ev as CloseEvent
+			this._post(this._envelopes.clientClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
+			this._sockets.delete(wsId)
+		})
+		cfSocket.accept()
+		this._bridgedAdoptions.add(wsId)
 	}
 
 	/** Look up a previously-registered or adopted CFWebSocket. */
@@ -109,6 +144,13 @@ export class WsHostBridge<O> {
 			this._bufferPending(wsId, evt)
 			return
 		}
+		if (this._bridgedAdoptions.has(wsId)) {
+			// Adopted host socket — dispatching on it would fire its own listeners
+			// again (we wired ones in `_wireBridgedAdoption`). Route via `send` so
+			// the data lands on its real peer instead.
+			cfSocket.send(data)
+			return
+		}
 		cfSocket.dispatchOrQueue(evt)
 	}
 
@@ -118,6 +160,11 @@ export class WsHostBridge<O> {
 		const evt: WSEvent = { type: 'close', code, reason, wasClean }
 		if (!cfSocket) {
 			this._bufferPending(wsId, evt)
+			return
+		}
+		if (this._bridgedAdoptions.delete(wsId)) {
+			cfSocket.close(code, reason)
+			this._sockets.delete(wsId)
 			return
 		}
 		cfSocket.dispatchOrQueue(evt)
@@ -141,12 +188,19 @@ export class WsHostBridge<O> {
 	 * never reached `register()` (e.g. binding-fetch errored mid-flight).
 	 */
 	disposeAll(): void {
-		for (const cfSocket of this._sockets.values()) {
+		for (const [wsId, cfSocket] of this._sockets) {
 			if (cfSocket.readyState === CFWebSocket.CLOSED) continue
+			if (this._bridgedAdoptions.has(wsId)) {
+				// Real socket — closing it propagates 1012 to the upstream peer
+				// (the synthetic side lives on the guest, which is going away).
+				cfSocket.close(1012, 'Service Restart')
+				continue
+			}
 			cfSocket.dispatchOrQueue({ type: 'close', code: 1012, reason: 'Service Restart', wasClean: true })
 		}
 		this._sockets.clear()
 		this._pendingEvents.clear()
+		this._bridgedAdoptions.clear()
 	}
 }
 

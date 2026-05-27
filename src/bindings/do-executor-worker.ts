@@ -677,7 +677,7 @@ export class WorkerExecutor implements DOExecutor {
 				decorateResponse: (response, serialized) => {
 					const ws = (response as ResponseWithWebSocket).webSocket
 					if (response.status === 101 && ws instanceof CFWebSocket && this._envBindingWsBridge) {
-						serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws)
+						serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws, { bridgeEvents: true })
 					}
 				},
 			},
