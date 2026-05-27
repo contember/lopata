@@ -122,6 +122,15 @@ export class DockerManager {
 	}
 
 	/**
+	 * Fire the `onRegister` callback for a container we didn't create via
+	 * `run()` — e.g. one adopted at startup because it was already running.
+	 * Lets cleanup hooks (process-exit handler) track it the same way.
+	 */
+	registerExisting(name: string): void {
+		this._onRegister?.(name)
+	}
+
+	/**
 	 * Stop a running container gracefully.
 	 */
 	async stop(name: string, timeoutSec?: number): Promise<void> {

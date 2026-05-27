@@ -104,6 +104,9 @@ export class ContainerRuntime {
 				// Recover port mappings from the running container
 				this._hostPorts.clear()
 				this._recoverPortMappings(existing.ports)
+				// `run()` would have fired onRegister; do the same for adoption so
+				// the process-exit cleanup tracks recovered containers too.
+				this._docker.registerExisting(this._containerName)
 				await this.onStart?.()
 				this._startHealthCheck()
 				this._startMonitor()
