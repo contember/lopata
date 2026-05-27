@@ -141,6 +141,14 @@ export type DOWorkerMessage =
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
+	/**
+	 * Env-binding fetch returned `Response{status:101, webSocket}`; main adopted
+	 * the upstream `CFWebSocket` and ships its events to the DO worker, where a
+	 * user-facing peer reconstructed via `WsGuestBridge.createBridgedSocket`
+	 * dispatches them on user code's `.addEventListener('message')` / `.onmessage`.
+	 */
+	| { type: 'env-ws-incoming'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'env-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
 	// Unified cross-thread binding-RPC replies — see `worker-thread/protocol.ts`.
 	| RpcReply
 	/** Caller-side cancel for a streamed DO-fetch response body. */
@@ -160,6 +168,13 @@ export type DOMainMessage =
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
+	/**
+	 * User code (inside the DO worker) emitted bytes / closed on a CFWebSocket
+	 * reconstructed from an env-binding fetch upgrade. Forward to the upstream
+	 * peer adopted on main via `_envBindingWsBridge`.
+	 */
+	| { type: 'env-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'env-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
 	// Unified cross-thread binding-RPC requests — see `worker-thread/protocol.ts`.
 	// The DO-worker calls `this.env.<binding>.method(...)` / `.fetch(...)`; main
 	// resolves the binding from its env, runs the call under the caller's trace

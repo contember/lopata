@@ -199,6 +199,22 @@ export class WsGuestBridge<O> {
 	}
 
 	/**
+	 * Reverse of `register`: build a fresh `CFWebSocket` for a wsId allocated on
+	 * the host (e.g. main adopted an upstream WS returned from an env-binding
+	 * fetch). The returned socket is what user code interacts with — calling
+	 * `accept()` / `send()` / `addEventListener('message')` here drives the
+	 * remote peer through the bridge.
+	 */
+	createBridgedSocket(wsId: string): CFWebSocket {
+		const userPeer = new CFWebSocket()
+		const bridgePeer = new BridgeGuestPeer<O>(wsId, this._post, this._envelopes, id => this._sockets.delete(id))
+		userPeer._peer = bridgePeer
+		bridgePeer._peer = userPeer
+		this._sockets.set(wsId, { userPeer, closed: false })
+		return userPeer
+	}
+
+	/**
 	 * Hook up a `CFWebSocket` that's about to ship in a Response. Listeners must
 	 * be attached BEFORE `accept()` so the synchronous flush of any queued events
 	 * (e.g. the user already called `server.send()` before returning the response)
@@ -258,5 +274,39 @@ export class WsGuestBridge<O> {
 		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
 		entry.userPeer.readyState = CFWebSocket.CLOSED
 		this._sockets.delete(wsId)
+	}
+}
+
+/**
+ * Peer attached to the user-facing `CFWebSocket` returned by
+ * {@link WsGuestBridge.createBridgedSocket}. Pinned to `OPEN`/`accepted` so
+ * bytes the user-peer sends (`peer._dispatchWSEvent` from `CFWebSocket.send`)
+ * are forwarded to the host immediately without waiting for accept().
+ */
+class BridgeGuestPeer<O> extends CFWebSocket {
+	private _wsId: string
+	private _post: (msg: O) => void
+	private _envelopes: WsGuestEnvelopes<O>
+	private _onForget: (wsId: string) => void
+
+	constructor(wsId: string, post: (msg: O) => void, envelopes: WsGuestEnvelopes<O>, onForget: (wsId: string) => void) {
+		super()
+		this._wsId = wsId
+		this._post = post
+		this._envelopes = envelopes
+		this._onForget = onForget
+		this._accepted = true
+		this.readyState = CFWebSocket.OPEN
+	}
+
+	override _dispatchWSEvent(evt: WSEvent): void {
+		if (evt.type === 'message' && evt.data !== undefined) {
+			this._post(this._envelopes.remoteMessage(this._wsId, evt.data))
+			return
+		}
+		if (evt.type === 'close') {
+			this._post(this._envelopes.remoteClose(this._wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true))
+			this._onForget(this._wsId)
+		}
 	}
 }
