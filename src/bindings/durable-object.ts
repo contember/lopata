@@ -868,15 +868,15 @@ export class DurableObjectNamespaceImpl {
 	 * need the JS class on main (e.g. `WorkerExecutorFactory`).
 	 */
 	_setExternalClass(className: string, env: Record<string, unknown>, generationId?: number) {
+		// Thread-mode executors (the only kind that lands here) can't hot-swap their
+		// class — the class lives in a Bun Worker and the only reload mechanism is
+		// terminate + respawn, which is what `dispose()` does. Active WebSockets are
+		// dropped along with the executor; preserving them would require a class-level
+		// swap that Bun Worker can't perform without re-importing the user module.
 		for (const [idStr, executor] of this._executors) {
-			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
-				// Hot-swap: worker-thread executors reload by re-importing the user module.
-				executor.reloadClass(_externalClassSentinel as any, env)
-			} else {
-				executor.dispose().catch(() => {})
-				this._executors.delete(idStr)
-				this._lastActivity.delete(idStr)
-			}
+			executor.dispose().catch(() => {})
+			this._executors.delete(idStr)
+			this._lastActivity.delete(idStr)
 		}
 
 		this._class = undefined
