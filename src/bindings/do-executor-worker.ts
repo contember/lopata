@@ -527,7 +527,22 @@ export class WorkerExecutor implements DOExecutor {
 		})
 
 		if (body && streamId !== undefined) {
-			this._pumpFetchRequestBody(streamId, body)
+			if (this._disposed) {
+				// `_sendCommand` already rejected synchronously (worker disposed before
+				// `_ensureWorker()` / `await _ready`); skipping the pump avoids locking
+				// the source reader on a stream nobody will read.
+				body.cancel().catch(() => {})
+			} else {
+				// If `resultPromise` rejects mid-flight (worker errored during
+				// `await _ready`), `_pumpFetchRequestBody` would otherwise hold the
+				// source reader locked because `pumpStream`'s loop awaits
+				// `reader.read()` and only checks `_disposed` afterwards. Cancel the
+				// pump's reader so any pending read resolves and the registry releases.
+				resultPromise.catch(() => {
+					this._fetchRequestStreams.cancel(streamId)
+				})
+				this._pumpFetchRequestBody(streamId, body)
+			}
 		}
 
 		const result = await resultPromise
