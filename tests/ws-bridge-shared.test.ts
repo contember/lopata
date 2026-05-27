@@ -136,6 +136,81 @@ describe('WsHostBridge', () => {
 		bridge.deliverRemoteClose('w-1', 1000, '', true)
 		expect(sockets(bridge).has('w-1')).toBe(false)
 	})
+
+	test('adoptExisting cleans up _sockets when adopted peer closes', () => {
+		const real = new CFWebSocket()
+		// Pair it so close() can run end-to-end.
+		const farSide = new CFWebSocket()
+		real._peer = farSide
+		farSide._peer = real
+		real.accept()
+
+		const wsId = bridge.adoptExisting(real)
+		expect(sockets(bridge).get(wsId)).toBe(real)
+
+		real.close(1000, 'bye')
+		expect(sockets(bridge).has(wsId)).toBe(false)
+	})
+
+	test('adoptExisting with bridgeEvents cleans up _sockets when peer closes', () => {
+		const real = new CFWebSocket()
+		const farSide = new CFWebSocket()
+		real._peer = farSide
+		farSide._peer = real
+
+		const wsId = bridge.adoptExisting(real, { bridgeEvents: true })
+		expect(sockets(bridge).get(wsId)).toBe(real)
+
+		real.close(1000, 'bye')
+		expect(sockets(bridge).has(wsId)).toBe(false)
+	})
+
+	test('disposeAll marks sockets CLOSED so consumer polls see stale-OPEN no more', () => {
+		const cf1 = bridge.register('w-1')
+		const cf2 = bridge.register('w-2')
+		cf1.accept()
+		cf2.accept()
+		expect(cf1.readyState).toBe(CFWebSocket.OPEN)
+		expect(cf2.readyState).toBe(CFWebSocket.OPEN)
+
+		bridge.disposeAll()
+		expect(cf1.readyState).toBe(CFWebSocket.CLOSED)
+		expect(cf2.readyState).toBe(CFWebSocket.CLOSED)
+	})
+
+	test('late message after peer close does not leak into _pendingEvents', () => {
+		const cf = bridge.register('w-1')
+		cf.accept()
+		// Real client closed first, host forgets the wsId.
+		cf._peer!._dispatchWSEvent({ type: 'close', code: 1000, reason: 'bye', wasClean: true })
+		expect(sockets(bridge).has('w-1')).toBe(false)
+
+		// In-flight guest-side message arrives after the close.
+		bridge.deliverRemoteMessage('w-1', 'late')
+		expect(pending(bridge).has('w-1')).toBe(false)
+	})
+
+	test('BridgeWebSocketPeer drops late messages after its close was dispatched', () => {
+		const cf = bridge.register('w-1')
+		cf.accept()
+		const peer = cf._peer!
+		peer._dispatchWSEvent({ type: 'close', code: 1000, reason: 'bye', wasClean: true })
+
+		posted.length = 0
+		peer._dispatchWSEvent({ type: 'message', data: 'after-close' })
+		expect(posted).toEqual([])
+	})
+
+	test('BridgeWebSocketPeer is idempotent on repeated close dispatch', () => {
+		const cf = bridge.register('w-1')
+		cf.accept()
+		const peer = cf._peer!
+		peer._dispatchWSEvent({ type: 'close', code: 1000, reason: 'bye', wasClean: true })
+		const afterFirst = posted.length
+		peer._dispatchWSEvent({ type: 'close', code: 1000, reason: 'bye', wasClean: true })
+		expect(posted.length).toBe(afterFirst)
+		expect(peer.readyState).toBe(CFWebSocket.CLOSED)
+	})
 })
 
 describe('WsGuestBridge', () => {

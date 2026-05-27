@@ -64,12 +64,26 @@ export class WsHostBridge<O> {
 	 * itself, which is the right behavior only for the `Bun.serve` passthrough).
 	 */
 	private _bridgedAdoptions = new Set<string>()
+	/**
+	 * wsIds that were previously registered/adopted and have since closed.
+	 * Used to drop late `deliverRemote*` calls cleanly instead of stashing
+	 * them in `_pendingEvents` (where they'd be unreachable — wsIds are
+	 * unique per upgrade, so no future `register()` will ever match).
+	 */
+	private _forgotten = new Set<string>()
 	private _post: (msg: O) => void
 	private _envelopes: WsHostEnvelopes<O>
 
 	constructor(post: (msg: O) => void, envelopes: WsHostEnvelopes<O>) {
 		this._post = post
 		this._envelopes = envelopes
+	}
+
+	private _forget(wsId: string): void {
+		this._sockets.delete(wsId)
+		this._pendingEvents.delete(wsId)
+		this._bridgedAdoptions.delete(wsId)
+		this._forgotten.add(wsId)
 	}
 
 	/**
@@ -79,7 +93,7 @@ export class WsHostBridge<O> {
 	 */
 	register(wsId: string): CFWebSocket {
 		const cfSocket = new CFWebSocket()
-		const peer = new BridgeWebSocketPeer(wsId, this._post, this._envelopes, id => this._sockets.delete(id))
+		const peer = new BridgeWebSocketPeer(wsId, this._post, this._envelopes, id => this._forget(id))
 		cfSocket._peer = peer
 		peer._peer = cfSocket
 		this._sockets.set(wsId, cfSocket)
@@ -113,6 +127,11 @@ export class WsHostBridge<O> {
 		this._sockets.set(wsId, ws)
 		if (options.bridgeEvents) {
 			this._wireBridgedAdoption(wsId, ws)
+		} else {
+			// Passthrough adoption: still attach a close listener so the entry is
+			// removed from `_sockets` when the upstream peer goes away — otherwise
+			// the map grows for the executor's lifetime.
+			ws.addEventListener('close', () => this._forget(wsId))
 		}
 		return wsId
 	}
@@ -125,7 +144,7 @@ export class WsHostBridge<O> {
 		cfSocket.addEventListener('close', (ev: Event) => {
 			const ce = ev as CloseEvent
 			this._post(this._envelopes.clientClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
-			this._sockets.delete(wsId)
+			this._forget(wsId)
 		})
 		cfSocket.accept()
 		this._bridgedAdoptions.add(wsId)
@@ -162,17 +181,21 @@ export class WsHostBridge<O> {
 			this._bufferPending(wsId, evt)
 			return
 		}
-		if (this._bridgedAdoptions.delete(wsId)) {
+		if (this._bridgedAdoptions.has(wsId)) {
 			cfSocket.close(code, reason)
-			this._sockets.delete(wsId)
+			this._forget(wsId)
 			return
 		}
 		cfSocket.dispatchOrQueue(evt)
 		cfSocket.readyState = CFWebSocket.CLOSED
-		this._sockets.delete(wsId)
+		this._forget(wsId)
 	}
 
 	private _bufferPending(wsId: string, evt: WSEvent): void {
+		// Late event for a wsId that was already forgotten (peer closed first,
+		// host received this guest-side event after). No future `register()` will
+		// match this id, so buffering would leak. Drop it.
+		if (this._forgotten.has(wsId)) return
 		let q = this._pendingEvents.get(wsId)
 		if (!q) {
 			q = []
@@ -193,14 +216,17 @@ export class WsHostBridge<O> {
 			if (this._bridgedAdoptions.has(wsId)) {
 				// Real socket — closing it propagates 1012 to the upstream peer
 				// (the synthetic side lives on the guest, which is going away).
+				// `close()` sets readyState to CLOSED for us.
 				cfSocket.close(1012, 'Service Restart')
 				continue
 			}
 			cfSocket.dispatchOrQueue({ type: 'close', code: 1012, reason: 'Service Restart', wasClean: true })
+			cfSocket.readyState = CFWebSocket.CLOSED
 		}
 		this._sockets.clear()
 		this._pendingEvents.clear()
 		this._bridgedAdoptions.clear()
+		this._forgotten.clear()
 	}
 }
 
@@ -228,10 +254,16 @@ class BridgeWebSocketPeer<O> extends CFWebSocket {
 
 	override _dispatchWSEvent(evt: WSEvent): void {
 		if (evt.type === 'message' && evt.data !== undefined) {
+			// Drop late messages dispatched after a close (e.g. a queued event
+			// flushing after `_onForget` ran). The peer's state must stay
+			// coherent with the wsId having been forgotten on both sides.
+			if (this.readyState !== CFWebSocket.OPEN) return
 			this._post(this._envelopes.clientMessage(this._wsId, evt.data))
 			return
 		}
 		if (evt.type === 'close') {
+			if (this.readyState === CFWebSocket.CLOSED) return
+			this.readyState = CFWebSocket.CLOSED
 			this._post(this._envelopes.clientClose(this._wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true))
 			this._onForget(this._wsId)
 		}
