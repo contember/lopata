@@ -84,7 +84,9 @@ export class GenerationManager {
 			this._reloading = null
 			if (this._pendingReload) {
 				this._pendingReload = false
-				this.reload()
+				this.reload().catch(err => {
+					console.error('[lopata] queued reload failed:', err)
+				})
 			}
 		}
 	}
