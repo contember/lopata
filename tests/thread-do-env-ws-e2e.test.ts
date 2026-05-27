@@ -158,4 +158,13 @@ describe('env-binding WebSocket upgrade through a DO', () => {
 		expect(ev.code).toBe(4010)
 		expect(ev.reason).toBe('aux-closing')
 	})
+
+	test('chained — DO opens a WS to another DO via env binding (env-WS bridge chained through fetch-WS bridge)', async () => {
+		const c = await connect(`${wsBase}/bridge-do-echo`)
+		c.send('chained')
+		expect(await c.waitForMessage()).toBe('do-echo:chained')
+		c.send('again')
+		expect(await c.waitForMessage()).toBe('do-echo:again')
+		c.close()
+	})
 })

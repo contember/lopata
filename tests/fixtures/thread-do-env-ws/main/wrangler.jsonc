@@ -7,10 +7,11 @@
 	],
 	"durable_objects": {
 		"bindings": [
-			{ "name": "BRIDGE", "class_name": "BridgeDO" }
+			{ "name": "BRIDGE", "class_name": "BridgeDO" },
+			{ "name": "UPSTREAM", "class_name": "UpstreamDO" }
 		]
 	},
 	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["BridgeDO"] }
+		{ "tag": "v1", "new_sqlite_classes": ["BridgeDO", "UpstreamDO"] }
 	]
 }
