@@ -125,6 +125,7 @@ export class WorkerThreadExecutor {
 		this._pendingHandlers.clear()
 		this._pendingRpc.clear()
 		this._pendingRpcGet.clear()
+		this._pendingWaitUntil.clear()
 		this._responseStreams.disposeAll(err)
 		this._rpcStreams.disposeAll()
 		this._rpcRequestStreams.disposeAll(err)
