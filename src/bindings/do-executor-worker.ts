@@ -254,6 +254,11 @@ export class WorkerExecutor implements DOExecutor {
 		})
 
 		worker.onmessage = (event: MessageEvent<DOMainMessage>) => {
+			// Drop late messages after dispose/onerror — the shared RPC dispatchers
+			// would otherwise commit side effects (KV write, R2 put, queue send)
+			// from a dying generation before their reply gets filtered by
+			// `hooks.isAlive()`. Mirrors `WorkerThreadExecutor._handleMessage`.
+			if (this._disposed) return
 			const msg = event.data
 
 			switch (msg.type) {
