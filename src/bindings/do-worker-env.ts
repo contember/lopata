@@ -50,6 +50,19 @@ function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, un
 		fetch: async (input, init) => {
 			const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
 			const r = await rpc.callFetch(target, req)
+			// WebSocket upgrade responses don't round-trip through this channel
+			// yet — main's DO-channel `_dispatchRpcFetch` has no `decorateResponse`
+			// hook to adopt the host peer, and `rpc.makeResponse` doesn't reattach
+			// a guest peer on the worker side. Returning the body-less Response
+			// would lead to silently-broken `response.webSocket === undefined`;
+			// throw with a clear message instead.
+			if (r.status === 101 || r.webSocketId !== undefined) {
+				throw new Error(
+					`WebSocket upgrade responses are not yet supported through DO env binding "${binding}". `
+						+ `(The binding's fetch returned status 101 with a \`webSocket\`. Open the WS from the DO's own fetch handler, `
+						+ `or from a non-DO worker.)`,
+				)
+			}
 			return rpc.makeResponse(r)
 		},
 		call: (prop, args) => rpc.call(target, prop, args),
