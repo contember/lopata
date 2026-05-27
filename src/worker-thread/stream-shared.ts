@@ -61,6 +61,7 @@ export class OutboundStreamRegistry {
 export class StreamReceiver {
 	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
 	private _pending = new Map<number, StreamEvent[]>()
+	private _cancelled = new Set<number>()
 	private _onCancel: (streamId: number) => void
 
 	constructor(onCancel: (streamId: number) => void) {
@@ -80,9 +81,23 @@ export class StreamReceiver {
 			cancel: () => {
 				this._controllers.delete(streamId)
 				this._pending.delete(streamId)
+				this._cancelled.add(streamId)
 				this._onCancel(streamId)
 			},
 		})
+	}
+
+	/**
+	 * Receiver-side cancel for an inbound stream that never reached a consumer
+	 * (e.g. dispatcher errored before `open()` registered the controller, or the
+	 * request was torn down post-open). Drops any buffered events, marks the id
+	 * stale so late chunks are ignored, and signals the sender via `onCancel`.
+	 */
+	cancel(streamId: number): void {
+		this._controllers.delete(streamId)
+		this._pending.delete(streamId)
+		this._cancelled.add(streamId)
+		this._onCancel(streamId)
 	}
 
 	push(streamId: number, chunk: Uint8Array): void {
@@ -105,9 +120,17 @@ export class StreamReceiver {
 		}
 		this._controllers.clear()
 		this._pending.clear()
+		this._cancelled.clear()
 	}
 
 	private _onEvent(streamId: number, ev: StreamEvent): void {
+		if (this._cancelled.has(streamId)) {
+			// Consumer cancelled the reconstructed stream — drop racing late events
+			// from the sender (it hadn't yet seen the cancel). Forget the id once
+			// the sender's terminator arrives so we don't grow the Set unbounded.
+			if (ev.kind !== 'chunk') this._cancelled.delete(streamId)
+			return
+		}
 		const controller = this._controllers.get(streamId)
 		if (!controller) {
 			let q = this._pending.get(streamId)
@@ -180,11 +203,20 @@ export function pumpStream<TChunk, TEnd, TError>(
 		try {
 			while (true) {
 				const { done, value } = await reader.read()
-				if (isAlive && !isAlive()) return
+				if (isAlive && !isAlive()) {
+					// Channel torn down between this read and posting — release the
+					// source so it doesn't stay locked. `finally` removes us from the
+					// registry, so `disposeAll` won't see this reader.
+					reader.cancel().catch(() => {})
+					return
+				}
 				if (done) break
-				if (value && value.byteLength > 0) post(envelopes.chunk(streamId, value))
+				if (value) post(envelopes.chunk(streamId, value))
 			}
-			if (isAlive && !isAlive()) return
+			if (isAlive && !isAlive()) {
+				reader.cancel().catch(() => {})
+				return
+			}
 			post(envelopes.end(streamId))
 		} catch (e) {
 			if (isAlive && !isAlive()) return
