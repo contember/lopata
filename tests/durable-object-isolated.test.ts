@@ -80,6 +80,54 @@ beforeAll(() => {
       }
     }
 
+    export class HibernationDO extends DurableObject {
+      async fetch(request) {
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected websocket', { status: 426 });
+        }
+        const pair = new WebSocketPair();
+        const client = pair[0];
+        const server = pair[1];
+        this.ctx.acceptWebSocket(server);
+        return new Response(null, { status: 101, webSocket: client });
+      }
+    }
+
+    export class SelfRefDO extends DurableObject {
+      async probeSelf() {
+        // Touching this.env.SELF_REF.anything must throw — see Finding D.
+        try {
+          const id = this.env.SELF_REF.idFromName('peer');
+          await this.env.SELF_REF.get(id).probeSelf();
+          return 'ok';
+        } catch (e) {
+          return 'threw:' + e.message;
+        }
+      }
+      async probeCrossProbes() {
+        // Introspection-only members on a cross-DO stub must NOT throw — see Finding E.
+        const ref = this.env.OTHER_DO;
+        return {
+          then: ref.then,
+          toJSON: ref.toJSON,
+          toString: ref.toString,
+          inspectSym: ref[Symbol.for('nodejs.util.inspect.custom')],
+        };
+      }
+      async probeCrossUse() {
+        try {
+          await this.env.OTHER_DO.something();
+          return 'no-throw';
+        } catch (e) {
+          return 'threw:' + e.message;
+        }
+      }
+    }
+
+    export class OtherDO extends DurableObject {
+      async noop() { return 'noop'; }
+    }
+
     export default {
       async fetch() {
         return new Response("ok");
@@ -100,6 +148,9 @@ beforeAll(() => {
 					{ name: 'COUNTER', class_name: 'TestCounter' },
 					{ name: 'ALARM', class_name: 'AlarmDO' },
 					{ name: 'FIRE_AND_FORGET', class_name: 'FireAndForgetDO' },
+					{ name: 'HIBERNATION', class_name: 'HibernationDO' },
+					{ name: 'SELF_REF', class_name: 'SelfRefDO' },
+					{ name: 'OTHER_DO', class_name: 'OtherDO' },
 				],
 			},
 		}),
@@ -292,5 +343,115 @@ describe('Isolated DO — data persistence', () => {
 
 		const exec2 = ns2._getExecutor(id.toString())
 		if (exec2) await exec2.dispose()
+	})
+})
+
+describe('Isolated DO — env-binding stubs (Findings D + E)', () => {
+	test('self-DO env access throws with a clear error (Finding D)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const stub = ns.get(ns.idFromName('self-d')) as any
+		const result = (await stub.probeSelf()) as string
+		// Forking instance state would silently return 'ok'. The fix throws with
+		// the cross-DO stub message — verify both that it threw and that the
+		// message names the binding.
+		expect(result.startsWith('threw:')).toBe(true)
+		expect(result).toContain('SELF_REF')
+
+		const executor = ns._getExecutor(ns.idFromName('self-d').toString())
+		if (executor) await executor.dispose()
+	})
+
+	test('cross-DO stub allows JS introspection probes (Finding E)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const stub = ns.get(ns.idFromName('probe-e')) as any
+		// `console.log(other)` / `JSON.stringify(other)` / `await other` /
+		// `nodejs.util.inspect.custom` all hit the proxy through these props
+		// without intending to use the binding. Must not throw.
+		const probes = await stub.probeCrossProbes()
+		expect(probes).toBeDefined()
+		expect(probes.then).toBeUndefined()
+		expect(probes.toJSON).toBeUndefined()
+		expect(probes.toString).toBeUndefined()
+		expect(probes.inspectSym).toBeUndefined()
+
+		// Actual cross-DO method *use* still throws loudly.
+		const useResult = (await stub.probeCrossUse()) as string
+		expect(useResult.startsWith('threw:')).toBe(true)
+		expect(useResult).toContain('OTHER_DO')
+
+		const executor = ns._getExecutor(ns.idFromName('probe-e').toString())
+		if (executor) await executor.dispose()
+	})
+})
+
+describe('Isolated DO — pump on disposed executor (Finding C)', () => {
+	test('executeFetch on a disposed executor cancels (not locks) the body source', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'TestCounter', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('disposed-pump')
+		const stub = ns.get(id) as any
+		// Warm up so the worker is actually created, then dispose.
+		await stub.fetch('http://do/count')
+		const executor = ns._getExecutor(id.toString())!
+		await executor.dispose()
+
+		// Streaming body — `Request.body` becomes a `ReadableStream` from this.
+		// Before the fix, `_pumpFetchRequestBody` would still kick off after
+		// `_sendCommand` rejected; `pumpStream` grabbed the source reader and
+		// its loop returned early because `_disposed=true` (so it never
+		// released the reader), leaving the source stream perpetually locked.
+		// After the fix, the disposed branch cancels the body directly.
+		let cancelReason: unknown = null
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('chunk1'))
+				// Don't close — simulates a long-lived upload.
+			},
+			cancel(reason) {
+				cancelReason = reason ?? 'cancelled'
+			},
+		})
+		const request = new Request('http://do/stream', { method: 'POST', body, duplex: 'half' } as RequestInit)
+
+		await expect(executor.executeFetch(request)).rejects.toThrow()
+
+		// The body must have been cancelled (no longer locked, and `cancel`
+		// callback fired). Pre-fix, neither happened.
+		await new Promise(r => setTimeout(r, 50))
+		expect(cancelReason).not.toBe(null)
+		expect(body.locked).toBe(false)
+	})
+})
+
+describe('Isolated DO — hibernation WS count (Finding B)', () => {
+	test('state.acceptWebSocket increments activeWebSocketCount on main', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'HibernationDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('hib-count')
+		const stub = ns.get(id) as any
+		const upgrade = new Request('http://do/', { headers: { Upgrade: 'websocket' } })
+		const resp = await stub.fetch(upgrade)
+		expect(resp.status).toBe(101)
+		expect((resp as Response & { webSocket?: unknown }).webSocket).toBeDefined()
+
+		// The post-`ws-bridge ws-accept` signal hops to main asynchronously;
+		// give it a tick to land. Without the fix the counter never moves.
+		await new Promise(r => setTimeout(r, 50))
+
+		// Without the fix, `state.acceptWebSocket(server)` never signalled main
+		// and `activeWebSocketCount()` stayed 0, so `hasActiveWebSockets()`
+		// returned false and the idle reaper would evict the executor mid-WS.
+		expect(ns.hasActiveWebSockets()).toBe(true)
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.activeWebSocketCount()).toBeGreaterThan(0)
+
+		await executor.dispose()
 	})
 })
