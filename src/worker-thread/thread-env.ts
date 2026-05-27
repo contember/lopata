@@ -244,10 +244,14 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<strin
 	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
 	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
 	const get = (id: DurableObjectIdImpl) => {
-		const key = id.toString()
+		const idStr = id.toString()
+		// Cache key includes name so a nameless `idFromString(hash)` and a named
+		// `idFromName(...)` resolving to the same hash get distinct stubs — each
+		// preserving its caller's `id.name`. Same id-shape → same cached stub.
+		const key = `${idStr}:${id.name ?? ''}`
 		let stub = stubs.get(key)
 		if (!stub) {
-			stub = makeDOStubProxy(bindingName, key, id, rpc)
+			stub = makeDOStubProxy(bindingName, idStr, id, rpc)
 			stubs.set(key, stub)
 		}
 		return stub

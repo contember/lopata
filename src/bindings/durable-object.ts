@@ -1180,7 +1180,11 @@ export class DurableObjectNamespaceImpl {
 			executor.dispose().catch(() => {})
 			this._executors.delete(idStr)
 		}
-		this._stubs.delete(idStr)
+		// Stub keys are `${idStr}:${name ?? ''}` — drop every variant for this id.
+		const stubPrefix = `${idStr}:`
+		for (const key of this._stubs.keys()) {
+			if (key.startsWith(stubPrefix)) this._stubs.delete(key)
+		}
 		this._knownIds.delete(idStr)
 		this._lastActivity.delete(idStr)
 
@@ -1227,9 +1231,13 @@ export class DurableObjectNamespaceImpl {
 
 	get(id: DurableObjectIdImpl): unknown {
 		const idStr = id.toString()
+		// Cache by `${idStr}:${name ?? ''}` so a nameless `idFromString(hash)` and a
+		// named `idFromName(...)` resolving to the same hash get distinct stubs —
+		// each preserving its caller's `id.name`. Same id-shape → same cached stub.
+		const stubKey = `${idStr}:${id.name ?? ''}`
 
 		// Return cached stub if available — stub survives eviction
-		if (this._stubs.has(idStr)) return this._stubs.get(idStr)!
+		if (this._stubs.has(stubKey)) return this._stubs.get(stubKey)!
 
 		if (!this._isWired()) throw new Error('DurableObject class not wired yet. Call _setClass() first.')
 
@@ -1285,7 +1293,7 @@ export class DurableObjectNamespaceImpl {
 			},
 		})
 
-		this._stubs.set(idStr, stub)
+		this._stubs.set(stubKey, stub)
 		return stub
 	}
 }

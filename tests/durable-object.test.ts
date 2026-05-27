@@ -326,6 +326,23 @@ describe('DurableObjectNamespace', () => {
 		expect(await stub2.getCount()).toBe(1)
 	})
 
+	test('named id then nameless idFromString(sameHash) keeps each stub\'s id.name', () => {
+		const namedId = ns.idFromName('alpha')
+		const namedStub = ns.get(namedId) as { id: { name?: string } }
+		expect(namedStub.id.name).toBe('alpha')
+
+		// A caller who only has the raw hash gets back a stub whose id is nameless,
+		// not the cached named one (the cache used to key on idStr only and leaked
+		// `name: 'alpha'` to this caller).
+		const namelessId = ns.idFromString(namedId.toString())
+		const namelessStub = ns.get(namelessId) as { id: { name?: string } }
+		expect(namelessStub.id.name).toBeUndefined()
+
+		// And the named stub is still the cached one for the original lookup.
+		const namedStub2 = ns.get(namedId) as { id: { name?: string } }
+		expect(namedStub2).toBe(namedStub)
+	})
+
 	test('blockConcurrencyWhile defers proxy calls until ready', async () => {
 		const order: string[] = []
 
