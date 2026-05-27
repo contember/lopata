@@ -13,8 +13,9 @@ import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { getActiveContext } from '../tracing/context'
-import type { BindingTarget, ParentSpanContext } from '../worker-thread/protocol'
+import type { BindingTarget, ParentSpanContext, SerializedResponse } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
+import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectIdImpl, DurableObjectNamespaceImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
@@ -22,6 +23,7 @@ import { SqliteKVNamespace } from './kv'
 import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
 import { makeBindingProxy } from './rpc-stub'
+import type { ResponseWithWebSocket } from './websocket-pair'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -32,26 +34,30 @@ export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
 	return new RpcClient(req => post(req as DOMainMessage), getParent)
 }
 
-function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): Record<string, unknown> {
+function buildBridgedFetchResponse(
+	r: SerializedResponse,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<DOMainMessage>,
+): Response {
+	const response = rpc.makeResponse(r) as ResponseWithWebSocket
+	if (r.webSocketId !== undefined) {
+		response.webSocket = envWsBridge.createBridgedSocket(r.webSocketId)
+	}
+	return response
+}
+
+function makeRpcProxy(
+	target: BindingTarget,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<DOMainMessage>,
+	extras: Record<string | symbol, unknown> = {},
+): Record<string, unknown> {
 	return makeBindingProxy(
 		{
 			fetch: async (input, init) => {
 				const req = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
 				const r = await rpc.callFetch(target, req)
-				// WebSocket upgrade responses don't round-trip through this channel
-				// yet — main's DO-channel `_dispatchRpcFetch` has no `decorateResponse`
-				// hook to adopt the host peer, and `rpc.makeResponse` doesn't reattach
-				// a guest peer on the worker side. Returning the body-less Response
-				// would lead to silently-broken `response.webSocket === undefined`;
-				// throw with a clear message instead.
-				if (r.status === 101 || r.webSocketId !== undefined) {
-					throw new Error(
-						`WebSocket upgrade responses are not yet supported through DO env binding "${target.binding}". `
-							+ `(The binding's fetch returned status 101 with a \`webSocket\`. Open the WS from the DO's own fetch handler, `
-							+ `or from a non-DO worker.)`,
-					)
-				}
-				return rpc.makeResponse(r)
+				return buildBridgedFetchResponse(r, rpc, envWsBridge)
 			},
 			call: (prop, args) => rpc.call(target, prop, args),
 		},
@@ -59,12 +65,18 @@ function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<stri
 	)
 }
 
-function makeEnvBindingProxy(binding: string, rpc: RpcClient): Record<string, unknown> {
-	return makeRpcProxy({ binding }, rpc)
+function makeEnvBindingProxy(binding: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
+	return makeRpcProxy({ binding }, rpc, envWsBridge)
 }
 
-function makeDoEnvStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): Record<string, unknown> {
-	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, { id, name: id.name })
+function makeDoEnvStubProxy(
+	bindingName: string,
+	idStr: string,
+	id: DurableObjectIdImpl,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<DOMainMessage>,
+): Record<string, unknown> {
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, envWsBridge, { id, name: id.name })
 }
 
 /**
@@ -74,7 +86,7 @@ function makeDoEnvStubProxy(bindingName: string, idStr: string, id: DurableObjec
  * `.get()` resolves the singleton executor for that id. Mirrors the
  * user-worker `makeDONamespaceProxy` shape.
  */
-function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
 	const stubs = new Map<string, unknown>()
 	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
 	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
@@ -83,7 +95,7 @@ function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient): Record<st
 		const key = id.toString()
 		let stub = stubs.get(key)
 		if (!stub) {
-			stub = makeDoEnvStubProxy(bindingName, key, id, rpc)
+			stub = makeDoEnvStubProxy(bindingName, key, id, rpc, envWsBridge)
 			stubs.set(key, stub)
 		}
 		return stub
@@ -104,12 +116,18 @@ function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient): Record<st
  * locally against the shared SQLite/filesystem. Stateful ones (service
  * bindings, email, workflow, …) become RPC proxies that route through main
  * via the DO-executor message channel.
+ *
+ * `envWsBridge` is shared with `do-worker-entry.ts`'s message router: when an
+ * env-binding fetch returns a 101 response with a `webSocketId`, the proxy
+ * here calls `envWsBridge.createBridgedSocket(id)` to reconstruct a
+ * user-facing CFWebSocket whose events flow over the bridge to main.
  */
 export function buildWorkerEnv(
 	config: WranglerConfig,
 	dataDir: string,
 	rpc: RpcClient,
 	_hostNamespaceName: string,
+	envWsBridge: WsGuestBridge<DOMainMessage>,
 ): { db: Database; env: Record<string, unknown>; doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -145,7 +163,7 @@ export function buildWorkerEnv(
 	// and cross-DO access reach the same instance state main owns.
 	const doBindingNames = new Set<string>()
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		env[doBinding.name] = makeDoEnvNamespaceProxy(doBinding.name, rpc)
+		env[doBinding.name] = makeDoEnvNamespaceProxy(doBinding.name, rpc, envWsBridge)
 		doBindingNames.add(doBinding.name)
 	}
 	// Container DOs whose binding isn't already declared under `durable_objects`
@@ -154,7 +172,7 @@ export function buildWorkerEnv(
 	for (const container of config.containers ?? []) {
 		const bindingName = container.name ?? container.class_name
 		if (doBindingNames.has(bindingName)) continue
-		env[bindingName] = makeDoEnvNamespaceProxy(bindingName, rpc)
+		env[bindingName] = makeDoEnvNamespaceProxy(bindingName, rpc, envWsBridge)
 	}
 
 	// D1 databases
@@ -168,13 +186,13 @@ export function buildWorkerEnv(
 	}
 
 	for (const svc of config.services ?? []) {
-		env[svc.binding] = makeEnvBindingProxy(svc.binding, rpc)
+		env[svc.binding] = makeEnvBindingProxy(svc.binding, rpc, envWsBridge)
 	}
 	for (const email of config.send_email ?? []) {
-		env[email.name] = makeEnvBindingProxy(email.name, rpc)
+		env[email.name] = makeEnvBindingProxy(email.name, rpc, envWsBridge)
 	}
 	for (const wf of config.workflows ?? []) {
-		env[wf.binding] = makeEnvBindingProxy(wf.binding, rpc)
+		env[wf.binding] = makeEnvBindingProxy(wf.binding, rpc, envWsBridge)
 	}
 
 	return { db, env, doNamespaces }

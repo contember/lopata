@@ -65,7 +65,19 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const config = await loadConfig(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
-	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc, workerConfig.namespaceName)
+
+	/**
+	 * Bridge for `Response{webSocket}` returned from env-binding fetches the
+	 * DO worker calls (e.g. `this.env.SVC.fetch('/ws')`). The user-facing peer
+	 * lives here; bytes sent / closes on it travel through this bridge back to
+	 * the upstream CFWebSocket adopted on main.
+	 */
+	const envWsBridge = new WsGuestBridge<DOMainMessage>(msg => postMessage(msg), {
+		remoteMessage: (wsId, data) => ({ type: 'env-ws-outgoing', wsId, data }),
+		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
+	})
+
+	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc, workerConfig.namespaceName, envWsBridge)
 
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
@@ -377,6 +389,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 			fetchWsBridge.deliverClientMessage(msg.wsId, msg.data)
 		} else if (msg.type === 'fetch-ws-close-in') {
 			fetchWsBridge.deliverClientClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
+		} else if (msg.type === 'env-ws-incoming') {
+			envWsBridge.deliverClientMessage(msg.wsId, msg.data)
+		} else if (msg.type === 'env-ws-close-in') {
+			envWsBridge.deliverClientClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
 		}
 	}
 

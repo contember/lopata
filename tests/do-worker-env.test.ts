@@ -2,8 +2,8 @@
  * Unit tests for the DO-worker env builder.
  *
  * Targets behaviors that don't need a real Worker thread to verify:
- *  - WebSocket-upgrade responses through DO env bindings must throw a clear
- *    error (Finding F).
+ *  - 101 responses through DO env bindings reconstruct a user-facing
+ *    CFWebSocket whose `send`/`close` cross the `envWsBridge`.
  *  - DO env bindings (host and cross-DO) expose a namespace proxy whose
  *    `.get(id).<method|fetch>(...)` round-trips through env-RPC with
  *    `{ instanceId, instanceName }` so main resolves the singleton executor.
@@ -14,11 +14,21 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { DOMainMessage } from '../src/bindings/do-executor-worker'
 import { buildWorkerEnv } from '../src/bindings/do-worker-env'
+import type { CFWebSocket } from '../src/bindings/websocket-pair'
 import type { WranglerConfig } from '../src/config'
 import { runMigrations } from '../src/db'
 import type { ParentSpanContext, RpcCallReply, RpcFetchReply, SerializedResponse } from '../src/worker-thread/protocol'
 import { RpcClient } from '../src/worker-thread/rpc-shared'
+import { WsGuestBridge } from '../src/worker-thread/ws-bridge-shared'
+
+function makeEnvWsBridge(post: (msg: DOMainMessage) => void = () => {}): WsGuestBridge<DOMainMessage> {
+	return new WsGuestBridge<DOMainMessage>(post, {
+		remoteMessage: (wsId, data) => ({ type: 'env-ws-outgoing', wsId, data }),
+		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
+	})
+}
 
 interface PostedFetch {
 	id: number
@@ -71,41 +81,58 @@ describe('buildWorkerEnv — service binding fetch', () => {
 		db.close()
 	})
 
-	test('Finding F — 101 response with webSocketId throws a clear error', async () => {
+	test('101 response with webSocketId reconstructs a bridged CFWebSocket', async () => {
 		const config = { services: [{ binding: 'SVC', service: 'aux' }] } as unknown as WranglerConfig
 		const { rpc, respondFetch } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const posted: DOMainMessage[] = []
+		const envWsBridge = makeEnvWsBridge(msg => posted.push(msg))
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', envWsBridge)
 		const svc = env.SVC as { fetch: (req: Request) => Promise<Response> }
 
-		// Kick off the call; the proxy posts an `rpc-fetch` we resolve below.
 		const promise = svc.fetch(new Request('http://svc/upgrade'))
 		respondFetch({
 			status: 101,
 			statusText: 'Switching Protocols',
 			headers: [],
 			body: null,
-			webSocketId: 'fake-ws-id',
+			webSocketId: 'env-ws-1',
 		})
 
-		await expect(promise).rejects.toThrow(/WebSocket upgrade .* not yet supported .* "SVC"/)
-	})
+		const response = (await promise) as Response & { webSocket: CFWebSocket }
+		expect(response.status).toBe(101)
+		expect(response.webSocket).toBeDefined()
 
-	test('Finding F — bare status 101 without webSocketId also throws', async () => {
-		const config = { services: [{ binding: 'SVC', service: 'aux' }] } as unknown as WranglerConfig
-		const { rpc, respondFetch } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
-		const svc = env.SVC as { fetch: (req: Request) => Promise<Response> }
+		// Drive user code: accept(), attach listener, send a message, simulate an
+		// inbound from upstream, then close. Verify both directions cross the
+		// bridge correctly.
+		const received: string[] = []
+		response.webSocket.addEventListener('message', (ev: Event) => {
+			const data = (ev as MessageEvent).data
+			if (typeof data === 'string') received.push(data)
+		})
+		response.webSocket.accept()
+		response.webSocket.send('client-hello')
 
-		const promise = svc.fetch(new Request('http://svc/upgrade'))
-		respondFetch({ status: 101, statusText: '', headers: [], body: null })
+		envWsBridge.deliverClientMessage('env-ws-1', 'server-hello')
+		// Allow microtask flush for dispatchOrQueue.
+		await new Promise<void>(r => setTimeout(r, 0))
 
-		await expect(promise).rejects.toThrow(/WebSocket upgrade/)
+		expect(received).toEqual(['server-hello'])
+		const outgoing = posted.filter(m => m.type === 'env-ws-outgoing') as Extract<DOMainMessage, { type: 'env-ws-outgoing' }>[]
+		expect(outgoing.map(m => m.data)).toEqual(['client-hello'])
+
+		response.webSocket.close(4001, 'bye')
+		const closes = posted.filter(m => m.type === 'env-ws-close-out') as Extract<DOMainMessage, { type: 'env-ws-close-out' }>[]
+		expect(closes.length).toBe(1)
+		expect(closes[0]!.code).toBe(4001)
+		expect(closes[0]!.reason).toBe('bye')
 	})
 
 	test('non-101 responses pass through unchanged', async () => {
 		const config = { services: [{ binding: 'SVC', service: 'aux' }] } as unknown as WranglerConfig
 		const { rpc, respondFetch } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const envWsBridge = makeEnvWsBridge()
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', envWsBridge)
 		const svc = env.SVC as { fetch: (req: Request) => Promise<Response> }
 
 		const promise = svc.fetch(new Request('http://svc/hello'))
@@ -120,6 +147,7 @@ describe('buildWorkerEnv — service binding fetch', () => {
 		const response = await promise
 		expect(response.status).toBe(200)
 		expect(await response.text()).toBe('hello')
+		expect((response as Response & { webSocket?: unknown }).webSocket).toBeUndefined()
 	})
 })
 
@@ -151,7 +179,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			},
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 
 		// Main owns every executor — the worker side never emits a local namespace.
 		expect(doNamespaces).toEqual([])
@@ -170,7 +198,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc, respondFetch, posts } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 
 		const id = other.idFromName('alice')
@@ -212,7 +240,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			},
 			() => undefined,
 		)
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const id = other.idFromName('bob')
 		const stub = other.get(id)
@@ -234,7 +262,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const a = other.get(other.idFromName('x'))
 		const b = other.get(other.idFromName('x'))
@@ -246,7 +274,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			containers: [{ name: 'BOX', class_name: 'BoxContainer', image: 'foo' }],
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const box = env.BOX as any
 		expect(typeof box.idFromName).toBe('function')
 		expect(typeof box.get).toBe('function')
@@ -257,7 +285,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const id1 = other.idFromName('shared')
 		const id2 = other.idFromName('shared')
@@ -298,7 +326,7 @@ describe('buildWorkerEnv — RPC call passthrough', () => {
 			},
 			() => undefined,
 		)
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const svc = env.SVC as Record<string, (...a: unknown[]) => Promise<unknown>>
 
 		const promise = svc.greet!('alice')
