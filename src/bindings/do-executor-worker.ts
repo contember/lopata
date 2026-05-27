@@ -209,6 +209,13 @@ export class WorkerExecutor implements DOExecutor {
 	private _wsCount = 0
 	private _bridgedWebSockets = new Map<string, WebSocket>()
 	/**
+	 * `wsId`s of hibernation WSes the DO worker has signalled as accepted via
+	 * `state.acceptWebSocket`. The matching decrement on close lives in the
+	 * `fetch-ws-close-out` dispatch (these WSes use the fetch bridge, not the
+	 * legacy `BridgeWebSocket` path).
+	 */
+	private _acceptedFetchWsIds = new Set<string>()
+	/**
 	 * Main-side WS bridge for `Response{webSocket}` returned by the DO worker's
 	 * fetch handler. The bridge's peer forwards outgoing bytes (Bun.serve → here)
 	 * down to the DO worker as `fetch-ws-incoming` / `fetch-ws-close-in`.
@@ -320,6 +327,9 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'fetch-ws-close-out':
 					this._fetchBridge?.deliverRemoteClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
+					if (this._acceptedFetchWsIds.delete(msg.wsId)) {
+						this._wsCount--
+					}
 					break
 
 				case 'rpc-call':
@@ -387,6 +397,8 @@ export class WorkerExecutor implements DOExecutor {
 				pending.reject(error)
 			}
 			this._pending.clear()
+			this._acceptedFetchWsIds.clear()
+			this._wsCount = 0
 			this._fetchBridge?.disposeAll()
 			this._rpcStreams.disposeAll()
 			this._rpcRequestStreams.disposeAll(error)
@@ -460,8 +472,14 @@ export class WorkerExecutor implements DOExecutor {
 				break
 			}
 			case 'ws-accept': {
-				// WebSocket was accepted by the DO — increment count
-				this._wsCount++
+				// WebSocket was accepted by the DO — increment count. Track the
+				// id so the matching `fetch-ws-close-out` can decrement (the
+				// fetch bridge path doesn't go through the `ws-close` payload
+				// below, which is for the legacy `BridgeWebSocket` flow).
+				if (!this._acceptedFetchWsIds.has(payload.wsId)) {
+					this._acceptedFetchWsIds.add(payload.wsId)
+					this._wsCount++
+				}
 				break
 			}
 		}
@@ -688,6 +706,8 @@ export class WorkerExecutor implements DOExecutor {
 		}
 		this._pending.clear()
 		this._bridgedWebSockets.clear()
+		this._acceptedFetchWsIds.clear()
+		this._wsCount = 0
 		this._fetchBridge?.disposeAll()
 		this._rpcStreams.disposeAll()
 		this._rpcRequestStreams.disposeAll(error)

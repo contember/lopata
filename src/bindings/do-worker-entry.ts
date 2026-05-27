@@ -89,6 +89,23 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
 
+	/**
+	 * Server peers (the half the DO keeps; `client._peer` from `new WebSocketPair`)
+	 * that user code passed to `state.acceptWebSocket`. The `wsId` isn't allocated
+	 * until `fetchWsBridge.register(client)` runs in the fetch handler, so we
+	 * keep the tags here and emit the `ws-accept` signal once both are known.
+	 * Without this signal, main's `activeWebSocketCount()` stays 0 and the idle
+	 * reaper evicts the executor mid-WebSocket.
+	 */
+	const acceptedHibernationPeers = new Map<InstanceType<typeof CFWebSocket>, string[]>()
+	const originalAccept = state.acceptWebSocket.bind(state)
+	state.acceptWebSocket = (ws: WebSocket, tags?: string[]) => {
+		originalAccept(ws, tags)
+		if (ws instanceof CFWebSocket) {
+			acceptedHibernationPeers.set(ws, tags ?? [])
+		}
+	}
+
 	// Mirrors the `ContainerRuntime` wiring `InProcessExecutor` did on main —
 	// without it, `ContainerBase` instances fail with "Container runtime not
 	// initialized" on the first `startAndWaitForPorts` call.
@@ -204,7 +221,25 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 					let fetchWebSocketId: string | undefined
 					if (hasWebSocket) {
-						fetchWebSocketId = fetchWsBridge.register(clientWs as InstanceType<typeof CFWebSocket>)
+						const cw = clientWs as InstanceType<typeof CFWebSocket>
+						fetchWebSocketId = fetchWsBridge.register(cw)
+						// Hibernation API: if user code called `state.acceptWebSocket(server)`
+						// before returning the response, signal main so it bumps the
+						// `activeWebSocketCount()` for this executor (paired with a
+						// decrement when the close arrives via `fetch-ws-close-out`).
+						const serverPeer = cw._peer
+						if (serverPeer) {
+							const tags = acceptedHibernationPeers.get(serverPeer)
+							if (tags !== undefined) {
+								acceptedHibernationPeers.delete(serverPeer)
+								postMessage(
+									{
+										type: 'ws-bridge',
+										payload: { type: 'ws-accept', wsId: fetchWebSocketId, tags },
+									} satisfies DOMainMessage,
+								)
+							}
+						}
 					}
 
 					let streamId: number | undefined
