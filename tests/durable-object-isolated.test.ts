@@ -94,38 +94,50 @@ beforeAll(() => {
     }
 
     export class SelfRefDO extends DurableObject {
-      async probeSelf() {
-        // Touching this.env.SELF_REF.anything must throw — see Finding D.
-        try {
-          const id = this.env.SELF_REF.idFromName('peer');
-          await this.env.SELF_REF.get(id).probeSelf();
-          return 'ok';
-        } catch (e) {
-          return 'threw:' + e.message;
-        }
+      async whoAmI() {
+        // Identify the instance by its name (preserved via instanceName flow).
+        return this.ctx.id.name ?? '<no-name>';
       }
-      async probeCrossProbes() {
-        // Introspection-only members on a cross-DO stub must NOT throw — see Finding E.
-        const ref = this.env.OTHER_DO;
-        return {
-          then: ref.then,
-          toJSON: ref.toJSON,
-          toString: ref.toString,
-          inspectSym: ref[Symbol.for('nodejs.util.inspect.custom')],
-        };
+      async incHere() {
+        const v = ((await this.ctx.storage.get('n')) ?? 0) + 1;
+        await this.ctx.storage.put('n', v);
+        return v;
       }
-      async probeCrossUse() {
-        try {
-          await this.env.OTHER_DO.something();
-          return 'no-throw';
-        } catch (e) {
-          return 'threw:' + e.message;
+      async getHere() {
+        return (await this.ctx.storage.get('n')) ?? 0;
+      }
+      async callPeer(name) {
+        // Cross-DO call to the same class via env-RPC. Lands on a separate
+        // singleton instance ("peer") owned by main's namespace.
+        const id = this.env.SELF_REF.idFromName(name);
+        const stub = this.env.SELF_REF.get(id);
+        const who = await stub.whoAmI();
+        const n = await stub.incHere();
+        return { who, n };
+      }
+      async callOther(name) {
+        // Cross-class DO call via env-RPC.
+        const id = this.env.OTHER_DO.idFromName(name);
+        return this.env.OTHER_DO.get(id).noop();
+      }
+      async fetchPeer(name, path) {
+        // Cross-DO fetch via env-RPC.
+        const stub = this.env.SELF_REF.get(this.env.SELF_REF.idFromName(name));
+        const resp = await stub.fetch('http://peer' + path);
+        return { status: resp.status, body: await resp.text() };
+      }
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname === '/who') {
+          return new Response(this.ctx.id.name ?? '<no-name>');
         }
+        return new Response('not found', { status: 404 });
       }
     }
 
     export class OtherDO extends DurableObject {
       async noop() { return 'noop'; }
+      async whoAmI() { return this.ctx.id.name ?? '<no-name>'; }
     }
 
     export default {
@@ -346,44 +358,121 @@ describe('Isolated DO — data persistence', () => {
 	})
 })
 
-describe('Isolated DO — env-binding stubs (Findings D + E)', () => {
-	test('self-DO env access throws with a clear error (Finding D)', async () => {
-		const ns = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
-		ns._setClass(class {} as any, {})
+describe('Isolated DO — cross-DO routing via env-RPC', () => {
+	/**
+	 * Main owns the namespace; both DO bindings on the worker side are env-RPC
+	 * proxies. To exercise the full cross-DO flow we share the same namespaces
+	 * with main's executor factory so DO A's worker can route a call back into
+	 * main, which dispatches to DO B's separate executor.
+	 */
+	function buildEnv(): { selfNs: DurableObjectNamespaceImpl; otherNs: DurableObjectNamespaceImpl; env: Record<string, unknown> } {
+		const selfNs = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		const otherNs = new DurableObjectNamespaceImpl(db, 'OtherDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		const env = { SELF_REF: selfNs, OTHER_DO: otherNs }
+		selfNs._setClass(class {} as any, env)
+		otherNs._setClass(class {} as any, env)
+		return { selfNs, otherNs, env }
+	}
 
-		const stub = ns.get(ns.idFromName('self-d')) as any
-		const result = (await stub.probeSelf()) as string
-		// Forking instance state would silently return 'ok'. The fix throws with
-		// the cross-DO stub message — verify both that it threw and that the
-		// message names the binding.
-		expect(result.startsWith('threw:')).toBe(true)
-		expect(result).toContain('SELF_REF')
+	test('self-DO call lands on a separate executor for the peer id', async () => {
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('caller')
+		const caller = selfNs.get(callerId) as any
 
-		const executor = ns._getExecutor(ns.idFromName('self-d').toString())
-		if (executor) await executor.dispose()
+		const result = await caller.callPeer('peer')
+		expect(result).toEqual({ who: 'peer', n: 1 })
+
+		// The peer increment landed on a separate executor (different id),
+		// not on the caller's storage.
+		const peerId = selfNs.idFromName('peer')
+		const peer = selfNs.get(peerId) as any
+		expect(await peer.getHere()).toBe(1)
+		expect(await caller.getHere()).toBe(0)
+
+		// And the two executors really are distinct singletons.
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(peerId.toString())
+		expect(callerExec).not.toBe(null)
+		expect(peerExec).not.toBe(null)
+		expect(callerExec).not.toBe(peerExec)
+
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
 	})
 
-	test('cross-DO stub allows JS introspection probes (Finding E)', async () => {
-		const ns = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
-		ns._setClass(class {} as any, {})
+	test('cross-class DO call routes through main to the other namespace', async () => {
+		const { selfNs, otherNs } = buildEnv()
+		const callerId = selfNs.idFromName('cross-caller')
+		const caller = selfNs.get(callerId) as any
 
-		const stub = ns.get(ns.idFromName('probe-e')) as any
-		// `console.log(other)` / `JSON.stringify(other)` / `await other` /
-		// `nodejs.util.inspect.custom` all hit the proxy through these props
-		// without intending to use the binding. Must not throw.
-		const probes = await stub.probeCrossProbes()
-		expect(probes).toBeDefined()
-		expect(probes.then).toBeUndefined()
-		expect(probes.toJSON).toBeUndefined()
-		expect(probes.toString).toBeUndefined()
-		expect(probes.inspectSym).toBeUndefined()
+		const result = await caller.callOther('cross-target')
+		expect(result).toBe('noop')
 
-		// Actual cross-DO method *use* still throws loudly.
-		const useResult = (await stub.probeCrossUse()) as string
-		expect(useResult.startsWith('threw:')).toBe(true)
-		expect(useResult).toContain('OTHER_DO')
+		// The target executor lives on the other namespace, not on SELF_REF.
+		const targetId = otherNs.idFromName('cross-target')
+		expect(otherNs._getExecutor(targetId.toString())).not.toBe(null)
+		expect(selfNs._getExecutor(targetId.toString())).toBe(null)
 
-		const executor = ns._getExecutor(ns.idFromName('probe-e').toString())
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const targetExec = otherNs._getExecutor(targetId.toString())
+		if (callerExec) await callerExec.dispose()
+		if (targetExec) await targetExec.dispose()
+	})
+
+	test('cross-DO fetch through env-RPC reaches the peer instance', async () => {
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('fetch-caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.fetchPeer('fetch-peer', '/who')
+		expect(result).toEqual({ status: 200, body: 'fetch-peer' })
+
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(selfNs.idFromName('fetch-peer').toString())
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
+	})
+
+	test('instanceName flows through env-RPC — ctx.id.name preserved on the target', async () => {
+		// `whoAmI()` reads `this.ctx.id.name` on the peer. That value only
+		// matches the caller-supplied name when `instanceName` is carried in
+		// the `BindingTarget` and main reconstructs `DurableObjectIdImpl(idStr,
+		// instanceName)` before resolving the executor.
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('name-caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.callPeer('name-target')
+		expect(result.who).toBe('name-target')
+
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(selfNs.idFromName('name-target').toString())
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
+	})
+
+	test('self-DO call to the host id reaches the same executor (no deadlock, no fork)', async () => {
+		// `env.SELF_REF.get(idFromName('A'))` from inside A resolves the same
+		// singleton executor on main. The DO worker handles the re-entered
+		// command in parallel (concurrent handler invocations, not a separate
+		// fork): both calls see the same storage. Before the fix, this would
+		// either throw (loud-throw stub) or silently fork into a duplicate
+		// in-worker namespace.
+		const { selfNs } = buildEnv()
+		const id = selfNs.idFromName('reentry')
+		const stub = selfNs.get(id) as any
+
+		// Bump storage from inside, then verify the re-entrant peer call sees
+		// the same storage (it ran on the same executor — no fork).
+		await stub.incHere()
+		const result = await stub.callPeer('reentry')
+		expect(result.who).toBe('reentry')
+		// `callPeer` calls `incHere()` on the peer (= same instance), so the
+		// counter goes from 1 → 2 on the same storage row.
+		expect(result.n).toBe(2)
+		expect(await stub.getHere()).toBe(2)
+
+		const executor = selfNs._getExecutor(id.toString())
 		if (executor) await executor.dispose()
 	})
 })

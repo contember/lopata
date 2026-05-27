@@ -4,10 +4,9 @@
  * Targets behaviors that don't need a real Worker thread to verify:
  *  - WebSocket-upgrade responses through DO env bindings must throw a clear
  *    error (Finding F).
- *  - Cross-DO env bindings only fail on actual *use* — JS introspection probes
- *    (`then`, `toString`, `inspect`, …) return undefined (Finding E).
- *  - Self-DO env access fails loud instead of silently forking instance state
- *    (Finding D).
+ *  - DO env bindings (host and cross-DO) expose a namespace proxy whose
+ *    `.get(id).<method|fetch>(...)` round-trips through env-RPC with
+ *    `{ instanceId, instanceName }` so main resolves the singleton executor.
  */
 
 import { Database } from 'bun:sqlite'
@@ -124,7 +123,7 @@ describe('buildWorkerEnv — service binding fetch', () => {
 	})
 })
 
-describe('buildWorkerEnv — DO env bindings (Findings D + E)', () => {
+describe('buildWorkerEnv — DO env bindings', () => {
 	let tempDir: string
 	let dataDir: string
 	let db: Database
@@ -142,7 +141,7 @@ describe('buildWorkerEnv — DO env bindings (Findings D + E)', () => {
 		db.close()
 	})
 
-	test('Finding D — host DO binding is a loud-throw stub, not a local namespace', () => {
+	test('host DO binding exposes a namespace proxy (idFromName / get / fetch)', () => {
 		const config = {
 			durable_objects: {
 				bindings: [
@@ -154,40 +153,116 @@ describe('buildWorkerEnv — DO env bindings (Findings D + E)', () => {
 		const { rpc } = makeMockRpc()
 		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
 
-		// No local namespace gets emitted for the host DO any more.
+		// Main owns every executor — the worker side never emits a local namespace.
 		expect(doNamespaces).toEqual([])
 
-		// Touching `this.env.SELF_REF.anything` throws, just like cross-DO.
+		// Both bindings (host class and cross-DO class) are namespace proxies.
 		const selfRef = env.SELF_REF as any
-		expect(() => selfRef.get).toThrow(/Cross-Durable-Object.*SELF_REF.*HostDO/s)
-
-		// And `this.env.OTHER` (cross-DO to a different class) likewise throws.
+		expect(typeof selfRef.idFromName).toBe('function')
+		expect(typeof selfRef.get).toBe('function')
 		const other = env.OTHER as any
-		expect(() => other.get).toThrow(/Cross-Durable-Object.*OTHER.*OtherDO/s)
+		expect(typeof other.idFromName).toBe('function')
+		expect(typeof other.get).toBe('function')
 	})
 
-	test('Finding E — JS introspection probes return undefined instead of throwing', async () => {
+	test('stub.fetch ships { binding, instanceId, instanceName } over env-RPC', async () => {
+		const config = {
+			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
+		} as unknown as WranglerConfig
+		const { rpc, respondFetch, posts } = makeMockRpc()
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const other = env.OTHER as any
+
+		const id = other.idFromName('alice')
+		expect(id.name).toBe('alice')
+		const stub = other.get(id)
+		expect(stub.id).toBe(id)
+		expect(stub.name).toBe('alice')
+
+		const promise = stub.fetch(new Request('http://do/hello'))
+		// The posted RPC carries the id details so main resolves the right instance.
+		expect(posts.length).toBe(1)
+		const post = posts[0] as any
+		expect(post.target).toEqual({ binding: 'OTHER', instanceId: id.toString(), instanceName: 'alice' })
+
+		const bodyBytes = new TextEncoder().encode('hi alice')
+		respondFetch({
+			status: 200,
+			statusText: 'OK',
+			headers: [['content-type', 'text/plain']],
+			body: bodyBytes.buffer.slice(bodyBytes.byteOffset, bodyBytes.byteOffset + bodyBytes.byteLength) as ArrayBuffer,
+		})
+		const response = await promise
+		expect(response.status).toBe(200)
+		expect(await response.text()).toBe('hi alice')
+	})
+
+	test('stub method call ships { binding, instanceId, instanceName } over env-RPC', async () => {
+		const config = {
+			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
+		} as unknown as WranglerConfig
+		const calls: Array<{ target: unknown; method: string; args: unknown[] }> = []
+		const pendingIds: number[] = []
+		const rpc: RpcClient = new RpcClient(
+			(msg: any) => {
+				if (msg.type === 'rpc-call') {
+					calls.push({ target: msg.target, method: msg.method, args: msg.args })
+					pendingIds.push(msg.id)
+				}
+			},
+			() => undefined,
+		)
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const other = env.OTHER as any
+		const id = other.idFromName('bob')
+		const stub = other.get(id)
+
+		const promise = stub.greet('hi')
+		const replyId = pendingIds.shift()!
+		const reply: RpcCallReply = { type: 'rpc-call-result', id: replyId, value: 'hi bob' }
+		rpc.handle(reply)
+		expect(await promise).toBe('hi bob')
+		expect(calls).toEqual([{
+			target: { binding: 'OTHER', instanceId: id.toString(), instanceName: 'bob' },
+			method: 'greet',
+			args: ['hi'],
+		}])
+	})
+
+	test('stubs are cached by id — repeated get(id) returns the same proxy', () => {
 		const config = {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
 		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
 		const other = env.OTHER as any
+		const a = other.get(other.idFromName('x'))
+		const b = other.get(other.idFromName('x'))
+		expect(a).toBe(b)
+	})
 
-		// `console.log(other)` / `await other` / `JSON.stringify(other)` /
-		// `String(other)` must NOT throw — all of these hit the proxy via
-		// `then`, `toJSON`, `toString`, or `Symbol.for('nodejs.util.inspect.custom')`.
-		expect(other.then).toBeUndefined()
-		expect(other.toJSON).toBeUndefined()
-		expect(other.toString).toBeUndefined()
-		expect(other.valueOf).toBeUndefined()
-		expect(other[Symbol.toPrimitive]).toBeUndefined()
-		expect(other[Symbol.toStringTag]).toBeUndefined()
-		expect(other[Symbol.for('nodejs.util.inspect.custom')]).toBeUndefined()
+	test('container DO bindings (no `durable_objects.bindings` entry) also get a namespace proxy', () => {
+		const config = {
+			containers: [{ name: 'BOX', class_name: 'BoxContainer', image: 'foo' }],
+		} as unknown as WranglerConfig
+		const { rpc } = makeMockRpc()
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const box = env.BOX as any
+		expect(typeof box.idFromName).toBe('function')
+		expect(typeof box.get).toBe('function')
+	})
 
-		// `await other` would call `.then`, which returns undefined → not a thenable;
-		// the await resolves to the proxy itself. The earlier code threw here.
-		await expect(Promise.resolve(other)).resolves.toBe(other)
+	test('idFromName is deterministic — same name → same id string', () => {
+		const config = {
+			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
+		} as unknown as WranglerConfig
+		const { rpc } = makeMockRpc()
+		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO')
+		const other = env.OTHER as any
+		const id1 = other.idFromName('shared')
+		const id2 = other.idFromName('shared')
+		expect(id1.toString()).toBe(id2.toString())
+		expect(id1.name).toBe('shared')
 	})
 })
 
