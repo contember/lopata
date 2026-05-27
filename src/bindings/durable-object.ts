@@ -881,6 +881,11 @@ export class DurableObjectNamespaceImpl {
 
 		this._class = undefined
 		this._externalClassName = className
+		// Clear the previous generation's hint; the new generation's `'ready'` message
+		// will deliver a fresh one via `_setAlarmHandlerHint`. Without this, removing
+		// `alarm()` between reloads would leave `hasAlarmHandler()` reporting stale
+		// `true` until the hint arrives — matching the doc comment on `hasAlarmHandler`.
+		this._externalAlarmHandler = undefined
 		this._env = env
 		this._generationId = generationId
 		this._restoreAlarms()

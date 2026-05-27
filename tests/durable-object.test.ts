@@ -394,6 +394,18 @@ describe('DurableObjectNamespace', () => {
 			ns._setAlarmHandlerHint(false)
 			expect(ns.hasAlarmHandler()).toBe(false)
 		})
+
+		test('thread mode: _setExternalClass clears the previous generation\'s hint', () => {
+			const ns = new DurableObjectNamespaceImpl(db, 'ThreadDO', undefined, { evictionTimeoutMs: 0 })
+			ns._setExternalClass('ThreadDO', {})
+			ns._setAlarmHandlerHint(true)
+			expect(ns.hasAlarmHandler()).toBe(true)
+
+			// Re-wire (e.g. user removed `alarm()` between reloads). The next hint may
+			// arrive asynchronously; until it does, `hasAlarmHandler()` must report false.
+			ns._setExternalClass('ThreadDO', {})
+			expect(ns.hasAlarmHandler()).toBe(false)
+		})
 	})
 })
 
