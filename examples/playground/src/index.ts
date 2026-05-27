@@ -1,6 +1,7 @@
 export { MyContainer } from './container'
 export { Counter } from './counter'
 export { ErrorBridge } from './error-bridge'
+export { HibernatingChat } from './hibernating-chat'
 export { SqlNotes } from './notes'
 export { Sandbox } from './sandbox'
 export { MyWorkflow } from './workflow'
@@ -23,6 +24,10 @@ import './playground/sections/media'
 import './playground/sections/error-bridge'
 import './playground/sections/workflow'
 import './playground/sections/websocket'
+import './playground/sections/streaming'
+import './playground/sections/hibernation'
+import './playground/sections/email'
+import './playground/sections/cron'
 
 export default {
 	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
