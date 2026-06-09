@@ -120,7 +120,14 @@ export class Generation {
 			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
 				const upgraded = server.upgrade(request, { data: { cfSocket: ws } })
-				if (!upgraded) return new Response('WebSocket upgrade failed', { status: 500 })
+				if (!upgraded) {
+					// Upgrade failed: the host bridge socket was already registered (and
+					// the guest peer accepted) by executeFetch, but nobody will accept()
+					// or close() it now. Close it so the guest peer is torn down and the
+					// bridge entry forgotten instead of leaking until disposeAll.
+					ws.close(1011, 'upgrade failed')
+					return new Response('WebSocket upgrade failed', { status: 500 })
+				}
 				return undefined
 			}
 			return response
