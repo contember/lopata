@@ -296,22 +296,12 @@ export class WorkerThreadExecutor {
 				this._pendingWaitUntil.delete(msg.id)
 				break
 			case 'trace-span-insert':
-				getTraceStore().insertSpan(msg.span)
-				break
 			case 'trace-span-end':
-				getTraceStore().endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
-				break
 			case 'trace-span-status':
-				getTraceStore().setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
-				break
 			case 'trace-span-attrs':
-				getTraceStore().updateAttributes(msg.spanId, msg.attrs)
-				break
 			case 'trace-span-event':
-				getTraceStore().addEvent(msg.event)
-				break
 			case 'trace-error':
-				getTraceStore().insertError(msg.error)
+				this._applyTrace(msg)
 				break
 			case 'ws-worker-send':
 				this._wsBridge.deliverRemoteMessage(msg.wsId, msg.data)
@@ -328,6 +318,39 @@ export class WorkerThreadExecutor {
 			case 'stream-error':
 				this._responseStreams.error(msg.id, deserializeError(msg.error))
 				break
+		}
+	}
+
+	/** Apply a forwarded trace-store write on main. Wrapped in try/catch because
+	 *  these run inside `worker.onmessage`: a write that throws (a `BigInt` /
+	 *  circular value `JSON.stringify` chokes on, a transient DB error) would be
+	 *  an uncaught exception that takes down the whole dev server. A failed trace
+	 *  write is diagnostic-only — never worth crashing for. */
+	private _applyTrace(msg: Extract<WorkerMessage, { type: `trace-${string}` }>): void {
+		try {
+			const store = getTraceStore()
+			switch (msg.type) {
+				case 'trace-span-insert':
+					store.insertSpan(msg.span)
+					break
+				case 'trace-span-end':
+					store.endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
+					break
+				case 'trace-span-status':
+					store.setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
+					break
+				case 'trace-span-attrs':
+					store.updateAttributes(msg.spanId, msg.attrs)
+					break
+				case 'trace-span-event':
+					store.addEvent(msg.event)
+					break
+				case 'trace-error':
+					store.insertError(msg.error)
+					break
+			}
+		} catch (err) {
+			console.error('[lopata] trace store write failed (ignored):', err)
 		}
 	}
 

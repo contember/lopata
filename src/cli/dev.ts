@@ -6,6 +6,13 @@ process.on('unhandledRejection', (reason) => {
 	console.error('[lopata] Unhandled promise rejection:', reason)
 })
 
+// Last-resort guard so a synchronous throw on main (e.g. a worker message
+// handler choking on a non-serializable user value) logs instead of killing the
+// whole dev server — every worker, the dashboard and the file watcher with it.
+process.on('uncaughtException', (err) => {
+	console.error('[lopata] Uncaught exception (dev server kept alive):', err)
+})
+
 import '../plugin'
 import path from 'node:path'
 import {

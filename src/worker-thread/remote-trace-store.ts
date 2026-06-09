@@ -15,6 +15,28 @@ import type { TraceErrorPayload, WorkerMessage } from './protocol'
  *  must extend this list (and `RemoteTraceStore` below). */
 type RemotedMethods = 'insertSpan' | 'endSpan' | 'setSpanStatus' | 'getSpanStatus' | 'updateAttributes' | 'addEvent' | 'insertError'
 
+/**
+ * Keep only structured-clone-safe values so the `postMessage` to main can't
+ * throw a `DataCloneError`. Trace attributes are user-controlled (`setAttribute`,
+ * `addEvent`, logged objects) and may carry functions, symbols or class
+ * instances that survive in-process but not across the worker boundary. Mirrors
+ * `serializeError`'s per-key cloneable filter: a non-cloneable value is dropped,
+ * never thrown — a trace attribute is diagnostic and must never fail the request.
+ * Allocates a copy only when something actually has to be dropped.
+ */
+function sanitizeAttributes(attrs: Record<string, unknown>): Record<string, unknown> {
+	let safe: Record<string, unknown> | null = null
+	for (const key of Object.keys(attrs)) {
+		try {
+			structuredClone(attrs[key])
+		} catch {
+			if (!safe) safe = { ...attrs }
+			delete safe[key]
+		}
+	}
+	return safe ?? attrs
+}
+
 export class RemoteTraceStore implements Pick<TraceStore, RemotedMethods> {
 	private _statuses = new Map<string, 'ok' | 'error' | 'unset'>()
 	private _post: (msg: WorkerMessage) => void
@@ -25,7 +47,11 @@ export class RemoteTraceStore implements Pick<TraceStore, RemotedMethods> {
 
 	insertSpan(span: SpanData): void {
 		this._statuses.set(span.spanId, span.status)
-		this._post({ type: 'trace-span-insert', span })
+		try {
+			this._post({ type: 'trace-span-insert', span })
+		} catch {
+			this._post({ type: 'trace-span-insert', span: { ...span, attributes: sanitizeAttributes(span.attributes) } })
+		}
 	}
 
 	endSpan(spanId: string, endTime: number, status: 'ok' | 'error', statusMessage?: string): void {
@@ -43,11 +69,19 @@ export class RemoteTraceStore implements Pick<TraceStore, RemotedMethods> {
 	}
 
 	updateAttributes(spanId: string, attrs: Record<string, unknown>): void {
-		this._post({ type: 'trace-span-attrs', spanId, attrs })
+		try {
+			this._post({ type: 'trace-span-attrs', spanId, attrs })
+		} catch {
+			this._post({ type: 'trace-span-attrs', spanId, attrs: sanitizeAttributes(attrs) })
+		}
 	}
 
 	addEvent(event: Omit<SpanEventData, 'id'>): void {
-		this._post({ type: 'trace-span-event', event })
+		try {
+			this._post({ type: 'trace-span-event', event })
+		} catch {
+			this._post({ type: 'trace-span-event', event: { ...event, attributes: sanitizeAttributes(event.attributes) } })
+		}
 	}
 
 	insertError(opts: TraceErrorPayload): void {

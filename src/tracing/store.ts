@@ -4,6 +4,26 @@ import type { SpanData, SpanEventData, TraceDetail, TraceEvent, TraceSummary } f
 
 type Listener = (event: TraceEvent) => void
 
+/**
+ * `JSON.stringify` for user-controlled span attributes / event payloads.
+ * Plain `JSON.stringify` THROWS on a `BigInt` and on a circular reference —
+ * both trivially reachable from user code (`setAttribute('x', 1n)`, logging a
+ * request/response object). In thread mode these writes run on the main thread
+ * (inside `worker.onmessage`), so an unguarded throw would take down the whole
+ * dev server. A dropped/coerced value is always preferable to a crash here.
+ */
+export function safeStringify(value: unknown): string {
+	const seen = new WeakSet<object>()
+	return JSON.stringify(value, (_key, val) => {
+		if (typeof val === 'bigint') return val.toString()
+		if (typeof val === 'object' && val !== null) {
+			if (seen.has(val)) return '[Circular]'
+			seen.add(val)
+		}
+		return val
+	})
+}
+
 const TRACE_CAP = 10_000
 const PRUNE_BATCH = 100
 const STALE_SPAN_TTL_MS = 10 * 60 * 1000 // 10 minutes
@@ -80,7 +100,7 @@ export class TraceStore {
 			span.startTime,
 			span.endTime,
 			span.durationMs,
-			JSON.stringify(span.attributes),
+			safeStringify(span.attributes),
 			span.workerName,
 		)
 		this.broadcast({ type: 'span.start', span })
@@ -113,7 +133,7 @@ export class TraceStore {
 	}
 
 	updateAttributes(spanId: string, attrs: Record<string, unknown>): void {
-		this.updateAttributesStmt.run(JSON.stringify(attrs), spanId)
+		this.updateAttributesStmt.run(safeStringify(attrs), spanId)
 	}
 
 	addEvent(event: Omit<SpanEventData, 'id'>): void {
@@ -124,7 +144,7 @@ export class TraceStore {
 			event.name,
 			event.level,
 			event.message,
-			JSON.stringify(event.attributes),
+			safeStringify(event.attributes),
 		)
 		const id = this.db.prepare<{ id: number }, []>('SELECT last_insert_rowid() as id').get()?.id
 		this.broadcast({ type: 'span.event', event: { ...event, id } })
