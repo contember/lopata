@@ -16,10 +16,6 @@ import { getTraceStore } from '../tracing/store'
 import type {
 	BindingTarget,
 	ParentSpanContext,
-	RpcCallRequest,
-	RpcFetchRequest,
-	RpcGetRequest,
-	RpcReply,
 	SerializedRequest,
 	SerializedResponse,
 	WorkerCommand,
@@ -28,7 +24,7 @@ import type {
 	WorkflowControlResult,
 } from './protocol'
 import { deserializeError } from './protocol'
-import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from './rpc-shared'
+import { RpcHostChannel } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
@@ -92,24 +88,20 @@ export class WorkerThreadExecutor {
 			},
 		},
 	)
-	/** Outbound response-body pumps started by `dispatchRpcFetch` (main → worker
-	 *  reverse-streaming path for service-binding fetches). */
-	private _rpcStreams = new OutboundStreamRegistry()
-	/** Receiver state for request-body streams arriving from the worker on the
-	 *  unified RPC channel (worker → main service-binding fetch with body). */
-	private _rpcRequestStreams = new StreamReceiver(
-		(streamId) => {
-			if (this._disposed) return
-			this._send({ type: 'rpc-req-stream-cancel', streamId })
+	/** Main-side host of the unified cross-thread RPC channel — binding call/get/
+	 *  fetch from the user's worker, with response/request-body streaming. Shared
+	 *  with the DO-worker executor; channel-specifics injected as hooks. */
+	private _rpcChannel = new RpcHostChannel({
+		resolveBinding: (target) => this._resolveBinding(target),
+		post: (reply) => this._send(reply),
+		isAlive: () => !this._disposed,
+		decorateResponse: (response, serialized) => {
+			const ws = (response as ResponseWithWebSocket).webSocket
+			if (response.status === 101 && ws instanceof CFWebSocket) {
+				serialized.webSocketId = this._wsBridge.adoptExisting(ws)
+			}
 		},
-		{
-			window: STREAM_BACKPRESSURE_WINDOW,
-			onCredit: (streamId) => {
-				if (this._disposed) return
-				this._send({ type: 'rpc-req-stream-ack', streamId })
-			},
-		},
-	)
+	})
 	/** Outbound request-body pumps for the top-level fetch path (main → worker).
 	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
 	 *  stops the source reader. */
@@ -162,18 +154,13 @@ export class WorkerThreadExecutor {
 		this._pendingWorkflowControl.clear()
 		this._pendingWaitUntil.clear()
 		this._responseStreams.disposeAll(err)
-		this._rpcStreams.disposeAll()
-		this._rpcRequestStreams.disposeAll(err)
+		this._rpcChannel.disposeAll(err)
 		this._topRequestStreams.disposeAll()
 		this._wsBridge.disposeAll()
 	}
 
 	private _send(cmd: WorkerCommand): void {
 		this._worker.postMessage(cmd)
-	}
-
-	private _postReply = (reply: RpcReply): void => {
-		this._send(reply)
 	}
 
 	private _handleMessage(msg: WorkerMessage): void {
@@ -187,6 +174,7 @@ export class WorkerThreadExecutor {
 			return
 		}
 		if (this._disposed) return
+		if (this._rpcChannel.handle(msg)) return
 		switch (msg.type) {
 			case 'need-init':
 				this._send({
@@ -307,30 +295,6 @@ export class WorkerThreadExecutor {
 				}
 				break
 			}
-			case 'rpc-call':
-				this._dispatchRpcCall(msg)
-				break
-			case 'rpc-call-get':
-				this._dispatchRpcGet(msg)
-				break
-			case 'rpc-fetch':
-				this._dispatchRpcFetch(msg)
-				break
-			case 'rpc-stream-cancel':
-				this._rpcStreams.cancel(msg.streamId)
-				break
-			case 'rpc-stream-ack':
-				this._rpcStreams.grantCredit(msg.streamId)
-				break
-			case 'rpc-req-stream-chunk':
-				this._rpcRequestStreams.push(msg.streamId, msg.chunk)
-				break
-			case 'rpc-req-stream-end':
-				this._rpcRequestStreams.end(msg.streamId)
-				break
-			case 'rpc-req-stream-error':
-				this._rpcRequestStreams.error(msg.streamId, deserializeError(msg.error))
-				break
 			case 'req-stream-cancel':
 				this._topRequestStreams.cancel(msg.streamId)
 				break
@@ -429,41 +393,6 @@ export class WorkerThreadExecutor {
 		}
 		const doId = new DurableObjectIdImpl(target.instanceId, target.instanceName)
 		return (get as (id: DurableObjectIdImpl) => Record<string, unknown>).call(binding, doId)
-	}
-
-	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
-		return dispatchRpcCall(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed,
-		})
-	}
-
-	private _dispatchRpcGet(req: RpcGetRequest): Promise<void> {
-		return dispatchRpcGet(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed,
-		})
-	}
-
-	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
-		return dispatchRpcFetch(
-			req,
-			{
-				resolveBinding: this._resolveBinding,
-				post: this._postReply,
-				isAlive: () => !this._disposed,
-				decorateResponse: (response, serialized) => {
-					const ws = (response as ResponseWithWebSocket).webSocket
-					if (response.status === 101 && ws instanceof CFWebSocket) {
-						serialized.webSocketId = this._wsBridge.adoptExisting(ws)
-					}
-				},
-			},
-			this._rpcStreams,
-			this._rpcRequestStreams,
-		)
 	}
 
 	private _pumpTopRequestBody(streamId: number, body: ReadableStream<Uint8Array>): void {

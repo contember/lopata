@@ -228,6 +228,88 @@ function pumpRpcFetchBody(
 	)
 }
 
+/**
+ * Main-side host of the unified cross-thread RPC channel. Both
+ * `WorkerThreadExecutor` (user-worker channel) and `WorkerExecutor` (DO-instance
+ * channel) own one. It bundles the outbound response-body pump registry, the
+ * inbound request-body receiver (with backpressure), the call/get/fetch
+ * dispatch, and teardown — so the two executors share a single wiring +
+ * `isAlive`/teardown contract instead of re-implementing (and drifting on) the
+ * glue. The executor supplies channel-specific behavior via {@link RpcDispatchHooks}:
+ * `resolveBinding` (env lookup), `post` (transport), `isAlive` (liveness), and an
+ * optional `decorateResponse` (WS adoption). All hooks should close over the
+ * executor so they read live state lazily.
+ */
+export class RpcHostChannel {
+	/** Outbound response-body pumps started by `dispatchRpcFetch`. */
+	private _streams = new OutboundStreamRegistry()
+	/** Inbound request-body streams (worker → main binding fetch with body). */
+	private _requestStreams: StreamReceiver
+	private _hooks: RpcDispatchHooks
+
+	constructor(hooks: RpcDispatchHooks) {
+		this._hooks = hooks
+		this._requestStreams = new StreamReceiver(
+			(streamId) => {
+				if (!hooks.isAlive()) return
+				hooks.post({ type: 'rpc-req-stream-cancel', streamId })
+			},
+			{
+				window: STREAM_BACKPRESSURE_WINDOW,
+				onCredit: (streamId) => {
+					if (!hooks.isAlive()) return
+					hooks.post({ type: 'rpc-req-stream-ack', streamId })
+				},
+			},
+		)
+	}
+
+	/**
+	 * Route an inbound message if it belongs to the RPC channel; returns true if
+	 * consumed (the caller stops processing it). Mirrors {@link RpcClient.handle}
+	 * on the sender side.
+	 */
+	handle(msg: { type: string }): boolean {
+		switch (msg.type) {
+			case 'rpc-call':
+				void dispatchRpcCall(msg as RpcCallRequest, this._hooks)
+				return true
+			case 'rpc-call-get':
+				void dispatchRpcGet(msg as RpcGetRequest, this._hooks)
+				return true
+			case 'rpc-fetch':
+				void dispatchRpcFetch(msg as RpcFetchRequest, this._hooks, this._streams, this._requestStreams)
+				return true
+			case 'rpc-stream-cancel':
+				this._streams.cancel((msg as RpcStreamCancel).streamId)
+				return true
+			case 'rpc-stream-ack':
+				this._streams.grantCredit((msg as RpcStreamAck).streamId)
+				return true
+			case 'rpc-req-stream-chunk': {
+				const m = msg as RpcReqStreamChunk
+				this._requestStreams.push(m.streamId, m.chunk)
+				return true
+			}
+			case 'rpc-req-stream-end':
+				this._requestStreams.end((msg as RpcReqStreamEnd).streamId)
+				return true
+			case 'rpc-req-stream-error': {
+				const m = msg as RpcReqStreamError
+				this._requestStreams.error(m.streamId, deserializeError(m.error))
+				return true
+			}
+			default:
+				return false
+		}
+	}
+
+	disposeAll(err: Error): void {
+		this._streams.disposeAll()
+		this._requestStreams.disposeAll(err)
+	}
+}
+
 interface PendingCall {
 	resolve: (value: unknown) => void
 	reject: (error: Error) => void

@@ -16,9 +16,9 @@ import type {
 	DOWorkerMessage,
 	WsAcceptSignal,
 } from '../worker-thread/do-protocol'
-import type { BindingTarget, RpcCallRequest, RpcFetchRequest, RpcGetRequest, RpcReply } from '../worker-thread/protocol'
+import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
-import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from '../worker-thread/rpc-shared'
+import { RpcHostChannel } from '../worker-thread/rpc-shared'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
@@ -93,24 +93,23 @@ export class WorkerExecutor implements DOExecutor {
 	 * holds the synthetic user-facing peer.
 	 */
 	private _envBindingWsBridge: WsHostBridge<DOWorkerMessage> | null = null
-	/** Reverse-streaming pumps for env-binding fetch responses (service-binding
-	 *  RPC `.fetch()` invoked from inside the DO worker). */
-	private _rpcStreams = new OutboundStreamRegistry()
-	/** Receiver state for request-body streams arriving from the DO worker on
-	 *  the unified RPC channel (DO-worker → main env-binding fetch with body). */
-	private _rpcRequestStreams = new StreamReceiver(
-		(streamId) => {
-			if (this._disposed) return
-			this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
+	/** Main-side host of the unified cross-thread RPC channel — env-binding
+	 *  call/get/fetch from inside the DO worker (`this.env.SVC.…`), with
+	 *  response/request-body streaming. Shared with the user-worker executor;
+	 *  channel-specifics injected as hooks. */
+	private _rpcChannel = new RpcHostChannel({
+		resolveBinding: (target) => this._resolveBinding(target),
+		post: (reply) => {
+			this._worker?.postMessage(reply satisfies RpcReply)
 		},
-		{
-			window: STREAM_BACKPRESSURE_WINDOW,
-			onCredit: (streamId) => {
-				if (this._disposed) return
-				this._worker?.postMessage({ type: 'rpc-req-stream-ack', streamId } satisfies DOWorkerMessage)
-			},
+		isAlive: () => !this._disposed && this._worker !== null,
+		decorateResponse: (response, serialized) => {
+			const ws = (response as ResponseWithWebSocket).webSocket
+			if (response.status === 101 && ws instanceof CFWebSocket && this._envBindingWsBridge) {
+				serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws, { bridgeEvents: true })
+			}
 		},
-	)
+	})
 	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
 	private _fetchStreams = new StreamReceiver(
 		(streamId) => {
@@ -169,6 +168,7 @@ export class WorkerExecutor implements DOExecutor {
 			// `hooks.isAlive()`. Mirrors `WorkerThreadExecutor._handleMessage`.
 			if (this._disposed) return
 			const msg = event.data
+			if (this._rpcChannel.handle(msg)) return
 
 			switch (msg.type) {
 				case 'need-init':
@@ -242,38 +242,6 @@ export class WorkerExecutor implements DOExecutor {
 					this._envBindingWsBridge?.deliverRemoteClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
 					break
 
-				case 'rpc-call':
-					this._dispatchRpcCall(msg)
-					break
-
-				case 'rpc-call-get':
-					this._dispatchRpcGet(msg)
-					break
-
-				case 'rpc-fetch':
-					this._dispatchRpcFetch(msg)
-					break
-
-				case 'rpc-stream-cancel':
-					this._rpcStreams.cancel(msg.streamId)
-					break
-
-				case 'rpc-stream-ack':
-					this._rpcStreams.grantCredit(msg.streamId)
-					break
-
-				case 'rpc-req-stream-chunk':
-					this._rpcRequestStreams.push(msg.streamId, msg.chunk)
-					break
-
-				case 'rpc-req-stream-end':
-					this._rpcRequestStreams.end(msg.streamId)
-					break
-
-				case 'rpc-req-stream-error':
-					this._rpcRequestStreams.error(msg.streamId, deserializeError(msg.error))
-					break
-
 				case 'do-stream-chunk':
 					this._fetchStreams.push(msg.streamId, msg.chunk)
 					break
@@ -322,8 +290,7 @@ export class WorkerExecutor implements DOExecutor {
 			this._wsCount = 0
 			this._fetchBridge?.disposeAll()
 			this._envBindingWsBridge?.disposeAll()
-			this._rpcStreams.disposeAll()
-			this._rpcRequestStreams.disposeAll(error)
+			this._rpcChannel.disposeAll(error)
 			this._fetchStreams.disposeAll(error)
 			this._fetchRequestStreams.disposeAll()
 		}
@@ -481,45 +448,6 @@ export class WorkerExecutor implements DOExecutor {
 		return (get as (id: DurableObjectIdImpl) => Record<string, unknown>).call(binding, doId)
 	}
 
-	private _postReply = (reply: RpcReply): void => {
-		this._worker?.postMessage(reply satisfies DOWorkerMessage)
-	}
-
-	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
-		return dispatchRpcCall(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed && this._worker !== null,
-		})
-	}
-
-	private _dispatchRpcGet(req: RpcGetRequest): Promise<void> {
-		return dispatchRpcGet(req, {
-			resolveBinding: this._resolveBinding,
-			post: this._postReply,
-			isAlive: () => !this._disposed && this._worker !== null,
-		})
-	}
-
-	private _dispatchRpcFetch(req: RpcFetchRequest): Promise<void> {
-		return dispatchRpcFetch(
-			req,
-			{
-				resolveBinding: this._resolveBinding,
-				post: this._postReply,
-				isAlive: () => !this._disposed && this._worker !== null,
-				decorateResponse: (response, serialized) => {
-					const ws = (response as ResponseWithWebSocket).webSocket
-					if (response.status === 101 && ws instanceof CFWebSocket && this._envBindingWsBridge) {
-						serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws, { bridgeEvents: true })
-					}
-				},
-			},
-			this._rpcStreams,
-			this._rpcRequestStreams,
-		)
-	}
-
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
 		const result = await this._sendCommand({
 			type: 'rpc-call',
@@ -618,8 +546,7 @@ export class WorkerExecutor implements DOExecutor {
 		this._wsCount = 0
 		this._fetchBridge?.disposeAll()
 		this._envBindingWsBridge?.disposeAll()
-		this._rpcStreams.disposeAll()
-		this._rpcRequestStreams.disposeAll(error)
+		this._rpcChannel.disposeAll(error)
 		this._fetchStreams.disposeAll(error)
 		this._fetchRequestStreams.disposeAll()
 	}
