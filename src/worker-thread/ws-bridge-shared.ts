@@ -42,6 +42,20 @@ export interface WsGuestEnvelopes<O> {
 	remoteClose(wsId: string, code: number, reason: string, wasClean: boolean): O
 }
 
+/** Cap on the "recently forgotten" set. A long-lived bridge (DO executors live
+ *  until eviction and may serve many short-lived connections) would otherwise
+ *  grow this set unbounded. It only needs to catch late `deliver*` events racing
+ *  a recent close, so once over the cap, evicting the oldest id (Set preserves
+ *  insertion order) is safe. */
+const FORGOTTEN_CAP = 1024
+function rememberForgotten(set: Set<string>, wsId: string): void {
+	set.add(wsId)
+	if (set.size > FORGOTTEN_CAP) {
+		const oldest = set.values().next().value
+		if (oldest !== undefined) set.delete(oldest)
+	}
+}
+
 /**
  * Host side: owns the `CFWebSocket` that gets handed to `Bun.serve.upgrade`
  * and bridges events to/from the guest worker.
@@ -83,7 +97,7 @@ export class WsHostBridge<O> {
 		this._sockets.delete(wsId)
 		this._pendingEvents.delete(wsId)
 		this._bridgedAdoptions.delete(wsId)
-		this._forgotten.add(wsId)
+		rememberForgotten(this._forgotten, wsId)
 	}
 
 	/**
@@ -308,7 +322,7 @@ export class WsGuestBridge<O> {
 	private _forget(wsId: string): void {
 		this._sockets.delete(wsId)
 		this._pendingEvents.delete(wsId)
-		this._forgotten.add(wsId)
+		rememberForgotten(this._forgotten, wsId)
 	}
 
 	private _bufferPending(wsId: string, evt: WSEvent): void {
