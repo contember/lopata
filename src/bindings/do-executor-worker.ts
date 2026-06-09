@@ -9,8 +9,8 @@ import { dirname, resolve } from 'node:path'
 import type {
 	BindingTarget,
 	RpcCallRequest,
-	RpcGetRequest,
 	RpcFetchRequest,
+	RpcGetRequest,
 	RpcReply,
 	RpcReqStreamChunk,
 	RpcReqStreamEnd,
