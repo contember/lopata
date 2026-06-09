@@ -106,6 +106,13 @@ export class WorkerThreadExecutor {
 		this._worker.onerror = (event: ErrorEvent) => {
 			if (this._disposed) return
 			this._disposed = true
+			// Bun does NOT auto-terminate a Worker that crashed via an uncaught error
+			// (unhandledrejection, async errors in waitUntil/queue/timer callbacks).
+			// Terminate it here — otherwise `dispose()` early-returns on `_disposed`
+			// and the thread (with its queue-consumer `setInterval`s, see
+			// `startThreadQueueConsumers`) lives until process exit, polling the shared
+			// SQLite queue forever. Mirrors `WorkerExecutor.onerror` for DO workers.
+			this._worker.terminate()
 			// `event.message` is frequently empty for Bun worker errors — prefer the
 			// real stack when the runtime attaches one so the user gets a usable trace.
 			const detail = event.error?.stack ?? event.message ?? 'unknown'
