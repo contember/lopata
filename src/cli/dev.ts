@@ -26,6 +26,7 @@ import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase } from '../db'
 import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
+import { ImportGraphWatcher } from '../import-graph'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
@@ -56,7 +57,7 @@ export async function run(ctx: CliContext, args: string[]) {
 	const portFlag = values.port
 
 	const baseDir = process.cwd()
-	const watchers: FileWatcher[] = []
+	const watchers: { stop(): void }[] = []
 
 	// Reap orphan containers left behind by previous lopata runs that crashed
 	// or were `kill -9`'d before the exit handler fired. Silently does nothing
@@ -255,12 +256,23 @@ export async function run(ctx: CliContext, args: string[]) {
 		setGenerationManager(manager)
 		setWorkerRegistry(registry)
 
-		// File watcher — watch the source directory
-		const srcDir = path.dirname(path.resolve(baseDir, config.main))
-		const watcher = new FileWatcher(srcDir, makeReloadCallback(manager, 'Reloaded'))
+		// File watcher — follow the worker's actual import graph, not just the
+		// entry's directory. This catches edits to code imported from elsewhere in
+		// the project (e.g. an entry at `workers/app.ts` importing `../app/**`),
+		// which a dir-only watcher would miss. A reload re-imports the whole graph,
+		// so after each one we rescan to pick up newly-added imports.
+		const entry = path.resolve(baseDir, config.main)
+		const watcher = new ImportGraphWatcher(entry, baseDir, () => {
+			manager.reload().then(gen => {
+				watcher.rescan()
+				console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)
+			}).catch(err => {
+				console.error('[lopata] Reload failed:', err)
+			})
+		})
 		watcher.start()
 		watchers.push(watcher)
-		console.log(`[lopata] Watching ${srcDir} for changes`)
+		console.log(`[lopata] Watching ${watcher.size} imported files for changes`)
 	}
 
 	// Start server — one Bun.serve(), delegates to active generation
