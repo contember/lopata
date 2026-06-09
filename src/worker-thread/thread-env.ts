@@ -27,6 +27,7 @@ import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
+import { warnInvalidRpcArgs } from '../rpc-validate'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget } from './protocol'
 import type { RpcClient } from './rpc-client'
@@ -228,7 +229,13 @@ function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<stri
 	return makeBindingProxy(
 		{
 			fetch: (input, init) => proxyFetch(target, rpc, input, init),
-			call: (prop, args) => rpc.call(target, prop, args),
+			call: (prop, args) => {
+				// Restore the in-process path's dev-time warning for args that won't
+				// survive the cross-thread hop (functions, RpcTargets, …) — otherwise
+				// the postMessage just throws an opaque DataCloneError with no guidance.
+				warnInvalidRpcArgs(args, prop)
+				return rpc.call(target, prop, args)
+			},
 			getProperty: prop => rpc.callGet(target, prop),
 		},
 		extras,

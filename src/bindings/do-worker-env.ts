@@ -12,6 +12,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
+import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
 import type { BindingTarget, ParentSpanContext, SerializedResponse } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
@@ -59,7 +60,10 @@ function makeRpcProxy(
 				const r = await rpc.callFetch(target, req)
 				return buildBridgedFetchResponse(r, rpc, envWsBridge)
 			},
-			call: (prop, args) => rpc.call(target, prop, args),
+			call: (prop, args) => {
+				warnInvalidRpcArgs(args, prop)
+				return rpc.call(target, prop, args)
+			},
 			getProperty: prop => rpc.callGet(target, prop),
 		},
 		extras,
