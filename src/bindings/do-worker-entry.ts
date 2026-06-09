@@ -56,7 +56,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const { loadConfig } = await import('../config')
 	const { buildWorkerEnv, createDoEnvRpc } = await import('./do-worker-env')
 	const { DurableObjectStateImpl, DurableObjectIdImpl } = await import('./durable-object')
-	const { BridgeWebSocket } = await import('./do-websocket-bridge')
 	const { CFWebSocket } = await import('./websocket-pair')
 	const { WsGuestBridge } = await import('../worker-thread/ws-bridge-shared')
 	const { ContainerBase, ContainerContext, ContainerRuntime } = await import('./container')
@@ -156,8 +155,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 	}
 
 	state._setInstanceResolver(() => instance)
-
-	const bridgedWebSockets = new Map<string, InstanceType<typeof BridgeWebSocket>>()
 
 	/**
 	 * Bridge for `Response{webSocket}` returned by the DO's own fetch(). Forwards
@@ -330,14 +327,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 				}
 			}
 
-			case 'ws-create': {
-				const bridgeWs = new BridgeWebSocket(cmd.wsId, (msg: any) => {
-					postMessage({ type: 'ws-bridge', payload: msg } satisfies DOMainMessage)
-				})
-				bridgedWebSockets.set(cmd.wsId, bridgeWs)
-				return { result: { type: 'ws-created', wsId: cmd.wsId } }
-			}
-
 			case 'cleanup': {
 				// Tear down the Docker container (rm -f + stop timers) before main
 				// terminates this thread. No-op for non-container DOs.
@@ -390,18 +379,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 			requestStreams.end(msg.streamId)
 		} else if (msg.type === 'do-req-stream-error') {
 			requestStreams.error(msg.streamId, deserializeError(msg.error))
-		} else if (msg.type === 'ws-message') {
-			const ws = bridgedWebSockets.get(msg.wsId)
-			if (ws) ws._onMessage(msg.data)
-		} else if (msg.type === 'ws-close') {
-			const ws = bridgedWebSockets.get(msg.wsId)
-			if (ws) {
-				ws._onClose(msg.code, msg.reason, msg.wasClean)
-				bridgedWebSockets.delete(msg.wsId)
-			}
-		} else if (msg.type === 'ws-error') {
-			const ws = bridgedWebSockets.get(msg.wsId)
-			if (ws) ws._onError()
 		} else if (msg.type === 'fetch-ws-incoming') {
 			fetchWsBridge.deliverClientMessage(msg.wsId, msg.data)
 		} else if (msg.type === 'fetch-ws-close-in') {
