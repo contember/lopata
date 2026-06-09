@@ -159,6 +159,12 @@ export interface DoReqStreamCancel {
 	type: 'do-req-stream-cancel'
 	streamId: number
 }
+/** DO worker → main: instance code pulled a request-body chunk and grants main's
+ *  pump one more credit (cross-thread backpressure, mirrors {@link DoStreamAck}). */
+export interface DoReqStreamAck {
+	type: 'do-req-stream-ack'
+	streamId: number
+}
 
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
@@ -220,6 +226,8 @@ export type DOMainMessage =
 	| DoStreamError
 	/** Instance-side cancel for a streamed DO-fetch request body. */
 	| DoReqStreamCancel
+	/** Instance-side credit grant for a streamed DO-fetch request body. */
+	| DoReqStreamAck
 	/**
 	 * Container lifecycle notifications. Main owns the active-container Set so
 	 * one centralized `exit` handler can `docker rm -f` everything, regardless
@@ -279,10 +287,19 @@ export class WorkerExecutor implements DOExecutor {
 	private _rpcStreams = new OutboundStreamRegistry()
 	/** Receiver state for request-body streams arriving from the DO worker on
 	 *  the unified RPC channel (DO-worker → main env-binding fetch with body). */
-	private _rpcRequestStreams = new StreamReceiver((streamId) => {
-		if (this._disposed) return
-		this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
-	})
+	private _rpcRequestStreams = new StreamReceiver(
+		(streamId) => {
+			if (this._disposed) return
+			this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => {
+				if (this._disposed) return
+				this._worker?.postMessage({ type: 'rpc-req-stream-ack', streamId } satisfies DOWorkerMessage)
+			},
+		},
+	)
 	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
 	private _fetchStreams = new StreamReceiver(
 		(streamId) => {
@@ -461,6 +478,9 @@ export class WorkerExecutor implements DOExecutor {
 				case 'do-req-stream-cancel':
 					this._fetchRequestStreams.cancel(msg.streamId)
 					break
+				case 'do-req-stream-ack':
+					this._fetchRequestStreams.grantCredit(msg.streamId)
+					break
 
 				case 'container-registered':
 					registerContainer(msg.name)
@@ -629,6 +649,7 @@ export class WorkerExecutor implements DOExecutor {
 				error: (id, error) => ({ type: 'do-req-stream-error', streamId: id, error }),
 			},
 			() => !this._disposed,
+			STREAM_BACKPRESSURE_WINDOW,
 		)
 	}
 

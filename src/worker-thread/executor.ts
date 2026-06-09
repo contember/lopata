@@ -97,10 +97,19 @@ export class WorkerThreadExecutor {
 	private _rpcStreams = new OutboundStreamRegistry()
 	/** Receiver state for request-body streams arriving from the worker on the
 	 *  unified RPC channel (worker → main service-binding fetch with body). */
-	private _rpcRequestStreams = new StreamReceiver((streamId) => {
-		if (this._disposed) return
-		this._send({ type: 'rpc-req-stream-cancel', streamId })
-	})
+	private _rpcRequestStreams = new StreamReceiver(
+		(streamId) => {
+			if (this._disposed) return
+			this._send({ type: 'rpc-req-stream-cancel', streamId })
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => {
+				if (this._disposed) return
+				this._send({ type: 'rpc-req-stream-ack', streamId })
+			},
+		},
+	)
 	/** Outbound request-body pumps for the top-level fetch path (main → worker).
 	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
 	 *  stops the source reader. */
@@ -325,6 +334,9 @@ export class WorkerThreadExecutor {
 			case 'req-stream-cancel':
 				this._topRequestStreams.cancel(msg.streamId)
 				break
+			case 'req-stream-ack':
+				this._topRequestStreams.grantCredit(msg.streamId)
+				break
 			case 'wait-until-add':
 				this._pendingWaitUntil.add(msg.id)
 				break
@@ -469,6 +481,7 @@ export class WorkerThreadExecutor {
 				error: (id, error) => ({ type: 'req-stream-error', streamId: id, error }),
 			},
 			() => !this._disposed,
+			STREAM_BACKPRESSURE_WINDOW,
 		)
 	}
 

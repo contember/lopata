@@ -172,9 +172,15 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	/** Active reconstructed DO-fetch request bodies (main → DO worker). Chunks
 	 *  arriving before the controller registers queue inside the receiver. */
-	const requestStreams = new StreamReceiver((streamId) => {
-		postMessage({ type: 'do-req-stream-cancel', streamId } satisfies DOMainMessage)
-	})
+	const requestStreams = new StreamReceiver(
+		(streamId) => {
+			postMessage({ type: 'do-req-stream-cancel', streamId } satisfies DOMainMessage)
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => postMessage({ type: 'do-req-stream-ack', streamId } satisfies DOMainMessage),
+		},
+	)
 
 	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>): void {
 		type Chunk = Extract<DOMainMessage, { type: 'do-stream-chunk' }>

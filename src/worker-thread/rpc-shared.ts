@@ -24,6 +24,7 @@ import type {
 	RpcFetchRequest,
 	RpcGetRequest,
 	RpcReply,
+	RpcReqStreamAck,
 	RpcReqStreamCancel,
 	RpcReqStreamChunk,
 	RpcReqStreamEnd,
@@ -265,6 +266,8 @@ function pumpRpcRequestBody(
 			end: (id) => ({ type: 'rpc-req-stream-end', streamId: id }),
 			error: (id, error) => ({ type: 'rpc-req-stream-error', streamId: id, error }),
 		},
+		undefined,
+		STREAM_BACKPRESSURE_WINDOW,
 	)
 }
 
@@ -404,6 +407,11 @@ export class RpcClient {
 			case 'rpc-req-stream-cancel': {
 				const m = msg as RpcReqStreamCancel
 				this._requestStreams.cancel(m.streamId)
+				return true
+			}
+			case 'rpc-req-stream-ack': {
+				const m = msg as RpcReqStreamAck
+				this._requestStreams.grantCredit(m.streamId)
 				return true
 			}
 			default:

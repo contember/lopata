@@ -306,6 +306,14 @@ export interface RpcReqStreamCancel {
 	streamId: number
 }
 
+/** receiver → sender: the binding consumer pulled a request-body chunk and
+ *  grants the sender one more credit (cross-thread backpressure, mirrors
+ *  {@link RpcStreamAck} on the response side). */
+export interface RpcReqStreamAck {
+	type: 'rpc-req-stream-ack'
+	streamId: number
+}
+
 export type RpcReply =
 	| RpcCallReply
 	| RpcCallErrorReply
@@ -315,6 +323,7 @@ export type RpcReply =
 	| RpcStreamEnd
 	| RpcStreamError
 	| RpcReqStreamCancel
+	| RpcReqStreamAck
 
 /** Main → worker */
 export type WorkerCommand =
@@ -332,6 +341,7 @@ export type WorkerCommand =
 	| RpcStreamEnd
 	| RpcStreamError
 	| RpcReqStreamCancel
+	| RpcReqStreamAck
 	// RPC method call into the worker's user-defined entrypoint class.
 	// Sent from main when a `ServiceBinding` RPC callable resolves a target
 	// whose entrypoint class lives in a worker thread. `props` carries the
@@ -458,3 +468,7 @@ export type WorkerMessage =
 	// Worker → main: user code cancelled the reconstructed request body
 	// (e.g. `request.body.cancel()`). Stop the source pump on main.
 	| { type: 'req-stream-cancel'; streamId: number }
+	// Worker → main: the worker consumed a request-body chunk and grants main's
+	// pump one more credit (cross-thread backpressure for the top-level fetch
+	// request body, mirrors `stream-ack` on the response side).
+	| { type: 'req-stream-ack'; streamId: number }

@@ -38,9 +38,15 @@ function post(msg: WorkerMessage): void {
 const responseStreams = new OutboundStreamRegistry()
 /** Active reconstructed top-level request bodies (main → worker). Chunks
  *  arriving before user code pulls the body queue inside the receiver. */
-const requestStreams = new StreamReceiver((streamId) => {
-	post({ type: 'req-stream-cancel', streamId })
-})
+const requestStreams = new StreamReceiver(
+	(streamId) => {
+		post({ type: 'req-stream-cancel', streamId })
+	},
+	{
+		window: STREAM_BACKPRESSURE_WINDOW,
+		onCredit: (streamId) => post({ type: 'req-stream-ack', streamId }),
+	},
+)
 
 /**
  * Serialize response status + headers only — the body is never buffered here.
