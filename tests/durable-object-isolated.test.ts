@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkerExecutorFactory } from '../src/bindings/do-executor-worker'
 import { DurableObjectIdImpl, DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
+import type { CFWebSocket } from '../src/bindings/websocket-pair'
 import { runMigrations } from '../src/db'
 
 /**
@@ -540,6 +541,34 @@ describe('Isolated DO — hibernation WS count (Finding B)', () => {
 
 		const executor = ns._getExecutor(id.toString())!
 		expect(executor.activeWebSocketCount()).toBeGreaterThan(0)
+
+		await executor.dispose()
+	})
+
+	test('client disconnect decrements the count even when webSocketClose omits ws.close() (CORR-WS-1)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'HibernationDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('hib-client-disconnect')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch(new Request('http://do/', { headers: { Upgrade: 'websocket' } }))
+		expect(resp.status).toBe(101)
+		await new Promise(r => setTimeout(r, 50))
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.activeWebSocketCount()).toBe(1)
+
+		// Simulate the real client disconnecting — in production cli/dev.ts
+		// dispatches the close on the host socket's bridge peer. HibernationDO has
+		// NO webSocketClose handler that calls ws.close(), so the server peer never
+		// closes back; without the fix `_wsCount` would stay 1 forever and pin the
+		// worker alive past the eviction timer.
+		const hostWs = (resp as Response & { webSocket: CFWebSocket }).webSocket
+		hostWs._peer?.dispatchOrQueue({ type: 'close', code: 1000, reason: '', wasClean: true })
+
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.activeWebSocketCount()).toBe(0)
+		expect(ns.hasActiveWebSockets()).toBe(false)
 
 		await executor.dispose()
 	})

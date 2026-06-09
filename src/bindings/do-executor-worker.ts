@@ -306,7 +306,16 @@ export class WorkerExecutor implements DOExecutor {
 
 		this._fetchBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
 			clientMessage: (wsId, data) => ({ type: 'fetch-ws-incoming', wsId, data }),
-			clientClose: (wsId, code, reason, wasClean) => ({ type: 'fetch-ws-close-in', wsId, code, reason, wasClean }),
+			clientClose: (wsId, code, reason, wasClean) => {
+				// A real client disconnect ends the hibernation WS regardless of
+				// whether user code calls `ws.close()` in its `webSocketClose`
+				// handler (that call is optional in CF). Decrement here so the count
+				// doesn't leak and pin the DO worker alive past eviction. The matching
+				// `fetch-ws-close-out` (when the server peer also closes) then finds
+				// the id already gone and is a no-op, so this never double-decrements.
+				if (this._acceptedFetchWsIds.delete(wsId)) this._wsCount--
+				return { type: 'fetch-ws-close-in', wsId, code, reason, wasClean }
+			},
 		})
 		this._envBindingWsBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
 			clientMessage: (wsId, data) => ({ type: 'env-ws-incoming', wsId, data }),
