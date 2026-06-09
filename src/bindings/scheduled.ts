@@ -282,11 +282,19 @@ export function startCronTimer(
 ): NodeJS.Timer {
 	const parsed = crons.map(parseCron)
 
-	// Check every 60 seconds, aligned to the start of each minute
+	// Poll a few times per minute and fire each cron at most once per matching
+	// wall-clock minute. `setInterval` is NOT minute-aligned (it fires relative
+	// to creation, and HMR reload resets that phase), so a once-per-60s check
+	// could drift past a matching minute or land on it twice. Polling at 15s +
+	// per-minute dedup makes firing robust to that drift within a generation.
+	const lastFiredMinute = new Map<number, number>()
 	return setInterval(() => {
 		const now = new Date()
-		for (const cron of parsed) {
-			if (!cronMatchesDate(cron, now)) continue
+		const minuteKey = Math.floor(now.getTime() / 60_000)
+		parsed.forEach((cron, i) => {
+			if (!cronMatchesDate(cron, now)) return
+			if (lastFiredMinute.get(i) === minuteKey) return
+			lastFiredMinute.set(i, minuteKey)
 			console.log(`[lopata] Cron triggered: ${cron.expression}`)
 			startSpan({
 				name: 'scheduled',
@@ -297,8 +305,8 @@ export function startCronTimer(
 				console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
 				persistError(err, 'scheduled', workerName)
 			})
-		}
-	}, 60_000)
+		})
+	}, 15_000)
 }
 
 export function startCronScheduler(
