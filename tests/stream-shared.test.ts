@@ -267,7 +267,7 @@ describe('cross-thread backpressure (window)', () => {
 		expect(ended).toBe(true)
 	})
 
-	test('cancelling the registry releases a parked pump', async () => {
+	test('cancelling a parked pump posts a terminator so the receiver can clean up', async () => {
 		const WINDOW = 2
 		const sender = new OutboundStreamRegistry()
 		const recv = new StreamReceiver(() => {}, {
@@ -289,10 +289,12 @@ describe('cross-thread backpressure (window)', () => {
 			WINDOW,
 		)
 		await new Promise((r) => setTimeout(r, 30))
-		// Pump is parked on a credit. Cancelling must wake it so it stops cleanly
-		// (no hang) — the source reader gets cancelled, no 'end' is posted.
+		// Pump is parked on a credit. Cancelling wakes it so it stops cleanly (no
+		// hang). Because the channel is still alive (a receiver-initiated cancel,
+		// not a teardown), the pump posts a terminator so the receiver clears its
+		// `_cancelled` entry instead of leaking the id until disposeAll.
 		sender.cancel(3)
 		await new Promise((r) => setTimeout(r, 20))
-		expect(ended).toBe(false)
+		expect(ended).toBe(true)
 	})
 })

@@ -474,20 +474,28 @@ export class WorkerThreadExecutor {
 	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
 		const shell = serializeRequestShell(request)
 		const body = request.body
-		const req: SerializedRequest = body
-			? { ...shell, body: null, streamId: this._topRequestStreams.allocateId() }
+		const reqStreamId = body ? this._topRequestStreams.allocateId() : undefined
+		const req: SerializedRequest = reqStreamId !== undefined
+			? { ...shell, body: null, streamId: reqStreamId }
 			: { ...shell, body: null }
 		// `afterPost` fires after `_sendAndAwait` posts the 'fetch' command so
 		// the worker sees the streamId before any `req-stream-chunk` arrives.
 		// (The receiver buffers events for unknown streamIds, but ordering the
 		// pump after the post keeps the slow-path off the hot path.)
-		const serialized = await this._sendAndAwait(
+		const resultPromise = this._sendAndAwait(
 			this._pending,
 			(id, parent) => ({ type: 'fetch', id, request: req, parent, props }),
 			() => {
-				if (body && req.streamId !== undefined) this._pumpTopRequestBody(req.streamId, body)
+				if (body && reqStreamId !== undefined) this._pumpTopRequestBody(reqStreamId, body)
 			},
 		)
+		if (body && reqStreamId !== undefined) {
+			// If the handler errors mid-upload, stop the request-body pump so it
+			// doesn't keep reading the source into the worker's receiver buffer for a
+			// request that already failed. Mirrors the DO-fetch path.
+			resultPromise.catch(() => this._topRequestStreams.cancel(reqStreamId))
+		}
+		const serialized = await resultPromise
 
 		let response: ResponseWithWebSocket
 		if (serialized.streamId !== undefined) {

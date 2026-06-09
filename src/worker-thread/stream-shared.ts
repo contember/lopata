@@ -326,7 +326,13 @@ export function pumpStream<TChunk, TEnd, TError>(
 					// for eager streams (Infinity credits).
 					const ok = await registry.acquireCredit(streamId)
 					if (!ok) {
-						// Cancelled/disposed while parked — stop without posting.
+						// Cancelled or disposed while parked. On a receiver-initiated cancel
+						// the channel is still alive — post a terminator so the receiver
+						// clears its cancelled-stream bookkeeping (`_cancelled`) instead of
+						// leaking the id until the next `disposeAll`. On teardown
+						// (`isAlive()` false) posting is moot. Worker-side pumps omit
+						// `isAlive` and only reach here via a receiver cancel, so they post.
+						if (!isAlive || isAlive()) post(envelopes.end(streamId))
 						reader.cancel().catch(() => {})
 						return
 					}
