@@ -295,15 +295,17 @@ export class ContainerRuntime {
 	// ─── Private ────────────────────────────────────────────────────────────
 
 	/**
-	 * Recover host port mappings from docker inspect Ports object.
-	 * Format: { "8080/tcp": [{ "HostIp": "...", "HostPort": "49152" }], ... }
+	 * Recover host port mappings from the flattened ports map returned by
+	 * `DockerManager.inspect()`: { "8080/tcp": "0.0.0.0:32768", ... }.
+	 * (inspect() already flattens docker's raw `[{HostIp,HostPort}]` shape, so
+	 * the value here is a "host:port" string, not an array.)
 	 */
-	private _recoverPortMappings(ports: Record<string, unknown>) {
-		for (const [key, bindings] of Object.entries(ports)) {
-			if (!Array.isArray(bindings) || bindings.length === 0) continue
+	private _recoverPortMappings(ports: Record<string, string>) {
+		for (const [key, value] of Object.entries(ports)) {
+			if (typeof value !== 'string') continue
 			const containerPort = parseInt(key, 10)
 			if (Number.isNaN(containerPort)) continue
-			const hostPort = parseInt(bindings[0].HostPort, 10)
+			const hostPort = parseInt(value.split(':').pop() ?? '', 10)
 			if (Number.isNaN(hostPort)) continue
 			this._hostPorts.set(containerPort, hostPort)
 		}
