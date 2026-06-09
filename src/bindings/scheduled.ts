@@ -1,4 +1,3 @@
-import { ExecutionContext } from '../execution-context'
 import { persistError, startSpan } from '../tracing/span'
 
 export interface ScheduledController {
@@ -269,8 +268,6 @@ export function createScheduledController(cron: string, scheduledTime: number): 
 	}
 }
 
-type ScheduledHandler = (controller: ScheduledController, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>
-
 /**
  * Generic cron timer. `invoke` is called with the matched expression and the
  * tick time; the caller decides how to dispatch (in-process handler vs RPC).
@@ -307,18 +304,4 @@ export function startCronTimer(
 			})
 		})
 	}, 15_000)
-}
-
-export function startCronScheduler(
-	crons: string[],
-	handler: ScheduledHandler,
-	env: Record<string, unknown>,
-	workerName?: string,
-): NodeJS.Timer {
-	return startCronTimer(crons, async (cronExpr, now) => {
-		const controller = createScheduledController(cronExpr, now.getTime())
-		const ctx = new ExecutionContext()
-		await handler(controller, env, ctx)
-		await ctx._awaitAll()
-	}, workerName)
 }

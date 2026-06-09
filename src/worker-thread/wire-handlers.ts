@@ -59,8 +59,8 @@ function resolveQueueHandler(workerModule: Record<string, unknown>): ((batch: un
 	if (typeof def === 'function' && def.prototype) {
 		const proto = def.prototype as Record<string, unknown>
 		if (typeof proto.queue !== 'function') return null
-		// Class-based: construct a fresh instance per batch — mirrors
-		// `Generation.getHandler` for the in-process path.
+		// Class-based: construct a fresh instance per batch — same per-batch
+		// construction `resolveHandler` does for fetch/scheduled/email in entry.ts.
 		const Ctor = def as new(ctx: unknown, env: unknown) => Record<string, (...a: unknown[]) => Promise<unknown>>
 		return async (batch, env, ctx) => {
 			const instance = new Ctor(ctx, env)

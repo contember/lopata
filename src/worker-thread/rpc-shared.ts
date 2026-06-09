@@ -410,11 +410,4 @@ export class RpcClient {
 				return false
 		}
 	}
-
-	rejectAll(err: Error): void {
-		for (const [, p] of this._pending) p.reject(err)
-		this._pending.clear()
-		this._streams.disposeAll(err)
-		this._requestStreams.disposeAll()
-	}
 }

@@ -119,8 +119,10 @@ export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
 export interface BindingTarget {
 	binding: string
 	/**
-	 * @internal Scaffold for upcoming workflow / DO instance RPC. When set, main
-	 * resolves via `env[binding].get(instanceId)` before invoking `method`.
+	 * DO instance target. When set, the resolving side routes through
+	 * `env[binding].get(instanceId)` before invoking `method` / `fetch`, so
+	 * cross-DO and self-DO access via env-RPC lands on the right instance. Used
+	 * by both the DO-stub proxies and the executors' `_resolveBinding`.
 	 */
 	instanceId?: string
 	/**
@@ -276,15 +278,6 @@ export interface RpcReqStreamCancel {
 	streamId: number
 }
 
-export type RpcRequest =
-	| RpcCallRequest
-	| RpcGetRequest
-	| RpcFetchRequest
-	| RpcStreamCancel
-	| RpcStreamAck
-	| RpcReqStreamChunk
-	| RpcReqStreamEnd
-	| RpcReqStreamError
 export type RpcReply =
 	| RpcCallReply
 	| RpcCallErrorReply
