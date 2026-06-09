@@ -60,6 +60,7 @@ function makeRpcProxy(
 				return buildBridgedFetchResponse(r, rpc, envWsBridge)
 			},
 			call: (prop, args) => rpc.call(target, prop, args),
+			getProperty: prop => rpc.callGet(target, prop),
 		},
 		extras,
 	)

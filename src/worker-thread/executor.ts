@@ -17,6 +17,7 @@ import type {
 	BindingTarget,
 	ParentSpanContext,
 	RpcCallRequest,
+	RpcGetRequest,
 	RpcFetchRequest,
 	RpcReply,
 	SerializedRequest,
@@ -25,7 +26,7 @@ import type {
 	WorkerMessage,
 } from './protocol'
 import { deserializeError } from './protocol'
-import { dispatchRpcCall, dispatchRpcFetch } from './rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
 import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
@@ -255,6 +256,9 @@ export class WorkerThreadExecutor {
 			case 'rpc-call':
 				this._dispatchRpcCall(msg)
 				break
+			case 'rpc-call-get':
+				this._dispatchRpcGet(msg)
+				break
 			case 'rpc-fetch':
 				this._dispatchRpcFetch(msg)
 				break
@@ -338,6 +342,14 @@ export class WorkerThreadExecutor {
 
 	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
 		return dispatchRpcCall(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed,
+		})
+	}
+
+	private _dispatchRpcGet(req: RpcGetRequest): Promise<void> {
+		return dispatchRpcGet(req, {
 			resolveBinding: this._resolveBinding,
 			post: this._postReply,
 			isAlive: () => !this._disposed,

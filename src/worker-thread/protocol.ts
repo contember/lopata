@@ -158,6 +158,21 @@ export interface RpcFetchRequest {
 	parent?: ParentSpanContext
 }
 
+/**
+ * Property read on a cross-thread binding (`await env.SVC.someProp`). The
+ * worker-side binding proxy is callable (for method calls) AND thenable (for
+ * property reads); awaiting it posts this and main resolves the property on the
+ * main-side binding (which itself implements the thenable property-get). The
+ * reply reuses {@link RpcCallReply} / {@link RpcCallErrorReply}.
+ */
+export interface RpcGetRequest {
+	type: 'rpc-call-get'
+	id: number
+	target: BindingTarget
+	property: string
+	parent?: ParentSpanContext
+}
+
 export interface RpcCallReply {
 	type: 'rpc-call-result'
 	id: number
@@ -256,6 +271,7 @@ export interface RpcReqStreamCancel {
 
 export type RpcRequest =
 	| RpcCallRequest
+	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
 	| RpcReqStreamChunk
@@ -356,6 +372,7 @@ export type WorkerMessage =
 	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'function' }
 	| { type: 'entrypoint-rpc-get-error'; id: number; error: SerializedError }
 	| RpcCallRequest
+	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
 	| RpcReqStreamChunk

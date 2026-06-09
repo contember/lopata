@@ -258,6 +258,56 @@ describe('Symbol.dispose and dup()', () => {
 	})
 })
 
+describe('makeBindingProxy — property access (thenable)', () => {
+	test('await binding.prop issues a property-get, not a method call', async () => {
+		const calls: { prop: string; args: unknown[] }[] = []
+		const gets: string[] = []
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: (prop, args) => {
+				calls.push({ prop, args })
+				return 'method-result'
+			},
+			getProperty: async prop => {
+				gets.push(prop)
+				return `value-of-${prop}`
+			},
+		})
+
+		// Awaited → property-get RPC (the regressed path).
+		expect(await (proxy as Record<string, unknown>).version).toBe('value-of-version')
+		expect(gets).toEqual(['version'])
+		expect(calls).toEqual([])
+	})
+
+	test('binding.method(args) still does a method call', async () => {
+		const calls: { prop: string; args: unknown[] }[] = []
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: (prop, args) => {
+				calls.push({ prop, args })
+				return 'method-result'
+			},
+			getProperty: async prop => `value-of-${prop}`,
+		})
+
+		const fn = (proxy as Record<string, (...a: unknown[]) => unknown>).doThing!
+		const result = fn(1, 2)
+		expect(result).toBe('method-result')
+		expect(calls).toEqual([{ prop: 'doThing', args: [1, 2] }])
+	})
+
+	test('without getProperty, the callable is not thenable (back-compat)', () => {
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: () => 'x',
+		})
+		const fn = (proxy as Record<string, unknown>).whatever as { then?: unknown }
+		expect(typeof fn).toBe('function')
+		expect(fn.then).toBeUndefined()
+	})
+})
+
 describe('createRpcFunctionStub', () => {
 	test('wraps a function with validation', async () => {
 		const fn = (a: number, b: number) => a + b

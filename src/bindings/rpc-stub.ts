@@ -61,6 +61,10 @@ export function makeBindingProxy(
 	callbacks: {
 		fetch: (input: Request | string | URL, init?: RequestInit) => Promise<Response>
 		call: (prop: string, args: unknown[]) => unknown
+		/** Optional property read (`await binding.prop`). When supplied, the
+		 *  per-prop callable is also thenable, issuing a property-get instead of
+		 *  resolving to the function itself. */
+		getProperty?: (prop: string) => Promise<unknown>
 	},
 	extras: Record<string | symbol, unknown> = {},
 ): Record<string, unknown> {
@@ -72,9 +76,21 @@ export function makeBindingProxy(
 			if (prop in extras) return extras[prop]
 			const cached = methodCache.get(prop)
 			if (cached) return cached
-			const fn = prop === 'fetch'
-				? callbacks.fetch
-				: (...args: unknown[]) => callbacks.call(prop as string, args)
+			if (prop === 'fetch') {
+				methodCache.set(prop, callbacks.fetch)
+				return callbacks.fetch
+			}
+			const fn = (...args: unknown[]) => callbacks.call(prop as string, args)
+			// Make the callable thenable so `await binding.prop` does a property-get
+			// RPC (matching CF + the in-process path) instead of awaiting the
+			// function object and resolving to it.
+			if (callbacks.getProperty) {
+				const getProperty = callbacks.getProperty
+				;(fn as { then?: unknown }).then = (
+					onFulfilled?: ((value: unknown) => unknown) | null,
+					onRejected?: ((reason: unknown) => unknown) | null,
+				) => getProperty(prop as string).then(onFulfilled, onRejected)
+			}
 			methodCache.set(prop, fn)
 			return fn
 		},

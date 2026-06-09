@@ -229,6 +229,7 @@ function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<stri
 		{
 			fetch: (input, init) => proxyFetch(target, rpc, input, init),
 			call: (prop, args) => rpc.call(target, prop, args),
+			getProperty: prop => rpc.callGet(target, prop),
 		},
 		extras,
 	)

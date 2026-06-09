@@ -19,6 +19,7 @@ import type {
 	RpcCallErrorReply,
 	RpcCallReply,
 	RpcCallRequest,
+	RpcGetRequest,
 	RpcFetchErrorReply,
 	RpcFetchReply,
 	RpcFetchRequest,
@@ -94,6 +95,30 @@ export async function dispatchRpcCall(req: RpcCallRequest, hooks: RpcDispatchHoo
 		}
 		const args = reifyArgs(req.args)
 		const value = await runWithParentContext(req.parent, () => (fn as (...a: unknown[]) => unknown).call(resolved, ...args))
+		if (!hooks.isAlive()) return
+		hooks.post({ type: 'rpc-call-result', id: req.id, value } satisfies RpcCallReply)
+	} catch (e) {
+		if (!hooks.isAlive()) return
+		hooks.post({ type: 'rpc-call-error', id: req.id, error: serializeError(e) } satisfies RpcCallErrorReply)
+	}
+}
+
+/**
+ * Resolve a property read on a binding (`await env.SVC.prop`). The main-side
+ * binding is itself a thenable-property proxy (service-binding `toProxy`), so
+ * awaiting `resolved[property]` runs its property-get (including the nested
+ * main→target-thread hop when the target is a worker thread). The resolved
+ * value ships back via the same reply types as a method call. Returning a
+ * non-cloneable value (RpcTarget/function) surfaces as `rpc-call-error` — the
+ * documented cross-thread limitation, same as method returns.
+ */
+export async function dispatchRpcGet(req: RpcGetRequest, hooks: RpcDispatchHooks): Promise<void> {
+	try {
+		const resolved = hooks.resolveBinding(req.target)
+		const value = await runWithParentContext(
+			req.parent,
+			() => Promise.resolve((resolved as Record<string, unknown>)[req.property]),
+		)
 		if (!hooks.isAlive()) return
 		hooks.post({ type: 'rpc-call-result', id: req.id, value } satisfies RpcCallReply)
 	} catch (e) {
@@ -202,6 +227,7 @@ interface PendingCall {
 type RpcClientPost = (
 	req:
 		| RpcCallRequest
+		| RpcGetRequest
 		| RpcFetchRequest
 		| RpcStreamCancel
 		| RpcReqStreamChunk
@@ -270,6 +296,16 @@ export class RpcClient {
 		return new Promise((resolve, reject) => {
 			this._pending.set(id, { resolve, reject })
 			this._post({ type: 'rpc-call', id, target, method, args, parent: this._getParent() })
+		})
+	}
+
+	/** Property read on a binding (`await env.SVC.prop`). Reply reuses the
+	 *  rpc-call-result/error path via {@link handle}. */
+	callGet(target: BindingTarget, property: string): Promise<unknown> {
+		const id = this._nextId++
+		return new Promise((resolve, reject) => {
+			this._pending.set(id, { resolve, reject })
+			this._post({ type: 'rpc-call-get', id, target, property, parent: this._getParent() })
 		})
 	}
 

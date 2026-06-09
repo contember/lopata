@@ -9,6 +9,7 @@ import { dirname, resolve } from 'node:path'
 import type {
 	BindingTarget,
 	RpcCallRequest,
+	RpcGetRequest,
 	RpcFetchRequest,
 	RpcReply,
 	RpcReqStreamChunk,
@@ -18,7 +19,7 @@ import type {
 	SerializedError,
 } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
-import { dispatchRpcCall, dispatchRpcFetch } from '../worker-thread/rpc-shared'
+import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from '../worker-thread/rpc-shared'
 import { OutboundStreamRegistry, pumpStream, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
@@ -180,6 +181,7 @@ export type DOMainMessage =
 	// resolves the binding from its env, runs the call under the caller's trace
 	// context, and ships the reply back.
 	| RpcCallRequest
+	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
 	| RpcReqStreamChunk
@@ -370,6 +372,10 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'rpc-call':
 					this._dispatchRpcCall(msg)
+					break
+
+				case 'rpc-call-get':
+					this._dispatchRpcGet(msg)
 					break
 
 				case 'rpc-fetch':
@@ -661,6 +667,14 @@ export class WorkerExecutor implements DOExecutor {
 
 	private _dispatchRpcCall(req: RpcCallRequest): Promise<void> {
 		return dispatchRpcCall(req, {
+			resolveBinding: this._resolveBinding,
+			post: this._postReply,
+			isAlive: () => !this._disposed && this._worker !== null,
+		})
+	}
+
+	private _dispatchRpcGet(req: RpcGetRequest): Promise<void> {
+		return dispatchRpcGet(req, {
 			resolveBinding: this._resolveBinding,
 			post: this._postReply,
 			isAlive: () => !this._disposed && this._worker !== null,
