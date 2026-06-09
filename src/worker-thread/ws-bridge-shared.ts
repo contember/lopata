@@ -276,12 +276,39 @@ class BridgeWebSocketPeer<O> extends CFWebSocket {
  */
 export class WsGuestBridge<O> {
 	private _sockets = new Map<string, { userPeer: CFWebSocket; closed: boolean }>()
+	/**
+	 * Client events that arrived before the matching `createBridgedSocket()` was
+	 * called. On the env-binding channel main adopts the upstream WS with
+	 * `bridgeEvents: true`, whose `accept()` flushes already-queued client events
+	 * synchronously — those posts race ahead of the `rpc-fetch-result` that
+	 * triggers `createBridgedSocket` here. Without buffering, the first inbound
+	 * message (or an early close) would be lost. Mirrors `WsHostBridge`.
+	 */
+	private _pendingEvents = new Map<string, WSEvent[]>()
+	/** wsIds already created+closed; drop late client events instead of re-buffering. */
+	private _forgotten = new Set<string>()
 	private _post: (msg: O) => void
 	private _envelopes: WsGuestEnvelopes<O>
 
 	constructor(post: (msg: O) => void, envelopes: WsGuestEnvelopes<O>) {
 		this._post = post
 		this._envelopes = envelopes
+	}
+
+	private _forget(wsId: string): void {
+		this._sockets.delete(wsId)
+		this._pendingEvents.delete(wsId)
+		this._forgotten.add(wsId)
+	}
+
+	private _bufferPending(wsId: string, evt: WSEvent): void {
+		if (this._forgotten.has(wsId)) return
+		let q = this._pendingEvents.get(wsId)
+		if (!q) {
+			q = []
+			this._pendingEvents.set(wsId, q)
+		}
+		q.push(evt)
 	}
 
 	/**
@@ -293,10 +320,22 @@ export class WsGuestBridge<O> {
 	 */
 	createBridgedSocket(wsId: string): CFWebSocket {
 		const userPeer = new CFWebSocket()
-		const bridgePeer = new BridgeGuestPeer<O>(wsId, this._post, this._envelopes, id => this._sockets.delete(id))
+		const bridgePeer = new BridgeGuestPeer<O>(wsId, this._post, this._envelopes, id => this._forget(id))
 		userPeer._peer = bridgePeer
 		bridgePeer._peer = userPeer
 		this._sockets.set(wsId, { userPeer, closed: false })
+		// Replay events buffered before this socket existed (see `_pendingEvents`).
+		const pending = this._pendingEvents.get(wsId)
+		if (pending) {
+			this._pendingEvents.delete(wsId)
+			for (const evt of pending) {
+				if (evt.type === 'close') {
+					this.deliverClientClose(wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true)
+				} else if (evt.data !== undefined) {
+					this.deliverClientMessage(wsId, evt.data)
+				}
+			}
+		}
 		return userPeer
 	}
 
@@ -348,18 +387,26 @@ export class WsGuestBridge<O> {
 	/** Host delivered a message from the real client → fire it on the user peer. */
 	deliverClientMessage(wsId: string, data: string | ArrayBuffer): void {
 		const entry = this._sockets.get(wsId)
-		if (!entry || entry.closed) return
+		if (!entry) {
+			this._bufferPending(wsId, { type: 'message', data })
+			return
+		}
+		if (entry.closed) return
 		entry.userPeer.dispatchOrQueue({ type: 'message', data })
 	}
 
 	/** Host delivered a close from the real client → fire close on the user peer. */
 	deliverClientClose(wsId: string, code: number, reason: string, wasClean: boolean): void {
 		const entry = this._sockets.get(wsId)
-		if (!entry || entry.closed) return
+		if (!entry) {
+			this._bufferPending(wsId, { type: 'close', code, reason, wasClean })
+			return
+		}
+		if (entry.closed) return
 		entry.closed = true
 		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
 		entry.userPeer.readyState = CFWebSocket.CLOSED
-		this._sockets.delete(wsId)
+		this._forget(wsId)
 	}
 }
 

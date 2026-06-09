@@ -279,6 +279,48 @@ describe('WsGuestBridge', () => {
 		expect(() => bridge.register(lone)).toThrow(/has no peer/)
 	})
 
+	test('createBridgedSocket flushes a client message buffered before creation', () => {
+		const wsId = 'race-msg'
+		// env-ws-incoming raced ahead of the rpc-fetch-result that creates the socket
+		bridge.deliverClientMessage(wsId, 'early')
+
+		const userPeer = bridge.createBridgedSocket(wsId)
+		const received: (string | ArrayBuffer)[] = []
+		userPeer.addEventListener('message', ev => received.push((ev as MessageEvent).data))
+		userPeer.accept()
+
+		expect(received).toEqual(['early'])
+	})
+
+	test('createBridgedSocket flushes a buffered message + close in order', () => {
+		const wsId = 'race-close'
+		bridge.deliverClientMessage(wsId, 'm1')
+		bridge.deliverClientClose(wsId, 4001, 'gone', true)
+
+		const userPeer = bridge.createBridgedSocket(wsId)
+		const order: string[] = []
+		userPeer.addEventListener('message', () => order.push('msg'))
+		userPeer.addEventListener('close', ev => order.push(`close:${(ev as CloseEvent).code}`))
+		userPeer.accept()
+
+		expect(order).toEqual(['msg', 'close:4001'])
+	})
+
+	test('client events after a normal close are dropped, not re-buffered', () => {
+		const wsId = 'race-forgotten'
+		const userPeer = bridge.createBridgedSocket(wsId)
+		userPeer.accept()
+		bridge.deliverClientClose(wsId, 1000, '', true)
+		// A late message for the now-forgotten id must not resurrect a pending queue.
+		bridge.deliverClientMessage(wsId, 'late')
+
+		const next = bridge.createBridgedSocket(wsId)
+		const received: unknown[] = []
+		next.addEventListener('message', ev => received.push((ev as MessageEvent).data))
+		next.accept()
+		expect(received).toEqual([])
+	})
+
 	test('register warns when shipped peer was pre-accepted; later events still flow', () => {
 		const { client, server } = makePair()
 		client.accept()
