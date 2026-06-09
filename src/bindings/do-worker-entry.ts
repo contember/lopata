@@ -306,9 +306,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 				try {
 					const val = (instance as any)[cmd.prop]
 					if (typeof val === 'function') {
-						return { result: { type: 'rpc-get', value: '__function__' } }
+						return { result: { type: 'rpc-get', kind: 'function' } }
 					}
-					return { result: { type: 'rpc-get', value: val } }
+					return { result: { type: 'rpc-get', kind: 'value', value: val } }
 				} finally {
 					state._exit()
 				}

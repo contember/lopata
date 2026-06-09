@@ -75,7 +75,12 @@ export type DOResult =
 		streamId?: number
 	}
 	| { type: 'rpc-call'; value: unknown }
-	| { type: 'rpc-get'; value: unknown }
+	// `kind` discriminates a plain property value from a method (functions can't
+	// cross the worker boundary — main hands back a callable stub). Mirrors the
+	// user-worker channel's `entrypoint-rpc-get-result` instead of an in-band
+	// magic-string sentinel that a real string value could collide with.
+	| { type: 'rpc-get'; kind: 'value'; value: unknown }
+	| { type: 'rpc-get'; kind: 'function' }
 	| { type: 'alarm' }
 	| { type: 'ws-created'; wsId: string }
 	| { type: 'cleanup' }
@@ -755,7 +760,7 @@ export class WorkerExecutor implements DOExecutor {
 
 		if (result.type !== 'rpc-get') throw new Error('Unexpected result type')
 		// Functions can't cross the boundary — return a callable stub
-		if (result.value === '__function__') {
+		if (result.kind === 'function') {
 			return (...args: unknown[]) => this.executeRpc(prop, args)
 		}
 		return result.value
