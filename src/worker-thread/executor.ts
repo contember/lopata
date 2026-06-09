@@ -336,6 +336,14 @@ export class WorkerThreadExecutor {
 		return this._pendingWaitUntil.size
 	}
 
+	/** In-flight scheduled/email handlers and inbound entrypoint RPC/property-get
+	 *  calls (another worker calling `env.THIS.method()`). Reload drain consults
+	 *  this so a cron/email handler or inbound RPC firing just before reload isn't
+	 *  force-terminated mid-execution. */
+	pendingHandlerWork(): number {
+		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size
+	}
+
 	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {
 		const binding = this._mainEnv[target.binding]
 		if (binding == null) {

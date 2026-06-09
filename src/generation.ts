@@ -240,6 +240,11 @@ export class Generation {
 	isIdle(): boolean {
 		if (this.activeRequests > 0) return false
 		if (this.threadExecutor.pendingWaitUntil() > 0) return false
+		// In-flight scheduled/email handlers and inbound service-binding RPCs are
+		// not counted by `activeRequests` (callScheduled/callEmail don't touch it),
+		// but drain must still let them finish — a cron handler firing just before
+		// reload would otherwise be force-terminated mid-execution.
+		if (this.threadExecutor.pendingHandlerWork() > 0) return false
 		for (const entry of this.registry.durableObjects) {
 			if (entry.namespace.hasActiveWebSockets()) return false
 		}
