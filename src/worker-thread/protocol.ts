@@ -56,17 +56,48 @@ export interface SerializedError {
 	message: string
 	stack?: string
 	name?: string
+	/** Recursively serialized `error.cause` chain (depth-capped). */
+	cause?: SerializedError
+	/** Enumerable own-properties (err.code, err.status, err.data, …) that user
+	 *  or library error handling branches on. Only structured-cloneable values
+	 *  are kept (the whole SerializedError must survive postMessage). */
+	props?: Record<string, unknown>
 }
 
-export function serializeError(e: unknown): SerializedError {
+const MAX_CAUSE_DEPTH = 8
+
+export function serializeError(e: unknown, depth = 0): SerializedError {
 	const err = e instanceof Error ? e : new Error(String(e))
-	return { message: err.message, stack: err.stack, name: err.name }
+	const out: SerializedError = { message: err.message, stack: err.stack, name: err.name }
+
+	// Preserve enumerable own-properties. The in-process path passed the real
+	// Error by reference, so `catch (e) { e.code }` worked; the hand-rolled
+	// serializer must not silently drop them. message/stack/name are normally
+	// non-enumerable, but skip them defensively; `cause` is handled below.
+	const props: Record<string, unknown> = {}
+	for (const key of Object.keys(err)) {
+		if (key === 'message' || key === 'stack' || key === 'name' || key === 'cause') continue
+		const value = (err as unknown as Record<string, unknown>)[key]
+		try {
+			// Validate cloneability per-key so one non-cloneable value (a function,
+			// etc.) can't blow up the whole error post downstream — drop only it.
+			structuredClone(value)
+			props[key] = value
+		} catch {}
+	}
+	if (Object.keys(props).length > 0) out.props = props
+
+	if (err.cause !== undefined && depth < MAX_CAUSE_DEPTH) {
+		out.cause = serializeError(err.cause, depth + 1)
+	}
+	return out
 }
 
 export function deserializeError(err: SerializedError): Error {
-	const e = new Error(err.message)
+	const e = new Error(err.message, err.cause ? { cause: deserializeError(err.cause) } : undefined)
 	if (err.stack) e.stack = err.stack
 	e.name = err.name ?? 'Error'
+	if (err.props) Object.assign(e, err.props)
 	return e
 }
 
