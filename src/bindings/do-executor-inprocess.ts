@@ -1,7 +1,6 @@
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import { type DurableObjectBase, DurableObjectStateImpl } from './durable-object'
-import { createRpcFunctionStub, wrapRpcReturnValue } from './rpc-stub'
 
 export class InProcessExecutor implements DOExecutor {
 	private _state: DurableObjectStateImpl
@@ -63,8 +62,11 @@ export class InProcessExecutor implements DOExecutor {
 		try {
 			const val = (this._instance as unknown as Record<string, unknown>)[method]
 			if (typeof val === 'function') {
-				const result = await (val as (...a: unknown[]) => unknown).call(this._instance, ...args)
-				return wrapRpcReturnValue(result, method)
+				// Return the raw result — the namespace `get()` stub wraps it once via
+				// wrapRpcReturnValue, matching the worker-thread executor (whose
+				// executeRpc also returns a raw value). Wrapping here too would
+				// double-wrap and emit warnInvalidRpcReturn twice.
+				return await (val as (...a: unknown[]) => unknown).call(this._instance, ...args)
 			}
 			throw new Error(`"${method}" is not a method on the Durable Object`)
 		} finally {
@@ -77,9 +79,11 @@ export class InProcessExecutor implements DOExecutor {
 		try {
 			const val = (this._instance as unknown as Record<string, unknown>)[prop]
 			if (typeof val === 'function') {
-				return createRpcFunctionStub(val as Function, this._instance)
+				// Re-dispatching callable (mirrors WorkerExecutor.executeRpcGet); the
+				// stub wraps it once. Avoids the double function-stub wrap.
+				return (...args: unknown[]) => this.executeRpc(prop, args)
 			}
-			return wrapRpcReturnValue(val, prop)
+			return val
 		} finally {
 			this._state._exit()
 		}
