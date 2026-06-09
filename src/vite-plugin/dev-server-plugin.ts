@@ -389,6 +389,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					auxConfigs.set(workerDef.configPath, { config: auxConfig, name: workerName })
 					console.log(`[lopata:vite] Auxiliary worker: ${workerName}`)
 
+					// Aux workers run in their own Bun Worker thread (GenerationManager's
+					// universal model) loaded via native Bun import — NOT through Vite's
+					// SSR/transform pipeline like the main worker. See `auxiliaryWorkers`
+					// in index.ts: author them as plain Bun-resolvable modules.
 					const auxManager = new GenerationManager(auxConfig, auxBaseDir, {
 						workerName,
 						workerRegistry,
