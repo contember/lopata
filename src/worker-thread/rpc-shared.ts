@@ -174,6 +174,12 @@ export async function dispatchRpcFetch(
 
 	if (!hooks.isAlive()) {
 		if (reqStreamId !== undefined) requestStreams.cancel(reqStreamId)
+		// The binding's fetch already resolved — tear down what it produced so the
+		// upstream socket/stream isn't leaked now that the channel is gone (the
+		// caller will never adopt the WS or read the body).
+		const ws = (response as ResponseWithWebSocket).webSocket
+		if (response.status === 101 && ws instanceof CFWebSocket) ws.close(1012, 'Service Restart')
+		else response.body?.cancel().catch(() => {})
 		return
 	}
 
