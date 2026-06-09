@@ -336,6 +336,13 @@ async function initWorker(workerConfig: WorkerConfig) {
 				return { result: { type: 'ws-created', wsId: cmd.wsId } }
 			}
 
+			case 'cleanup': {
+				// Tear down the Docker container (rm -f + stop timers) before main
+				// terminates this thread. No-op for non-container DOs.
+				await containerRuntime?.cleanup()
+				return { result: { type: 'cleanup' } }
+			}
+
 			default:
 				throw new Error(`Unknown command type: ${(cmd as any).type}`)
 		}

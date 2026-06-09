@@ -50,6 +50,10 @@ export type DOCommand =
 	| { type: 'rpc-get'; prop: string }
 	| { type: 'alarm'; retryCount: number }
 	| { type: 'ws-create'; wsId: string }
+	// Stop the DO's Docker container (rm -f + stop timers) before main terminates
+	// the worker thread. terminate() kills the activity/health timers but leaves
+	// the Docker process running; only an explicit cleanup stops it.
+	| { type: 'cleanup' }
 
 /** Results returned from worker to main thread */
 export type DOResult =
@@ -73,6 +77,7 @@ export type DOResult =
 	| { type: 'rpc-get'; value: unknown }
 	| { type: 'alarm' }
 	| { type: 'ws-created'; wsId: string }
+	| { type: 'cleanup' }
 	| { type: 'error'; message: string; stack?: string; name?: string }
 
 /**
@@ -757,7 +762,32 @@ export class WorkerExecutor implements DOExecutor {
 		return this._disposed
 	}
 
+	/**
+	 * Ask the DO worker to tear down its Docker container before we terminate the
+	 * thread. terminate() kills the worker's activity/health timers but leaves the
+	 * Docker process running — mirrors `InProcessExecutor.dispose()`'s
+	 * `containerRuntime.cleanup()`. Bounded so a hung `docker rm` can't block
+	 * reload; the thread is terminated right after regardless.
+	 */
+	private _cleanupContainer(): Promise<void> {
+		let timer: ReturnType<typeof setTimeout>
+		const timeout = new Promise<void>((res) => {
+			timer = setTimeout(res, 3000)
+		})
+		return Promise.race([
+			this._sendCommand({ type: 'cleanup' }).then(() => {}, () => {}),
+			timeout,
+		]).finally(() => clearTimeout(timer))
+	}
+
 	async dispose(): Promise<void> {
+		// Container DOs: stop the Docker container before terminating the thread.
+		// Non-container DOs skip the round-trip so reload stays fast.
+		if (!this._disposed && this._worker && this._config.containerConfig) {
+			try {
+				await this._cleanupContainer()
+			} catch {}
+		}
 		this._disposed = true
 		if (this._worker) {
 			this._worker.terminate()
