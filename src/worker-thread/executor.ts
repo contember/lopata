@@ -33,6 +33,10 @@ import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
 
+function isTraceMessage(msg: WorkerMessage): msg is Extract<WorkerMessage, { type: `trace-${string}` }> {
+	return msg.type.startsWith('trace-')
+}
+
 interface Pending<T> {
 	resolve: (value: T) => void
 	reject: (error: Error) => void
@@ -159,6 +163,15 @@ export class WorkerThreadExecutor {
 	}
 
 	private _handleMessage(msg: WorkerMessage): void {
+		if (isTraceMessage(msg)) {
+			// Trace writes target the shared (process-wide) TraceStore + dashboard
+			// subscribers — they never touch this (possibly disposed) generation.
+			// Apply them even after dispose so a `trace-span-end` (or attrs/event)
+			// queued just before teardown still finalizes the span instead of
+			// leaving it dangling 'unset' for the dying generation.
+			this._applyTrace(msg)
+			return
+		}
 		if (this._disposed) return
 		switch (msg.type) {
 			case 'need-init':
@@ -294,14 +307,6 @@ export class WorkerThreadExecutor {
 				break
 			case 'wait-until-settle':
 				this._pendingWaitUntil.delete(msg.id)
-				break
-			case 'trace-span-insert':
-			case 'trace-span-end':
-			case 'trace-span-status':
-			case 'trace-span-attrs':
-			case 'trace-span-event':
-			case 'trace-error':
-				this._applyTrace(msg)
 				break
 			case 'ws-worker-send':
 				this._wsBridge.deliverRemoteMessage(msg.wsId, msg.data)
