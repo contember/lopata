@@ -99,10 +99,6 @@ export class GenerationManager {
 		// RPCs into them. Stateless ones duplicate in the thread. Static assets
 		// stay main-side for the auto-serve fallback.
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
-		for (const entry of registry.durableObjects) {
-			this._doNamespaces.set(entry.className, entry.namespace)
-			entry.namespace._setExternalClass(entry.className, env, this.nextGenId)
-		}
 		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
@@ -120,13 +116,21 @@ export class GenerationManager {
 			executor.dispose()
 			throw err
 		}
-		// Forward `alarm()` introspection from the user-worker to each namespace
-		// so the dashboard's "trigger alarm" UI shows up in thread mode. (Main
-		// itself can't introspect — the user module is only loaded inside the
-		// worker.)
+
+		// Rewire the shared DO namespaces to this generation only after the new
+		// worker has loaded successfully. `_setExternalClass` disposes the
+		// previous generation's live DO executors (active WebSockets included)
+		// and repoints the namespace at the new env — doing it before `ready()`
+		// would tear down working Durable Objects on a *failed* reload (e.g. a
+		// syntax error mid-edit) and leave the still-serving old generation
+		// returning 500s for every DO request. Forwarding the `alarm()`
+		// introspection hint here (rather than in a later pass) keeps the
+		// dashboard's "trigger alarm" UI working in thread mode — main can't
+		// introspect because the user module is only loaded inside the worker.
 		for (const entry of registry.durableObjects) {
-			const hasAlarm = readyInfo.doAlarmHandlers[entry.className] ?? false
-			entry.namespace._setAlarmHandlerHint(hasAlarm)
+			this._doNamespaces.set(entry.className, entry.namespace)
+			entry.namespace._setExternalClass(entry.className, env, this.nextGenId)
+			entry.namespace._setAlarmHandlerHint(readyInfo.doAlarmHandlers[entry.className] ?? false)
 		}
 
 		const genId = this.nextGenId++
@@ -137,7 +141,10 @@ export class GenerationManager {
 		if (oldGenId !== null) {
 			const oldGen = this.generations.get(oldGenId)
 			if (oldGen && oldGen.state === 'active') {
-				oldGen.drain()
+				// Skip clearing alarm timers for namespaces shared with this new
+				// generation — it just restored them via `_restoreAlarms()`, so
+				// clearing here would silently drop pending alarms across the reload.
+				oldGen.drain(new Set(this._doNamespaces.values()))
 				this._scheduleDrainAndStop(oldGenId, oldGen)
 			}
 		}
@@ -173,7 +180,7 @@ export class GenerationManager {
 	drain(genId: number): void {
 		const gen = this.generations.get(genId)
 		if (!gen) return
-		gen.drain()
+		gen.drain(new Set(this._doNamespaces.values()))
 	}
 
 	/** Force-stop a specific generation */

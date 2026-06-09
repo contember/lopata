@@ -198,12 +198,17 @@ export class Generation {
 	}
 
 	/** Transition to draining — stops consumers + alarm timers, keeps in-flight requests alive. */
-	drain(): void {
+	drain(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): void {
 		if (this.state === 'stopped') return
 		this.state = 'draining'
 		this.stopConsumers()
-		// New generation restores alarms from DB via `_restoreAlarms()`.
+		// Stop firing this generation's alarms — but skip namespaces shared with
+		// the next generation, which has already restored their timers via
+		// `_restoreAlarms()`. Clearing a shared namespace here would wipe those
+		// freshly-scheduled timers, so a pending alarm would silently never fire
+		// across a reload (until the next reload or a `setAlarm` write).
 		for (const entry of this.registry.durableObjects) {
+			if (sharedNamespaces?.has(entry.namespace)) continue
 			entry.namespace.clearAlarmTimers()
 		}
 	}
@@ -211,7 +216,7 @@ export class Generation {
 	/** Force-stop: drain + destroy all DO namespaces + abort workflows + terminate the worker. */
 	stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): void {
 		if (this.state === 'stopped') return
-		this.drain()
+		this.drain(sharedNamespaces)
 		this.state = 'stopped'
 		for (const entry of this.registry.durableObjects) {
 			// Skip destroy for namespaces shared with the next generation

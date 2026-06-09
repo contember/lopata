@@ -1,0 +1,13 @@
+{
+	"name": "do-reload-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "DO", "class_name": "Thing" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Thing"] }
+	]
+}
