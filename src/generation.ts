@@ -245,6 +245,10 @@ export class Generation {
 		// but drain must still let them finish — a cron handler firing just before
 		// reload would otherwise be force-terminated mid-execution.
 		if (this.threadExecutor.pendingHandlerWork() > 0) return false
+		// Cross-worker service-binding fetches (`env.OTHER.fetch()`) reach this
+		// generation's executor directly, also bypassing `activeRequests`. Count
+		// them so reloading the target doesn't sever an inbound fetch mid-flight.
+		if (this.threadExecutor.pendingFetch() > 0) return false
 		for (const entry of this.registry.durableObjects) {
 			if (entry.namespace.hasActiveWebSockets()) return false
 		}

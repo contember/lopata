@@ -367,6 +367,14 @@ export class WorkerThreadExecutor {
 		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size
 	}
 
+	/** In-flight top-level `executeFetch` calls. A cross-worker service-binding
+	 *  fetch (`env.OTHER.fetch()`) lands here directly via the registry without
+	 *  touching the target `Generation.activeRequests`, so the drain must consult
+	 *  this too — otherwise reloading the target severs the request mid-flight. */
+	pendingFetch(): number {
+		return this._pending.size
+	}
+
 	private _resolveBinding = (target: BindingTarget): Record<string, unknown> => {
 		const binding = this._mainEnv[target.binding]
 		if (binding == null) {
