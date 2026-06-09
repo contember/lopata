@@ -26,12 +26,25 @@ describe('serializeError / deserializeError', () => {
 		expect((out.cause as Error)?.message).toBe('root')
 	})
 
-	test('caps cause recursion depth without throwing', () => {
+	test('caps cause recursion depth at MAX_CAUSE_DEPTH without throwing', () => {
 		let err = new Error('leaf')
 		for (let i = 0; i < 50; i++) err = new Error(`level-${i}`, { cause: err })
 		// Must not stack-overflow / hang.
 		const out = deserializeError(serializeError(err))
 		expect(out.message).toBe('level-49')
+
+		// The chain must be truncated at the cap (MAX_CAUSE_DEPTH = 8), not carry
+		// all 50 levels — otherwise the depth guard could be removed and this test
+		// would still pass. Walk the deserialized cause chain and count the links.
+		let links = 0
+		let cur: Error | undefined = out
+		while (cur?.cause instanceof Error) {
+			cur = cur.cause
+			links++
+		}
+		expect(links).toBe(8)
+		// level-49 (depth 0) → … → level-41 (depth 8), then capped.
+		expect(cur?.message).toBe('level-41')
 	})
 
 	test('drops non-cloneable props instead of throwing', () => {

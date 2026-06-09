@@ -1942,3 +1942,90 @@ describe('Executor crash recovery', () => {
 		expect(factory.created.length).toBe(2)
 	})
 })
+
+describe('DurableObjectNamespaceImpl.destroy({ force })', () => {
+	// A fake executor that always reports a live WebSocket, so the non-force
+	// destroy keeps it alive and `force` is the only thing that disposes it.
+	class WsHoldingExecutor implements DOExecutor {
+		disposeCount = 0
+		async executeFetch(): Promise<Response> {
+			return new Response('ok')
+		}
+		async executeRpc(): Promise<unknown> {
+			return null
+		}
+		async executeRpcGet(): Promise<unknown> {
+			return null
+		}
+		async executeAlarm(): Promise<void> {}
+		isActive() {
+			return false
+		}
+		isBlocked() {
+			return false
+		}
+		activeWebSocketCount() {
+			return 1
+		}
+		isAborted() {
+			return false
+		}
+		isDisposed() {
+			return false
+		}
+		async dispose() {
+			this.disposeCount++
+		}
+	}
+	class WsFactory implements DOExecutorFactory {
+		created: WsHoldingExecutor[] = []
+		create(): DOExecutor {
+			const e = new WsHoldingExecutor()
+			this.created.push(e)
+			return e
+		}
+	}
+
+	async function setup(name: string) {
+		const factory = new WsFactory()
+		const ns = new DurableObjectNamespaceImpl(db, name, undefined, { evictionTimeoutMs: 30_000 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const id = ns.idFromName('a')
+		const stub = ns.get(id) as unknown as { fetch(r: Request): Promise<Response> }
+		await stub.fetch(new Request('http://do/')) // force lazy executor creation
+		return { factory, ns, id }
+	}
+
+	function evictionTimer(ns: DurableObjectNamespaceImpl): unknown {
+		return (ns as unknown as { _evictionTimer: unknown })._evictionTimer
+	}
+
+	// TESTS-2: the final-teardown path (test dispose / shutdown) must dispose
+	// even WS-holding executors and must NOT restart the 30s eviction interval —
+	// there's no next generation to reap survivors and a live timer would outlive
+	// the DB close that follows. A regression would hang the suite, not fail an
+	// assertion, so assert it directly.
+	test('force disposes a WS-holding executor and leaves no eviction timer', async () => {
+		const { factory, ns, id } = await setup('DestroyWsForce')
+		expect(factory.created[0]!.activeWebSocketCount()).toBe(1)
+
+		ns.destroy({ force: true })
+
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+		expect(ns._getExecutor(id.toString())).toBe(null)
+		expect(evictionTimer(ns)).toBe(null)
+	})
+
+	test('without force, a WS-holding executor survives and the eviction timer is re-armed', async () => {
+		const { factory, ns, id } = await setup('DestroyWsKeep')
+
+		ns.destroy() // no force — the WS-holding executor must survive
+
+		expect(factory.created[0]!.disposeCount).toBe(0)
+		expect(ns._getExecutor(id.toString())).not.toBe(null)
+		expect(evictionTimer(ns)).not.toBe(null)
+
+		// Teardown: force-destroy so the re-armed 30s interval doesn't outlive the test.
+		ns.destroy({ force: true })
+	})
+})
