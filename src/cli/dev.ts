@@ -89,8 +89,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 		// DOs always run in worker threads now — main thread can't host the user
 		// classes since the worker entry imports user code in its own thread.
-		const executorFactory = await makeExecutorFactory()
-
+		// Each manager gets its OWN factory instance: the factory carries the
+		// owning worker's module/config path (set via configure() on every
+		// reload). A single shared instance would be clobbered by the
+		// last-reloaded worker, so aux-worker DOs would spawn with the wrong
+		// worker's module — see generation-manager._doReload().
 		registry = new WorkerRegistry()
 
 		// Load main worker config
@@ -104,7 +107,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			workerRegistry: registry,
 			isMain: true,
 			cron: lopataConfig.cron,
-			executorFactory,
+			executorFactory: await makeExecutorFactory(),
 			configPath: lopataConfig.main,
 			browserConfig: lopataConfig.browser,
 		})
@@ -123,7 +126,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				workerRegistry: registry,
 				isMain: false,
 				cron: lopataConfig.cron,
-				executorFactory,
+				executorFactory: await makeExecutorFactory(),
 				configPath: workerDef.config,
 			})
 			registry.register(workerDef.name, auxManager)
