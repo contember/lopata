@@ -256,7 +256,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		for (const tw of testWorkflows) tw.dispose()
 		for (const td of testDOs) td.dispose()
 		for (const entry of registry.durableObjects) {
-			entry.namespace.destroy()
+			// force: final teardown — dispose every executor and leave no eviction
+			// timer running past db.close() below.
+			entry.namespace.destroy({ force: true })
 		}
 		for (const entry of registry.workflows) {
 			entry.binding.abortRunning()

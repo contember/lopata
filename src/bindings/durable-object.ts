@@ -1057,16 +1057,23 @@ export class DurableObjectNamespaceImpl {
 		this.alarmTimers.clear()
 	}
 
-	/** @internal Destroy this namespace: clear timers, evict executors without active WebSockets */
-	destroy(): void {
+	/**
+	 * @internal Destroy this namespace: clear timers, evict executors without
+	 * active WebSockets. Pass `{ force: true }` for final teardown (test dispose /
+	 * shutdown) to dispose EVERY executor and never restart the eviction timer —
+	 * there's no next generation to reap survivors, and a restarted 30s interval
+	 * would outlive teardown (and the DB close that follows).
+	 */
+	destroy(options?: { force?: boolean }): void {
 		if (this._evictionTimer) {
 			clearInterval(this._evictionTimer)
 			this._evictionTimer = null
 		}
 		this.clearAlarmTimers()
-		// Dispose executors without active WebSockets; keep the rest alive
+		// Dispose executors without active WebSockets; keep the rest alive (unless
+		// forced).
 		for (const [idStr, executor] of this._executors) {
-			if (executor.activeWebSocketCount() === 0) {
+			if (options?.force || executor.activeWebSocketCount() === 0) {
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
@@ -1074,8 +1081,9 @@ export class DurableObjectNamespaceImpl {
 		}
 		// If any WS-holding executor survived, keep its _lastActivity entry and
 		// restart the eviction timer so it eventually gets reaped once the WS
-		// half-closes (no FIN). Otherwise the executor would linger forever.
-		if (this._executors.size > 0 && this._evictionTimeoutMs > 0) {
+		// half-closes (no FIN). Otherwise the executor would linger forever. Never
+		// restart under `force` — teardown must leave no live timer.
+		if (!options?.force && this._executors.size > 0 && this._evictionTimeoutMs > 0) {
 			this._evictionTimer = setInterval(() => this._evictIdle(), 30_000)
 		} else {
 			this._lastActivity.clear()
