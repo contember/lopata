@@ -134,6 +134,11 @@ export function buildWorkerEnv(
 	mkdirSync(dataDir, { recursive: true })
 	const db = new Database(dbPath, { create: true })
 	db.run('PRAGMA journal_mode=WAL')
+	// Match db.ts / thread-env.ts: WAL allows only one writer at a time across
+	// connections, so without busy_timeout a concurrent write from the main or
+	// user-worker connection fails this DO-worker write instantly with
+	// SQLITE_BUSY instead of waiting.
+	db.run('PRAGMA busy_timeout=5000')
 	runMigrations(db)
 
 	const env: Record<string, unknown> = {}
