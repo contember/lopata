@@ -133,6 +133,15 @@ export class GenerationManager {
 			entry.namespace._setAlarmHandlerHint(readyInfo.doAlarmHandlers[entry.className] ?? false)
 		}
 
+		// Route dashboard workflow control through the worker thread. The main-side
+		// binding built by `buildEnv` is hollow (no `_class`, empty in-memory event
+		// waiters / sleep resolvers / abort controllers) — the live state machine
+		// runs in the worker. This is the workflow analog of `_setExternalClass`,
+		// installed here rather than via the (skipped) `wireClassRefs`.
+		for (const entry of registry.workflows) {
+			entry.binding._setThreadRouter((op) => executor.executeWorkflowControl(entry.bindingName, op))
+		}
+
 		const genId = this.nextGenId++
 		const gen = new Generation(genId, env, registry, this.config, executor, this.workerName, this.cronEnabled)
 		this.generations.set(genId, gen)

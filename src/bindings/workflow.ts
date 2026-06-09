@@ -3,6 +3,7 @@ import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveContext } from '../tracing/context'
 import { addSpanEvent, persistError, startSpan } from '../tracing/span'
+import type { WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
 
 // --- Limits ---
 
@@ -897,6 +898,13 @@ export class SqliteWorkflowBinding {
 	private counter = 0
 	private limits: Required<WorkflowLimits>
 	private clock: Clock
+	/**
+	 * Thread-mode router for dashboard control ops. The real state machine lives
+	 * in the worker thread, so when this is set `executeControl` forwards there
+	 * instead of running against this (hollow) main-side binding. `null`/unset =
+	 * in-process: run locally. Installed by `GenerationManager` on each reload.
+	 */
+	private _threadRouter?: (op: WorkflowControlOp) => Promise<WorkflowControlResult>
 
 	constructor(db: Database, workflowName: string, className: string, limits?: WorkflowLimits, clock?: Clock) {
 		this.db = db
@@ -1086,6 +1094,61 @@ export class SqliteWorkflowBinding {
 			.get(id) as { id: string } | null
 		if (!row) throw new Error(`Workflow instance ${id} not found`)
 		return new SqliteWorkflowInstance(this.db, id, this)
+	}
+
+	/**
+	 * Install the thread-mode router (see {@link _threadRouter}). Called by
+	 * `GenerationManager` on each reload so the dashboard's control ops reach the
+	 * live worker-side binding. Mirrors the DO namespace's `_setExternalClass`.
+	 */
+	_setThreadRouter(router: (op: WorkflowControlOp) => Promise<WorkflowControlResult>): void {
+		this._threadRouter = router
+	}
+
+	/**
+	 * Execute a dashboard control operation. In thread mode the real state
+	 * machine (abort controllers, event waiters, sleep resolvers, the wired
+	 * class) lives in the worker, so when a thread router is installed this
+	 * forwards there; otherwise (in-process / worker-side binding) it runs
+	 * locally. Mutating ops resolve to `{ kind: 'ok' }`; `create` reports the new
+	 * id; the introspection reads report their value.
+	 */
+	async executeControl(op: WorkflowControlOp): Promise<WorkflowControlResult> {
+		if (this._threadRouter) return this._threadRouter(op)
+		switch (op.kind) {
+			case 'create': {
+				const instance = await this.create({ params: op.params })
+				return { kind: 'create', id: instance.id }
+			}
+			case 'terminate': {
+				await (await this.get(op.instanceId)).terminate()
+				return { kind: 'ok' }
+			}
+			case 'pause': {
+				await (await this.get(op.instanceId)).pause()
+				return { kind: 'ok' }
+			}
+			case 'resume': {
+				await (await this.get(op.instanceId)).resume()
+				return { kind: 'ok' }
+			}
+			case 'restart': {
+				await (await this.get(op.instanceId)).restart(op.fromStep ? { fromStep: op.fromStep } : undefined)
+				return { kind: 'ok' }
+			}
+			case 'skipSleep': {
+				await (await this.get(op.instanceId)).skipSleep()
+				return { kind: 'ok' }
+			}
+			case 'sendEvent': {
+				await (await this.get(op.instanceId)).sendEvent({ type: op.eventType, payload: op.payload })
+				return { kind: 'ok' }
+			}
+			case 'isSleeping':
+				return { kind: 'isSleeping', value: isInstanceSleeping(op.instanceId) }
+			case 'waitingEventTypes':
+				return { kind: 'waitingEventTypes', value: getWaitingEventTypes(op.instanceId) }
+		}
 	}
 
 	/** Resume any workflow instances that were running/waiting when the process last exited. */

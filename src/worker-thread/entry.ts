@@ -8,7 +8,16 @@ import { getDatabase } from '../db'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { WorkerExecutionContext } from './execution-context'
-import type { ParentSpanContext, SerializedResponse, WorkerCommand, WorkerHandlerName, WorkerInitConfig, WorkerMessage } from './protocol'
+import type {
+	ParentSpanContext,
+	SerializedResponse,
+	WorkerCommand,
+	WorkerHandlerName,
+	WorkerInitConfig,
+	WorkerMessage,
+	WorkflowControlOp,
+	WorkflowControlResult,
+} from './protocol'
 import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
@@ -186,6 +195,12 @@ async function initRuntime(init: WorkerInitConfig) {
 		return { kind: 'value', value: member }
 	}
 
+	const invokeWorkflowControl = async (bindingName: string, op: WorkflowControlOp): Promise<WorkflowControlResult> => {
+		const wf = built.workflows.find(w => w.bindingName === bindingName)
+		if (!wf) throw new Error(`Workflow binding "${bindingName}" not found`)
+		return wf.binding.executeControl(op)
+	}
+
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
 		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
@@ -309,6 +324,14 @@ async function initRuntime(init: WorkerInitConfig) {
 					}
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-get-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'workflow-control':
+				try {
+					const result = await runWithParentContext(cmd.parent, () => invokeWorkflowControl(cmd.binding, cmd.op))
+					post({ type: 'workflow-control-result', id: cmd.id, result })
+				} catch (e) {
+					post({ type: 'workflow-control-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 		}

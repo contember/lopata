@@ -116,6 +116,34 @@ export interface WorkerInitConfig {
 /** Names of the worker handlers we know how to invoke via RPC. */
 export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
 
+/**
+ * Dashboard-initiated workflow control operation, routed main → worker so it
+ * lands on the *live* worker-side `SqliteWorkflowBinding` (which owns the real
+ * abort controllers / event waiters / sleep resolvers — main's binding is
+ * hollow in thread mode). `binding` is the wrangler binding name; `instanceId`
+ * targets a specific instance for everything except `create`.
+ */
+export type WorkflowControlOp =
+	| { kind: 'create'; params: unknown }
+	| { kind: 'terminate'; instanceId: string }
+	| { kind: 'pause'; instanceId: string }
+	| { kind: 'resume'; instanceId: string }
+	| { kind: 'restart'; instanceId: string; fromStep?: string }
+	| { kind: 'skipSleep'; instanceId: string }
+	| { kind: 'sendEvent'; instanceId: string; eventType: string; payload?: unknown }
+	// Introspection reads of the worker-side in-memory registries — the dashboard
+	// instance detail renders "sleeping" / "waiting for events" from these.
+	| { kind: 'isSleeping'; instanceId: string }
+	| { kind: 'waitingEventTypes'; instanceId: string }
+
+/** Result payload of a {@link WorkflowControlOp}. `create` reports the new id,
+ *  the introspection reads report their value; mutating ops report nothing. */
+export type WorkflowControlResult =
+	| { kind: 'create'; id: string }
+	| { kind: 'ok' }
+	| { kind: 'isSleeping'; value: boolean }
+	| { kind: 'waitingEventTypes'; value: string[] }
+
 export interface BindingTarget {
 	binding: string
 	/**
@@ -330,6 +358,18 @@ export type WorkerCommand =
 		props?: Record<string, unknown>
 		parent?: ParentSpanContext
 	}
+	// Dashboard-initiated workflow control (create/terminate/pause/resume/
+	// restart/skipSleep/sendEvent + introspection reads). Routed to the worker
+	// because the live workflow state machine — abort controllers, event
+	// waiters, sleep resolvers — lives in the worker's binding instance, not
+	// main's hollow one.
+	| {
+		type: 'workflow-control'
+		id: number
+		binding: string
+		op: WorkflowControlOp
+		parent?: ParentSpanContext
+	}
 	// WebSocket bridge: a real client connected to main's upgraded ws sent us
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
@@ -375,6 +415,8 @@ export type WorkerMessage =
 	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'value'; value: unknown }
 	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'function' }
 	| { type: 'entrypoint-rpc-get-error'; id: number; error: SerializedError }
+	| { type: 'workflow-control-result'; id: number; result: WorkflowControlResult }
+	| { type: 'workflow-control-error'; id: number; error: SerializedError }
 	| RpcCallRequest
 	| RpcGetRequest
 	| RpcFetchRequest

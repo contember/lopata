@@ -1,6 +1,5 @@
 import type { SQLQueryBindings } from 'bun:sqlite'
 import type { SqliteWorkflowBinding } from '../../bindings/workflow'
-import { getWaitingEventTypes, isInstanceSleeping } from '../../bindings/workflow'
 import { getDatabase } from '../../db'
 import type { HandlerContext, OkResponse, WorkflowDetail, WorkflowInstance, WorkflowSummary } from '../types'
 import { getAllConfigs } from '../types'
@@ -66,7 +65,7 @@ export const handlers = {
 		return db.prepare(query).all(...params) as WorkflowInstance[]
 	},
 
-	'workflows.getInstance'({ id }: { name: string; id: string }): WorkflowDetail {
+	async 'workflows.getInstance'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<WorkflowDetail> {
 		const db = getDatabase()
 		const instance = db.query<Record<string, unknown>, [string]>(
 			'SELECT * FROM workflow_instances WHERE id = ?',
@@ -95,10 +94,28 @@ export const handlers = {
 			'SELECT id, event_type, payload, created_at FROM workflow_events WHERE instance_id = ? ORDER BY created_at',
 		).all(id)
 
-		// Compute active sleep: check if the instance is currently sleeping (in-memory)
+		// The "sleeping" / "waiting for events" introspection reads live-process
+		// in-memory registries. In thread mode those registries are populated in
+		// the worker, so route the reads through the binding (the thread router
+		// forwards them); in-process the binding runs them locally. Resolve the
+		// binding best-effort — a stopped/unknown worker just yields the defaults.
+		let sleeping = false
+		let waitingForEvents: string[] = []
+		try {
+			const binding = getWorkflowBinding(ctx, name)
+			if (instance.status === 'running') {
+				const r = await binding.executeControl({ kind: 'isSleeping', instanceId: id })
+				if (r.kind === 'isSleeping') sleeping = r.value
+			}
+			if (instance.status === 'waiting') {
+				const r = await binding.executeControl({ kind: 'waitingEventTypes', instanceId: id })
+				if (r.kind === 'waitingEventTypes') waitingForEvents = r.value
+			}
+		} catch {}
+
+		// Compute active sleep: find the latest sleep/sleepUntil step "until" time.
 		let activeSleep: WorkflowDetail['activeSleep'] = null
-		if (instance.status === 'running' && isInstanceSleeping(id)) {
-			// Find the latest sleep/sleepUntil step to get the "until" time
+		if (sleeping) {
 			for (let i = steps.length - 1; i >= 0; i--) {
 				const s = steps[i]!
 				if ((s.step_name.startsWith('sleep:') || s.step_name.startsWith('sleepUntil:')) && s.output) {
@@ -114,51 +131,37 @@ export const handlers = {
 			}
 		}
 
-		// Compute waiting event types from in-memory registry
-		const waitingForEvents = instance.status === 'waiting' ? getWaitingEventTypes(id) : []
-
 		return { ...instance, steps, stepAttempts, events, activeSleep, waitingForEvents } as WorkflowDetail
 	},
 
 	async 'workflows.terminate'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		await instance.terminate()
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'terminate', instanceId: id })
 		return { ok: true }
 	},
 
 	async 'workflows.create'({ name, params }: { name: string; params: string }, ctx: HandlerContext): Promise<{ ok: true; id: string }> {
-		const binding = getWorkflowBinding(ctx, name)
-		const parsed = JSON.parse(params)
-		const instance = await binding.create({ params: parsed })
-		return { ok: true, id: instance.id }
+		const result = await getWorkflowBinding(ctx, name).executeControl({ kind: 'create', params: JSON.parse(params) })
+		if (result.kind !== 'create') throw new Error('Unexpected workflow control result for create')
+		return { ok: true, id: result.id }
 	},
 
 	async 'workflows.pause'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		await instance.pause()
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'pause', instanceId: id })
 		return { ok: true }
 	},
 
 	async 'workflows.resume'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		await instance.resume()
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'resume', instanceId: id })
 		return { ok: true }
 	},
 
 	async 'workflows.restart'({ name, id, fromStep }: { name: string; id: string; fromStep?: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		await instance.restart(fromStep ? { fromStep } : undefined)
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'restart', instanceId: id, fromStep })
 		return { ok: true }
 	},
 
 	async 'workflows.skipSleep'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		await instance.skipSleep()
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'skipSleep', instanceId: id })
 		return { ok: true }
 	},
 
@@ -166,22 +169,24 @@ export const handlers = {
 		{ name, id, type, payload }: { name: string; id: string; type: string; payload?: string },
 		ctx: HandlerContext,
 	): Promise<OkResponse> {
-		const binding = getWorkflowBinding(ctx, name)
-		const instance = await binding.get(id)
-		const parsed = payload ? JSON.parse(payload) : undefined
-		await instance.sendEvent({ type, payload: parsed })
+		await getWorkflowBinding(ctx, name).executeControl({
+			kind: 'sendEvent',
+			instanceId: id,
+			eventType: type,
+			payload: payload ? JSON.parse(payload) : undefined,
+		})
 		return { ok: true }
 	},
 
 	async 'workflows.duplicate'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<{ ok: true; id: string }> {
-		const binding = getWorkflowBinding(ctx, name)
 		const db = getDatabase()
 		const row = db.query<{ params: string | null }, [string]>(
 			'SELECT params FROM workflow_instances WHERE id = ?',
 		).get(id)
 		if (!row) throw new Error('Workflow instance not found')
 		const params = row.params !== null ? JSON.parse(row.params) : {}
-		const newInstance = await binding.create({ params })
-		return { ok: true, id: newInstance.id }
+		const result = await getWorkflowBinding(ctx, name).executeControl({ kind: 'create', params })
+		if (result.kind !== 'create') throw new Error('Unexpected workflow control result for duplicate')
+		return { ok: true, id: result.id }
 	},
 }

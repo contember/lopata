@@ -1,0 +1,9 @@
+{
+	"name": "thread-workflow-control-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"workflows": [
+		{ "name": "waiter", "binding": "WAITER", "class_name": "Waiter" },
+		{ "name": "sleeper", "binding": "SLEEPER", "class_name": "Sleeper" }
+	]
+}

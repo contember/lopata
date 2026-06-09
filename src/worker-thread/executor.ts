@@ -24,6 +24,8 @@ import type {
 	SerializedResponse,
 	WorkerCommand,
 	WorkerMessage,
+	WorkflowControlOp,
+	WorkflowControlResult,
 } from './protocol'
 import { deserializeError } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from './rpc-shared'
@@ -68,6 +70,7 @@ export class WorkerThreadExecutor {
 	private _pendingHandlers = new Map<number, Pending<HandlerResult>>()
 	private _pendingRpc = new Map<number, Pending<unknown>>()
 	private _pendingRpcGet = new Map<number, Pending<{ kind: 'value'; value: unknown } | { kind: 'function' }>>()
+	private _pendingWorkflowControl = new Map<number, Pending<WorkflowControlResult>>()
 	private _nextId = 1
 	private _disposed = false
 	private _initConfig: WorkerThreadExecutorOptions
@@ -142,10 +145,12 @@ export class WorkerThreadExecutor {
 		for (const [, pending] of this._pendingHandlers) pending.reject(err)
 		for (const [, pending] of this._pendingRpc) pending.reject(err)
 		for (const [, pending] of this._pendingRpcGet) pending.reject(err)
+		for (const [, pending] of this._pendingWorkflowControl) pending.reject(err)
 		this._pending.clear()
 		this._pendingHandlers.clear()
 		this._pendingRpc.clear()
 		this._pendingRpcGet.clear()
+		this._pendingWorkflowControl.clear()
 		this._pendingWaitUntil.clear()
 		this._responseStreams.disposeAll(err)
 		this._rpcStreams.disposeAll()
@@ -254,6 +259,24 @@ export class WorkerThreadExecutor {
 				const p = this._pendingRpcGet.get(msg.id)
 				if (!p) break
 				this._pendingRpcGet.delete(msg.id)
+				const err = new Error(msg.error.message)
+				if (msg.error.stack) err.stack = msg.error.stack
+				err.name = msg.error.name ?? 'Error'
+				p.reject(err)
+				break
+			}
+			case 'workflow-control-result': {
+				const p = this._pendingWorkflowControl.get(msg.id)
+				if (p) {
+					this._pendingWorkflowControl.delete(msg.id)
+					p.resolve(msg.result)
+				}
+				break
+			}
+			case 'workflow-control-error': {
+				const p = this._pendingWorkflowControl.get(msg.id)
+				if (!p) break
+				this._pendingWorkflowControl.delete(msg.id)
 				const err = new Error(msg.error.message)
 				if (msg.error.stack) err.stack = msg.error.stack
 				err.name = msg.error.name ?? 'Error'
@@ -369,7 +392,7 @@ export class WorkerThreadExecutor {
 	 *  this so a cron/email handler or inbound RPC firing just before reload isn't
 	 *  force-terminated mid-execution. */
 	pendingHandlerWork(): number {
-		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size
+		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size + this._pendingWorkflowControl.size
 	}
 
 	/** In-flight top-level `executeFetch` calls. A cross-worker service-binding
@@ -549,6 +572,11 @@ export class WorkerThreadExecutor {
 
 	executeEmail(messageId: string, from: string, to: string, raw: Uint8Array): Promise<HandlerResult> {
 		return this._sendAndAwait(this._pendingHandlers, (id, parent) => ({ type: 'email', id, messageId, from, to, raw, parent }))
+	}
+
+	/** Run a dashboard workflow control op against the live worker-side binding. */
+	executeWorkflowControl(binding: string, op: WorkflowControlOp): Promise<WorkflowControlResult> {
+		return this._sendAndAwait(this._pendingWorkflowControl, (id, parent) => ({ type: 'workflow-control', id, binding, op, parent }))
 	}
 
 	dispose(): void {
