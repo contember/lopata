@@ -306,6 +306,17 @@ describe('makeBindingProxy — property access (thenable)', () => {
 		expect(typeof fn).toBe('function')
 		expect(fn.then).toBeUndefined()
 	})
+
+	test('arbitrary symbol props return undefined (no DataCloneError)', () => {
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: () => {
+				throw new Error('symbol prop must not become an RPC call')
+			},
+		})
+		expect((proxy as Record<symbol, unknown>)[Symbol.for('lopata.test')]).toBeUndefined()
+		expect((proxy as Record<symbol, unknown>)[Symbol.iterator]).toBeUndefined()
+	})
 })
 
 describe('createRpcFunctionStub', () => {

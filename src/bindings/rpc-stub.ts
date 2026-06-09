@@ -74,6 +74,11 @@ export function makeBindingProxy(
 			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
 			if (prop in extras) return extras[prop]
+			// Any other symbol key (user `Symbol.for(...)`, an unlisted well-known
+			// symbol) must not become an RPC method name — symbols aren't
+			// structured-cloneable and would throw DataCloneError. Mirrors the guard
+			// in createRpcStub / the service-binding proxy.
+			if (typeof prop === 'symbol') return undefined
 			const cached = methodCache.get(prop)
 			if (cached) return cached
 			if (prop === 'fetch') {
