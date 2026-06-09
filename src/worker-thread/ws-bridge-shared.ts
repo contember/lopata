@@ -101,6 +101,16 @@ export class WsHostBridge<O> {
 		if (pending) {
 			cfSocket._eventQueue.push(...pending)
 			this._pendingEvents.delete(wsId)
+			// A close buffered before register() (user did send()+close() on the
+			// server peer before returning the Response) must carry the same
+			// bookkeeping deliverRemoteClose does: mark the socket CLOSED and forget
+			// the id. The queued close event still dispatches to the real client on
+			// accept(). Without this the entry lingered in `_sockets` until
+			// disposeAll and the socket reported OPEN despite being closed.
+			if (pending.some((ev) => ev.type === 'close')) {
+				cfSocket.readyState = CFWebSocket.CLOSED
+				this._forget(wsId)
+			}
 		}
 		return cfSocket
 	}

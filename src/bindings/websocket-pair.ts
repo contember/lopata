@@ -71,7 +71,10 @@ export class CFWebSocket extends EventTarget {
 	accept(): void {
 		if (this._accepted) return
 		this._accepted = true
-		this.readyState = OPEN
+		// Don't re-open a socket that was already closed before accept() (e.g. a
+		// bridged peer whose close was buffered ahead of registration). The queued
+		// close event below still dispatches to listeners.
+		if (this.readyState !== CLOSED) this.readyState = OPEN
 
 		// Flush queued events
 		const queue = this._eventQueue
