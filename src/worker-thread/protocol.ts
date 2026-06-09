@@ -232,6 +232,13 @@ export interface RpcStreamCancel {
 	streamId: number
 }
 
+/** worker → main: the caller consumed an rpc-fetch response-body chunk and
+ *  grants the sender one more credit (see `STREAM_BACKPRESSURE_WINDOW`). */
+export interface RpcStreamAck {
+	type: 'rpc-stream-ack'
+	streamId: number
+}
+
 /**
  * Forward-direction streaming for {@link RpcFetchRequest}'s body. The sender
  * (worker-side `RpcClient.callFetch`) ships the request shell + a
@@ -274,6 +281,7 @@ export type RpcRequest =
 	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	| RpcStreamAck
 	| RpcReqStreamChunk
 	| RpcReqStreamEnd
 	| RpcReqStreamError
@@ -337,6 +345,9 @@ export type WorkerCommand =
 	// disconnected). Tell the worker to cancel its reader so an unbounded
 	// source (e.g. SSE) stops pumping instead of running forever.
 	| { type: 'stream-cancel'; id: number }
+	// Backpressure: main consumed a response-body chunk and grants the worker
+	// one more credit to post (see `STREAM_BACKPRESSURE_WINDOW`).
+	| { type: 'stream-ack'; id: number }
 	// Request-body streaming for the top-level user-worker fetch (main → worker).
 	// Mirrors `stream-chunk` / `stream-end` / `stream-error` in the opposite
 	// direction. Allows large or unbounded request bodies (uploads, streaming
@@ -375,6 +386,7 @@ export type WorkerMessage =
 	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	| RpcStreamAck
 	| RpcReqStreamChunk
 	| RpcReqStreamEnd
 	| RpcReqStreamError

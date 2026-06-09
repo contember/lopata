@@ -178,3 +178,121 @@ describe('pumpStream', () => {
 		expect(last.type).toBe('end')
 	})
 })
+
+describe('cross-thread backpressure (window)', () => {
+	// Wire a sender pump straight to a receiver (the `post` callback feeds the
+	// receiver; the receiver's `onCredit` grants back to the sender's registry) so
+	// we exercise the full credit loop without real postMessage.
+	function fastSource(total: number): ReadableStream<Uint8Array> {
+		let i = 0
+		return new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (i >= total) controller.close()
+				else controller.enqueue(new Uint8Array([i++ & 0xff]))
+			},
+		})
+	}
+
+	const envelopes = {
+		chunk: (id: number, chunk: Uint8Array) => ({ type: 'chunk' as const, id, chunk }),
+		end: (id: number) => ({ type: 'end' as const, id }),
+		error: (id: number, error: unknown) => ({ type: 'error' as const, id, error }),
+	}
+
+	test('a fast producer stalls at the window when the consumer does not read', async () => {
+		const WINDOW = 4
+		const TOTAL = 50
+		const sender = new OutboundStreamRegistry()
+		const recv = new StreamReceiver(() => {}, {
+			window: WINDOW,
+			onCredit: (id) => sender.grantCredit(id, 1),
+		})
+		const recvStream = recv.open(1)
+
+		let posted = 0
+		let ended = false
+		pumpStream(
+			1,
+			fastSource(TOTAL),
+			sender,
+			(msg) => {
+				if (msg.type === 'chunk') {
+					posted++
+					recv.push(1, msg.chunk)
+				} else if (msg.type === 'end') {
+					ended = true
+					recv.end(1)
+				}
+			},
+			envelopes,
+			undefined,
+			WINDOW,
+		)
+
+		// No consumer reading → the pump must back-pressure, not drain all 50.
+		await new Promise((r) => setTimeout(r, 50))
+		expect(posted).toBeGreaterThan(0)
+		expect(posted).toBeLessThan(TOTAL)
+		expect(ended).toBe(false)
+
+		// Drain fully → credits flow → the stream completes with every chunk.
+		const reader = recvStream.getReader()
+		let received = 0
+		while (true) {
+			const { done } = await reader.read()
+			if (done) break
+			received++
+		}
+		expect(received).toBe(TOTAL)
+		expect(ended).toBe(true)
+	})
+
+	test('eager mode (no window) drains everything without a consumer', async () => {
+		const TOTAL = 20
+		const sender = new OutboundStreamRegistry()
+		let posted = 0
+		let ended = false
+		pumpStream(
+			2,
+			fastSource(TOTAL),
+			sender,
+			(msg) => {
+				if (msg.type === 'chunk') posted++
+				else if (msg.type === 'end') ended = true
+			},
+			envelopes,
+		)
+		await new Promise((r) => setTimeout(r, 30))
+		expect(posted).toBe(TOTAL)
+		expect(ended).toBe(true)
+	})
+
+	test('cancelling the registry releases a parked pump', async () => {
+		const WINDOW = 2
+		const sender = new OutboundStreamRegistry()
+		const recv = new StreamReceiver(() => {}, {
+			window: WINDOW,
+			onCredit: (id) => sender.grantCredit(id, 1),
+		})
+		recv.open(3) // never read → pump will park
+		let ended = false
+		pumpStream(
+			3,
+			fastSource(100),
+			sender,
+			(msg) => {
+				if (msg.type === 'chunk') recv.push(3, msg.chunk)
+				else if (msg.type === 'end') ended = true
+			},
+			envelopes,
+			undefined,
+			WINDOW,
+		)
+		await new Promise((r) => setTimeout(r, 30))
+		// Pump is parked on a credit. Cancelling must wake it so it stops cleanly
+		// (no hang) — the source reader gets cancelled, no 'end' is posted.
+		sender.cancel(3)
+		await new Promise((r) => setTimeout(r, 20))
+		expect(ended).toBe(false)
+	})
+})

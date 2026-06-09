@@ -28,6 +28,7 @@ import type {
 	RpcReqStreamChunk,
 	RpcReqStreamEnd,
 	RpcReqStreamError,
+	RpcStreamAck,
 	RpcStreamCancel,
 	RpcStreamChunk,
 	RpcStreamEnd,
@@ -37,7 +38,7 @@ import type {
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
 import { deserializeRequest, serializeRequestShell } from './serialize'
-import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 
@@ -216,6 +217,7 @@ function pumpRpcFetchBody(
 			error: (id, error) => ({ type: 'rpc-stream-error', streamId: id, error }),
 		},
 		hooks.isAlive,
+		STREAM_BACKPRESSURE_WINDOW,
 	)
 }
 
@@ -230,6 +232,7 @@ type RpcClientPost = (
 		| RpcGetRequest
 		| RpcFetchRequest
 		| RpcStreamCancel
+		| RpcStreamAck
 		| RpcReqStreamChunk
 		| RpcReqStreamEnd
 		| RpcReqStreamError,
@@ -278,9 +281,17 @@ export class RpcClient {
 	private _post: RpcClientPost
 	private _getParent: () => ParentSpanContext | undefined
 	/** Reconstructed inbound response-body streams (rpc-fetch-result.streamId). */
-	private _streams = new StreamReceiver((streamId) => {
-		this._post({ type: 'rpc-stream-cancel', streamId } satisfies RpcStreamCancel)
-	})
+	private _streams = new StreamReceiver(
+		(streamId) => {
+			this._post({ type: 'rpc-stream-cancel', streamId } satisfies RpcStreamCancel)
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => {
+				this._post({ type: 'rpc-stream-ack', streamId } satisfies RpcStreamAck)
+			},
+		},
+	)
 	/** Outbound request-body pumps started by `callFetch`. A receiver-side
 	 *  `rpc-req-stream-cancel` arrives via `handle()` and stops the source
 	 *  reader so an unbounded upload doesn't pump forever. */

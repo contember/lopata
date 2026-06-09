@@ -16,33 +16,103 @@
 import type { SerializedError } from './protocol'
 import { serializeError } from './protocol'
 
+/**
+ * Default cross-thread backpressure window (chunk count) for response-body
+ * streams. Bounds in-flight chunks so a fast producer (e.g. proxying a large R2
+ * object, a tight SSE/generated stream) can't race ahead of a slow consumer and
+ * grow memory unbounded. Small enough to bound memory, large enough to keep the
+ * pipe full across the postMessage round-trip.
+ */
+export const STREAM_BACKPRESSURE_WINDOW = 8
+
+interface OutboundStreamState {
+	reader: { cancel(reason?: unknown): Promise<unknown> }
+	/** Remaining permits to post a chunk. `Infinity` = no backpressure (eager,
+	 *  the default for channels that don't opt in). */
+	credits: number
+	/** Resolver for a pump parked in `acquireCredit`, waiting for a grant. */
+	waiter: (() => void) | null
+}
+
 export class OutboundStreamRegistry {
 	private _nextStreamId = 1
-	private _readers = new Map<number, { cancel(reason?: unknown): Promise<unknown> }>()
+	private _streams = new Map<number, OutboundStreamState>()
 
 	allocateId(): number {
 		return this._nextStreamId++
 	}
 
-	register(streamId: number, reader: { cancel(reason?: unknown): Promise<unknown> }): void {
-		this._readers.set(streamId, reader)
+	register(
+		streamId: number,
+		reader: { cancel(reason?: unknown): Promise<unknown> },
+		initialCredits: number = Number.POSITIVE_INFINITY,
+	): void {
+		this._streams.set(streamId, { reader, credits: initialCredits, waiter: null })
+	}
+
+	/**
+	 * Sender: take one permit to post a chunk, parking until the receiver grants
+	 * one if none are left. Returns `false` if the stream was cancelled/disposed
+	 * while parked (the pump should stop). With the default `Infinity` credits
+	 * this never blocks — eager behavior, unchanged.
+	 */
+	async acquireCredit(streamId: number): Promise<boolean> {
+		const s = this._streams.get(streamId)
+		if (!s) return false
+		if (s.credits > 0) {
+			s.credits--
+			return true
+		}
+		await new Promise<void>((resolve) => {
+			s.waiter = resolve
+		})
+		const after = this._streams.get(streamId)
+		if (!after) return false // cancelled/disposed while parked
+		if (after.credits > 0) after.credits--
+		return true
+	}
+
+	/** Receiver granted `n` more permits — replenish and wake a parked pump. */
+	grantCredit(streamId: number, n = 1): void {
+		const s = this._streams.get(streamId)
+		if (!s) return
+		s.credits += n
+		const w = s.waiter
+		if (w) {
+			s.waiter = null
+			w()
+		}
 	}
 
 	complete(streamId: number): void {
-		this._readers.delete(streamId)
+		this._streams.delete(streamId)
 	}
 
 	/** Receiver-side cancel arrived — stop the source pump if still running. */
 	cancel(streamId: number): void {
-		const r = this._readers.get(streamId)
-		if (!r) return
-		this._readers.delete(streamId)
-		r.cancel().catch(() => {})
+		const s = this._streams.get(streamId)
+		if (!s) return
+		this._streams.delete(streamId)
+		// Wake a parked pump so it exits instead of hanging on a grant that will
+		// never come.
+		const w = s.waiter
+		if (w) {
+			s.waiter = null
+			w()
+		}
+		s.reader.cancel().catch(() => {})
 	}
 
 	disposeAll(): void {
-		for (const [, r] of this._readers) r.cancel().catch(() => {})
-		this._readers.clear()
+		for (const [, s] of this._streams) {
+			const w = s.waiter
+			if (w) {
+				s.waiter = null
+				w()
+			}
+			s.reader.cancel().catch(() => {})
+		}
+		this._streams.clear()
 	}
 }
 
@@ -58,18 +128,42 @@ export class OutboundStreamRegistry {
  * the reconstructed stream, so the wiring code can post the channel-specific
  * `*-cancel` message back to the sender.
  */
+export interface StreamReceiverOptions {
+	/**
+	 * Enable cross-thread backpressure. When set, the reconstructed
+	 * `ReadableStream` uses this as its highWaterMark (chunk count) and the
+	 * receiver grants the sender a credit (via {@link StreamReceiverOptions.onCredit})
+	 * as it pulls — bounding the number of in-flight chunks instead of letting a
+	 * fast producer race ahead and grow memory unbounded. Omit for eager
+	 * (unbounded) behavior — the default.
+	 */
+	window?: number
+	/** Post the channel-specific `*-stream-ack` message granting one credit. Only
+	 *  consulted when `window` is set. */
+	onCredit?: (streamId: number) => void
+}
+
 export class StreamReceiver {
 	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
 	private _pending = new Map<number, StreamEvent[]>()
 	private _cancelled = new Set<number>()
 	private _onCancel: (streamId: number) => void
+	private _window?: number
+	private _onCredit?: (streamId: number) => void
 
-	constructor(onCancel: (streamId: number) => void) {
+	constructor(onCancel: (streamId: number) => void, options: StreamReceiverOptions = {}) {
 		this._onCancel = onCancel
+		this._window = options.window
+		this._onCredit = options.onCredit
 	}
 
 	open(streamId: number): ReadableStream<Uint8Array> {
-		return new ReadableStream<Uint8Array>({
+		type Source = {
+			start: (controller: ReadableStreamDefaultController<Uint8Array>) => void
+			pull?: (controller: ReadableStreamDefaultController<Uint8Array>) => void
+			cancel?: (reason?: unknown) => void
+		}
+		const source: Source = {
 			start: (controller) => {
 				this._controllers.set(streamId, controller)
 				const pending = this._pending.get(streamId)
@@ -84,7 +178,19 @@ export class StreamReceiver {
 				this._cancelled.add(streamId)
 				this._onCancel(streamId)
 			},
-		})
+		}
+		// Backpressure mode: bound the queue and grant the sender a credit each
+		// time the stream pulls (i.e. has room). `pull` returns undefined, so the
+		// stream calls it once per drain rather than spinning. Eager mode (no
+		// window) keeps the original unbounded behavior.
+		if (this._window !== undefined && this._onCredit) {
+			const onCredit = this._onCredit
+			source.pull = () => {
+				onCredit(streamId)
+			}
+			return new ReadableStream<Uint8Array>(source, new CountQueuingStrategy({ highWaterMark: this._window }))
+		}
+		return new ReadableStream<Uint8Array>(source)
 	}
 
 	/**
@@ -196,9 +302,13 @@ export function pumpStream<TChunk, TEnd, TError>(
 	post: (msg: TChunk | TEnd | TError) => void,
 	envelopes: PumpEnvelopes<TChunk, TEnd, TError>,
 	isAlive?: () => boolean,
+	/** When set, post at most `window` chunks ahead of the receiver's credits
+	 *  (cross-thread backpressure). Requires the receiver's `StreamReceiver` to be
+	 *  constructed with a matching `window` + `onCredit`. Omit for eager. */
+	window?: number,
 ): void {
 	const reader = body.getReader()
-	registry.register(streamId, reader)
+	registry.register(streamId, reader, window ?? Number.POSITIVE_INFINITY)
 	void (async () => {
 		try {
 			while (true) {
@@ -211,7 +321,21 @@ export function pumpStream<TChunk, TEnd, TError>(
 					return
 				}
 				if (done) break
-				if (value) post(envelopes.chunk(streamId, value))
+				if (value) {
+					// Backpressure: park until the receiver has room. No-op (immediate)
+					// for eager streams (Infinity credits).
+					const ok = await registry.acquireCredit(streamId)
+					if (!ok) {
+						// Cancelled/disposed while parked — stop without posting.
+						reader.cancel().catch(() => {})
+						return
+					}
+					if (isAlive && !isAlive()) {
+						reader.cancel().catch(() => {})
+						return
+					}
+					post(envelopes.chunk(streamId, value))
+				}
 			}
 			if (isAlive && !isAlive()) {
 				reader.cancel().catch(() => {})

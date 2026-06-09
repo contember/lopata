@@ -6,7 +6,7 @@
  */
 
 import { deserializeError } from '../worker-thread/protocol'
-import { OutboundStreamRegistry, pumpStream, StreamReceiver } from '../worker-thread/stream-shared'
+import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
@@ -193,6 +193,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 				end: (id) => ({ type: 'do-stream-end', streamId: id }),
 				error: (id, error) => ({ type: 'do-stream-error', streamId: id, error }),
 			},
+			undefined,
+			STREAM_BACKPRESSURE_WINDOW,
 		)
 	}
 
@@ -378,6 +380,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 					} satisfies DOMainMessage,
 				)
 			}
+		} else if (msg.type === 'do-stream-ack') {
+			fetchStreams.grantCredit(msg.streamId)
 		} else if (msg.type === 'do-stream-cancel') {
 			fetchStreams.cancel(msg.streamId)
 		} else if (msg.type === 'do-req-stream-chunk') {

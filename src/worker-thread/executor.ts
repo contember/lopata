@@ -28,7 +28,7 @@ import type {
 import { deserializeError } from './protocol'
 import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
-import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
@@ -72,10 +72,19 @@ export class WorkerThreadExecutor {
 	private _wsBridge: WsHostBridge<WorkerCommand>
 	/** Reconstructed response bodies fed by `stream-chunk` from the worker
 	 *  (top-level fetch response → main). */
-	private _responseStreams = new StreamReceiver((streamId) => {
-		if (this._disposed) return
-		this._send({ type: 'stream-cancel', id: streamId })
-	})
+	private _responseStreams = new StreamReceiver(
+		(streamId) => {
+			if (this._disposed) return
+			this._send({ type: 'stream-cancel', id: streamId })
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => {
+				if (this._disposed) return
+				this._send({ type: 'stream-ack', id: streamId })
+			},
+		},
+	)
 	/** Outbound response-body pumps started by `dispatchRpcFetch` (main → worker
 	 *  reverse-streaming path for service-binding fetches). */
 	private _rpcStreams = new OutboundStreamRegistry()
@@ -264,6 +273,9 @@ export class WorkerThreadExecutor {
 				break
 			case 'rpc-stream-cancel':
 				this._rpcStreams.cancel(msg.streamId)
+				break
+			case 'rpc-stream-ack':
+				this._rpcStreams.grantCredit(msg.streamId)
 				break
 			case 'rpc-req-stream-chunk':
 				this._rpcRequestStreams.push(msg.streamId, msg.chunk)

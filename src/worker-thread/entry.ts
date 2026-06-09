@@ -13,7 +13,7 @@ import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
 import { deserializeRequest } from './serialize'
-import { OutboundStreamRegistry, pumpStream, StreamReceiver } from './stream-shared'
+import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
@@ -75,11 +75,19 @@ type StreamErrorMsg = Extract<WorkerMessage, { type: 'stream-error' }>
  *  or `stream-error`. Started only after `fetch-result` is posted so main has
  *  the `streamId` registered before chunks arrive. */
 function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): void {
-	pumpStream<StreamChunkMsg, StreamEndMsg, StreamErrorMsg>(streamId, body, responseStreams, post, {
-		chunk: (id, chunk) => ({ type: 'stream-chunk', id, chunk }),
-		end: (id) => ({ type: 'stream-end', id }),
-		error: (id, error) => ({ type: 'stream-error', id, error }),
-	})
+	pumpStream<StreamChunkMsg, StreamEndMsg, StreamErrorMsg>(
+		streamId,
+		body,
+		responseStreams,
+		post,
+		{
+			chunk: (id, chunk) => ({ type: 'stream-chunk', id, chunk }),
+			end: (id) => ({ type: 'stream-end', id }),
+			error: (id, error) => ({ type: 'stream-error', id, error }),
+		},
+		undefined,
+		STREAM_BACKPRESSURE_WINDOW,
+	)
 }
 
 self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
@@ -270,6 +278,9 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'stream-cancel':
 				responseStreams.cancel(cmd.id)
+				break
+			case 'stream-ack':
+				responseStreams.grantCredit(cmd.id)
 				break
 			case 'req-stream-chunk':
 				requestStreams.push(cmd.streamId, cmd.chunk)

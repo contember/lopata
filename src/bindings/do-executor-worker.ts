@@ -15,12 +15,13 @@ import type {
 	RpcReqStreamChunk,
 	RpcReqStreamEnd,
 	RpcReqStreamError,
+	RpcStreamAck,
 	RpcStreamCancel,
 	SerializedError,
 } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
 import { dispatchRpcCall, dispatchRpcFetch, dispatchRpcGet } from '../worker-thread/rpc-shared'
-import { OutboundStreamRegistry, pumpStream, StreamReceiver } from '../worker-thread/stream-shared'
+import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
@@ -108,6 +109,12 @@ export interface DoStreamCancel {
 	type: 'do-stream-cancel'
 	streamId: number
 }
+/** main → DO worker: main consumed a DO-fetch response-body chunk and grants
+ *  the DO worker one more credit (see `STREAM_BACKPRESSURE_WINDOW`). */
+export interface DoStreamAck {
+	type: 'do-stream-ack'
+	streamId: number
+}
 
 /**
  * Forward-direction streaming for the DOCommand 'fetch' request body (main →
@@ -159,6 +166,8 @@ export type DOWorkerMessage =
 	| RpcReply
 	/** Caller-side cancel for a streamed DO-fetch response body. */
 	| DoStreamCancel
+	/** Caller-side credit grant for a streamed DO-fetch response body. */
+	| DoStreamAck
 	/** Body chunks for a streamed DO-fetch *request* body (main → DO worker). */
 	| DoReqStreamChunk
 	| DoReqStreamEnd
@@ -189,6 +198,7 @@ export type DOMainMessage =
 	| RpcGetRequest
 	| RpcFetchRequest
 	| RpcStreamCancel
+	| RpcStreamAck
 	| RpcReqStreamChunk
 	| RpcReqStreamEnd
 	| RpcReqStreamError
@@ -262,9 +272,17 @@ export class WorkerExecutor implements DOExecutor {
 		this._worker?.postMessage({ type: 'rpc-req-stream-cancel', streamId } satisfies DOWorkerMessage)
 	})
 	/** Reconstruction of streamed DO-fetch response bodies (DO worker → main). */
-	private _fetchStreams = new StreamReceiver((streamId) => {
-		this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
-	})
+	private _fetchStreams = new StreamReceiver(
+		(streamId) => {
+			this._worker?.postMessage({ type: 'do-stream-cancel', streamId } satisfies DOWorkerMessage)
+		},
+		{
+			window: STREAM_BACKPRESSURE_WINDOW,
+			onCredit: (streamId) => {
+				this._worker?.postMessage({ type: 'do-stream-ack', streamId } satisfies DOWorkerMessage)
+			},
+		},
+	)
 	/** Outbound request-body pumps for DO-fetch (main → DO worker). A
 	 *  `do-req-stream-cancel` from the DO worker (instance code cancelled the
 	 *  body) stops the source reader. */
@@ -389,6 +407,10 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'rpc-stream-cancel':
 					this._rpcStreams.cancel(msg.streamId)
+					break
+
+				case 'rpc-stream-ack':
+					this._rpcStreams.grantCredit(msg.streamId)
 					break
 
 				case 'rpc-req-stream-chunk':
