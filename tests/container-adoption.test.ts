@@ -17,6 +17,8 @@ describe('ContainerRuntime port-mapping adoption', () => {
 				state: 'running' as const,
 				exitCode: null,
 				ports: { '8080/tcp': '0.0.0.0:32768', '9090/tcp': '127.0.0.1:32769' },
+				// Own-process label so the adoption pid-check (CORR-23) adopts it.
+				labels: { 'lopata.pid': String(process.pid) },
 			}),
 			registerExisting: () => {},
 			remove: async () => {},
