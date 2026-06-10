@@ -65,4 +65,21 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		const res = await fetch(`${base}/counter/alice/name`)
 		expect(await res.text()).toBe('alice:alice')
 	})
+
+	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
+	// the main-side check never trips in thread mode. The budget must
+	// accumulate across all binding calls of ONE request (a per-call re-seed of
+	// the AsyncLocalStorage context would never trip)…
+	test('a request making >1000 binding calls hits the subrequest limit', async () => {
+		const res = await fetch(`${base}/spam-rpc?n=1001`)
+		expect(res.status).toBe(500)
+		expect(await res.text()).toContain('Subrequest limit exceeded')
+	}, 30_000)
+
+	// …and must NOT leak between requests: a fresh request starts at zero.
+	test('the budget resets per top-level request', async () => {
+		const res = await fetch(`${base}/spam-rpc?n=5`)
+		expect(res.status).toBe(200)
+		expect(await res.text()).toBe('ok')
+	})
 })

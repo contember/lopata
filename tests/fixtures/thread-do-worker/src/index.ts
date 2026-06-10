@@ -49,6 +49,20 @@ export default {
 			return new Response(greeting)
 		}
 
+		// Drive N binding RPC calls within ONE top-level request so the
+		// worker-side subrequest budget (shared per-request via
+		// AsyncLocalStorage) can be exercised end-to-end.
+		if (url.pathname === '/spam-rpc') {
+			const n = Number(url.searchParams.get('n') ?? '0')
+			const stub = env.COUNTER.get(env.COUNTER.idFromName('spam'))
+			try {
+				for (let i = 0; i < n; i++) await stub.greet('x')
+				return new Response('ok')
+			} catch (e: any) {
+				return new Response(`error: ${e?.message ?? e}`, { status: 500 })
+			}
+		}
+
 		return new Response('not found', { status: 404 })
 	},
 }
