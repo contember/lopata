@@ -735,7 +735,11 @@ export function wireWorkflowClass(
 	const cls = workerModule[className]
 	if (!cls) throw new Error(`Workflow class "${className}" not exported from worker module`)
 	binding._setClass(cls as new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env)
-	binding.resumeInterrupted()
+	// NOTE: resumeInterrupted() is deliberately NOT called here. Resuming during
+	// worker init would re-execute running/waiting instances while the previous
+	// generation's worker (terminated only after drain) is still running them —
+	// duplicate side effects. Main drives resume via a `resumeInterrupted` control
+	// op once the old generation's worker is disposed (see GenerationManager).
 }
 
 export class WorkflowEntrypointBase {
@@ -1119,6 +1123,10 @@ export class SqliteWorkflowBinding {
 			case 'create': {
 				const instance = await this.create({ params: op.params })
 				return { kind: 'create', id: instance.id }
+			}
+			case 'resumeInterrupted': {
+				this.resumeInterrupted()
+				return { kind: 'ok' }
 			}
 			case 'terminate': {
 				await (await this.get(op.instanceId)).terminate()

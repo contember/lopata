@@ -166,6 +166,10 @@ export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
  */
 export type WorkflowControlOp =
 	| { kind: 'create'; params: unknown }
+	// Resume all interrupted (running/waiting) instances. Driven by main AFTER the
+	// previous generation's worker is disposed, so an interrupted workflow is never
+	// re-executed in the new worker while the old one is still running it.
+	| { kind: 'resumeInterrupted' }
 	| { kind: 'terminate'; instanceId: string }
 	| { kind: 'pause'; instanceId: string }
 	| { kind: 'resume'; instanceId: string }

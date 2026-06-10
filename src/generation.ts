@@ -233,9 +233,12 @@ export class Generation {
 				entry.namespace.destroy()
 			}
 		}
-		for (const entry of this.registry.workflows) {
-			entry.binding.abortRunning()
-		}
+		// Workflows run inside this generation's worker thread; `dispose()` below
+		// terminates it, which stops them. (The old `entry.binding.abortRunning()`
+		// was a no-op anyway — main's binding is hollow, the live abort controllers
+		// live in the worker.) Their DB rows stay 'running' and the next generation
+		// resumes them once this worker is gone — see GenerationManager's
+		// resumeInterrupted control op.
 		this.threadExecutor.dispose()
 	}
 

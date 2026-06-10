@@ -22,6 +22,9 @@ export class GenerationManager {
 	 *  mid-minute doesn't re-run a scheduled handler the previous generation already
 	 *  fired (keyed by cron expression). */
 	private _cronLastFired = new Map<string, number>()
+	/** Generation ids whose interrupted workflows have already been resumed, so a
+	 *  generation isn't resumed twice (which would re-execute the same instances). */
+	private _resumedGenIds = new Set<number>()
 
 	gracePeriodMs = 10_000
 
@@ -176,18 +179,47 @@ export class GenerationManager {
 
 		this._activeGenId = genId
 		gen.startConsumers(this._cronLastFired)
+		// First load: no previous worker could be running these, so resume any
+		// interrupted instances now. On a reload, resume is deferred until the old
+		// generation's worker is disposed (see _scheduleDrainAndStop) so a workflow
+		// never runs in two threads at once.
+		if (oldGenId === null) this._resumeWorkflows(gen)
 		return gen
 	}
 
+	/**
+	 * Resume interrupted (running/waiting) workflow instances on `gen`'s worker,
+	 * routed through the live worker-side binding. Guarded so a generation is
+	 * resumed at most once even when several older generations stop in sequence —
+	 * a second resume would re-execute the same instances (the bug this avoids).
+	 */
+	private _resumeWorkflows(gen: Generation): void {
+		if (gen.registry.workflows.length === 0) return
+		if (this._resumedGenIds.has(gen.id)) return
+		this._resumedGenIds.add(gen.id)
+		for (const entry of gen.registry.workflows) {
+			entry.binding.executeControl({ kind: 'resumeInterrupted' }).catch(err => {
+				console.error(`[lopata] workflow resume failed (${entry.bindingName}):`, err)
+			})
+		}
+	}
+
 	private _scheduleDrainAndStop(genId: number, gen: Generation): void {
-		if (gen.isIdle()) {
+		const finish = () => {
 			this._stopGeneration(genId)
+			// The previous worker (which was running interrupted workflows) is now
+			// gone — resume them on the current active generation.
+			const active = this.active
+			if (active) this._resumeWorkflows(active)
+		}
+		if (gen.isIdle()) {
+			finish()
 			return
 		}
 		void Promise.race([
 			waitUntilIdle(gen),
 			sleep(this.gracePeriodMs),
-		]).then(() => this._stopGeneration(genId))
+		]).then(finish)
 	}
 
 	private _stopGeneration(genId: number): void {
@@ -198,6 +230,7 @@ export class GenerationManager {
 		// Remove after another grace period to let dashboard show it
 		setTimeout(() => {
 			this.generations.delete(genId)
+			this._resumedGenIds.delete(genId)
 		}, 60_000)
 	}
 
