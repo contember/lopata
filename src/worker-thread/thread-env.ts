@@ -29,6 +29,7 @@ import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
+import { getActiveContext } from '../tracing/context'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget, WorkerMessage } from './protocol'
 import type { RpcClient } from './rpc-client'
@@ -240,6 +241,25 @@ async function proxyFetch(
 	return response
 }
 
+/**
+ * Per-top-level-request subrequest budget, counted on the WORKER side. The
+ * main-side `ServiceBinding._checkSubrequestLimit` is effectively dead in thread
+ * mode — every binding call arrives as its own RPC dispatch wrapped in
+ * `runWithParentContext`, which re-seeds `count: 0`, so it never trips. The
+ * worker's fetch context (seeded once per request and shared across all its
+ * binding calls via AsyncLocalStorage) is where the budget actually accumulates.
+ */
+const MAX_SUBREQUESTS = 1000
+
+function checkSubrequestLimit(): void {
+	const counter = getActiveContext()?.subrequests
+	if (!counter) return
+	counter.count++
+	if (counter.count > MAX_SUBREQUESTS) {
+		throw new Error(`Subrequest limit exceeded (max ${MAX_SUBREQUESTS} per request)`)
+	}
+}
+
 function makeRpcProxy(
 	target: BindingTarget,
 	rpc: RpcClient,
@@ -248,13 +268,17 @@ function makeRpcProxy(
 ): Record<string, unknown> {
 	return makeBindingProxy(
 		{
-			fetch: (input, init) => proxyFetch(target, rpc, envWsBridge, input, init),
+			fetch: (input, init) => {
+				checkSubrequestLimit()
+				return proxyFetch(target, rpc, envWsBridge, input, init)
+			},
 			call: (prop, args) => {
 				// Restore the in-process path's dev-time warning for args that won't
 				// survive the cross-thread hop (functions, RpcTargets, …) — otherwise
 				// the postMessage just throws an opaque DataCloneError with no guidance.
 				warnInvalidRpcArgs(args, prop)
 				warnCrossThreadRpcArgs(args, prop)
+				checkSubrequestLimit()
 				return rpc.call(target, prop, args)
 			},
 			getProperty: prop => rpc.callGet(target, prop),
