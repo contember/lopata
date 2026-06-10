@@ -11,9 +11,11 @@ export function runWithExecutionContext<T>(ctx: ExecutionContext, fn: () => T): 
 	return storage.run(ctx, fn)
 }
 
-/** Swallow + log a `waitUntil` rejection. Single source of truth for the log string. */
+/** Swallow + log a `waitUntil` rejection. Single source of truth for the log string.
+ *  Coerces non-thenables (CF tolerates `ctx.waitUntil(undefined)`) — a synchronous
+ *  throw here would strand the wait-until-settle accounting on the worker side. */
 export function logIfRejected(promise: Promise<unknown>): Promise<unknown> {
-	return promise.catch(err => {
+	return Promise.resolve(promise).catch(err => {
 		console.error('[lopata] waitUntil promise rejected:', err)
 	})
 }
