@@ -5,7 +5,7 @@
  * postMessage from the main thread (handshake), then initializes.
  */
 
-import { deserializeError } from '../worker-thread/protocol'
+import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
@@ -30,17 +30,12 @@ self.onmessage = async (event: MessageEvent) => {
 	try {
 		await initWorker(workerConfig)
 	} catch (e) {
-		const error = e instanceof Error ? e : new Error(String(e))
+		const message = e instanceof Error ? e.message : String(e)
 		postMessage(
 			{
 				type: 'result',
 				id: -1,
-				result: {
-					type: 'error',
-					message: `Worker init failed: ${error.message}`,
-					stack: error.stack,
-					name: error.name,
-				},
+				result: { type: 'error', error: serializeError(new Error(`Worker init failed: ${message}`, { cause: e })) },
 			} satisfies DOMainMessage,
 		)
 	}
@@ -361,17 +356,11 @@ async function initWorker(workerConfig: WorkerConfig) {
 				// `streamId` before any chunk arrives.
 				afterPost?.()
 			} catch (e) {
-				const error = e instanceof Error ? e : new Error(String(e))
 				postMessage(
 					{
 						type: 'result',
 						id: msg.id,
-						result: {
-							type: 'error',
-							message: error.message,
-							stack: error.stack,
-							name: error.name,
-						},
+						result: { type: 'error', error: serializeError(e) },
 					} satisfies DOMainMessage,
 				)
 			}

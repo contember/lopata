@@ -66,29 +66,62 @@ export interface SerializedError {
 
 const MAX_CAUSE_DEPTH = 8
 
+/**
+ * Serialize a thrown value for postMessage. MUST be total — it runs inside every
+ * worker-side catch block, so a secondary throw here (a non-stringifiable value,
+ * a throwing getter) would escalate a handled error into `worker.onerror` and
+ * tear down the whole generation. Every value read is guarded.
+ *
+ * Non-Error thrown values (`throw { status: 404 }`, `throw 'boom'`) keep their
+ * cloneable own-enumerable properties so `catch (e) { e.status }` survives the
+ * hop — class identity is lost (it always was, even in-process the wire is
+ * structured-clone), but the payload is preserved.
+ */
 export function serializeError(e: unknown, depth = 0): SerializedError {
-	const err = e instanceof Error ? e : new Error(String(e))
-	const out: SerializedError = { message: err.message, stack: err.stack, name: err.name }
+	const isError = e instanceof Error
+	const source = e !== null && typeof e === 'object' ? e : null
 
-	// Preserve enumerable own-properties. The in-process path passed the real
-	// Error by reference, so `catch (e) { e.code }` worked; the hand-rolled
-	// serializer must not silently drop them. message/stack/name are normally
-	// non-enumerable, but skip them defensively; `cause` is handled below.
-	const props: Record<string, unknown> = {}
-	for (const key of Object.keys(err)) {
-		if (key === 'message' || key === 'stack' || key === 'name' || key === 'cause') continue
-		const value = (err as unknown as Record<string, unknown>)[key]
-		try {
-			// Validate cloneability per-key so one non-cloneable value (a function,
-			// etc.) can't blow up the whole error post downstream — drop only it.
-			structuredClone(value)
-			props[key] = value
-		} catch {}
+	let message = ''
+	let name: string | undefined
+	let stack: string | undefined
+	try {
+		if (isError) {
+			message = e.message
+			name = e.name
+			stack = e.stack
+		} else if (source) {
+			const m = Reflect.get(source, 'message')
+			message = typeof m === 'string' ? m : String(e)
+			const n = Reflect.get(source, 'name')
+			if (typeof n === 'string') name = n
+		} else {
+			message = String(e)
+		}
+	} catch {
+		message = 'Unserializable thrown value'
 	}
-	if (Object.keys(props).length > 0) out.props = props
 
-	if (err.cause !== undefined && depth < MAX_CAUSE_DEPTH) {
-		out.cause = serializeError(err.cause, depth + 1)
+	const out: SerializedError = { message, stack, name: name ?? (isError ? 'Error' : undefined) }
+
+	// Preserve cloneable own-enumerable properties. For real Errors these are
+	// extras (err.code/status/data/…); for thrown plain objects they ARE the
+	// payload. Read each key via Reflect.get inside the try so a throwing getter
+	// drops only that key instead of crashing the whole serialize.
+	if (source) {
+		const props: Record<string, unknown> = {}
+		for (const key of Object.keys(source)) {
+			if (key === 'message' || key === 'stack' || key === 'name' || key === 'cause') continue
+			try {
+				const value = Reflect.get(source, key)
+				structuredClone(value)
+				props[key] = value
+			} catch {}
+		}
+		if (Object.keys(props).length > 0) out.props = props
+	}
+
+	if (isError && e.cause !== undefined && depth < MAX_CAUSE_DEPTH) {
+		out.cause = serializeError(e.cause, depth + 1)
 	}
 	return out
 }

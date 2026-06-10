@@ -57,4 +57,43 @@ describe('serializeError / deserializeError', () => {
 		expect(out.code).toBe('OK')
 		expect(out.handler).toBeUndefined()
 	})
+
+	test('preserves a thrown plain object (non-Error) payload', () => {
+		// Routing libs throw bare objects: `throw { status: 404, message: 'nope' }`.
+		const out = deserializeError(serializeError({ status: 404, message: 'nope', detail: { x: 1 } })) as
+			& Error
+			& { status?: number; detail?: { x: number } }
+		expect(out.message).toBe('nope')
+		expect(out.status).toBe(404)
+		expect(out.detail).toEqual({ x: 1 })
+	})
+
+	test('handles thrown primitives without throwing', () => {
+		expect(deserializeError(serializeError('boom')).message).toBe('boom')
+		expect(deserializeError(serializeError(42)).message).toBe('42')
+		expect(deserializeError(serializeError(null)).message).toBe('null')
+		expect(deserializeError(serializeError(undefined)).message).toBe('undefined')
+	})
+
+	test('is total — a throwing getter / null-proto value never escalates', () => {
+		// A throwing getter on the thrown object must not propagate out of serialize
+		// (it runs inside a worker catch block; a secondary throw would crash the
+		// generation via worker.onerror).
+		const evil: Record<string, unknown> = { ok: 1 }
+		Object.defineProperty(evil, 'boom', {
+			enumerable: true,
+			get() {
+				throw new Error('getter exploded')
+			},
+		})
+		let ser!: ReturnType<typeof serializeError>
+		expect(() => {
+			ser = serializeError(evil)
+		}).not.toThrow()
+		expect((deserializeError(ser) as Error & { ok?: number }).ok).toBe(1)
+
+		// A null-prototype object has no toString — String() of it throws; serialize
+		// must still produce a valid envelope.
+		expect(() => serializeError(Object.create(null))).not.toThrow()
+	})
 })

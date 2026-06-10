@@ -214,9 +214,7 @@ export class WorkerThreadExecutor {
 				const pending = this._pending.get(msg.id)
 				if (pending) {
 					this._pending.delete(msg.id)
-					const err = new Error(msg.error.message)
-					if (msg.error.stack) err.stack = msg.error.stack
-					err.name = msg.error.name ?? 'Error'
+					const err = deserializeError(msg.error)
 					pending.reject(err)
 				}
 				break
@@ -292,9 +290,7 @@ export class WorkerThreadExecutor {
 				if (msg.noHandler) {
 					p.resolve({ ok: false, noHandler: true })
 				} else {
-					const err = new Error(msg.error.message)
-					if (msg.error.stack) err.stack = msg.error.stack
-					err.name = msg.error.name ?? 'Error'
+					const err = deserializeError(msg.error)
 					p.reject(err)
 				}
 				break

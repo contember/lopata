@@ -88,7 +88,11 @@ export type DOResult =
 	| { type: 'rpc-get'; kind: 'function' }
 	| { type: 'alarm' }
 	| { type: 'cleanup' }
-	| { type: 'error'; message: string; stack?: string; name?: string }
+	// Carries the unified SerializedError (cause chain + cloneable own-props),
+	// same as every other cross-thread error frame — so a DO method throwing
+	// `Object.assign(new Error('x'), { code })` keeps `.code`/`.cause` crossing
+	// DO worker → main → calling worker.
+	| { type: 'error'; error: SerializedError }
 
 /**
  * Reverse-streaming for DO instance fetch responses (DO worker → main). When a

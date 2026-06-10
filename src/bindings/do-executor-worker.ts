@@ -195,9 +195,7 @@ export class WorkerExecutor implements DOExecutor {
 						// Worker init error — reject all pending and the ready promise so
 						// awaiting callers surface the real cause instead of a generic
 						// "Worker terminated" after `_disposed` flips.
-						const error = new Error(msg.result.message)
-						if (msg.result.stack) error.stack = msg.result.stack
-						error.name = msg.result.name ?? 'Error'
+						const error = deserializeError(msg.result.error)
 						for (const [, pending] of this._pending) {
 							pending.reject(error)
 						}
@@ -325,10 +323,7 @@ export class WorkerExecutor implements DOExecutor {
 				resolve: (result) => {
 					this._inFlightCount--
 					if (result.type === 'error') {
-						const err = new Error(result.message)
-						err.name = result.name ?? 'Error'
-						if (result.stack) err.stack = result.stack
-						reject(err)
+						reject(deserializeError(result.error))
 					} else {
 						resolve(result)
 					}
@@ -479,9 +474,7 @@ export class WorkerExecutor implements DOExecutor {
 			retryCount,
 		})
 		if (result.type === 'error') {
-			const err = new Error(result.message)
-			if (result.stack) err.stack = result.stack
-			throw err
+			throw deserializeError(result.error)
 		}
 	}
 
