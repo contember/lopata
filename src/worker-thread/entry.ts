@@ -118,10 +118,48 @@ self.onmessage = async (event: MessageEvent<WorkerCommand>) => {
 
 post({ type: 'need-init' })
 
+/**
+ * Dispatch a request to a legacy service-worker `fetch` handler via a minimal
+ * `FetchEvent` shim. `respondWith` must be called synchronously during dispatch
+ * (the spec allows passing it a promise); resolve with whatever it's handed.
+ */
+function dispatchServiceWorkerFetch(
+	handler: (event: unknown) => void,
+	request: Request,
+	ctx: WorkerExecutionContext,
+): Promise<Response> {
+	return new Promise<Response>((resolve, reject) => {
+		let responded = false
+		const event = {
+			type: 'fetch',
+			request,
+			respondWith(r: Response | Promise<Response>) {
+				responded = true
+				Promise.resolve(r).then(resolve, reject)
+			},
+			waitUntil(p: Promise<unknown>) {
+				ctx.waitUntil(p)
+			},
+			passThroughOnException() {
+				ctx.passThroughOnException()
+			},
+		}
+		try {
+			handler(event)
+		} catch (e) {
+			reject(e)
+			return
+		}
+		if (!responded) {
+			reject(new Error('Service worker "fetch" handler did not call event.respondWith()'))
+		}
+	})
+}
+
 async function initRuntime(init: WorkerInitConfig) {
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
-	await import('../plugin')
+	const plugin = await import('../plugin')
 
 	// Route all tracing operations through main so the dashboard's subscribers fire.
 	setTraceStoreOverride(new RemoteTraceStore(post))
@@ -230,7 +268,13 @@ async function initRuntime(init: WorkerInitConfig) {
 		if (defaultExport && typeof defaultExport.fetch === 'function') {
 			return defaultExport.fetch(request, env, ctx) as Promise<Response>
 		}
-		throw new Error('Worker module does not export a fetch handler')
+		// Legacy service-worker syntax: `addEventListener('fetch', e => e.respondWith(...))`.
+		// The plugin shim captured the handler at module-import time.
+		const swFetch = plugin.getServiceWorkerFetchHandler()
+		if (swFetch) {
+			return dispatchServiceWorkerFetch(swFetch, request, ctx)
+		}
+		throw new Error('Worker module does not export a fetch handler (and no addEventListener("fetch") handler was registered)')
 	}
 
 	/** Resolve a named handler honoring class- vs object-based exports. */
