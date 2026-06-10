@@ -147,6 +147,19 @@ async function initRuntime(init: WorkerInitConfig) {
 	const { setGlobalEnv } = await import('../env')
 	setGlobalEnv(env)
 
+	// Route binding-RPC replies BEFORE importing the user module. A module that
+	// touches a stateful binding at top level (`await env.SVC.fetch()`,
+	// `env.QUEUE.send()`, a DO stub call) posts an RPC during `import()`; until the
+	// full handler below is installed `self.onmessage` is the bootstrap handler that
+	// drops everything but `init`, so the reply would never arrive, the import's
+	// await would hang, `ready` would never post, and `GenerationManager.reload()`
+	// would wait on `executor.ready()` forever. fetch/scheduled/email never arrive
+	// pre-ready (main awaits `ready` before sending them), so handling RPC replies
+	// is enough.
+	self.onmessage = (event: MessageEvent<WorkerCommand>) => {
+		rpc.handle(event.data as { type: string })
+	}
+
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
 
