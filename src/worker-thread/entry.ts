@@ -55,26 +55,22 @@ const requestStreams = new StreamReceiver(
  * what made unbounded responses (SSE, chunked) hang forever.
  */
 function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): SerializedResponse {
-	const cfSocket = (response as ResponseWithWebSocket).webSocket as
-		| CFWebSocket
-		| { __bridgedWsId: string }
-		| undefined
+	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	const headers: [string, string][] = []
 	response.headers.forEach((v, k) => headers.push([k, v]))
 	const base = { status: response.status, statusText: response.statusText, headers, body: null }
 	if (response.status === 101 && cfSocket) {
-		if (cfSocket instanceof CFWebSocket) {
-			return { ...base, webSocketId: ws.register(cfSocket) }
-		}
-		// Peer was adopted on main during a nested binding fetch — just reship its id.
-		const bridgedId = (cfSocket as { __bridgedWsId?: unknown }).__bridgedWsId
-		if (typeof bridgedId !== 'string' || bridgedId.length === 0) {
+		// Always a CFWebSocket: `new WebSocketPair()` peers are, and a peer that
+		// came back through a binding fetch was reconstructed as one by
+		// `createBridgedSocket` (thread-env's proxyFetch) — reshipping it just
+		// re-registers the bridged peer here (double-bridge to the client).
+		if (!(cfSocket instanceof CFWebSocket)) {
 			throw new Error(
-				'Response.webSocket is not a CFWebSocket and has no __bridgedWsId — '
+				'Response.webSocket is not a CFWebSocket — '
 					+ 'lopata can only ship WebSockets created via `new WebSocketPair()` or returned from a binding fetch.',
 			)
 		}
-		return { ...base, webSocketId: bridgedId }
+		return { ...base, webSocketId: ws.register(cfSocket) }
 	}
 	if (response.body) {
 		return { ...base, streamId: responseStreams.allocateId() }

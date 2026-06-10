@@ -533,10 +533,12 @@ export class WorkerThreadExecutor {
 			response = deserializeResponse(serialized) as ResponseWithWebSocket
 		}
 		if (serialized.webSocketId) {
-			// If the id was adopted earlier (e.g. WS came back through a DO/service
-			// binding fetch), reuse that real CFWebSocket so `Bun.serve.upgrade`
-			// gets the actual peer instead of a fresh bridge.
-			response.webSocket = this._wsBridge.getSocket(serialized.webSocketId) ?? this._wsBridge.register(serialized.webSocketId)
+			// Always a fresh guest-side id: the worker registers the response's
+			// CFWebSocket on its top-level WS bridge in serializeResponse — even a
+			// socket that originally came from a DO/service binding fetch was
+			// reconstructed worker-side and re-registered (its env-binding adoption
+			// lives on `_envBindingWsBridge`, not here).
+			response.webSocket = this._wsBridge.register(serialized.webSocketId)
 		}
 		return response
 	}
