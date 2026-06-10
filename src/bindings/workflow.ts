@@ -1121,8 +1121,11 @@ export class SqliteWorkflowBinding {
 		if (this._threadRouter) return this._threadRouter(op)
 		switch (op.kind) {
 			case 'create': {
-				const instance = await this.create({ params: op.params })
+				const instance = await this.create({ id: op.id, params: op.params })
 				return { kind: 'create', id: instance.id }
+			}
+			case 'status': {
+				return { kind: 'status', value: await (await this.get(op.instanceId)).status() }
 			}
 			case 'resumeInterrupted': {
 				this.resumeInterrupted()

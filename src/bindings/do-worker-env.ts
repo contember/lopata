@@ -15,7 +15,7 @@ import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
-import type { BindingTarget, ParentSpanContext, SerializedResponse } from '../worker-thread/protocol'
+import type { BindingTarget, ParentSpanContext, SerializedResponse, WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
 import { tagCloneable } from '../worker-thread/rpc-shared'
 import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
@@ -230,7 +230,7 @@ export function buildWorkerEnv(
 		env[email.name] = makeSendEmailProxy(email.name, rpc, envWsBridge)
 	}
 	for (const wf of config.workflows ?? []) {
-		env[wf.binding] = makeEnvBindingProxy(wf.binding, rpc, envWsBridge)
+		env[wf.binding] = makeWorkflowEnvProxy(wf.binding, rpc, envWsBridge)
 	}
 
 	// Stateless bindings missing until now — on real CF a DO's env equals the
@@ -272,6 +272,75 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 		return new Response(raw as ReadableStream).arrayBuffer()
 	}
 	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
+}
+
+/**
+ * Workflow binding proxy for DO worker threads. A generic RPC proxy would land
+ * on main's HOLLOW `SqliteWorkflowBinding` (in thread mode main never wires the
+ * class — `create()` throws and instance handles silently no-op against empty
+ * per-process registries), and the `SqliteWorkflowInstance` a real call returns
+ * couldn't cross the boundary anyway. Instead, model the public Workflow API as
+ * `executeControl` ops: main's binding forwards them through its thread router
+ * to the user worker that owns the live state machine.
+ */
+function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	const control = async (op: WorkflowControlOp): Promise<WorkflowControlResult> => {
+		const result: unknown = await rpc.call(target, 'executeControl', [op])
+		if (typeof result === 'object' && result !== null && 'kind' in result && typeof result.kind === 'string') {
+			return result as WorkflowControlResult
+		}
+		throw new Error('Malformed workflow control result')
+	}
+	const expectCreate = (result: WorkflowControlResult) => {
+		if (result.kind !== 'create') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "create")`)
+		return result
+	}
+	const expectStatus = (result: WorkflowControlResult) => {
+		if (result.kind !== 'status') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "status")`)
+		return result
+	}
+	const makeHandle = (id: string) => ({
+		id,
+		status: async () => expectStatus(await control({ kind: 'status', instanceId: id })).value,
+		pause: async () => {
+			await control({ kind: 'pause', instanceId: id })
+		},
+		resume: async () => {
+			await control({ kind: 'resume', instanceId: id })
+		},
+		terminate: async () => {
+			await control({ kind: 'terminate', instanceId: id })
+		},
+		restart: async (options?: { fromStep?: string }) => {
+			await control({ kind: 'restart', instanceId: id, fromStep: options?.fromStep })
+		},
+		skipSleep: async () => {
+			await control({ kind: 'skipSleep', instanceId: id })
+		},
+		sendEvent: async (event: { type: string; payload?: unknown }) => {
+			await control({ kind: 'sendEvent', instanceId: id, eventType: event.type, payload: event.payload })
+		},
+	})
+	return makeRpcProxy(target, rpc, envWsBridge, {
+		create: async (options?: { id?: string; params?: unknown }) => {
+			const r = expectCreate(await control({ kind: 'create', params: options?.params ?? {}, id: options?.id }))
+			return makeHandle(r.id)
+		},
+		createBatch: async (batch: { id?: string; params?: unknown }[]) => {
+			const handles = []
+			for (const item of batch) {
+				const r = expectCreate(await control({ kind: 'create', params: item.params ?? {}, id: item.id }))
+				handles.push(makeHandle(r.id))
+			}
+			return handles
+		},
+		get: async (id: string) => {
+			// Existence check (worker-side `get` throws for unknown ids).
+			expectStatus(await control({ kind: 'status', instanceId: id }))
+			return makeHandle(id)
+		},
+	})
 }
 
 function makeSendEmailProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {

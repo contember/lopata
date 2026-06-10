@@ -70,4 +70,25 @@ describe('Workflows (worker-thread runtime)', () => {
 		const status = await waitForStatus(id)
 		expect(status.output).toMatchObject({ greeting: 'hello bob', length: 9 })
 	})
+
+	// COMP-1: this.env.<WORKFLOW> from inside a DO must reach the live
+	// worker-side state machine (DO worker → main's hollow binding → thread
+	// router → user worker), not throw "Workflow class not wired yet".
+	test('a DO can create a workflow via this.env and read its status', async () => {
+		const res = await fetch(`${base}/do-start?name=carol`)
+		expect(res.status).toBe(200)
+		const id = await res.text()
+		expect(id).toMatch(/^wf-/)
+
+		// Workflow actually ran (not just a row insert) — steps executed.
+		const status = await waitForStatus(id)
+		expect(status).toMatchObject({
+			status: 'complete',
+			output: { greeting: 'hello carol', length: 11 },
+		})
+
+		// And the DO-side handle's status() agrees.
+		const viaDo = await (await fetch(`${base}/do-status/${id}`)).json() as { status: string; output?: unknown }
+		expect(viaDo).toMatchObject({ status: 'complete', output: { greeting: 'hello carol', length: 11 } })
+	}, 15_000)
 })

@@ -158,14 +158,16 @@ export interface WorkerInitConfig {
 export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
 
 /**
- * Dashboard-initiated workflow control operation, routed main → worker so it
- * lands on the *live* worker-side `SqliteWorkflowBinding` (which owns the real
- * abort controllers / event waiters / sleep resolvers — main's binding is
- * hollow in thread mode). `binding` is the wrangler binding name; `instanceId`
- * targets a specific instance for everything except `create`.
+ * Workflow control operation, routed to the *live* worker-side
+ * `SqliteWorkflowBinding` (which owns the real abort controllers / event
+ * waiters / sleep resolvers — main's binding is hollow in thread mode).
+ * Initiated by the dashboard AND by DO workers, whose `this.env.WF` proxy
+ * models create/get/instance methods as these ops. `binding` is the wrangler
+ * binding name; `instanceId` targets a specific instance for everything except
+ * `create`.
  */
 export type WorkflowControlOp =
-	| { kind: 'create'; params: unknown }
+	| { kind: 'create'; params: unknown; id?: string }
 	// Resume all interrupted (running/waiting) instances. Driven by main AFTER the
 	// previous generation's worker is disposed, so an interrupted workflow is never
 	// re-executed in the new worker while the old one is still running it.
@@ -180,6 +182,16 @@ export type WorkflowControlOp =
 	// instance detail renders "sleeping" / "waiting for events" from these.
 	| { kind: 'isSleeping'; instanceId: string }
 	| { kind: 'waitingEventTypes'; instanceId: string }
+	// `WorkflowInstance.status()` for DO-worker proxies; also doubles as the
+	// existence check behind their `get(id)`.
+	| { kind: 'status'; instanceId: string }
+
+/** `WorkflowInstance.status()` payload (see `SqliteWorkflowInstance.status`). */
+export interface WorkflowInstanceStatus {
+	status: string
+	output?: unknown
+	error?: { name: string; message: string }
+}
 
 /** Result payload of a {@link WorkflowControlOp}. `create` reports the new id,
  *  the introspection reads report their value; mutating ops report nothing. */
@@ -188,6 +200,7 @@ export type WorkflowControlResult =
 	| { kind: 'ok' }
 	| { kind: 'isSleeping'; value: boolean }
 	| { kind: 'waitingEventTypes'; value: string[] }
+	| { kind: 'status'; value: WorkflowInstanceStatus }
 
 export interface BindingTarget {
 	binding: string

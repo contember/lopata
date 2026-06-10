@@ -1,3 +1,19 @@
+import { DurableObject } from 'cloudflare:workers'
+
+// COMP-1: a DO's `this.env.<WORKFLOW>` must reach the live worker-side state
+// machine (DO worker → main → thread router → user worker).
+export class WfCaller extends DurableObject {
+	async startWorkflow(name: string): Promise<string> {
+		const instance = await (this.env as any).GREETER.create({ params: { name } })
+		return instance.id
+	}
+
+	async workflowStatus(id: string): Promise<unknown> {
+		const instance = await (this.env as any).GREETER.get(id)
+		return instance.status()
+	}
+}
+
 export class Greeter {
 	ctx: any
 	env: any
@@ -33,6 +49,19 @@ export default {
 			const instance = await env.GREETER.get(id)
 			const status = await instance.status()
 			return Response.json(status)
+		}
+
+		if (url.pathname === '/do-start') {
+			const name = url.searchParams.get('name') ?? 'anon'
+			const stub = env.WF_CALLER.getByName('caller')
+			const id = await stub.startWorkflow(name)
+			return new Response(id)
+		}
+
+		if (url.pathname.startsWith('/do-status/')) {
+			const id = url.pathname.slice('/do-status/'.length)
+			const stub = env.WF_CALLER.getByName('caller')
+			return Response.json(await stub.workflowStatus(id))
 		}
 
 		return new Response('not found', { status: 404 })
