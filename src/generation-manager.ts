@@ -11,7 +11,11 @@ export class GenerationManager {
 	private nextGenId = 1
 	private _activeGenId: number | null = null
 	private _reloading: Promise<Generation> | null = null
-	private _pendingReload = false
+	/** Coalesced follow-up: one reload queued to run after the in-flight one, with
+	 *  its real promise handed to every caller that arrived during the in-flight
+	 *  reload (so they observe the result/error of the reload reflecting their
+	 *  request, not a stale `this.active`). */
+	private _pendingReloadPromise: Promise<Generation> | null = null
 	/** DO namespaces shared across generations to preserve WebSocket connections on reload */
 	private _doNamespaces = new Map<string, import('./bindings/durable-object').DurableObjectNamespaceImpl>()
 
@@ -65,29 +69,24 @@ export class GenerationManager {
 	 * Serialized: if called while already reloading, queues one reload.
 	 */
 	async reload(): Promise<Generation> {
+		// A reload is already running. Queue exactly one follow-up that starts once
+		// it finishes, and hand every caller that arrives during the in-flight reload
+		// that same promise — so they all resolve/reject with the result of the
+		// reload that actually reflects their edit, instead of the previous
+		// generation (or a null `this.active` when every reload so far has failed).
 		if (this._reloading) {
-			this._pendingReload = true
-			// Wait for current reload, then re-trigger
-			await this._reloading
-			if (this._pendingReload) {
-				this._pendingReload = false
-				return this.reload()
-			}
-			return this.active!
+			this._pendingReloadPromise ??= this._reloading
+				.catch(() => {})
+				.then(() => this.reload())
+			return this._pendingReloadPromise
 		}
 
 		this._reloading = this._doReload()
 		try {
-			const gen = await this._reloading
-			return gen
+			return await this._reloading
 		} finally {
 			this._reloading = null
-			if (this._pendingReload) {
-				this._pendingReload = false
-				this.reload().catch(err => {
-					console.error('[lopata] queued reload failed:', err)
-				})
-			}
+			this._pendingReloadPromise = null
 		}
 	}
 
