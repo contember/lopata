@@ -279,6 +279,43 @@ describe('WsGuestBridge', () => {
 		expect(() => bridge.register(lone)).toThrow(/has no peer/)
 	})
 
+	test('user close handler sees CLOSED; a nested close() does not re-fire it (CORR-14)', () => {
+		const { client, server } = makePair()
+		const wsId = bridge.register(client)
+		server.accept()
+
+		let invocations = 0
+		let stateDuringHandler = -1
+		server.addEventListener('close', () => {
+			invocations++
+			stateDuringHandler = server.readyState
+			// CF's hibernation template calls ws.close() from webSocketClose.
+			server.close(1000)
+		})
+
+		bridge.deliverClientClose(wsId, 1006, 'gone', false)
+		expect(invocations).toBe(1)
+		expect(stateDuringHandler).toBe(CFWebSocket.CLOSED)
+	})
+
+	test('server-initiated close forgets the id so the close echo is not buffered (CORR-13)', () => {
+		const { client, server } = makePair()
+		const wsId = bridge.register(client) // register accept()s the shipped (client) peer
+		server.accept()
+
+		// User closes the server peer → register's close listener posts remoteClose
+		// and must forget the id (not a bare delete).
+		server.close(1000, 'done')
+		expect(posted.filter(m => m.type === 'remote-close')).toHaveLength(1)
+
+		// Host closes the real socket; the clientClose echo arrives afterwards. It
+		// must be dropped (id forgotten), NOT stashed in _pendingEvents forever.
+		bridge.deliverClientClose(wsId, 1000, 'done', true)
+		const pendingEvents = (bridge as unknown as { _pendingEvents: Map<string, unknown[]> })._pendingEvents
+		expect(pendingEvents.has(wsId)).toBe(false)
+		expect(pendingEvents.size).toBe(0)
+	})
+
 	test('createBridgedSocket flushes a client message buffered before creation', () => {
 		const wsId = 'race-msg'
 		// env-ws-incoming raced ahead of the rpc-fetch-result that creates the socket

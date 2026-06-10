@@ -210,8 +210,11 @@ export class WsHostBridge<O> {
 			this._forget(wsId)
 			return
 		}
-		cfSocket.dispatchOrQueue(evt)
+		// Mark CLOSED before dispatching (mirrors the guest side) so any close
+		// handler on the host socket observes a closed socket and a nested close()
+		// no-ops instead of re-dispatching.
 		cfSocket.readyState = CFWebSocket.CLOSED
+		cfSocket.dispatchOrQueue(evt)
 		this._forget(wsId)
 	}
 
@@ -393,7 +396,12 @@ export class WsGuestBridge<O> {
 		shipped.addEventListener('close', (ev: Event) => {
 			const ce = ev as CloseEvent
 			this._post(this._envelopes.remoteClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
-			this._sockets.delete(wsId)
+			// `_forget` (not a bare delete) so the id enters `_forgotten`. The host
+			// closes the real socket in response and the `clientClose` echo comes
+			// back here; without the id in `_forgotten`, `_bufferPending` would stash
+			// that echo in `_pendingEvents` forever (wsIds are unique, so no future
+			// register matches it) — a leak on every server-initiated close.
+			this._forget(wsId)
 		})
 		shipped.accept()
 
@@ -428,8 +436,13 @@ export class WsGuestBridge<O> {
 		}
 		if (entry.closed) return
 		entry.closed = true
-		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
+		// Mark CLOSED *before* dispatching so user code observes a closed socket
+		// inside its close handler. CF's hibernation template calls `ws.close()`
+		// from `webSocketClose`; with readyState still OPEN that re-enters
+		// `CFWebSocket.close()` and fires the handler a second time. Now the nested
+		// close() no-ops via its `readyState === CLOSED` early return.
 		entry.userPeer.readyState = CFWebSocket.CLOSED
+		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
 		this._forget(wsId)
 	}
 }
