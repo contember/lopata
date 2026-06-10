@@ -207,10 +207,18 @@ export class GenerationManager {
 	private _scheduleDrainAndStop(genId: number, gen: Generation): void {
 		const finish = () => {
 			this._stopGeneration(genId)
-			// The previous worker (which was running interrupted workflows) is now
-			// gone — resume them on the current active generation.
+			// Resume only once EVERY older generation's worker is gone, not just
+			// the one whose grace window elapsed here. Rapid reloads leave several
+			// older generations in overlapping grace windows; one of them may
+			// still be mid-execution of the very instances `resumeInterrupted`
+			// selects (their DB rows stay 'running' until the step settles), and
+			// resuming then would run one workflow in two threads at once.
 			const active = this.active
-			if (active) this._resumeWorkflows(active)
+			if (!active) return
+			for (const [id, g] of this.generations) {
+				if (id < active.id && g.state !== 'stopped') return
+			}
+			this._resumeWorkflows(active)
 		}
 		if (gen.isIdle()) {
 			finish()
