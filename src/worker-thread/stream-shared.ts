@@ -160,6 +160,17 @@ export class StreamReceiver {
 	private _onCancel: (streamId: number) => void
 	private _window?: number
 	private _onCredit?: (streamId: number) => void
+	/**
+	 * Cancels a reconstructed stream that was dropped (garbage-collected) before
+	 * reaching a terminal event — e.g. a handler that never read a request body, or
+	 * a caller that ignored a binding-fetch response body. Without this the sender's
+	 * pump parks in `acquireCredit` forever (holding the locked source reader) until
+	 * the generation is disposed. GC only collects truly-unreferenced streams, so a
+	 * body still held by `waitUntil` is never wrongly cancelled.
+	 */
+	private _finalizer = new FinalizationRegistry<number>((streamId) => {
+		if (this._open.has(streamId)) this.cancel(streamId)
+	})
 
 	constructor(onCancel: (streamId: number) => void, options: StreamReceiverOptions = {}) {
 		this._onCancel = onCancel
@@ -200,14 +211,18 @@ export class StreamReceiver {
 		// time the stream pulls (i.e. has room). `pull` returns undefined, so the
 		// stream calls it once per drain rather than spinning. Eager mode (no
 		// window) keeps the original unbounded behavior.
-		if (this._window !== undefined && this._onCredit) {
-			const onCredit = this._onCredit
-			source.pull = () => {
-				onCredit(streamId)
-			}
-			return new ReadableStream<Uint8Array>(source, new CountQueuingStrategy({ highWaterMark: this._window }))
-		}
-		return new ReadableStream<Uint8Array>(source)
+		const stream = this._window !== undefined && this._onCredit
+			? (() => {
+				const onCredit = this._onCredit
+				source.pull = () => {
+					onCredit(streamId)
+				}
+				return new ReadableStream<Uint8Array>(source, new CountQueuingStrategy({ highWaterMark: this._window }))
+			})()
+			: new ReadableStream<Uint8Array>(source)
+		// Cancel the sender's pump if this stream is dropped without being read.
+		this._finalizer.register(stream, streamId)
+		return stream
 	}
 
 	/**

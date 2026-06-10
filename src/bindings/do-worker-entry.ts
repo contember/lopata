@@ -233,7 +233,22 @@ async function initWorker(workerConfig: WorkerConfig) {
 						headers: cmd.headers,
 						body: reqBody,
 					})
-					const response = await fetchFn.call(instance, request)
+					let response: Response
+					try {
+						response = await fetchFn.call(instance, request)
+					} catch (e) {
+						// The instance's fetch errored without draining the streamed
+						// request body — cancel the receiver so main stops pumping and
+						// buffered chunks are dropped. Mirrors dispatchRpcFetch's contract.
+						if (cmd.streamId !== undefined) requestStreams.cancel(cmd.streamId)
+						throw e
+					}
+					// Resolved but the body wasn't consumed (e.g. a 401 before reading) —
+					// cancel the receiver so main's pump doesn't park forever holding the
+					// source. DO fetch has no ctx.waitUntil, so nothing reads it later.
+					if (cmd.streamId !== undefined && !request.bodyUsed) {
+						requestStreams.cancel(cmd.streamId)
+					}
 					const clientWs = (response as { webSocket?: unknown }).webSocket
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
 					const resHeaders: [string, string][] = []
