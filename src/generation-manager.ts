@@ -18,6 +18,10 @@ export class GenerationManager {
 	private _pendingReloadPromise: Promise<Generation> | null = null
 	/** DO namespaces shared across generations to preserve WebSocket connections on reload */
 	private _doNamespaces = new Map<string, import('./bindings/durable-object').DurableObjectNamespaceImpl>()
+	/** Per-cron last-fired-minute dedup, shared across generations so a reload
+	 *  mid-minute doesn't re-run a scheduled handler the previous generation already
+	 *  fired (keyed by cron expression). */
+	private _cronLastFired = new Map<string, number>()
 
 	gracePeriodMs = 10_000
 
@@ -158,7 +162,7 @@ export class GenerationManager {
 		}
 
 		this._activeGenId = genId
-		gen.startConsumers()
+		gen.startConsumers(this._cronLastFired)
 		return gen
 	}
 

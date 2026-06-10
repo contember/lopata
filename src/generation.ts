@@ -182,13 +182,15 @@ export class Generation {
 		})
 	}
 
-	/** Start cron timer. Queue consumers run in the worker thread; no main-side action needed. */
-	startConsumers(): void {
+	/** Start cron timer. Queue consumers run in the worker thread; no main-side action needed.
+	 *  `cronLastFired` is the manager-owned per-minute dedup state, shared across
+	 *  generations so a reload mid-minute doesn't re-fire a cron already handled. */
+	startConsumers(cronLastFired?: Map<string, number>): void {
 		if (!this.cronEnabled) return
 		const crons = this.config.triggers?.crons ?? []
 		if (crons.length === 0) return
 		const executor = this.threadExecutor
-		this.cronTimer = startCronTimer(crons, (cronExpr, now) => executor.executeScheduled(cronExpr, now.getTime()), this.workerName)
+		this.cronTimer = startCronTimer(crons, (cronExpr, now) => executor.executeScheduled(cronExpr, now.getTime()), this.workerName, cronLastFired)
 	}
 
 	private _persistAndRethrow(source: 'scheduled' | 'email' | 'queue', err: unknown): never {
