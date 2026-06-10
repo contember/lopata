@@ -371,6 +371,15 @@ export class WorkerThreadExecutor {
 		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size + this._pendingWorkflowControl.size
 	}
 
+	/** In-flight streamed bodies for the top-level fetch path: response bodies the
+	 *  client is still downloading (`_responseStreams`, incl. SSE) plus request-body
+	 *  pumps still uploading (`_topRequestStreams`). `executeFetch` resolves at the
+	 *  headers, so these aren't reflected by `pendingFetch()` — reload drain must
+	 *  consult them or it cuts off an active download/SSE with zero grace. */
+	openStreamCount(): number {
+		return this._responseStreams.activeCount() + this._topRequestStreams.activeCount()
+	}
+
 	/** In-flight top-level `executeFetch` calls. A cross-worker service-binding
 	 *  fetch (`env.OTHER.fetch()`) lands here directly via the registry without
 	 *  touching the target `Generation.activeRequests`, so the drain must consult

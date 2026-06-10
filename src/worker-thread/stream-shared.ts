@@ -42,6 +42,12 @@ export class OutboundStreamRegistry {
 		return this._nextStreamId++
 	}
 
+	/** Number of source pumps still running. Reload drain consults this so an
+	 *  in-flight upload / response-body pump isn't force-terminated mid-stream. */
+	activeCount(): number {
+		return this._streams.size
+	}
+
 	register(
 		streamId: number,
 		reader: { cancel(reason?: unknown): Promise<unknown> },
@@ -147,6 +153,10 @@ export class StreamReceiver {
 	private _controllers = new Map<number, ReadableStreamDefaultController<Uint8Array>>()
 	private _pending = new Map<number, StreamEvent[]>()
 	private _cancelled = new Set<number>()
+	/** Streams reconstructed via `open()` that haven't reached a terminal event
+	 *  (end/error/cancel) yet. Reload drain consults `activeCount()` so a response
+	 *  the client is still downloading (SSE, large proxy) isn't cut off mid-body. */
+	private _open = new Set<number>()
 	private _onCancel: (streamId: number) => void
 	private _window?: number
 	private _onCredit?: (streamId: number) => void
@@ -157,7 +167,13 @@ export class StreamReceiver {
 		this._onCredit = options.onCredit
 	}
 
+	/** Number of reconstructed streams not yet terminated. */
+	activeCount(): number {
+		return this._open.size
+	}
+
 	open(streamId: number): ReadableStream<Uint8Array> {
+		this._open.add(streamId)
 		type Source = {
 			start: (controller: ReadableStreamDefaultController<Uint8Array>) => void
 			pull?: (controller: ReadableStreamDefaultController<Uint8Array>) => void
@@ -175,6 +191,7 @@ export class StreamReceiver {
 			cancel: () => {
 				this._controllers.delete(streamId)
 				this._pending.delete(streamId)
+				this._open.delete(streamId)
 				this._cancelled.add(streamId)
 				this._onCancel(streamId)
 			},
@@ -202,6 +219,7 @@ export class StreamReceiver {
 	cancel(streamId: number): void {
 		this._controllers.delete(streamId)
 		this._pending.delete(streamId)
+		this._open.delete(streamId)
 		this._cancelled.add(streamId)
 		this._onCancel(streamId)
 	}
@@ -227,6 +245,7 @@ export class StreamReceiver {
 		this._controllers.clear()
 		this._pending.clear()
 		this._cancelled.clear()
+		this._open.clear()
 	}
 
 	private _onEvent(streamId: number, ev: StreamEvent): void {
@@ -265,7 +284,10 @@ export class StreamReceiver {
 		} catch {
 			// Already closed/errored (consumer cancelled) — drop.
 		}
-		if (ev.kind !== 'chunk') this._controllers.delete(streamId)
+		if (ev.kind !== 'chunk') {
+			this._controllers.delete(streamId)
+			this._open.delete(streamId)
+		}
 	}
 }
 

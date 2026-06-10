@@ -249,6 +249,10 @@ export class Generation {
 		// generation's executor directly, also bypassing `activeRequests`. Count
 		// them so reloading the target doesn't sever an inbound fetch mid-flight.
 		if (this.threadExecutor.pendingFetch() > 0) return false
+		// Streamed bodies outlive the `executeFetch` promise (which resolves at the
+		// headers). An active download / SSE / upload must keep the generation alive
+		// or reload would abort it mid-stream with zero grace.
+		if (this.threadExecutor.openStreamCount() > 0) return false
 		for (const entry of this.registry.durableObjects) {
 			if (entry.namespace.hasActiveWebSockets()) return false
 		}

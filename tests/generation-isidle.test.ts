@@ -4,13 +4,14 @@ import type { ClassRegistry } from '../src/generation'
 import { Generation } from '../src/generation'
 import type { WorkerThreadExecutor } from '../src/worker-thread/executor'
 
-type Counters = 'pendingWaitUntil' | 'pendingHandlerWork' | 'pendingFetch'
+type Counters = 'pendingWaitUntil' | 'pendingHandlerWork' | 'pendingFetch' | 'openStreamCount'
 
 function makeExecutor(over: Partial<Record<Counters, () => number>> = {}): WorkerThreadExecutor {
 	return {
 		pendingWaitUntil: () => 0,
 		pendingHandlerWork: () => 0,
 		pendingFetch: () => 0,
+		openStreamCount: () => 0,
 		...over,
 	} as unknown as WorkerThreadExecutor
 }
@@ -48,5 +49,12 @@ describe('Generation.isIdle()', () => {
 	// see it — otherwise reloading the target severs the request mid-flight.
 	test('not idle while a top-level/cross-worker fetch is in flight', () => {
 		expect(gen(makeExecutor({ pendingFetch: () => 1 })).isIdle()).toBe(false)
+	})
+
+	// CORR-3: streamed bodies (SSE / large download / upload) outlive the
+	// executeFetch promise — drain must keep the generation alive while any are
+	// open, or reload cuts them off mid-stream.
+	test('not idle while a streamed body is still flowing', () => {
+		expect(gen(makeExecutor({ openStreamCount: () => 1 })).isIdle()).toBe(false)
 	})
 })
