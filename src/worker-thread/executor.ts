@@ -495,13 +495,19 @@ export class WorkerThreadExecutor {
 			this._pending,
 			(id, parent) => {
 				fetchId = id
+				return { type: 'fetch', id, request: req, parent, props }
+			},
+			() => {
+				// Wire the signal only AFTER the fetch command is posted: a client
+				// that already disconnected fires onAbort synchronously, and posting
+				// fetch-abort ahead of the fetch command would no-op in the worker
+				// (no controller for the id yet) — the rebuilt Request's signal
+				// would then never fire. postMessage is FIFO, so abort-after-fetch
+				// is ordered.
 				if (signal) {
 					if (signal.aborted) onAbort()
 					else signal.addEventListener('abort', onAbort, { once: true })
 				}
-				return { type: 'fetch', id, request: req, parent, props }
-			},
-			() => {
 				if (body && reqStreamId !== undefined) this._pumpTopRequestBody(reqStreamId, body)
 			},
 		)
