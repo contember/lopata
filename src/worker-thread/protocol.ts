@@ -444,6 +444,11 @@ export type WorkerCommand =
 	| { type: 'req-stream-chunk'; streamId: number; chunk: Uint8Array }
 	| { type: 'req-stream-end'; streamId: number }
 	| { type: 'req-stream-error'; streamId: number; error: SerializedError }
+	// Reload drain: stop the worker's queue consumers from claiming NEW messages.
+	// Without this the OLD generation keeps polling the shared queue for the whole
+	// grace period, competing with the new generation. In-flight batches finish
+	// (tracked via wait-until so drain waits for them).
+	| { type: 'stop-queue-consumers' }
 
 /** Worker → main */
 export type WorkerMessage =

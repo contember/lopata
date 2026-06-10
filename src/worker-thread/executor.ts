@@ -543,6 +543,17 @@ export class WorkerThreadExecutor {
 		return this._sendAndAwait(this._pendingWorkflowControl, (id, parent) => ({ type: 'workflow-control', id, binding, op, parent }))
 	}
 
+	/** Tell the worker to stop its queue consumers from claiming new messages
+	 *  (reload drain). In-flight batches finish and are awaited via wait-until. */
+	stopQueueConsumers(): void {
+		if (this._disposed) return
+		try {
+			this._send({ type: 'stop-queue-consumers' })
+		} catch {
+			// Worker already gone — nothing to stop.
+		}
+	}
+
 	dispose(): void {
 		if (this._disposed) return
 		this._disposed = true

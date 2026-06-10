@@ -27,6 +27,7 @@ export function startThreadQueueConsumers(
 	env: Record<string, unknown>,
 	workerModule: Record<string, unknown>,
 	workerName?: string,
+	trackBatch?: (p: Promise<unknown>) => void,
 ): QueueConsumer[] {
 	const handler = resolveQueueHandler(workerModule)
 	if (!handler) return []
@@ -46,6 +47,8 @@ export function startThreadQueueConsumers(
 			handler,
 			env,
 			workerName,
+			undefined,
+			trackBatch,
 		)
 		consumer.start()
 		consumers.push(consumer)

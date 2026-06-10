@@ -211,6 +211,10 @@ export class Generation {
 		if (this.state === 'stopped') return
 		this.state = 'draining'
 		this.stopConsumers()
+		// Stop the worker thread's queue consumers from claiming NEW messages — the
+		// cron timer (stopConsumers above) is main-side, but queue consumers live in
+		// the worker. In-flight batches finish and are awaited via wait-until.
+		this.threadExecutor.stopQueueConsumers()
 		// Stop firing this generation's alarms — but skip namespaces shared with
 		// the next generation, which has already restored their timers via
 		// `_restoreAlarms()`. Clearing a shared namespace here would wipe those

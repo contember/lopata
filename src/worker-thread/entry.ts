@@ -7,7 +7,7 @@ import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-p
 import { getDatabase } from '../db'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
-import { WorkerExecutionContext } from './execution-context'
+import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
 import type {
 	ParentSpanContext,
 	SerializedResponse,
@@ -221,9 +221,19 @@ async function initRuntime(init: WorkerInitConfig) {
 	}
 
 	wireWorkflows(built, workerModule)
-	// `Worker.terminate()` (called on reload) clears the consumer's setInterval
-	// timers, so no graceful-shutdown handle is needed here.
-	startThreadQueueConsumers(init.config, built.db, env, workerModule, init.workerName)
+	// Queue consumers run as setIntervals in this thread. A reload drains the old
+	// generation: main posts `stop-queue-consumers` so we stop claiming NEW
+	// messages (instead of competing with the new generation for the whole grace
+	// period), while in-flight batches finish — each registered with reload drain
+	// via `trackBackgroundWork` so `isIdle()` waits for them.
+	const queueConsumers = startThreadQueueConsumers(
+		init.config,
+		built.db,
+		env,
+		workerModule,
+		init.workerName,
+		(p) => trackBackgroundWork(post, p),
+	)
 
 	const invokeEntrypointRpc = async (
 		entrypoint: string | undefined,
@@ -368,6 +378,11 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'req-stream-error':
 				requestStreams.error(cmd.streamId, deserializeError(cmd.error))
+				break
+			case 'stop-queue-consumers':
+				// Reload drain — stop polling for new messages. In-flight batches keep
+				// running and are awaited by main via their wait-until registration.
+				for (const consumer of queueConsumers) consumer.stop()
 				break
 			case 'entrypoint-rpc':
 				try {

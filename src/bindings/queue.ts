@@ -202,6 +202,9 @@ export class QueueConsumer {
 	private batchTimer: ReturnType<typeof setTimeout> | null = null
 	private polling = false
 	private _activeDeliveries = 0
+	/** Optional hook to register an in-flight batch with reload-drain accounting,
+	 *  so a generation isn't terminated mid-batch (thread mode). */
+	private _trackBatch?: (p: Promise<unknown>) => void
 
 	private clock: Clock
 
@@ -212,6 +215,7 @@ export class QueueConsumer {
 		env: Record<string, unknown>,
 		workerName?: string,
 		clock?: Clock,
+		trackBatch?: (p: Promise<unknown>) => void,
 	) {
 		this.db = db
 		this.config = config
@@ -219,6 +223,7 @@ export class QueueConsumer {
 		this.env = env
 		this.workerName = workerName
 		this.clock = clock ?? realClock
+		this._trackBatch = trackBatch
 	}
 
 	start(intervalMs: number = 1000): void {
@@ -263,7 +268,12 @@ export class QueueConsumer {
 
 			if (rows.length === 0) return
 
-			await this.deliverBatch(rows)
+			const delivery = this.deliverBatch(rows)
+			// Register the in-flight batch with reload drain so the generation isn't
+			// terminated mid-batch (which would expire the lease and redeliver with
+			// the retry counter bumped).
+			this._trackBatch?.(delivery)
+			await delivery
 		} finally {
 			this.polling = false
 		}

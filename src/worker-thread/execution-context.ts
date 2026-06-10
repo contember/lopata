@@ -13,6 +13,20 @@ import type { WorkerMessage } from './protocol'
 // concurrent fetches.
 let nextWaitUntilId = 1
 
+/**
+ * Register a background promise with main's reload-drain accounting (same
+ * `wait-until-add` / `wait-until-settle` protocol as `ctx.waitUntil`). Used for
+ * worker-side work that isn't tied to an `ExecutionContext` — e.g. an in-flight
+ * queue batch, so reload drain waits for it instead of terminating mid-batch.
+ */
+export function trackBackgroundWork(post: (msg: WorkerMessage) => void, promise: Promise<unknown>): void {
+	const id = nextWaitUntilId++
+	post({ type: 'wait-until-add', id })
+	logIfRejected(promise).finally(() => {
+		post({ type: 'wait-until-settle', id })
+	})
+}
+
 export class WorkerExecutionContext {
 	/** `ctx.props` — carries the calling worker's service-binding `props` for
 	 *  `entrypoint-rpc` / `fetch` dispatch; `{}` for top-level HTTP. */
