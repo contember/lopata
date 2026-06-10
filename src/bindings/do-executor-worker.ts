@@ -68,7 +68,11 @@ export class WorkerExecutor implements DOExecutor {
 	private _pending = new Map<number, PendingCommand>()
 	private _nextId = 1
 	private _disposed = false
-	private _priorDisposalAwaited = false
+	/** Swallowed copy of `_priorDisposal`, created lazily on the first command.
+	 *  Shared so CONCURRENT first commands all await the prior container's
+	 *  teardown — a boolean gate would let the second racer skip straight to
+	 *  `docker run` while the old container's `docker rm` is still in flight. */
+	private _priorDisposalGate: Promise<void> | null = null
 	private _inFlightCount = 0
 	/** Mirrors of the DO worker's `state` lifecycle, fed by `do-state` signals. */
 	private _blocked = false
@@ -334,16 +338,14 @@ export class WorkerExecutor implements DOExecutor {
 
 	private async _sendCommand(command: DOCommand, afterPost?: () => void): Promise<DOResult> {
 		const worker = this._ensureWorker()
-		// Wait for the prior executor's container teardown (docker rm) before the
-		// first command — a container DO's first fetch triggers `docker run` for the
-		// same name, which would otherwise race the teardown. Awaited once; no-op for
-		// non-container DOs (`_priorDisposal` undefined).
-		if (!this._priorDisposalAwaited) {
-			this._priorDisposalAwaited = true
-			if (this._config._priorDisposal) {
-				await this._config._priorDisposal.catch(() => {})
-			}
-		}
+		// Wait for the prior executor's container teardown (docker rm) before any
+		// command — a container DO's first fetch triggers `docker run` for the
+		// same name, which would otherwise race the teardown. Every command awaits
+		// the shared gate (a settled promise after the first), so concurrent first
+		// commands serialize too. No-op for non-container DOs (`_priorDisposal`
+		// undefined).
+		this._priorDisposalGate ??= this._config._priorDisposal?.catch(() => {}) ?? Promise.resolve()
+		await this._priorDisposalGate
 		await this._ready
 
 		if (this._disposed) throw new Error('Worker terminated')
