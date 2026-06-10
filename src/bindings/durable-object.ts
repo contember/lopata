@@ -122,6 +122,11 @@ export class SqlStorage {
 				mkdirSync(dir, { recursive: true })
 				this._db = new Database(this._dbPath, { create: true })
 				this._db.run('PRAGMA journal_mode=WAL')
+				// This per-DO file now lives in the DO worker thread while the dashboard
+				// opens the same file from main; WAL allows one writer at a time, so
+				// without busy_timeout an overlapping write fails instantly with
+				// SQLITE_BUSY. Matches db.ts / do-worker-env.ts on data.sqlite.
+				this._db.run('PRAGMA busy_timeout=5000')
 			} else {
 				this._db = new Database(':memory:')
 			}

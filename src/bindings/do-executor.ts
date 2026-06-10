@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import type { WranglerConfig } from '../config'
 import type { ContainerConfig } from './container'
 import type { DurableObjectBase, DurableObjectIdImpl, DurableObjectLimits } from './durable-object'
 
@@ -16,6 +17,10 @@ export interface ExecutorConfig {
 	 *  inside their Bun Worker; the factory injects these paths. */
 	_modulePath?: string
 	_configPath?: string
+	/** @internal Main's already-parsed, env-overridden wrangler config. Passed to
+	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
+	 *  overrides (which the re-parse silently dropped). */
+	_wranglerConfig?: WranglerConfig
 }
 
 export interface DOExecutor {
@@ -57,6 +62,7 @@ export interface DOExecutor {
 
 export interface DOExecutorFactory {
 	create(config: ExecutorConfig): DOExecutor
-	/** Tell the factory where user code lives (only used by worker-thread DO executors). */
-	configure?(modulePath: string, configPath: string): void
+	/** Tell the factory where user code lives + the already-parsed env-overridden
+	 *  config (only used by worker-thread DO executors). */
+	configure?(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig): void
 }

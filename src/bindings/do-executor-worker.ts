@@ -15,6 +15,7 @@ import type {
 	DOResult,
 	DOWorkerMessage,
 } from '../worker-thread/do-protocol'
+import type { WranglerConfig } from '../config'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
 import { RpcHostChannel } from '../worker-thread/rpc-shared'
@@ -179,6 +180,9 @@ export class WorkerExecutor implements DOExecutor {
 						config: {
 							modulePath: this._resolveModulePath(),
 							configPath: this._resolveConfigPath(),
+							// Main's parsed, env-overridden config — the DO worker uses this
+							// instead of re-loading from configPath WITHOUT the --env overrides.
+							wranglerConfig: this._config._wranglerConfig,
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
 							idStr: config.id.toString(),
@@ -568,22 +572,26 @@ export class WorkerExecutor implements DOExecutor {
 export class WorkerExecutorFactory implements DOExecutorFactory {
 	private _modulePath?: string
 	private _configPath?: string
+	private _wranglerConfig?: WranglerConfig
 
 	/**
-	 * Set the module and config paths for all executors created by this factory.
-	 * Called by the generation manager after loading config.
+	 * Set the module + config paths and the parsed env-overridden config for all
+	 * executors created by this factory. Called by the generation manager after
+	 * loading config.
 	 */
-	configure(modulePath: string, configPath: string): void {
+	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig): void {
 		this._modulePath = modulePath
 		this._configPath = configPath
+		this._wranglerConfig = wranglerConfig
 	}
 
 	create(config: ExecutorConfig): DOExecutor {
-		// Attach paths to the config for the executor to use
+		// Attach paths + parsed config to the config for the executor to use
 		return new WorkerExecutor({
 			...config,
 			_modulePath: this._modulePath ?? '',
 			_configPath: this._configPath ?? '',
+			_wranglerConfig: this._wranglerConfig,
 		})
 	}
 }

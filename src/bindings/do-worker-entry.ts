@@ -5,6 +5,7 @@
  * postMessage from the main thread (handshake), then initializes.
  */
 
+import { dirname } from 'node:path'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
@@ -14,6 +15,10 @@ declare var self: Worker
 interface WorkerConfig {
 	modulePath: string
 	configPath: string
+	/** Main's parsed, env-overridden config. When present it's used verbatim so
+	 *  the DO env honors `--env` overrides; absent (e.g. standalone test factory)
+	 *  we fall back to re-loading from `configPath`. */
+	wranglerConfig?: import('../config').WranglerConfig
 	dataDir: string
 	namespaceName: string
 	idStr: string
@@ -48,7 +53,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// Register Bun plugins for cloudflare:workers etc.
 	await import('../plugin')
 
-	const { loadConfig } = await import('../config')
 	const { buildWorkerEnv, createDoEnvRpc } = await import('./do-worker-env')
 	const { DurableObjectStateImpl, DurableObjectIdImpl } = await import('./durable-object')
 	const { CFWebSocket } = await import('./websocket-pair')
@@ -57,7 +61,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const { DockerManager } = await import('./container-docker')
 	const { containerLabels } = await import('./container-cleanup')
 
-	const config = await loadConfig(workerConfig.configPath)
+	// Prefer main's already-parsed, env-overridden config; only re-load from disk
+	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
+	// the standalone test factory.
+	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
+	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
+	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
 
 	/**
@@ -71,7 +80,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
 	})
 
-	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, envRpc, workerConfig.namespaceName, envWsBridge)
+	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, baseDir, envRpc, workerConfig.namespaceName, envWsBridge)
 
 	// Publish env to `globalEnv` so top-level `import { env } from
 	// 'cloudflare:workers'` in the user module sees this DO worker's env (not

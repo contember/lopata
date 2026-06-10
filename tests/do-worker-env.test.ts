@@ -86,7 +86,7 @@ describe('buildWorkerEnv — service binding fetch', () => {
 		const { rpc, respondFetch } = makeMockRpc()
 		const posted: DOMainMessage[] = []
 		const envWsBridge = makeEnvWsBridge(msg => posted.push(msg))
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', envWsBridge)
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', envWsBridge)
 		const svc = env.SVC as { fetch: (req: Request) => Promise<Response> }
 
 		const promise = svc.fetch(new Request('http://svc/upgrade'))
@@ -132,7 +132,7 @@ describe('buildWorkerEnv — service binding fetch', () => {
 		const config = { services: [{ binding: 'SVC', service: 'aux' }] } as unknown as WranglerConfig
 		const { rpc, respondFetch } = makeMockRpc()
 		const envWsBridge = makeEnvWsBridge()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', envWsBridge)
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', envWsBridge)
 		const svc = env.SVC as { fetch: (req: Request) => Promise<Response> }
 
 		const promise = svc.fetch(new Request('http://svc/hello'))
@@ -179,7 +179,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			},
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 
 		// Main owns every executor — the worker side never emits a local namespace.
 		expect(doNamespaces).toEqual([])
@@ -198,7 +198,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc, respondFetch, posts } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 
 		const id = other.idFromName('alice')
@@ -240,7 +240,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			},
 			() => undefined,
 		)
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const id = other.idFromName('bob')
 		const stub = other.get(id)
@@ -262,7 +262,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const a = other.get(other.idFromName('x'))
 		const b = other.get(other.idFromName('x'))
@@ -274,7 +274,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			containers: [{ name: 'BOX', class_name: 'BoxContainer', image: 'foo' }],
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const box = env.BOX as any
 		expect(typeof box.idFromName).toBe('function')
 		expect(typeof box.get).toBe('function')
@@ -285,7 +285,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			durable_objects: { bindings: [{ name: 'OTHER', class_name: 'OtherDO' }] },
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const other = env.OTHER as any
 		const id1 = other.idFromName('shared')
 		const id2 = other.idFromName('shared')
@@ -326,7 +326,7 @@ describe('buildWorkerEnv — RPC call passthrough', () => {
 			},
 			() => undefined,
 		)
-		const { env } = buildWorkerEnv(config, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 		const svc = env.SVC as Record<string, (...a: unknown[]) => Promise<unknown>>
 
 		const promise = svc.greet!('alice')

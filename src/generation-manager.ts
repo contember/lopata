@@ -91,7 +91,7 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
-		this.executorFactory?.configure?.(this.workerPath, this._configPath)
+		this.executorFactory?.configure?.(this.workerPath, this._configPath, this.config)
 
 		// Stateful bindings (DO namespaces, queue producers, workflows,
 		// service bindings, email, browser, containers) live in main — the worker
