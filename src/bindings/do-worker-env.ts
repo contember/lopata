@@ -24,7 +24,7 @@ import { SqliteAnalyticsEngine } from './analytics-engine'
 import { BrowserBinding } from './browser'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
-import { DurableObjectIdImpl, DurableObjectNamespaceImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
+import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { EmailMessage } from './email'
 import { HyperdriveBinding } from './hyperdrive'
 import { ImagesBinding } from './images'
@@ -149,7 +149,7 @@ export function buildWorkerEnv(
 	rpc: RpcClient,
 	_hostNamespaceName: string,
 	envWsBridge: WsGuestBridge<DOMainMessage>,
-): { db: Database; env: Record<string, unknown>; doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] } {
+): { db: Database; env: Record<string, unknown> } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
 	mkdirSync(dataDir, { recursive: true })
@@ -163,7 +163,6 @@ export function buildWorkerEnv(
 	runMigrations(db)
 
 	const env: Record<string, unknown> = {}
-	const doNamespaces: { className: string; namespace: DurableObjectNamespaceImpl }[] = []
 
 	// Environment variables
 	if (config.vars) {
@@ -264,7 +263,7 @@ export function buildWorkerEnv(
 		env[config.version_metadata.binding] = { id: 'local-dev', tag: '', timestamp: new Date().toISOString() }
 	}
 
-	return { db, env, doNamespaces }
+	return { db, env }
 }
 
 async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuffer | string> {

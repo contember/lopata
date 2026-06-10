@@ -314,10 +314,14 @@ export function buildEnv(
 				console.log(`[lopata] Container: ${container.class_name} (reusing DO binding, image: ${container.image})`)
 			}
 		} else {
-			// Create a new DO namespace for this container
+			// Reuse the existing namespace across reloads (like the DO-binding branch
+			// above) — constructing a fresh one would orphan the old namespace while a
+			// new executor opens the same do-sql file for the same id, breaking DO
+			// single-threading.
 			const bindingName = container.name ?? container.class_name
 			console.log(`[lopata] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`)
-			const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
+			const existingNs = existingNamespaces?.get(container.class_name)
+			const namespace = existingNs ?? new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
 			env[bindingName] = instrumentDONamespace(namespace, container.class_name)
 			registry.durableObjects.push({
 				bindingName,

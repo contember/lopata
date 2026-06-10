@@ -136,6 +136,19 @@ export class GenerationManager {
 			entry.namespace._setAlarmHandlerHint(readyInfo.doAlarmHandlers[entry.className] ?? false)
 		}
 
+		// Prune namespaces for DO classes removed from config: a stale entry would
+		// otherwise keep firing persisted alarms (spawning DO threads for a class
+		// that no longer exists) and keep its 30s eviction interval alive until the
+		// process exits. Force-destroy tears those down (the class is gone, so there
+		// are no WS connections worth preserving).
+		const liveClassNames = new Set(registry.durableObjects.map(e => e.className))
+		for (const [className, namespace] of this._doNamespaces) {
+			if (!liveClassNames.has(className)) {
+				namespace.destroy({ force: true })
+				this._doNamespaces.delete(className)
+			}
+		}
+
 		// Route dashboard workflow control through the worker thread. The main-side
 		// binding built by `buildEnv` is hollow (no `_class`, empty in-memory event
 		// waiters / sleep resolvers / abort controllers) — the live state machine

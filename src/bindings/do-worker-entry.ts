@@ -80,7 +80,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
 	})
 
-	const { db, env, doNamespaces } = buildWorkerEnv(config, workerConfig.dataDir, baseDir, envRpc, workerConfig.namespaceName, envWsBridge)
+	const { db, env } = buildWorkerEnv(config, workerConfig.dataDir, baseDir, envRpc, workerConfig.namespaceName, envWsBridge)
 
 	// Publish env to `globalEnv` so top-level `import { env } from
 	// 'cloudflare:workers'` in the user module sees this DO worker's env (not
@@ -90,16 +90,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
-
-	// Wire the host DO class — `buildWorkerEnv` only emits an entry for the
-	// binding whose `class_name` matches this worker's namespace (the only one
-	// with a real local namespace; cross-DO bindings are loud-throw stubs).
-	for (const entry of doNamespaces) {
-		const cls = workerModule[entry.className]
-		if (cls) {
-			entry.namespace._setClass(cls as any, env)
-		}
-	}
 
 	// Create this DO's instance
 	const id = new DurableObjectIdImpl(workerConfig.idStr, workerConfig.idName)

@@ -179,12 +179,11 @@ describe('buildWorkerEnv — DO env bindings', () => {
 			},
 		} as unknown as WranglerConfig
 		const { rpc } = makeMockRpc()
-		const { env, doNamespaces } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
+		const { env } = buildWorkerEnv(config, dataDir, dataDir, rpc, 'HostDO', makeEnvWsBridge())
 
-		// Main owns every executor — the worker side never emits a local namespace.
-		expect(doNamespaces).toEqual([])
-
-		// Both bindings (host class and cross-DO class) are namespace proxies.
+		// Main owns every executor — the worker side emits only namespace proxies,
+		// never a local namespace. Both bindings (host class and cross-DO class) are
+		// namespace proxies.
 		const selfRef = env.SELF_REF as any
 		expect(typeof selfRef.idFromName).toBe('function')
 		expect(typeof selfRef.get).toBe('function')
