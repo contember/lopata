@@ -26,7 +26,7 @@ function cleanup() {
 
 describe('Top-level binding RPC during worker init (worker-thread runtime)', () => {
 	let proc: Subprocess
-	const PORT = 18821
+	const PORT = 18834
 	const base = `http://localhost:${PORT}`
 
 	beforeAll(async () => {

@@ -147,6 +147,35 @@ describe('Response streaming through DO instance fetch (cross-thread)', () => {
 		expect(buf[buf.length - 1]).toBe(70)
 	}, 25_000)
 
+	test('streamed request body to a COLD DO instance is not truncated (CORR-4)', async () => {
+		// First request to a fresh DO id → its worker thread is cold. The request-body
+		// pump must wait for the worker to be ready before posting chunks, or the
+		// init-phase handler drops the head chunks (corruption) and the dropped end
+		// makes `request.arrayBuffer()` hang forever (test times out).
+		const size = 512 * 1024
+		const chunk = new Uint8Array(64 * 1024).fill(90) // 'Z'
+		let sent = 0
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent >= size) {
+					controller.close()
+					return
+				}
+				controller.enqueue(chunk)
+				sent += chunk.length
+			},
+		})
+		const res = await fetch(`${base}/echo?do=cold-body-${Date.now()}`, {
+			method: 'POST',
+			body: stream,
+			duplex: 'half',
+		})
+		const buf = new Uint8Array(await res.arrayBuffer())
+		expect(buf.byteLength).toBe(size)
+		expect(buf[0]).toBe(90)
+		expect(buf[buf.length - 1]).toBe(90)
+	}, 25_000)
+
 	test('cancel propagates: dropping the response body cancels the source inside the DO', async () => {
 		const before = Number(await (await fetch(`${base}/cancel-count`)).text())
 

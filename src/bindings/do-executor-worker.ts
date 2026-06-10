@@ -276,6 +276,11 @@ export class WorkerExecutor implements DOExecutor {
 			// instead of posting to a terminated Worker (which would hang). Mirrors
 			// the init-error path above.
 			this._disposed = true
+			// An uncaught worker error does NOT end the thread (Web Worker semantics),
+			// and once `_worker` is nulled `dispose()` can no longer terminate it —
+			// leaking the thread (SQLite handle, container/health timers, WS bridges).
+			// Terminate it here before dropping the handle. Mirrors WorkerThreadExecutor.
+			worker.terminate()
 			this._worker = null
 			const detail = event.error?.stack ?? event.message ?? 'unknown'
 			const error = new Error(`Worker error: ${detail}`)
@@ -309,7 +314,7 @@ export class WorkerExecutor implements DOExecutor {
 		return this._config.dataDir ?? ''
 	}
 
-	private async _sendCommand(command: DOCommand): Promise<DOResult> {
+	private async _sendCommand(command: DOCommand, afterPost?: () => void): Promise<DOResult> {
 		const worker = this._ensureWorker()
 		await this._ready
 
@@ -335,6 +340,12 @@ export class WorkerExecutor implements DOExecutor {
 			})
 			try {
 				worker.postMessage({ type: 'command', id, command } satisfies DOWorkerMessage)
+				// Runs only AFTER the command is posted, which is after `await this._ready`
+				// — so the DO worker's full message handler is installed (it's set right
+				// before the worker posts `ready`). Starting the request-body pump here
+				// (not synchronously in executeFetch) means its chunks can't race ahead
+				// of `ready` and get dropped by the init-phase handler.
+				afterPost?.()
 			} catch (e) {
 				// A synchronous postMessage throw (DataCloneError on non-cloneable
 				// args) would otherwise leak the pending entry and the `_inFlightCount`
@@ -365,36 +376,38 @@ export class WorkerExecutor implements DOExecutor {
 		const body = request.body
 		const streamId = body ? this._fetchRequestStreams.allocateId() : undefined
 
-		// `_sendCommand` posts the 'fetch' command first; the request-body pump
-		// kicks off afterward so the DO worker has registered the streamId
-		// before any chunk arrives. (Chunks for an unknown streamId are still
-		// buffered on the receiver side, so order is correctness — not safety.)
-		const resultPromise = this._sendCommand({
-			type: 'fetch',
-			url: request.url,
-			method: request.method,
-			headers,
-			body: null,
-			streamId,
-		})
+		// The request-body pump starts in `afterPost` — i.e. AFTER `_sendCommand`
+		// has awaited `_ready` and posted the 'fetch' command. On a COLD worker the
+		// init-phase handler drops every message except `init`, so starting the pump
+		// synchronously here (as before) dropped the head chunks — and a dropped
+		// `end` left `await request.text()` hanging forever, pinning the executor.
+		let pumpStarted = false
+		const resultPromise = this._sendCommand(
+			{
+				type: 'fetch',
+				url: request.url,
+				method: request.method,
+				headers,
+				body: null,
+				streamId,
+			},
+			body && streamId !== undefined
+				? () => {
+					pumpStarted = true
+					this._pumpFetchRequestBody(streamId, body)
+				}
+				: undefined,
+		)
 
 		if (body && streamId !== undefined) {
-			if (this._disposed) {
-				// `_sendCommand` already rejected synchronously (worker disposed before
-				// `_ensureWorker()` / `await _ready`); skipping the pump avoids locking
-				// the source reader on a stream nobody will read.
-				body.cancel().catch(() => {})
-			} else {
-				// If `resultPromise` rejects mid-flight (worker errored during
-				// `await _ready`), `_pumpFetchRequestBody` would otherwise hold the
-				// source reader locked because `pumpStream`'s loop awaits
-				// `reader.read()` and only checks `_disposed` afterwards. Cancel the
-				// pump's reader so any pending read resolves and the registry releases.
-				resultPromise.catch(() => {
-					this._fetchRequestStreams.cancel(streamId)
-				})
-				this._pumpFetchRequestBody(streamId, body)
-			}
+			// If `resultPromise` rejects (worker disposed before `_ready`, or errored
+			// mid-flight), release the source body: cancel via the registry if the
+			// pump started (the reader is locked there), else cancel the body itself
+			// so it isn't left dangling unread.
+			resultPromise.catch(() => {
+				if (pumpStarted) this._fetchRequestStreams.cancel(streamId)
+				else body.cancel().catch(() => {})
+			})
 		}
 
 		const result = await resultPromise

@@ -121,8 +121,9 @@ export default {
 	async fetch(request: Request, env: any): Promise<Response> {
 		const url = new URL(request.url)
 		// All paths route to the same DO instance so `/cancel-count` reflects the
-		// same DO that served `/infinite`.
-		const id = env.STREAM.idFromName('singleton')
+		// same DO that served `/infinite`. A `?do=<name>` override lets a test target
+		// a fresh (cold) DO instance — its worker thread won't exist yet.
+		const id = env.STREAM.idFromName(url.searchParams.get('do') ?? 'singleton')
 		const stub = env.STREAM.get(id)
 		const doUrl = `http://do${url.pathname}${url.search}`
 		const init: RequestInit = { method: request.method, headers: request.headers }
