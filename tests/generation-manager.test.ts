@@ -25,10 +25,12 @@ describe('GenerationManager.reload()', () => {
 		const config = { main: 'index.ts' } as unknown as WranglerConfig
 		const manager = new GenerationManager(config, '/tmp', {})
 
-		const gens = [{ id: 1 }, { id: 2 }] as unknown as import('../src/generation').Generation[]
+		const gen1 = { id: 1 } as unknown as import('../src/generation').Generation
+		const gen2 = { id: 2 } as unknown as import('../src/generation').Generation
 		let call = 0
 		;(manager as unknown as { _doReload: () => Promise<unknown> })._doReload = async () => {
-			const g = gens[call++]
+			call++
+			const g = call === 1 ? gen1 : gen2
 			await new Promise<void>(r => setTimeout(r, 10))
 			return g
 		}
@@ -37,8 +39,8 @@ describe('GenerationManager.reload()', () => {
 		await new Promise<void>(r => setTimeout(r, 1)) // let reload #1 start
 		const p2 = manager.reload() // queued → must run reload #2
 
-		expect(await p1).toBe(gens[0])
-		expect(await p2).toBe(gens[1])
+		expect(await p1).toBe(gen1)
+		expect(await p2).toBe(gen2)
 		expect(call).toBe(2)
 	})
 

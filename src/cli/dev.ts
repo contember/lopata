@@ -146,11 +146,15 @@ export async function run(ctx: CliContext, args: string[]) {
 				console.error(`[lopata] Failed to load auxiliary worker "${workerDef.name}":`, err)
 			}
 
-			// File watcher for aux worker
-			const auxSrcDir = path.dirname(path.resolve(auxBaseDir, auxConfig.main))
-			const auxWatcher = new FileWatcher(auxSrcDir, () => {
+			// Import-graph watcher for the aux worker — follows its transitive
+			// imports (matching single-worker mode), not just the entry's directory.
+			// `watchExtra` remains the answer for non-import assets / shared dirs.
+			const auxEntry = path.resolve(auxBaseDir, auxConfig.main)
+			const auxWatcher: ImportGraphWatcher = new ImportGraphWatcher(auxEntry, auxBaseDir, () => {
+				const onSettled = () => auxWatcher.rescan()
 				auxManager.reload().then(async gen => {
-					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id}`)
+					onSettled()
+					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id} (watching ${auxWatcher.size} files)`)
 					// Re-read config and update routes in case routes changed
 					if (routeDispatcher) {
 						try {
@@ -160,13 +164,14 @@ export async function run(ctx: CliContext, args: string[]) {
 							console.warn(`[lopata] Failed to re-read config for "${workerDef.name}" routes:`, err)
 						}
 					}
-				}).catch(err => {
+				}, err => {
+					onSettled()
 					console.error(`[lopata] Reload failed for "${workerDef.name}":`, err)
 				})
 			})
 			auxWatcher.start()
 			watchers.push(auxWatcher)
-			console.log(`[lopata] Watching ${auxSrcDir} for changes (${workerDef.name})`)
+			console.log(`[lopata] Watching ${auxWatcher.size} imported files for changes (${workerDef.name})`)
 		}
 
 		// Load main worker after aux workers
@@ -227,15 +232,24 @@ export async function run(ctx: CliContext, args: string[]) {
 		setWorkerRegistry(registry)
 		setRouteDispatcher(routeDispatcher)
 
-		// File watcher for main worker
-		const mainSrcDir = path.dirname(path.resolve(mainBaseDir, mainConfig.main))
+		// Import-graph watcher for the main worker (follows its transitive imports).
+		const mainEntry = path.resolve(mainBaseDir, mainConfig.main)
 		const reloadMain = makeReloadCallback(mainManager, 'Main worker reloaded')
-		const mainWatcher = new FileWatcher(mainSrcDir, reloadMain)
+		const mainWatcher: ImportGraphWatcher = new ImportGraphWatcher(mainEntry, mainBaseDir, () => {
+			mainManager.reload().then(gen => {
+				mainWatcher.rescan()
+				console.log(`[lopata] Main worker reloaded → generation ${gen.id} (watching ${mainWatcher.size} files)`)
+			}, err => {
+				mainWatcher.rescan()
+				console.error('[lopata] Reload failed:', err)
+			})
+		})
 		mainWatcher.start()
 		watchers.push(mainWatcher)
-		console.log(`[lopata] Watching ${mainSrcDir} for changes (main)`)
+		console.log(`[lopata] Watching ${mainWatcher.size} imported files for changes (main)`)
 
-		// Extra directories that should also trigger a main reload (e.g. shared monorepo packages)
+		// Extra directories that should also trigger a main reload (e.g. shared
+		// monorepo packages / non-import assets the static scan won't follow).
 		for (const extraDir of lopataConfig.watchExtra ?? []) {
 			const extraWatcher = new FileWatcher(extraDir, reloadMain)
 			extraWatcher.start()
@@ -276,7 +290,13 @@ export async function run(ctx: CliContext, args: string[]) {
 			manager.reload().then(gen => {
 				watcher.rescan()
 				console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)
-			}).catch(err => {
+			}, err => {
+				// Rescan even on a FAILED reload: a newly-added import whose first
+				// build failed (it referenced a file with a syntax error), or a
+				// delete-then-recreate, must still enter the watch set — otherwise
+				// fixing that file produces no event and the dev server stays broken
+				// until an already-watched file is re-touched.
+				watcher.rescan()
 				console.error('[lopata] Reload failed:', err)
 			})
 		})
