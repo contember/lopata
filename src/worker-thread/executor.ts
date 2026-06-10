@@ -495,9 +495,24 @@ export class WorkerThreadExecutor {
 		// the worker sees the streamId before any `req-stream-chunk` arrives.
 		// (The receiver buffers events for unknown streamIds, but ordering the
 		// pump after the post keeps the slow-path off the hot path.)
+		// Propagate client disconnect (Bun.serve `request.signal`) to the worker so
+		// the rebuilt Request's signal fires for user code listening on it (SSE /
+		// long-poll cleanup). The fetch id is known once `build` runs (post-ready).
+		let fetchId: number | undefined
+		const signal = request.signal
+		const onAbort = () => {
+			if (fetchId !== undefined && !this._disposed) this._send({ type: 'fetch-abort', id: fetchId })
+		}
 		const resultPromise = this._sendAndAwait(
 			this._pending,
-			(id, parent) => ({ type: 'fetch', id, request: req, parent, props }),
+			(id, parent) => {
+				fetchId = id
+				if (signal) {
+					if (signal.aborted) onAbort()
+					else signal.addEventListener('abort', onAbort, { once: true })
+				}
+				return { type: 'fetch', id, request: req, parent, props }
+			},
 			() => {
 				if (body && reqStreamId !== undefined) this._pumpTopRequestBody(reqStreamId, body)
 			},

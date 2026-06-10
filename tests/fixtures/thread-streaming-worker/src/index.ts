@@ -1,6 +1,8 @@
 // Module-level counter — observable in the /req-cancel response. Used by the
 // request-streaming test to assert the worker observed the partial body.
 let reqCancelObserved = 0
+// Incremented when a request.signal 'abort' listener fires (client disconnect).
+let signalAbortObserved = 0
 
 export default {
 	async fetch(request: Request): Promise<Response> {
@@ -116,6 +118,37 @@ export default {
 			await reader.cancel('user cancel')
 			reqCancelObserved++
 			return new Response(`cancelled-after-${first.done ? 'done' : 'chunk'}-total-${reqCancelObserved}`)
+		}
+
+		// request.signal: register an abort listener (the SSE/long-poll cleanup
+		// pattern) and record when it fires. The signal must abort when the client
+		// disconnects — across the worker-thread boundary.
+		if (url.pathname === '/signal-watch') {
+			request.signal.addEventListener('abort', () => {
+				signalAbortObserved++
+			})
+			const encoder = new TextEncoder()
+			let timer: ReturnType<typeof setInterval>
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode('open\n'))
+					timer = setInterval(() => {
+						try {
+							controller.enqueue(encoder.encode('tick\n'))
+						} catch {
+							clearInterval(timer)
+						}
+					}, 20)
+				},
+				cancel() {
+					clearInterval(timer)
+				},
+			})
+			return new Response(stream, { headers: { 'content-type': 'text/plain' } })
+		}
+
+		if (url.pathname === '/signal-status') {
+			return new Response(String(signalAbortObserved), { headers: { 'content-type': 'text/plain' } })
 		}
 
 		// Crash the worker thread mid-request: schedule an uncaught throw and never

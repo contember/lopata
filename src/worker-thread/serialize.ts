@@ -15,11 +15,16 @@ export function serializeRequestShell(request: Request): Omit<SerializedRequest,
 	return { url: request.url, method: request.method, headers }
 }
 
-export function deserializeRequest(req: SerializedRequest, body?: ReadableStream<Uint8Array> | null): Request {
+export function deserializeRequest(
+	req: SerializedRequest,
+	body?: ReadableStream<Uint8Array> | null,
+	signal?: AbortSignal,
+): Request {
 	return new Request(req.url, {
 		method: req.method,
 		headers: req.headers,
 		body: body !== undefined ? body : req.body,
+		signal,
 	})
 }
 

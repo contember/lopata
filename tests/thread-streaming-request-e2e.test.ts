@@ -172,4 +172,28 @@ describe('Request-body streaming (top-level worker-thread runtime)', () => {
 		expect(res.status).toBe(200)
 		expect(text).toMatch(/^cancelled-after-chunk-total-\d+$/)
 	}, 15_000)
+
+	// CORR-33: request.signal must abort across the thread boundary when the
+	// client disconnects, so user cleanup hooks (SSE / long-poll) fire.
+	test('request.signal fires in the worker when the client disconnects', async () => {
+		const before = Number(await (await fetch(`${base}/signal-status`)).text())
+
+		const ac = new AbortController()
+		const res = await fetch(`${base}/signal-watch`, { signal: ac.signal })
+		const reader = res.body!.getReader()
+		await reader.read() // 'open' — handler is running, listener registered
+		// Client disconnects.
+		ac.abort()
+		await reader.cancel().catch(() => {})
+
+		// Poll until the worker's request.signal 'abort' listener has fired.
+		const deadline = Date.now() + 4000
+		let after = before
+		while (Date.now() < deadline) {
+			after = Number(await (await fetch(`${base}/signal-status`)).text())
+			if (after > before) break
+			await new Promise(r => setTimeout(r, 50))
+		}
+		expect(after).toBeGreaterThan(before)
+	}, 15_000)
 })

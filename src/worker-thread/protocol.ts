@@ -455,6 +455,11 @@ export type WorkerCommand =
 	// grace period, competing with the new generation. In-flight batches finish
 	// (tracked via wait-until so drain waits for them).
 	| { type: 'stop-queue-consumers' }
+	// The client disconnected (main's Bun.serve `request.signal` aborted). Abort
+	// the worker's per-fetch AbortController so the rebuilt Request's `signal`
+	// fires — user code listening on `request.signal` (SSE / long-poll cleanup)
+	// gets the same hook it would in-process.
+	| { type: 'fetch-abort'; id: number }
 
 /** Worker → main */
 export type WorkerMessage =

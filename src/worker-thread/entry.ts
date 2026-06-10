@@ -86,10 +86,15 @@ type StreamChunkMsg = Extract<WorkerMessage, { type: 'stream-chunk' }>
 type StreamEndMsg = Extract<WorkerMessage, { type: 'stream-end' }>
 type StreamErrorMsg = Extract<WorkerMessage, { type: 'stream-error' }>
 
+/** Per-in-flight-fetch AbortControllers, keyed by the main-side fetch id. Main
+ *  posts `fetch-abort` on client disconnect; aborting fires the rebuilt Request's
+ *  `signal` so user code's `request.signal.addEventListener('abort', …)` runs. */
+const fetchAbortControllers = new Map<number, AbortController>()
+
 /** Pump a response body to main as `stream-chunk`s, terminated by `stream-end`
  *  or `stream-error`. Started only after `fetch-result` is posted so main has
  *  the `streamId` registered before chunks arrive. */
-function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>, onComplete?: () => void): void {
 	pumpStream<StreamChunkMsg, StreamEndMsg, StreamErrorMsg>(
 		streamId,
 		body,
@@ -102,6 +107,7 @@ function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>): v
 		},
 		undefined,
 		STREAM_BACKPRESSURE_WINDOW,
+		onComplete,
 	)
 }
 
@@ -333,20 +339,28 @@ async function initRuntime(init: WorkerInitConfig) {
 		const cmd = event.data
 		if (rpc.handle(cmd as { type: string })) return
 		switch (cmd.type) {
-			case 'fetch':
+			case 'fetch': {
+				const abortController = new AbortController()
+				fetchAbortControllers.set(cmd.id, abortController)
 				try {
 					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
-					const request = deserializeRequest(cmd.request, reqBody)
+					const request = deserializeRequest(cmd.request, reqBody, abortController.signal)
 					const response = await runWithParentContext(cmd.parent, () => callFetch(request, cmd.props))
 					const serialized = serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 					if (serialized.streamId !== undefined && response.body) {
-						pumpResponseBody(serialized.streamId, response.body)
+						// Keep the AbortController alive until the streamed body finishes
+						// (an SSE loop may still observe request.signal); drop it on end.
+						pumpResponseBody(serialized.streamId, response.body, () => fetchAbortControllers.delete(cmd.id))
+					} else {
+						fetchAbortControllers.delete(cmd.id)
 					}
 				} catch (e) {
+					fetchAbortControllers.delete(cmd.id)
 					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
+			}
 			case 'scheduled':
 				try {
 					const result = await runWithParentContext(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
@@ -396,6 +410,10 @@ async function initRuntime(init: WorkerInitConfig) {
 				// Reload drain — stop polling for new messages. In-flight batches keep
 				// running and are awaited by main via their wait-until registration.
 				for (const consumer of queueConsumers) consumer.stop()
+				break
+			case 'fetch-abort':
+				// Client disconnected — fire the request's signal so user cleanup runs.
+				fetchAbortControllers.get(cmd.id)?.abort()
 				break
 			case 'entrypoint-rpc':
 				try {

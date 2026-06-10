@@ -343,6 +343,9 @@ export function pumpStream<TChunk, TEnd, TError>(
 	 *  (cross-thread backpressure). Requires the receiver's `StreamReceiver` to be
 	 *  constructed with a matching `window` + `onCredit`. Omit for eager. */
 	window?: number,
+	/** Called once the pump exits for any reason (end / error / cancel / teardown).
+	 *  Lets callers tie per-stream resource cleanup to the body's completion. */
+	onComplete?: () => void,
 ): void {
 	void (async () => {
 		try {
@@ -397,6 +400,7 @@ export function pumpStream<TChunk, TEnd, TError>(
 			post(envelopes.error(streamId, serializeError(e)))
 		} finally {
 			registry.complete(streamId)
+			onComplete?.()
 		}
 	})()
 }
