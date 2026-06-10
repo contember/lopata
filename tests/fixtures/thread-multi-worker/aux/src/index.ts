@@ -18,4 +18,14 @@ export default {
 	async greet(name: string): Promise<{ greeting: string }> {
 		return { greeting: `aux greets ${name}` }
 	},
+
+	// Throws an error carrying custom props + a cause chain — the caller must
+	// receive them intact across the thread boundary (entrypoint-rpc-error path).
+	async failRich(): Promise<never> {
+		throw Object.assign(new Error('rich failure'), {
+			code: 'E_RICH',
+			status: 422,
+			cause: new Error('root cause'),
+		})
+	},
 }

@@ -72,4 +72,19 @@ describe('Multi-worker thread mode + cross-thread service bindings', () => {
 		const res = await fetch(`${base}/aux-rpc/greet?name=alice`)
 		expect(await res.json()).toEqual({ greeting: 'aux greets alice' })
 	})
+
+	// CORR-2: the entrypoint-rpc-error reply must round-trip through
+	// serializeError/deserializeError — a hand-rolled new Error(message) would
+	// strip custom props (e.code/e.status) and the cause chain, silently
+	// breaking user `catch (e) { if (e.code === ...) }` only in thread mode.
+	test('RPC errors keep custom props and the cause chain across the bridge', async () => {
+		const res = await fetch(`${base}/aux-rpc/fail-rich`)
+		expect(await res.json()).toEqual({
+			name: 'Error',
+			message: 'rich failure',
+			code: 'E_RICH',
+			status: 422,
+			causeMessage: 'root cause',
+		})
+	})
 })

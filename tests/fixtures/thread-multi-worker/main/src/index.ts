@@ -26,6 +26,21 @@ export default {
 				const result = await env.AUX.greet(name)
 				return Response.json(result)
 			}
+			if (method === 'fail-rich') {
+				// Report what actually survived the cross-worker RPC error path.
+				try {
+					await env.AUX.failRich()
+					return new Response('did not throw', { status: 500 })
+				} catch (e: any) {
+					return Response.json({
+						name: e?.name,
+						message: e?.message,
+						code: e?.code,
+						status: e?.status,
+						causeMessage: e?.cause?.message ?? null,
+					})
+				}
+			}
 		}
 
 		return new Response('not found', { status: 404 })
