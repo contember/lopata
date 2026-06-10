@@ -265,9 +265,12 @@ describe('cross-thread backpressure (window)', () => {
 		)
 
 		// No consumer reading → the pump must back-pressure, not drain all 50.
+		// Hard ceiling is 2x the window: `window` seeded credits + up to `window`
+		// pull-driven grants while the receiver queue fills (see
+		// STREAM_BACKPRESSURE_WINDOW docs).
 		await new Promise((r) => setTimeout(r, 50))
 		expect(posted).toBeGreaterThan(0)
-		expect(posted).toBeLessThan(TOTAL)
+		expect(posted).toBeLessThanOrEqual(2 * WINDOW)
 		expect(ended).toBe(false)
 
 		// Drain fully → credits flow → the stream completes with every chunk.

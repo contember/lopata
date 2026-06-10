@@ -22,6 +22,14 @@ import { serializeError } from './protocol'
  * object, a tight SSE/generated stream) can't race ahead of a slow consumer and
  * grow memory unbounded. Small enough to bound memory, large enough to keep the
  * pipe full across the postMessage round-trip.
+ *
+ * The effective ceiling is ~2x this value: the sender is seeded `window`
+ * credits up front (so it can burst without waiting a round-trip) AND the
+ * receiver's `ReadableStream` grants one more credit per `pull()` while its
+ * own queue (highWaterMark = `window`) has room. Both halves are intentional —
+ * seeding 0 would clock the pump to one chunk per postMessage round-trip from
+ * a cold start. "Window" below means this seeded half; double it for the hard
+ * memory bound.
  */
 export const STREAM_BACKPRESSURE_WINDOW = 8
 
