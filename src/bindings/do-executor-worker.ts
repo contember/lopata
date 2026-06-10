@@ -202,27 +202,12 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'result': {
 					if (msg.id === -1 && msg.result.type === 'error') {
-						// Worker init error — reject all pending and the ready promise so
-						// awaiting callers surface the real cause instead of a generic
-						// "Worker terminated" after `_disposed` flips.
-						const error = deserializeError(msg.result.error)
-						for (const [, pending] of this._pending) {
-							pending.reject(error)
-						}
-						this._pending.clear()
-						this._readyReject?.(error)
-						this._disposed = true
-						// The failed thread would otherwise linger (SQLite handle,
-						// container/health timers) until the 30s idle reaper or next
-						// access disposes it. Mirrors the `onerror` teardown below.
-						worker.terminate()
-						this._worker = null
-						this._openFetchWsIds.clear()
-						this._fetchBridge?.disposeAll()
-						this._envBindingWsBridge?.disposeAll()
-						this._rpcChannel.disposeAll(error)
-						this._fetchStreams.disposeAll(error)
-						this._fetchRequestStreams.disposeAll()
+						// Worker init error — tear down with the real cause so awaiting
+						// callers surface it instead of a generic "Worker terminated"
+						// after `_disposed` flips. The failed thread would otherwise
+						// linger (SQLite handle, container/health timers) until the 30s
+						// idle reaper or next access disposes it.
+						this._teardown(deserializeError(msg.result.error))
 						break
 					}
 					const pending = this._pending.get(msg.id)
@@ -296,28 +281,13 @@ export class WorkerExecutor implements DOExecutor {
 			if (this._disposed) return
 			// Mark dead so the namespace drops this executor and recreates a fresh
 			// one on next access (see `isDisposed()` + `_getOrCreateExecutor`),
-			// instead of posting to a terminated Worker (which would hang). Mirrors
-			// the init-error path above.
-			this._disposed = true
-			// An uncaught worker error does NOT end the thread (Web Worker semantics),
-			// and once `_worker` is nulled `dispose()` can no longer terminate it —
-			// leaking the thread (SQLite handle, container/health timers, WS bridges).
-			// Terminate it here before dropping the handle. Mirrors WorkerThreadExecutor.
-			worker.terminate()
-			this._worker = null
+			// instead of posting to a terminated Worker (which would hang). An
+			// uncaught worker error does NOT end the thread (Web Worker semantics),
+			// so `_teardown` terminating it here is what prevents the leak (SQLite
+			// handle, container/health timers, WS bridges). Mirrors
+			// WorkerThreadExecutor's onerror → _failAll.
 			const detail = event.error?.stack ?? event.message ?? 'unknown'
-			const error = new Error(`Worker error: ${detail}`)
-			this._readyReject?.(error)
-			for (const [, pending] of this._pending) {
-				pending.reject(error)
-			}
-			this._pending.clear()
-			this._openFetchWsIds.clear()
-			this._fetchBridge?.disposeAll()
-			this._envBindingWsBridge?.disposeAll()
-			this._rpcChannel.disposeAll(error)
-			this._fetchStreams.disposeAll(error)
-			this._fetchRequestStreams.disposeAll()
+			this._teardown(new Error(`Worker error: ${detail}`))
 		}
 
 		this._worker = worker
@@ -576,13 +546,23 @@ export class WorkerExecutor implements DOExecutor {
 				await this._cleanupContainer()
 			} catch {}
 		}
+		this._teardown(new Error('Worker terminated'))
+	}
+
+	/**
+	 * The one teardown sequence — shared by `dispose()` (planned), `onerror`
+	 * (worker crashed) and the init-error path, so the three can't drift: mark
+	 * disposed, terminate the thread, reject every pending command and the ready
+	 * promise with `error`, and dispose every bridge/stream/rpc registry.
+	 * Idempotent. Counterpart of `WorkerThreadExecutor._failAll`.
+	 */
+	private _teardown(error: Error): void {
 		this._disposed = true
 		if (this._worker) {
 			this._worker.terminate()
 			this._worker = null
 		}
-		// Reject all pending commands
-		const error = new Error('Worker terminated')
+		this._readyReject?.(error)
 		for (const [, pending] of this._pending) {
 			pending.reject(error)
 		}
