@@ -169,6 +169,13 @@ beforeAll(() => {
       async whoAmI() { return this.ctx.id.name ?? '<no-name>'; }
     }
 
+    export class EnvCallDO extends DurableObject {
+      async callSlowService() {
+        // Outbound env-call leaves this DO worker toward main mid-command.
+        return this.env.SLOW_SVC.ping();
+      }
+    }
+
     export class StreamDO extends DurableObject {
       async fetch() {
         const { readable, writable } = new TransformStream();
@@ -211,8 +218,12 @@ beforeAll(() => {
 					{ name: 'SELF_REF', class_name: 'SelfRefDO' },
 					{ name: 'OTHER_DO', class_name: 'OtherDO' },
 					{ name: 'STREAM_DO', class_name: 'StreamDO' },
+					{ name: 'ENV_CALL_DO', class_name: 'EnvCallDO' },
 				],
 			},
+			// Service binding used by EnvCallDO — env-calls resolve it against the
+			// env passed to _setClass on main (the test supplies a stub SLOW_SVC).
+			services: [{ binding: 'SLOW_SVC', service: 'slow-svc' }],
 		}),
 	)
 
@@ -319,6 +330,49 @@ describe('Isolated DO — open streams keep the instance active', () => {
 
 		await executor.dispose()
 	})
+})
+
+describe('Isolated DO — eviction vs in-flight env-call', () => {
+	// TEST-3: an outbound env-call (this.env.SVC.ping() leaving the DO worker
+	// toward main) runs inside a pending inbound command, which must keep the
+	// executor isActive() so the idle reaper can't dispose it mid-call.
+	test('an eviction tick during an env-call does not dispose the executor', async () => {
+		let release: () => void = () => {}
+		const gate = new Promise<void>(r => {
+			release = r
+		})
+		const mainEnv = {
+			SLOW_SVC: {
+				async ping() {
+					await gate
+					return 'pong'
+				},
+			},
+		}
+		// evictionTimeoutMs 0 → every executor is past the idle window; only the
+		// activity guards stand between the tick and dispose().
+		const ns = new DurableObjectNamespaceImpl(db, 'EnvCallDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, mainEnv)
+
+		const id = ns.idFromName('env-call-evict')
+		const stub = ns.get(id) as any
+		const pending = stub.callSlowService()
+
+		// Wait until the env-call is parked on the gate inside main…
+		await new Promise(r => setTimeout(r, 300))
+		// …then force an eviction scan mid-call.
+		;(ns as any)._evictIdle()
+
+		const executor = ns._getExecutor(id.toString())
+		expect(executor).not.toBeNull()
+		expect(executor?.isDisposed?.()).toBe(false)
+
+		release()
+		expect(await pending).toBe('pong')
+
+		const cleanupExec = ns._getExecutor(id.toString())
+		if (cleanupExec) await cleanupExec.dispose()
+	}, 15_000)
 })
 
 describe('Isolated DO — dispose terminates worker', () => {
