@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
-import { warnInvalidRpcArgs } from '../rpc-validate'
+import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
 import type { BindingTarget, ParentSpanContext, SerializedResponse } from '../worker-thread/protocol'
 import { RpcClient } from '../worker-thread/rpc-shared'
@@ -72,6 +72,7 @@ function makeRpcProxy(
 			},
 			call: (prop, args) => {
 				warnInvalidRpcArgs(args, prop)
+				warnCrossThreadRpcArgs(args, prop)
 				return rpc.call(target, prop, args)
 			},
 			getProperty: prop => rpc.callGet(target, prop),

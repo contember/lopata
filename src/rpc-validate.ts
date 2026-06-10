@@ -158,3 +158,32 @@ export function warnInvalidRpcReturn(value: unknown, methodName: string): void {
 		console.warn(`[lopata] RPC ${methodName}() return value warning: ${msg}`)
 	}
 }
+
+const RPC_TARGET_BRAND = Symbol.for('lopata.RpcTarget')
+
+function crossThreadUnsupportedKind(v: unknown): string | null {
+	if (typeof v === 'function') return 'a callback/function'
+	if (v && typeof v === 'object' && (v as Record<symbol, unknown>)[RPC_TARGET_BRAND] === true) return 'an RpcTarget'
+	return null
+}
+
+/**
+ * Thread-mode pre-flight for RPC args. Functions and RpcTarget instances are
+ * VALID on real Cloudflare (they cross as callback / target stubs) and pass
+ * {@link validateRpcValue}, but they can't be structured-cloned across lopata's
+ * worker-thread boundary — `postMessage` throws an opaque DataCloneError with no
+ * guidance. Warn clearly (top-level args; the common `stub.method(cb)` case) so
+ * the dev knows why the call is about to fail.
+ */
+export function warnCrossThreadRpcArgs(args: unknown[], methodName: string): void {
+	for (let i = 0; i < args.length; i++) {
+		const kind = crossThreadUnsupportedKind(args[i])
+		if (kind) {
+			console.warn(
+				`[lopata] RPC ${methodName}() arg${i} is ${kind} — these can't cross lopata's worker-thread `
+					+ `boundary (they work as stubs on real Cloudflare). Pass plain data instead; the call will `
+					+ `otherwise fail with a DataCloneError.`,
+			)
+		}
+	}
+}

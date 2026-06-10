@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { validateRpcValue } from '../src/rpc-validate'
+import { validateRpcValue, warnCrossThreadRpcArgs } from '../src/rpc-validate'
 
 // Helper: expect no errors
 function expectValid(value: unknown) {
@@ -157,5 +157,40 @@ describe('nested invalid types', () => {
 		const val = { a: Symbol('s'), b: new X(), c: 'ok' }
 		const errors = validateRpcValue(val)
 		expect(errors.length).toBe(2)
+	})
+})
+
+describe('warnCrossThreadRpcArgs (CORR-10)', () => {
+	function captureWarnings(fn: () => void): string[] {
+		const warnings: string[] = []
+		const original = console.warn
+		console.warn = (...args: unknown[]) => warnings.push(args.join(' '))
+		try {
+			fn()
+		} finally {
+			console.warn = original
+		}
+		return warnings
+	}
+
+	test('warns clearly for a function arg (which validateRpcValue allows)', () => {
+		// validateRpcValue OKs functions (valid CF callback stubs), so this is the gap.
+		expect(validateRpcValue(() => {})).toEqual([])
+		const warnings = captureWarnings(() => warnCrossThreadRpcArgs([() => {}], 'onEvent'))
+		expect(warnings.length).toBe(1)
+		expect(warnings[0]).toContain('onEvent()')
+		expect(warnings[0]).toContain('callback/function')
+	})
+
+	test('warns for an RpcTarget instance', () => {
+		const target = { [Symbol.for('lopata.RpcTarget')]: true }
+		const warnings = captureWarnings(() => warnCrossThreadRpcArgs([target], 'doThing'))
+		expect(warnings.length).toBe(1)
+		expect(warnings[0]).toContain('RpcTarget')
+	})
+
+	test('silent for plain data args', () => {
+		const warnings = captureWarnings(() => warnCrossThreadRpcArgs([1, 'x', { a: 1 }, [1, 2]], 'm'))
+		expect(warnings).toEqual([])
 	})
 })
