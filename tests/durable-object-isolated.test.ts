@@ -359,8 +359,7 @@ describe('Isolated DO — eviction vs in-flight env-call', () => {
 		const pending = stub.callSlowService()
 
 		// Wait until the env-call is parked on the gate inside main…
-		await new Promise(r => setTimeout(r, 300))
-		// …then force an eviction scan mid-call.
+		await new Promise(r => setTimeout(r, 300)) // …then force an eviction scan mid-call.
 		;(ns as any)._evictIdle()
 
 		const executor = ns._getExecutor(id.toString())

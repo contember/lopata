@@ -55,8 +55,7 @@ describe('ExecutionContext', () => {
 })
 
 describe('WorkerExecutionContext waitUntil accounting', () => {
-	const ids = (posted: WorkerMessage[], type: 'wait-until-add' | 'wait-until-settle') =>
-		posted.flatMap(m => m.type === type ? [m.id] : [])
+	const ids = (posted: WorkerMessage[], type: 'wait-until-add' | 'wait-until-settle') => posted.flatMap(m => m.type === type ? [m.id] : [])
 	// logIfRejected chains microtask hops (resolve coercion + catch)
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0))
 

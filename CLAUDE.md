@@ -47,12 +47,12 @@ which gives correct transitive HMR for free (the whole module graph is rebuilt).
   worker; stateful ones (DO/queue/email/workflow/service) become Proxies that
   RPC into the main env via `binding-call` / `binding-fetch`.
 - `ws-bridge-shared.ts` — WebSocket peers shipped in
-  `Response{status:101, webSocket}` get bridged: one `WsHostBridge` (main side)
-  + one `WsGuestBridge` (worker side), parameterized by `WsHostEnvelopes` /
-  `WsGuestEnvelopes` callbacks so the user-worker and DO-worker channels share
-  the same machinery with channel-specific message shapes. The worker keeps the
-  user-facing half, main owns the half handed to `Bun.serve.upgrade`; events
-  are buffered per-wsId until both sides are wired.
+  `Response{status:101, webSocket}` get bridged by a `WsHostBridge` (main side)
+  paired with a `WsGuestBridge` (worker side), parameterized by
+  `WsHostEnvelopes` / `WsGuestEnvelopes` callbacks so the user-worker and
+  DO-worker channels share the same machinery with channel-specific message
+  shapes. The worker keeps the user-facing half, main owns the half handed to
+  `Bun.serve.upgrade`; events are buffered per-wsId until both sides are wired.
 - DO worker threads (`src/bindings/do-executor-worker.ts` + `do-worker-entry.ts`)
   reuse those bridges via their own envelopes — when a DO's fetch returns a
   `Response{webSocket}`, the DO worker forwards events through to main, which

@@ -103,7 +103,7 @@ describe('Reload vs in-flight requests (worker-thread runtime)', () => {
 	test('a slow handler started before a reload still returns its response', async () => {
 		const pending = fetch(`${base}/slow-body?ms=1200`)
 		await new Promise(r => setTimeout(r, 200)) // handler is running, no Response yet
-		mutateWorkerSource("slow-done-v1", "slow-done-v2")
+		mutateWorkerSource('slow-done-v1', 'slow-done-v2')
 
 		// Old generation must serve the original code's response, undisturbed.
 		const res = await pending
