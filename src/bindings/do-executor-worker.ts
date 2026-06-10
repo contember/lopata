@@ -333,7 +333,17 @@ export class WorkerExecutor implements DOExecutor {
 					reject(err)
 				},
 			})
-			worker.postMessage({ type: 'command', id, command } satisfies DOWorkerMessage)
+			try {
+				worker.postMessage({ type: 'command', id, command } satisfies DOWorkerMessage)
+			} catch (e) {
+				// A synchronous postMessage throw (DataCloneError on non-cloneable
+				// args) would otherwise leak the pending entry and the `_inFlightCount`
+				// bump, leaving isActive() true forever and exempting the executor from
+				// idle eviction (thread + DB connection pinned until reload).
+				this._pending.delete(id)
+				this._inFlightCount--
+				reject(e instanceof Error ? e : new Error(String(e)))
+			}
 		})
 	}
 

@@ -431,13 +431,26 @@ export class WorkerThreadExecutor {
 	): Promise<T> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
+		// `dispose()` may have run during `await this._ready` — `_failAll` already
+		// cleared the maps, so registering a fresh pending entry here would post to a
+		// terminated Worker (a silent no-op) and the promise would never settle.
+		// Re-check after the await (mirrors the DO channel's `_sendCommand`).
+		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		const active = getActiveContext()
 		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 		const id = this._nextId++
 		return new Promise<T>((resolve, reject) => {
 			map.set(id, { resolve, reject })
-			this._send(build(id, parent))
-			afterPost?.()
+			try {
+				this._send(build(id, parent))
+				afterPost?.()
+			} catch (e) {
+				// A synchronous postMessage throw (DataCloneError on a non-cloneable
+				// arg) would otherwise leave the pending entry registered forever,
+				// pinning the generation non-idle. Drop it and reject the caller.
+				map.delete(id)
+				reject(e instanceof Error ? e : new Error(String(e)))
+			}
 		})
 	}
 
