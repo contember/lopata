@@ -9,9 +9,9 @@
 
 import { dirname, resolve } from 'node:path'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
-import { getDataDir } from '../db'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
+import { getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
 import type {

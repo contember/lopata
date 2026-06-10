@@ -6,6 +6,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import type { WranglerConfig } from '../config'
 import type {
 	DOCommand,
 	DOMainMessage,
@@ -15,7 +16,6 @@ import type {
 	DOResult,
 	DOWorkerMessage,
 } from '../worker-thread/do-protocol'
-import type { WranglerConfig } from '../config'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
 import { RpcHostChannel } from '../worker-thread/rpc-shared'

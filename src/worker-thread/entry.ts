@@ -188,7 +188,14 @@ async function initRuntime(init: WorkerInitConfig) {
 		remoteMessage: (wsId, data) => ({ type: 'env-ws-outgoing', wsId, data }),
 		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
 	})
-	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, dataDir: init.dataDir, rpc, browserConfig: init.browserConfig, envWsBridge })
+	const built = buildThreadEnv({
+		config: init.config,
+		baseDir: init.baseDir,
+		dataDir: init.dataDir,
+		rpc,
+		browserConfig: init.browserConfig,
+		envWsBridge,
+	})
 	const { env } = built
 
 	// Make env visible to top-level `import { env } from 'cloudflare:workers'`

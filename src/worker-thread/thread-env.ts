@@ -287,7 +287,13 @@ function makeRpcProxy(
 	)
 }
 
-function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): unknown {
+function makeDOStubProxy(
+	bindingName: string,
+	idStr: string,
+	id: DurableObjectIdImpl,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+): unknown {
 	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, envWsBridge, { id, name: id.name })
 }
 
