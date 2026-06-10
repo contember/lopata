@@ -116,7 +116,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 	state.blockConcurrencyWhile = <T>(cb: () => Promise<T>): Promise<T> => {
 		const p = originalBlock(cb)
 		postState() // entered the block
-		p.finally(postState) // left it
+		// left it — both-callbacks form so a rejecting callback (the caller's
+		// to handle via the returned `p`) can't float an unhandled rejection
+		p.then(postState, postState)
 		return p
 	}
 
