@@ -307,10 +307,17 @@ export function pumpStream<TChunk, TEnd, TError>(
 	 *  constructed with a matching `window` + `onCredit`. Omit for eager. */
 	window?: number,
 ): void {
-	const reader = body.getReader()
-	registry.register(streamId, reader, window ?? Number.POSITIVE_INFINITY)
 	void (async () => {
 		try {
+			// `getReader()` throws synchronously on a locked/disturbed body — e.g. the
+			// user did `await res.text()` then returned `res`. Doing it inside the try
+			// (rather than before the IIFE) surfaces that to the receiver as a stream
+			// error instead of letting the throw escape AFTER the headers/result were
+			// already posted, which would leave the consumer hanging on a body that
+			// never produces a chunk or terminator. Runs synchronously (before the
+			// first await), so registration stays synchronous as before.
+			const reader = body.getReader()
+			registry.register(streamId, reader, window ?? Number.POSITIVE_INFINITY)
 			while (true) {
 				const { done, value } = await reader.read()
 				if (isAlive && !isAlive()) {

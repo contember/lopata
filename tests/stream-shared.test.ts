@@ -143,6 +143,41 @@ describe('pumpStream', () => {
 		if (pumpTimer) clearInterval(pumpTimer)
 	})
 
+	test('a locked/disturbed body posts an error envelope instead of hanging', async () => {
+		// User bug: `await res.text()` (locks the body), then returns `res`. The body
+		// is still present but `getReader()` throws synchronously. The pump must turn
+		// that into a stream error for the receiver, not an unhandled throw that
+		// escapes after the result was already posted (which leaves the client hung).
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array([1]))
+				controller.close()
+			},
+		})
+		// Lock the body so the pump's getReader() throws.
+		body.getReader()
+
+		const registry = new OutboundStreamRegistry()
+		const id = registry.allocateId()
+		const posted: { type: string }[] = []
+		expect(() =>
+			pumpStream(
+				id,
+				body,
+				registry,
+				(msg) => posted.push(msg as { type: string }),
+				{
+					chunk: (sid, c) => ({ type: 'chunk', sid, c }),
+					end: (sid) => ({ type: 'end', sid }),
+					error: (sid, err) => ({ type: 'error', sid, err: String(err) }),
+				},
+			)
+		).not.toThrow()
+		await new Promise((r) => setTimeout(r, 20))
+		expect(posted).toHaveLength(1)
+		expect(posted[0]!.type).toBe('error')
+	})
+
 	test('forwards zero-byte chunks (no silent drop)', async () => {
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
