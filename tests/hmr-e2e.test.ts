@@ -198,13 +198,12 @@ describe('HMR E2E — standalone', () => {
 		expect(await res.text()).toBe('d1')
 	})
 
-	// TODO: flaky in CI / under load — after the "Reloaded" marker the fetch
-	// still sees the previous transitive-dep value (d1), i.e. the re-import of
-	// the changed transitive module races the reload signal (or transitive
-	// hot-reload is disabled in that environment). Fails on main independent of
-	// the per-request subrequest-counter change. Skipped to keep the release
-	// gate reliable; re-enable once transitive reload is deterministic.
-	test.skip('after transitive dep change, /dep updates to d2', async () => {
+	// Transitive HMR is the headline property of the worker-thread reload model:
+	// reload = terminate + respawn, which re-imports the WHOLE module graph from
+	// disk, so a changed transitive dependency is picked up deterministically (the
+	// old in-process module cache that raced here is gone). The watcher follows the
+	// import graph, so editing WORKER_DEP triggers a reload.
+	test('after transitive dep change, /dep updates to d2', async () => {
 		output.mark()
 		mutateFile(WORKER_DEP, "'d1'", "'d2'")
 
@@ -214,7 +213,7 @@ describe('HMR E2E — standalone', () => {
 		expect(await res.text()).toBe('d2')
 	}, 15_000)
 
-	test.skip('second transitive dep change updates /dep to d3', async () => {
+	test('second transitive dep change updates /dep to d3', async () => {
 		output.mark()
 		mutateFile(WORKER_DEP, "'d2'", "'d3'")
 
