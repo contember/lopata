@@ -208,6 +208,17 @@ export class WorkerExecutor implements DOExecutor {
 						this._pending.clear()
 						this._readyReject?.(error)
 						this._disposed = true
+						// The failed thread would otherwise linger (SQLite handle,
+						// container/health timers) until the 30s idle reaper or next
+						// access disposes it. Mirrors the `onerror` teardown below.
+						worker.terminate()
+						this._worker = null
+						this._openFetchWsIds.clear()
+						this._fetchBridge?.disposeAll()
+						this._envBindingWsBridge?.disposeAll()
+						this._rpcChannel.disposeAll(error)
+						this._fetchStreams.disposeAll(error)
+						this._fetchRequestStreams.disposeAll()
 						break
 					}
 					const pending = this._pending.get(msg.id)
