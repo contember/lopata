@@ -524,7 +524,12 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	isActive(): boolean {
-		return this._inFlightCount > 0
+		// Open body streams keep the instance active: the fetch promise settles
+		// at response HEADERS, so a long-lived body (SSE, slow download) would
+		// otherwise look idle and get evicted mid-stream — dispose() error()s
+		// the body the caller is still reading. Mirrors the top-level
+		// generation drain's openStreamCount() guard.
+		return this._inFlightCount > 0 || this._fetchStreams.activeCount() > 0 || this._fetchRequestStreams.activeCount() > 0
 	}
 
 	isBlocked(): boolean {

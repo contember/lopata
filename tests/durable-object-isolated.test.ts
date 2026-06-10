@@ -169,6 +169,21 @@ beforeAll(() => {
       async whoAmI() { return this.ctx.id.name ?? '<no-name>'; }
     }
 
+    export class StreamDO extends DurableObject {
+      async fetch() {
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const enc = new TextEncoder();
+        (async () => {
+          await writer.write(enc.encode("first"));
+          await new Promise(r => setTimeout(r, 150));
+          await writer.write(enc.encode("second"));
+          await writer.close();
+        })();
+        return new Response(readable);
+      }
+    }
+
     export default {
       async fetch() {
         return new Response("ok");
@@ -195,6 +210,7 @@ beforeAll(() => {
 					{ name: 'PLAIN_WS', class_name: 'PlainWsDO' },
 					{ name: 'SELF_REF', class_name: 'SelfRefDO' },
 					{ name: 'OTHER_DO', class_name: 'OtherDO' },
+					{ name: 'STREAM_DO', class_name: 'StreamDO' },
 				],
 			},
 		}),
@@ -279,6 +295,29 @@ describe('Isolated DO — basic RPC', () => {
 		const exec2 = ns._getExecutor(id2.toString())
 		if (exec1) await exec1.dispose()
 		if (exec2) await exec2.dispose()
+	})
+})
+
+describe('Isolated DO — open streams keep the instance active', () => {
+	test('a streamed body keeps isActive() true until consumed', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'StreamDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('stream-active')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch('http://fake/stream')
+
+		// Headers settled the fetch command, but the body is still streaming —
+		// the executor must report active so _evictIdle / _disposeExecutorWhenIdle
+		// can't dispose it mid-body (the caller would get "Worker terminated").
+		const executor = ns._getExecutor(id.toString())
+		if (!executor) throw new Error('executor not created')
+		expect(executor.isActive()).toBe(true)
+
+		expect(await resp.text()).toBe('firstsecond')
+		expect(executor.isActive()).toBe(false)
+
+		await executor.dispose()
 	})
 })
 
