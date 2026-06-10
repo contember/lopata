@@ -874,9 +874,19 @@ export class DurableObjectNamespaceImpl {
 		// dropped along with the executor; preserving them would require a class-level
 		// swap that Bun Worker can't perform without re-importing the user module.
 		for (const [idStr, executor] of this._executors) {
-			executor.dispose().catch(() => {})
+			// Detach from the namespace first so new requests get a fresh executor on
+			// the new code instead of reusing this one.
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
+			if (executor.isActive()) {
+				// An old-generation request is mid-DO-call. Disposing now rejects it
+				// with "Worker terminated" → 500, defeating the reload drain. Let the
+				// in-flight command settle, then dispose (bounded so a hung call can't
+				// keep the old worker thread alive indefinitely).
+				this._disposeExecutorWhenIdle(executor)
+			} else {
+				executor.dispose().catch(() => {})
+			}
 		}
 
 		this._class = undefined
@@ -1017,6 +1027,20 @@ export class DurableObjectNamespaceImpl {
 		this._executors.set(idStr, executor)
 		this._lastActivity.set(idStr, this.clock.now())
 		return executor
+	}
+
+	/**
+	 * @internal Dispose an executor detached from the namespace (during reload swap)
+	 * once its in-flight command settles, so an old-generation request mid-DO-call
+	 * isn't rejected with "Worker terminated". Polls `isActive()`; bounded (≈10s) so
+	 * a hung command can't keep the old worker thread alive indefinitely.
+	 */
+	private _disposeExecutorWhenIdle(executor: DOExecutor, attemptsLeft = 200): void {
+		if (!executor.isActive() || attemptsLeft <= 0) {
+			executor.dispose().catch(() => {})
+			return
+		}
+		setTimeout(() => this._disposeExecutorWhenIdle(executor, attemptsLeft - 1), 50)
 	}
 
 	/** @internal Evict idle executors */

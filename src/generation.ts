@@ -253,9 +253,14 @@ export class Generation {
 		// headers). An active download / SSE / upload must keep the generation alive
 		// or reload would abort it mid-stream with zero grace.
 		if (this.threadExecutor.openStreamCount() > 0) return false
-		for (const entry of this.registry.durableObjects) {
-			if (entry.namespace.hasActiveWebSockets()) return false
-		}
+		// DO WebSockets are intentionally NOT consulted: DO namespaces are shared by
+		// identity across generations and `_setExternalClass` disposes the previous
+		// generation's executors at swap, so this generation's `registry.durableObjects`
+		// only ever observes the NEXT generation's sockets. A browser reconnecting its
+		// DO WS to the new generation during the drain window would pin the old one
+		// non-idle for the entire grace period (stacking zombie threads on rapid
+		// saves). DO worker lifetime is owned by the namespace's eviction logic, not
+		// the generation.
 		return true
 	}
 
