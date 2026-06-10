@@ -211,10 +211,7 @@ export class WorkerThreadExecutor {
 				this._readyResolve({ doAlarmHandlers: msg.doAlarmHandlers })
 				break
 			case 'init-error': {
-				const err = new Error(msg.error.message)
-				if (msg.error.stack) err.stack = msg.error.stack
-				err.name = msg.error.name ?? 'Error'
-				this._readyReject(err)
+				this._readyReject(deserializeError(msg.error))
 				break
 			}
 			case 'fetch-result': {
@@ -255,10 +252,7 @@ export class WorkerThreadExecutor {
 				const p = this._pendingRpc.get(msg.id)
 				if (!p) break
 				this._pendingRpc.delete(msg.id)
-				const err = new Error(msg.error.message)
-				if (msg.error.stack) err.stack = msg.error.stack
-				err.name = msg.error.name ?? 'Error'
-				p.reject(err)
+				p.reject(deserializeError(msg.error))
 				break
 			}
 			case 'entrypoint-rpc-get-result': {
@@ -273,10 +267,7 @@ export class WorkerThreadExecutor {
 				const p = this._pendingRpcGet.get(msg.id)
 				if (!p) break
 				this._pendingRpcGet.delete(msg.id)
-				const err = new Error(msg.error.message)
-				if (msg.error.stack) err.stack = msg.error.stack
-				err.name = msg.error.name ?? 'Error'
-				p.reject(err)
+				p.reject(deserializeError(msg.error))
 				break
 			}
 			case 'workflow-control-result': {
@@ -291,10 +282,7 @@ export class WorkerThreadExecutor {
 				const p = this._pendingWorkflowControl.get(msg.id)
 				if (!p) break
 				this._pendingWorkflowControl.delete(msg.id)
-				const err = new Error(msg.error.message)
-				if (msg.error.stack) err.stack = msg.error.stack
-				err.name = msg.error.name ?? 'Error'
-				p.reject(err)
+				p.reject(deserializeError(msg.error))
 				break
 			}
 			case 'scheduled-error':
