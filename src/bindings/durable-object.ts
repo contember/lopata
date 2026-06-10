@@ -1048,7 +1048,7 @@ export class DurableObjectNamespaceImpl {
 	 * `docker rm -f` the freshly started replacement. Non-container DOs skip the
 	 * tracking (dispose is fast and there's no shared Docker name to collide on).
 	 */
-	private _disposeExecutor(idStr: string, executor: DOExecutor): void {
+	private _disposeExecutor(idStr: string, executor: DOExecutor): Promise<void> {
 		const p = executor.dispose().catch(() => {})
 		if (this._containerConfig) {
 			this._disposing.set(idStr, p)
@@ -1056,6 +1056,7 @@ export class DurableObjectNamespaceImpl {
 				if (this._disposing.get(idStr) === p) this._disposing.delete(idStr)
 			})
 		}
+		return p
 	}
 
 	/**
@@ -1065,11 +1066,34 @@ export class DurableObjectNamespaceImpl {
 	 * a hung command can't keep the old worker thread alive indefinitely.
 	 */
 	private _disposeExecutorWhenIdle(idStr: string, executor: DOExecutor, attemptsLeft = 200): void {
-		if (!executor.isActive() || attemptsLeft <= 0) {
-			this._disposeExecutor(idStr, executor)
+		// Container DOs: register the future teardown EAGERLY. The actual
+		// `docker rm` only starts once the poll ends, but a respawn for this id
+		// created mid-poll must already find a `_disposing` entry to serialize
+		// behind (`_priorDisposal`) — otherwise the deferred teardown can
+		// `docker rm` the very container the fresh executor adopted by name.
+		if (this._containerConfig && !this._disposing.has(idStr)) {
+			let settle: () => void = () => {}
+			const gate = new Promise<void>(resolve => {
+				settle = resolve
+			})
+			this._disposing.set(idStr, gate)
+			void gate.then(() => {
+				// `_disposeExecutor` replaces the entry with its own promise at poll
+				// end; only clean up if ours is still the registered one.
+				if (this._disposing.get(idStr) === gate) this._disposing.delete(idStr)
+			})
+			this._pollThenDispose(idStr, executor, attemptsLeft, settle)
 			return
 		}
-		setTimeout(() => this._disposeExecutorWhenIdle(idStr, executor, attemptsLeft - 1), 50)
+		this._pollThenDispose(idStr, executor, attemptsLeft)
+	}
+
+	private _pollThenDispose(idStr: string, executor: DOExecutor, attemptsLeft: number, onSettled?: () => void): void {
+		if (!executor.isActive() || attemptsLeft <= 0) {
+			void this._disposeExecutor(idStr, executor).then(onSettled)
+			return
+		}
+		setTimeout(() => this._pollThenDispose(idStr, executor, attemptsLeft - 1, onSettled), 50)
 	}
 
 	/** @internal Evict idle executors */
