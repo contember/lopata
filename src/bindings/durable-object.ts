@@ -797,6 +797,10 @@ const _externalClassSentinel = class ExternalDurableObject {
 
 export class DurableObjectNamespaceImpl {
 	private _executors = new Map<string, DOExecutor>()
+	/** In-flight disposals per id (container DOs only). A respawn for the same id
+	 *  chains its first command on this so a fresh `docker run` doesn't race the
+	 *  old container's teardown. */
+	private _disposing = new Map<string, Promise<void>>()
 	private _stubs = new Map<string, unknown>()
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
@@ -888,9 +892,9 @@ export class DurableObjectNamespaceImpl {
 				// with "Worker terminated" → 500, defeating the reload drain. Let the
 				// in-flight command settle, then dispose (bounded so a hung call can't
 				// keep the old worker thread alive indefinitely).
-				this._disposeExecutorWhenIdle(executor)
+				this._disposeExecutorWhenIdle(idStr, executor)
 			} else {
-				executor.dispose().catch(() => {})
+				this._disposeExecutor(idStr, executor)
 			}
 		}
 
@@ -994,7 +998,7 @@ export class DurableObjectNamespaceImpl {
 			// A crashed worker leaves a dead executor behind; drop it so the access
 			// below recreates a fresh one instead of posting to a terminated Worker.
 			if (!existing.isDisposed?.()) return existing
-			existing.dispose().catch(() => {})
+			this._disposeExecutor(idStr, existing)
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
 		}
@@ -1018,6 +1022,9 @@ export class DurableObjectNamespaceImpl {
 			dataDir: this.dataDir,
 			limits: this.limits,
 			containerConfig: this._containerConfig,
+			// Serialize a respawn behind the prior executor's container teardown
+			// (container DOs only — see `_disposing`).
+			_priorDisposal: this._containerConfig ? this._disposing.get(idStr) : undefined,
 			onAlarmSet: (time) => {
 				if (time === null) {
 					const t = this.alarmTimers.get(idStr)
@@ -1035,17 +1042,34 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/**
+	 * @internal Dispose an executor and, for container DOs, record the disposal so a
+	 * respawn for the same id can wait for the old container's teardown (`docker rm`)
+	 * to finish before its own `docker run` — otherwise the teardown can race and
+	 * `docker rm -f` the freshly started replacement. Non-container DOs skip the
+	 * tracking (dispose is fast and there's no shared Docker name to collide on).
+	 */
+	private _disposeExecutor(idStr: string, executor: DOExecutor): void {
+		const p = executor.dispose().catch(() => {})
+		if (this._containerConfig) {
+			this._disposing.set(idStr, p)
+			void p.finally(() => {
+				if (this._disposing.get(idStr) === p) this._disposing.delete(idStr)
+			})
+		}
+	}
+
+	/**
 	 * @internal Dispose an executor detached from the namespace (during reload swap)
 	 * once its in-flight command settles, so an old-generation request mid-DO-call
 	 * isn't rejected with "Worker terminated". Polls `isActive()`; bounded (≈10s) so
 	 * a hung command can't keep the old worker thread alive indefinitely.
 	 */
-	private _disposeExecutorWhenIdle(executor: DOExecutor, attemptsLeft = 200): void {
+	private _disposeExecutorWhenIdle(idStr: string, executor: DOExecutor, attemptsLeft = 200): void {
 		if (!executor.isActive() || attemptsLeft <= 0) {
-			executor.dispose().catch(() => {})
+			this._disposeExecutor(idStr, executor)
 			return
 		}
-		setTimeout(() => this._disposeExecutorWhenIdle(executor, attemptsLeft - 1), 50)
+		setTimeout(() => this._disposeExecutorWhenIdle(idStr, executor, attemptsLeft - 1), 50)
 	}
 
 	/** @internal Evict idle executors */
@@ -1056,14 +1080,14 @@ export class DurableObjectNamespaceImpl {
 			if (!executor) continue
 			// Drop dead executors (crashed Worker) immediately so they don't linger.
 			if (executor.isDisposed?.()) {
-				executor.dispose().catch(() => {})
+				this._disposeExecutor(idStr, executor)
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
 				continue
 			}
 			// Evict aborted instances immediately (once they have no active requests)
 			if (executor.isAborted() && !executor.isActive()) {
-				executor.dispose().catch(() => {})
+				this._disposeExecutor(idStr, executor)
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
 				continue
@@ -1073,7 +1097,7 @@ export class DurableObjectNamespaceImpl {
 			if (executor.isActive()) continue
 			if (executor.activeWebSocketCount() > 0) continue
 			// Evict
-			executor.dispose().catch(() => {})
+			this._disposeExecutor(idStr, executor)
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
 			// _knownIds and alarmTimers survive eviction

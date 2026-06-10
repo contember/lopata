@@ -1,3 +1,4 @@
+import { LOPATA_PID_LABEL_KEY } from './container-cleanup'
 import { DockerManager, type DockerRunOptions } from './container-docker'
 import { DurableObjectBase, type DurableObjectStateImpl } from './durable-object'
 
@@ -97,10 +98,18 @@ export class ContainerRuntime {
 
 		this._transition('running')
 
-		// Check if a container with this name already exists (e.g. after process crash)
+		// Check if a container with this name already exists (e.g. survived a reload
+		// in this same process, or was left behind by a crashed/foreign lopata run).
 		const existing = await this._docker.inspect(this._containerName)
 		if (existing) {
-			if (existing.state === 'running') {
+			// Only adopt a running container THIS process created (matching pid
+			// label). A stale label means the creator crashed/exited — its config,
+			// env and port mappings may not match what we'd build now, so removing
+			// and recreating is safer than silently adopting foreign state. (Labels
+			// are immutable, so an adopted container keeps the dead creator's pid.)
+			const ownerPid = existing.labels[LOPATA_PID_LABEL_KEY]
+			const ownedByThisProcess = ownerPid === String(process.pid)
+			if (existing.state === 'running' && ownedByThisProcess) {
 				// Recover port mappings from the running container
 				this._hostPorts.clear()
 				this._recoverPortMappings(existing.ports)
@@ -113,7 +122,8 @@ export class ContainerRuntime {
 				this.renewActivityTimeout()
 				return
 			}
-			// Container exists but isn't running — remove it before creating a new one
+			// Not running, or owned by a different/dead lopata process — remove it
+			// before creating a fresh one.
 			await this._docker.remove(this._containerName)
 		}
 

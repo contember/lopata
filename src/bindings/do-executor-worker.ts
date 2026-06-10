@@ -68,6 +68,7 @@ export class WorkerExecutor implements DOExecutor {
 	private _pending = new Map<number, PendingCommand>()
 	private _nextId = 1
 	private _disposed = false
+	private _priorDisposalAwaited = false
 	private _inFlightCount = 0
 	/** Mirrors of the DO worker's `state` lifecycle, fed by `do-state` signals. */
 	private _blocked = false
@@ -322,6 +323,16 @@ export class WorkerExecutor implements DOExecutor {
 
 	private async _sendCommand(command: DOCommand, afterPost?: () => void): Promise<DOResult> {
 		const worker = this._ensureWorker()
+		// Wait for the prior executor's container teardown (docker rm) before the
+		// first command — a container DO's first fetch triggers `docker run` for the
+		// same name, which would otherwise race the teardown. Awaited once; no-op for
+		// non-container DOs (`_priorDisposal` undefined).
+		if (!this._priorDisposalAwaited) {
+			this._priorDisposalAwaited = true
+			if (this._config._priorDisposal) {
+				await this._config._priorDisposal.catch(() => {})
+			}
+		}
 		await this._ready
 
 		if (this._disposed) throw new Error('Worker terminated')

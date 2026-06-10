@@ -21,6 +21,11 @@ export interface ExecutorConfig {
 	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
 	 *  overrides (which the re-parse silently dropped). */
 	_wranglerConfig?: WranglerConfig
+	/** @internal Disposal of the PRIOR executor for this same id, still in flight
+	 *  (its Docker container is being `docker rm`'d). A container DO awaits this
+	 *  before its first command so a fresh `docker run` for the same name doesn't
+	 *  race the teardown — which could `docker rm -f` the replacement. */
+	_priorDisposal?: Promise<void>
 }
 
 export interface DOExecutor {

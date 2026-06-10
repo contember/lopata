@@ -15,6 +15,9 @@ export interface DockerContainerInfo {
 	state: string // "running", "exited", "created", etc.
 	exitCode: number | null
 	ports: Record<string, string>
+	/** Container labels (e.g. `lopata.pid`) — used to detect a container left by a
+	 *  crashed/foreign lopata process before adopting it by name. */
+	labels: Record<string, string>
 }
 
 // Image build cache: tag -> { mtime }
@@ -178,12 +181,18 @@ export class DockerManager {
 			}
 
 			const state = data.State?.Status ?? 'unknown'
+			const rawLabels = data.Config?.Labels ?? {}
+			const labels: Record<string, string> = {}
+			for (const [k, v] of Object.entries(rawLabels)) {
+				if (typeof v === 'string') labels[k] = v
+			}
 			return {
 				id: data.Id ?? '',
 				name: (data.Name ?? '').replace(/^\//, ''),
 				state,
 				exitCode: state === 'running' ? null : (data.State?.ExitCode ?? null),
 				ports,
+				labels,
 			}
 		} catch {
 			return null
