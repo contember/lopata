@@ -137,7 +137,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		// pre-refactor wire format in `protocol.ts`).
 		remoteClose: (wsId, code, reason, _wasClean) => ({ type: 'ws-worker-close', wsId, code, reason }),
 	})
-	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, rpc, browserConfig: init.browserConfig })
+	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, dataDir: init.dataDir, rpc, browserConfig: init.browserConfig })
 	const { env } = built
 
 	// Make env visible to top-level `import { env } from 'cloudflare:workers'`

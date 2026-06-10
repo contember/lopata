@@ -35,7 +35,11 @@ import { tagCloneable } from './rpc-shared'
 
 export interface ThreadEnvOptions {
 	config: WranglerConfig
+	/** Per-worker dir for `.dev.vars`/`.env`/assets resolution only. */
 	baseDir: string
+	/** Shared `.lopata` data dir (main's `getDataDir()`) — the SQLite/r2/d1 files
+	 *  main and the DO workers use. Distinct from `baseDir` in multi-worker mode. */
+	dataDir: string
 	rpc: RpcClient
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
 }
@@ -49,8 +53,7 @@ export interface ThreadEnvBuilt {
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 }
 
-export function buildThreadEnv({ config, baseDir, rpc, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
-	const dataDir = path.join(baseDir, '.lopata')
+export function buildThreadEnv({ config, baseDir, dataDir, rpc, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
 	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })

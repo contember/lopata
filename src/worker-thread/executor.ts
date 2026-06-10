@@ -9,6 +9,7 @@
 
 import { dirname, resolve } from 'node:path'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
+import { getDataDir } from '../db'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
@@ -183,6 +184,9 @@ export class WorkerThreadExecutor {
 						modulePath: this._initConfig.modulePath,
 						config: this._initConfig.config,
 						baseDir: this._initConfig.baseDir,
+						// Same physical .lopata dir main + DO workers use, NOT baseDir —
+						// otherwise multi-worker mode splits binding state into a second db.
+						dataDir: getDataDir(),
 						workerName: this._initConfig.workerName,
 						browserConfig: this._initConfig.browserConfig,
 					},

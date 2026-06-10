@@ -106,6 +106,14 @@ export interface WorkerInitConfig {
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
 	config: WranglerConfig
 	baseDir: string
+	/**
+	 * Main's resolved `.lopata` data dir (`getDataDir()`). The worker thread MUST
+	 * open the same SQLite file / r2 / d1 dirs main and the DO workers use —
+	 * `baseDir` is per-worker (`dirname(workerDef.config)` in multi-worker mode)
+	 * and would otherwise split state into a second db. `baseDir` is kept only for
+	 * `.dev.vars`/`.env`/assets resolution, which IS per-worker.
+	 */
+	dataDir: string
 	/** Worker name from `lopata.config.ts` (or single-worker wrangler config). Used
 	 *  for span attribution + error attribution; mirrors `Generation.workerName`. */
 	workerName?: string
