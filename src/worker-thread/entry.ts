@@ -175,7 +175,14 @@ async function initRuntime(init: WorkerInitConfig) {
 		// pre-refactor wire format in `protocol.ts`).
 		remoteClose: (wsId, code, reason, _wasClean) => ({ type: 'ws-worker-close', wsId, code, reason }),
 	})
-	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, dataDir: init.dataDir, rpc, browserConfig: init.browserConfig })
+	// Bridge for `Response{webSocket}` returned by env-binding fetches the worker
+	// calls (`env.DO.fetch('/ws')`). The user-facing peer lives here; user code can
+	// consume it, and reshipping it registers it on `wsBridge` (double-bridge).
+	const envWsBridge = new WsGuestBridge<WorkerMessage>(post, {
+		remoteMessage: (wsId, data) => ({ type: 'env-ws-outgoing', wsId, data }),
+		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
+	})
+	const built = buildThreadEnv({ config: init.config, baseDir: init.baseDir, dataDir: init.dataDir, rpc, browserConfig: init.browserConfig, envWsBridge })
 	const { env } = built
 
 	// Make env visible to top-level `import { env } from 'cloudflare:workers'`
@@ -363,6 +370,12 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'ws-client-close':
 				wsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
+				break
+			case 'env-ws-incoming':
+				envWsBridge.deliverClientMessage(cmd.wsId, cmd.data)
+				break
+			case 'env-ws-close-in':
+				envWsBridge.deliverClientClose(cmd.wsId, cmd.code, cmd.reason, cmd.wasClean)
 				break
 			case 'stream-cancel':
 				responseStreams.cancel(cmd.id)

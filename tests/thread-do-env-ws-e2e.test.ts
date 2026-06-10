@@ -135,6 +135,17 @@ describe('env-binding WebSocket upgrade through a DO', () => {
 		c.close()
 	})
 
+	// CORR-5: the top-level worker (not a DO) consumes the WS from env.AUX.fetch()
+	// — `.accept()` + `.addEventListener` must work on the user-worker channel.
+	test('client ↔ top-level worker ↔ upstream echo through the user-worker env-WS bridge', async () => {
+		const c = await connect(`${wsBase}/worker-bridge-echo`)
+		c.send('hello')
+		expect(await c.waitForMessage()).toBe('echo:hello')
+		c.send('again')
+		expect(await c.waitForMessage()).toBe('echo:again')
+		c.close()
+	})
+
 	test('client ↔ DO ↔ upstream echo round-trips binary payloads', async () => {
 		const c = await connect(`${wsBase}/bridge-echo`)
 		const payload = new Uint8Array([10, 20, 30, 40, 50])

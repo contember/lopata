@@ -74,6 +74,11 @@ export class WorkerThreadExecutor {
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
 	private _wsBridge: WsHostBridge<WorkerCommand>
+	/** Main-side bridge for upstream CFWebSockets adopted from env-binding fetches
+	 *  the user worker initiated (`env.DO.fetch('/ws')` returning 101). The worker
+	 *  side holds the user-facing peer; events flow both ways so user code can
+	 *  consume the socket (`.accept()`/`.send()`), not just reship it. */
+	private _envBindingWsBridge!: WsHostBridge<WorkerCommand>
 	/** Reconstructed response bodies fed by `stream-chunk` from the worker
 	 *  (top-level fetch response → main). */
 	private _responseStreams = new StreamReceiver(
@@ -99,7 +104,12 @@ export class WorkerThreadExecutor {
 		decorateResponse: (response, serialized) => {
 			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
-				serialized.webSocketId = this._wsBridge.adoptExisting(ws)
+				// `bridgeEvents: true` forwards the upstream socket's events to the
+				// worker so user code can consume the WS (the CF-documented
+				// `(await env.DO.fetch(req)).webSocket.accept()` pattern). Reship still
+				// works: the worker re-registers the bridged peer on its top-level WS
+				// bridge, double-bridging through to the real client.
+				serialized.webSocketId = this._envBindingWsBridge.adoptExisting(ws, { bridgeEvents: true })
 			}
 		},
 	})
@@ -120,6 +130,10 @@ export class WorkerThreadExecutor {
 		this._wsBridge = new WsHostBridge<WorkerCommand>(cmd => this._send(cmd), {
 			clientMessage: (wsId, data) => ({ type: 'ws-client-message', wsId, data }),
 			clientClose: (wsId, code, reason, wasClean) => ({ type: 'ws-client-close', wsId, code, reason, wasClean }),
+		})
+		this._envBindingWsBridge = new WsHostBridge<WorkerCommand>(cmd => this._send(cmd), {
+			clientMessage: (wsId, data) => ({ type: 'env-ws-incoming', wsId, data }),
+			clientClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-in', wsId, code, reason, wasClean }),
 		})
 		this._worker.onmessage = (event: MessageEvent<WorkerMessage>) => this._handleMessage(event.data)
 		this._worker.onerror = (event: ErrorEvent) => {
@@ -158,6 +172,7 @@ export class WorkerThreadExecutor {
 		this._rpcChannel.disposeAll(err)
 		this._topRequestStreams.disposeAll()
 		this._wsBridge.disposeAll()
+		this._envBindingWsBridge.disposeAll()
 	}
 
 	private _send(cmd: WorkerCommand): void {
@@ -312,6 +327,12 @@ export class WorkerThreadExecutor {
 				break
 			case 'ws-worker-close':
 				this._wsBridge.deliverRemoteClose(msg.wsId, msg.code, msg.reason, true)
+				break
+			case 'env-ws-outgoing':
+				this._envBindingWsBridge.deliverRemoteMessage(msg.wsId, msg.data)
+				break
+			case 'env-ws-close-out':
+				this._envBindingWsBridge.deliverRemoteClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
 				break
 			case 'stream-chunk':
 				this._responseStreams.push(msg.id, msg.chunk)

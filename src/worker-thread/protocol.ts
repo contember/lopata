@@ -429,6 +429,12 @@ export type WorkerCommand =
 	// data / closed; dispatch into the user-facing peer of the worker-side pair.
 	| { type: 'ws-client-message'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'ws-client-close'; wsId: string; code: number; reason: string; wasClean: boolean }
+	// Env-binding fetch returned `Response{status:101, webSocket}`; main adopted the
+	// upstream `CFWebSocket` and ships its events to the worker, where a user-facing
+	// peer reconstructed via `WsGuestBridge.createBridgedSocket` lets user code
+	// `.accept()` / `.addEventListener('message')` it. Mirrors the DO channel.
+	| { type: 'env-ws-incoming'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'env-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
 	// The reconstructed response stream was cancelled on main (client
 	// disconnected). Tell the worker to cancel its reader so an unbounded
 	// source (e.g. SSE) stops pumping instead of running forever.
@@ -508,6 +514,10 @@ export type WorkerMessage =
 	// forwards to the real client.
 	| { type: 'ws-worker-send'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'ws-worker-close'; wsId: string; code: number; reason: string }
+	// User code emitted bytes / closed on a CFWebSocket reconstructed from an
+	// env-binding fetch upgrade. Forward to the upstream peer main adopted.
+	| { type: 'env-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
+	| { type: 'env-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }
 	// Response-body streaming. The worker reads its `Response.body` reader and
 	// pumps chunks here; main enqueues them on the reconstructed `ReadableStream`
 	// it handed to `Bun.serve`. Chunks that arrive before main registers the

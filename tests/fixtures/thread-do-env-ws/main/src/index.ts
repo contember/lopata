@@ -147,6 +147,30 @@ export default {
 	async fetch(request: Request, env: any): Promise<Response> {
 		const url = new URL(request.url)
 		if (url.pathname === '/health') return new Response('ok')
+
+		// CORR-5: the TOP-LEVEL worker (not a DO) consumes a WebSocket returned by a
+		// service-binding fetch — exercises the user-worker channel's env-WS bridge.
+		// `upstream.accept()` + `.addEventListener` must work (it returned a dud tag
+		// before this fix); the fresh client pair is reshipped to the browser.
+		if (url.pathname === '/worker-bridge-echo') {
+			const upstreamRes = await env.AUX.fetch('http://aux.internal/ws/echo')
+			if (upstreamRes.status !== 101 || !upstreamRes.webSocket) {
+				return new Response(`upstream bad: ${upstreamRes.status}`, { status: 500 })
+			}
+			const upstream: WebSocket = upstreamRes.webSocket
+			upstream.accept()
+
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
+			server.accept()
+			server.addEventListener('message', (ev: MessageEvent) => upstream.send(ev.data))
+			server.addEventListener('close', () => upstream.close())
+			upstream.addEventListener('message', (ev: MessageEvent) => server.send(ev.data))
+			upstream.addEventListener('close', (ev: CloseEvent) => server.close(ev.code, ev.reason))
+
+			return new Response(null, { status: 101, webSocket: client } as any)
+		}
+
 		// Route every /bridge-* to the singleton BridgeDO.
 		const id = env.BRIDGE.idFromName('singleton')
 		const stub = env.BRIDGE.get(id)

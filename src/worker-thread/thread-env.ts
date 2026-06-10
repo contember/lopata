@@ -23,15 +23,17 @@ import { FileR2Bucket } from '../bindings/r2'
 import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
+import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { parseDevVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
-import type { BindingTarget } from './protocol'
+import type { BindingTarget, WorkerMessage } from './protocol'
 import type { RpcClient } from './rpc-client'
 import { tagCloneable } from './rpc-shared'
+import type { WsGuestBridge } from './ws-bridge-shared'
 
 export interface ThreadEnvOptions {
 	config: WranglerConfig
@@ -41,6 +43,8 @@ export interface ThreadEnvOptions {
 	 *  main and the DO workers use. Distinct from `baseDir` in multi-worker mode. */
 	dataDir: string
 	rpc: RpcClient
+	/** Guest-side bridge for WebSockets returned by env-binding fetches. */
+	envWsBridge: WsGuestBridge<WorkerMessage>
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
 }
 
@@ -53,7 +57,7 @@ export interface ThreadEnvBuilt {
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 }
 
-export function buildThreadEnv({ config, baseDir, dataDir, rpc, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
+export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
 	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })
@@ -102,19 +106,19 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, browserConfig }:
 	}
 
 	for (const producer of config.queues?.producers ?? []) {
-		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc)
+		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc, envWsBridge)
 	}
 
 	for (const email of config.send_email ?? []) {
-		env[email.name] = makeSendEmailProxy(email.name, rpc)
+		env[email.name] = makeSendEmailProxy(email.name, rpc, envWsBridge)
 	}
 
 	for (const svc of config.services ?? []) {
-		env[svc.binding] = makeServiceBindingProxy(svc.binding, rpc)
+		env[svc.binding] = makeServiceBindingProxy(svc.binding, rpc, envWsBridge)
 	}
 
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
-		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc)
+		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc, envWsBridge)
 	}
 
 	// Container DOs whose class isn't already declared under `durable_objects`
@@ -124,7 +128,7 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, browserConfig }:
 	for (const container of config.containers ?? []) {
 		if (doClassNames.has(container.class_name)) continue
 		const bindingName = container.name ?? container.class_name
-		env[bindingName] = makeDONamespaceProxy(bindingName, rpc)
+		env[bindingName] = makeDONamespaceProxy(bindingName, rpc, envWsBridge)
 	}
 
 	// Workflows live entirely in the worker thread — class refs and the
@@ -202,8 +206,8 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, browserConfig }:
 	return { env, db, workflows }
 }
 
-function makeQueueProducerProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
-	return makeRpcProxy({ binding: bindingName }, rpc)
+function makeQueueProducerProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
+	return makeRpcProxy({ binding: bindingName }, rpc, envWsBridge)
 }
 
 async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuffer | string> {
@@ -214,24 +218,37 @@ async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuff
 	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
 }
 
-async function proxyFetch(target: BindingTarget, rpc: RpcClient, input: Request | string | URL, init?: RequestInit): Promise<Response> {
+async function proxyFetch(
+	target: BindingTarget,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+	input: Request | string | URL,
+	init?: RequestInit,
+): Promise<Response> {
 	const url = input instanceof URL ? input.toString() : input
 	const request = typeof url === 'string' ? new Request(url, init) : url
 	const serialized = await rpc.callFetch(target, request)
-	const response = rpc.makeResponse(serialized) as Response & { webSocket?: { __bridgedWsId: string } }
-	// If the binding's response came with a WebSocket peer, main already adopted
-	// it under `webSocketId`. Tag the response so `entry.ts` re-uses that same id
-	// when shipping the response back up (instead of allocating a new peer).
-	if (serialized.webSocketId) {
-		response.webSocket = { __bridgedWsId: serialized.webSocketId }
+	const response = rpc.makeResponse(serialized) as ResponseWithWebSocket
+	// If the binding's response carried a WebSocket upgrade, main adopted the
+	// upstream peer (bridgeEvents) under `webSocketId`. Reconstruct a real
+	// user-facing CFWebSocket bridged to it so user code can `.accept()` /
+	// `.addEventListener('message')` it — and reshipping it just re-registers it on
+	// the top-level WS bridge in entry.ts (double-bridge through to the client).
+	if (serialized.webSocketId !== undefined) {
+		response.webSocket = envWsBridge.createBridgedSocket(serialized.webSocketId)
 	}
 	return response
 }
 
-function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<string | symbol, unknown> = {}): Record<string, unknown> {
+function makeRpcProxy(
+	target: BindingTarget,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+	extras: Record<string | symbol, unknown> = {},
+): Record<string, unknown> {
 	return makeBindingProxy(
 		{
-			fetch: (input, init) => proxyFetch(target, rpc, input, init),
+			fetch: (input, init) => proxyFetch(target, rpc, envWsBridge, input, init),
 			call: (prop, args) => {
 				// Restore the in-process path's dev-time warning for args that won't
 				// survive the cross-thread hop (functions, RpcTargets, …) — otherwise
@@ -246,11 +263,11 @@ function makeRpcProxy(target: BindingTarget, rpc: RpcClient, extras: Record<stri
 	)
 }
 
-function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient): unknown {
-	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, { id, name: id.name })
+function makeDOStubProxy(bindingName: string, idStr: string, id: DurableObjectIdImpl, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): unknown {
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, envWsBridge, { id, name: id.name })
 }
 
-function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+function makeDONamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
 	const stubs = new Map<string, unknown>()
 	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
 	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
@@ -263,7 +280,7 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<strin
 		const key = `${idStr}:${id.name ?? ''}`
 		let stub = stubs.get(key)
 		if (!stub) {
-			stub = makeDOStubProxy(bindingName, idStr, id, rpc)
+			stub = makeDOStubProxy(bindingName, idStr, id, rpc, envWsBridge)
 			stubs.set(key, stub)
 		}
 		return stub
@@ -277,15 +294,15 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient): Record<strin
 	}
 }
 
-function makeServiceBindingProxy(bindingName: string, rpc: RpcClient): unknown {
-	return makeRpcProxy({ binding: bindingName }, rpc, {
+function makeServiceBindingProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): unknown {
+	return makeRpcProxy({ binding: bindingName }, rpc, envWsBridge, {
 		connect: () => {
 			throw serviceBindingConnectError(bindingName)
 		},
 	})
 }
 
-function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string, unknown> {
+function makeSendEmailProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
 	const target: BindingTarget = { binding: bindingName }
 	const taggedSend = async (message: unknown) => {
 		// Structured-clone strips EmailMessage's class identity, so tag it and
@@ -299,5 +316,5 @@ function makeSendEmailProxy(bindingName: string, rpc: RpcClient): Record<string,
 			: message
 		return rpc.call(target, 'send', [arg])
 	}
-	return makeRpcProxy(target, rpc, { send: taggedSend })
+	return makeRpcProxy(target, rpc, envWsBridge, { send: taggedSend })
 }
