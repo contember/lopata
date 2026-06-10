@@ -14,7 +14,6 @@ import type {
 	DoReqStreamError,
 	DOResult,
 	DOWorkerMessage,
-	WsAcceptSignal,
 } from '../worker-thread/do-protocol'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
@@ -69,16 +68,18 @@ export class WorkerExecutor implements DOExecutor {
 	private _nextId = 1
 	private _disposed = false
 	private _inFlightCount = 0
+	/** Mirrors of the DO worker's `state` lifecycle, fed by `do-state` signals. */
 	private _blocked = false
-	private _wsCount = 0
+	private _aborted = false
 	/**
-	 * `wsId`s of hibernation WSes the DO worker has signalled as accepted via
-	 * `state.acceptWebSocket`. The matching decrement lives in the `_fetchBridge`
-	 * clientClose envelope (client disconnect) and the `fetch-ws-close-out`
-	 * dispatch (server-side close) — both guard on this set so neither
-	 * double-decrements.
+	 * `wsId`s of every open WebSocket this DO's fetch handler returned — both
+	 * hibernation (`state.acceptWebSocket`) and plain (`new WebSocketPair`) ones.
+	 * Each pins the executor against the idle reaper until it closes. Added when
+	 * `executeFetch` registers the bridge socket; removed on the `fetch-ws-close-out`
+	 * dispatch (server-side close) and the `_fetchBridge` clientClose envelope
+	 * (client disconnect) — both delete from the same set so neither double-counts.
 	 */
-	private _acceptedFetchWsIds = new Set<string>()
+	private _openFetchWsIds = new Set<string>()
 	/**
 	 * Main-side WS bridge for `Response{webSocket}` returned by the DO worker's
 	 * fetch handler. The bridge's peer forwards outgoing bytes (Bun.serve → here)
@@ -146,13 +147,13 @@ export class WorkerExecutor implements DOExecutor {
 		this._fetchBridge = new WsHostBridge<DOWorkerMessage>(msg => worker.postMessage(msg), {
 			clientMessage: (wsId, data) => ({ type: 'fetch-ws-incoming', wsId, data }),
 			clientClose: (wsId, code, reason, wasClean) => {
-				// A real client disconnect ends the hibernation WS regardless of
-				// whether user code calls `ws.close()` in its `webSocketClose`
-				// handler (that call is optional in CF). Decrement here so the count
-				// doesn't leak and pin the DO worker alive past eviction. The matching
-				// `fetch-ws-close-out` (when the server peer also closes) then finds
-				// the id already gone and is a no-op, so this never double-decrements.
-				if (this._acceptedFetchWsIds.delete(wsId)) this._wsCount--
+				// A real client disconnect ends the WS regardless of whether user code
+				// calls `ws.close()` in its `webSocketClose` handler (that call is
+				// optional in CF). Drop the pin here so it doesn't leak and keep the DO
+				// worker alive past eviction. The matching `fetch-ws-close-out` (when
+				// the server peer also closes) then finds the id already gone and is a
+				// no-op, so this never double-counts.
+				this._openFetchWsIds.delete(wsId)
 				return { type: 'fetch-ws-close-in', wsId, code, reason, wasClean }
 			},
 		})
@@ -217,8 +218,12 @@ export class WorkerExecutor implements DOExecutor {
 					config.onAlarmSet?.(msg.time)
 					break
 
-				case 'ws-bridge':
-					this._handleWsBridge(msg.payload)
+				case 'do-state':
+					// Mirror the DO instance's abort/block lifecycle so the idle reaper
+					// evicts an aborted instance (→ recreated fresh) and never evicts
+					// mid-blockConcurrencyWhile.
+					this._aborted = msg.aborted
+					this._blocked = msg.blocked
 					break
 
 				case 'fetch-ws-outgoing':
@@ -227,9 +232,7 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'fetch-ws-close-out':
 					this._fetchBridge?.deliverRemoteClose(msg.wsId, msg.code, msg.reason, msg.wasClean)
-					if (this._acceptedFetchWsIds.delete(msg.wsId)) {
-						this._wsCount--
-					}
+					this._openFetchWsIds.delete(msg.wsId)
 					break
 
 				case 'env-ws-outgoing':
@@ -289,8 +292,7 @@ export class WorkerExecutor implements DOExecutor {
 				pending.reject(error)
 			}
 			this._pending.clear()
-			this._acceptedFetchWsIds.clear()
-			this._wsCount = 0
+			this._openFetchWsIds.clear()
 			this._fetchBridge?.disposeAll()
 			this._envBindingWsBridge?.disposeAll()
 			this._rpcChannel.disposeAll(error)
@@ -358,16 +360,6 @@ export class WorkerExecutor implements DOExecutor {
 		})
 	}
 
-	private _handleWsBridge(payload: WsAcceptSignal): void {
-		// The DO accepted a hibernation WebSocket — increment the count and track
-		// the id so the matching `fetch-ws-close-out` / inbound client close can
-		// decrement it (see the `_fetchBridge` clientClose envelope).
-		if (!this._acceptedFetchWsIds.has(payload.wsId)) {
-			this._acceptedFetchWsIds.add(payload.wsId)
-			this._wsCount++
-		}
-	}
-
 	// --- DOExecutor interface ---
 
 	async executeFetch(request: Request): Promise<Response> {
@@ -423,6 +415,10 @@ export class WorkerExecutor implements DOExecutor {
 		if (result.fetchWebSocketId) {
 			if (!this._fetchBridge) throw new Error('Fetch WS bridge not initialised — worker must be alive')
 			init.webSocket = this._fetchBridge.register(result.fetchWebSocketId)
+			// Pin the executor for as long as the WS is open — hibernation AND plain
+			// sockets alike (a chatty non-hibernation WS bypasses _sendCommand, so
+			// without this the idle reaper would evict it and 1012 the client).
+			this._openFetchWsIds.add(result.fetchWebSocketId)
 		}
 
 		if (result.streamId !== undefined) {
@@ -510,11 +506,11 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	activeWebSocketCount(): number {
-		return this._wsCount
+		return this._openFetchWsIds.size
 	}
 
 	isAborted(): boolean {
-		return false // Worker-thread DOs don't support abort
+		return this._aborted
 	}
 
 	isDisposed(): boolean {
@@ -558,8 +554,7 @@ export class WorkerExecutor implements DOExecutor {
 			pending.reject(error)
 		}
 		this._pending.clear()
-		this._acceptedFetchWsIds.clear()
-		this._wsCount = 0
+		this._openFetchWsIds.clear()
 		this._fetchBridge?.disposeAll()
 		this._envBindingWsBridge?.disposeAll()
 		this._rpcChannel.disposeAll(error)

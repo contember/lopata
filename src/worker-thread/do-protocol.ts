@@ -25,16 +25,17 @@ import type {
 } from './protocol'
 
 /**
- * DO worker → main: a hibernation WebSocket was accepted via
- * `state.acceptWebSocket`. Main bumps `activeWebSocketCount()` for this executor
- * so the idle reaper won't evict it mid-WebSocket. The id is the one allocated
- * by the fetch WS bridge; the matching decrement rides on `fetch-ws-close-out` /
- * the inbound client close.
+ * DO worker → main: the instance's lifecycle state changed. Main mirrors these
+ * flags onto the executor so the idle reaper behaves correctly:
+ *  - `aborted` — `state.abort()` was called; the executor must be evicted and
+ *    recreated fresh on next access (otherwise every command keeps throwing).
+ *  - `blocked` — `blockConcurrencyWhile` is running; the executor must not be
+ *    evicted mid-block.
  */
-export interface WsAcceptSignal {
-	type: 'ws-accept'
-	wsId: string
-	tags: string[]
+export interface DoStateSignal {
+	type: 'do-state'
+	aborted: boolean
+	blocked: boolean
 }
 
 /** Commands sent from main thread to worker */
@@ -195,7 +196,7 @@ export type DOMainMessage =
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }
 	| { type: 'alarm-set'; time: number | null }
-	| { type: 'ws-bridge'; payload: WsAcceptSignal }
+	| DoStateSignal
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-out'; wsId: string; code: number; reason: string; wasClean: boolean }

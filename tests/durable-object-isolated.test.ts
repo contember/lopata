@@ -94,6 +94,34 @@ beforeAll(() => {
       }
     }
 
+    export class AbortDO extends DurableObject {
+      async ping() { return "pong"; }
+      async doAbort() {
+        this.ctx.abort("boom");
+        return "aborting";
+      }
+    }
+
+    export class BlockDO extends DurableObject {
+      async startBlock(ms) {
+        // Fire-and-forget block so the method returns while the gate is held.
+        this.ctx.blockConcurrencyWhile(() => new Promise(r => setTimeout(r, ms)));
+        return "blocking";
+      }
+    }
+
+    export class PlainWsDO extends DurableObject {
+      // Returns a WebSocket WITHOUT the hibernation acceptWebSocket() API.
+      async fetch(request) {
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected websocket', { status: 426 });
+        }
+        const pair = new WebSocketPair();
+        pair[1].accept();
+        return new Response(null, { status: 101, webSocket: pair[0] });
+      }
+    }
+
     export class SelfRefDO extends DurableObject {
       async whoAmI() {
         // Identify the instance by its name (preserved via instanceName flow).
@@ -162,6 +190,9 @@ beforeAll(() => {
 					{ name: 'ALARM', class_name: 'AlarmDO' },
 					{ name: 'FIRE_AND_FORGET', class_name: 'FireAndForgetDO' },
 					{ name: 'HIBERNATION', class_name: 'HibernationDO' },
+					{ name: 'ABORT', class_name: 'AbortDO' },
+					{ name: 'BLOCK', class_name: 'BlockDO' },
+					{ name: 'PLAIN_WS', class_name: 'PlainWsDO' },
 					{ name: 'SELF_REF', class_name: 'SelfRefDO' },
 					{ name: 'OTHER_DO', class_name: 'OtherDO' },
 				],
@@ -572,4 +603,65 @@ describe('Isolated DO — hibernation WS count (Finding B)', () => {
 
 		await executor.dispose()
 	})
+
+	test('a plain (non-hibernation) WebSocket also pins the executor (CORR-32)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'PlainWsDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('plain-ws')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch(new Request('http://do/', { headers: { Upgrade: 'websocket' } }))
+		expect(resp.status).toBe(101)
+
+		const executor = ns._getExecutor(id.toString())!
+		// No acceptWebSocket() was called, yet the open socket must pin the executor
+		// so the idle reaper doesn't evict it and 1012 the live client.
+		expect(executor.activeWebSocketCount()).toBe(1)
+
+		const hostWs = (resp as Response & { webSocket: CFWebSocket }).webSocket
+		hostWs._peer?.dispatchOrQueue({ type: 'close', code: 1000, reason: '', wasClean: true })
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.activeWebSocketCount()).toBe(0)
+
+		await executor.dispose()
+	})
+})
+
+describe('Isolated DO — abort & block lifecycle', () => {
+	test('state.abort() marks the executor aborted so the reaper recreates it (CORR-19)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'AbortDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('abort-me')
+		const stub = ns.get(id) as any
+		expect(await stub.ping()).toBe('pong')
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.isAborted()).toBe(false)
+
+		await stub.doAbort()
+		// The do-state signal hops to main asynchronously.
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.isAborted()).toBe(true)
+
+		await executor.dispose()
+	})
+
+	test('blockConcurrencyWhile marks the executor blocked, then clears (CORR-28)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'BlockDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('block-me')
+		const stub = ns.get(id) as any
+		await stub.startBlock(600)
+		await new Promise(r => setTimeout(r, 50))
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.isBlocked()).toBe(true)
+
+		await new Promise(r => setTimeout(r, 700))
+		expect(executor.isBlocked()).toBe(false)
+
+		await executor.dispose()
+	}, 5_000)
 })

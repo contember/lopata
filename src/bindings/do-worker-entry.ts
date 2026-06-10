@@ -101,21 +101,24 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
 
-	/**
-	 * Server peers (the half the DO keeps; `client._peer` from `new WebSocketPair`)
-	 * that user code passed to `state.acceptWebSocket`. The `wsId` isn't allocated
-	 * until `fetchWsBridge.register(client)` runs in the fetch handler, so we
-	 * keep the tags here and emit the `ws-accept` signal once both are known.
-	 * Without this signal, main's `activeWebSocketCount()` stays 0 and the idle
-	 * reaper evicts the executor mid-WebSocket.
-	 */
-	const acceptedHibernationPeers = new Map<InstanceType<typeof CFWebSocket>, string[]>()
-	const originalAccept = state.acceptWebSocket.bind(state)
-	state.acceptWebSocket = (ws: WebSocket, tags?: string[]) => {
-		originalAccept(ws, tags)
-		if (ws instanceof CFWebSocket) {
-			acceptedHibernationPeers.set(ws, tags ?? [])
-		}
+	// Mirror the instance's abort/block lifecycle to main so the idle reaper
+	// evicts an aborted instance (every subsequent command throws — it must be
+	// recreated fresh) and never evicts mid-blockConcurrencyWhile. Main only sees
+	// commands/WS traffic, so without these signals it can't observe either.
+	const postState = () => {
+		postMessage({ type: 'do-state', aborted: state._isAborted(), blocked: state._isBlocked() } satisfies DOMainMessage)
+	}
+	const originalAbort = state.abort.bind(state)
+	state.abort = (reason?: string) => {
+		originalAbort(reason)
+		postState()
+	}
+	const originalBlock = state.blockConcurrencyWhile.bind(state)
+	state.blockConcurrencyWhile = <T>(cb: () => Promise<T>): Promise<T> => {
+		const p = originalBlock(cb)
+		postState() // entered the block
+		p.finally(postState) // left it
+		return p
 	}
 
 	// Mirrors the `ContainerRuntime` wiring `InProcessExecutor` did on main —
@@ -240,24 +243,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 					let fetchWebSocketId: string | undefined
 					if (hasWebSocket) {
 						const cw = clientWs as InstanceType<typeof CFWebSocket>
+						// Main pins the executor on this id (hibernation or plain socket
+						// alike) when it processes the result and unpins on close, so no
+						// separate accept signal is needed.
 						fetchWebSocketId = fetchWsBridge.register(cw)
-						// Hibernation API: if user code called `state.acceptWebSocket(server)`
-						// before returning the response, signal main so it bumps the
-						// `activeWebSocketCount()` for this executor (paired with a
-						// decrement when the close arrives via `fetch-ws-close-out`).
-						const serverPeer = cw._peer
-						if (serverPeer) {
-							const tags = acceptedHibernationPeers.get(serverPeer)
-							if (tags !== undefined) {
-								acceptedHibernationPeers.delete(serverPeer)
-								postMessage(
-									{
-										type: 'ws-bridge',
-										payload: { type: 'ws-accept', wsId: fetchWebSocketId, tags },
-									} satisfies DOMainMessage,
-								)
-							}
-						}
 					}
 
 					let streamId: number | undefined
@@ -355,6 +344,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 				// body pump *after* `result` ships so main has registered the
 				// `streamId` before any chunk arrives.
 				afterPost?.()
+				// Surface any abort/block transition this command caused (e.g. it
+				// called state.abort()). The wrappers above catch abort/block from
+				// outside a command (timers, WS handlers); this catches in-command.
+				postState()
 			} catch (e) {
 				postMessage(
 					{
@@ -363,6 +356,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 						result: { type: 'error', error: serializeError(e) },
 					} satisfies DOMainMessage,
 				)
+				// The command may have thrown because the instance was aborted
+				// (state._enter() rejects once aborted) — make sure main learns of it.
+				postState()
 			}
 		} else if (msg.type === 'do-stream-ack') {
 			fetchStreams.grantCredit(msg.streamId)
