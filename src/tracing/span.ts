@@ -123,6 +123,100 @@ export function startSyncSpan<T>(opts: SpanOptions, fn: () => T): T {
 	}
 }
 
+/** Handle passed to enterSpan callbacks, mirroring Cloudflare's custom-span Span object. */
+export interface SpanHandle {
+	/** Set an attribute on the span. */
+	setAttribute(key: string, value: string | number | boolean | undefined): void
+	/** Whether this invocation is being traced. Always true in lopata's dev runtime. */
+	readonly isTraced: boolean
+}
+
+/**
+ * Cloudflare-compatible custom span API (`tracing.enterSpan` from `cloudflare:workers`).
+ * Runs `fn` inside a child span of the active trace context, forwarding any extra args.
+ * The callback's value is returned as-is: synchronous callbacks resolve synchronously,
+ * async ones return the promise. The span auto-ends when the callback returns or its
+ * returned promise settles — matching Cloudflare's semantics. On a thrown error (sync or
+ * async) the span is marked errored and an `exception` event is recorded.
+ */
+export function enterSpan<T, A extends unknown[]>(name: string, fn: (span: SpanHandle, ...args: A) => T, ...args: A): T {
+	const store = getTraceStore()
+	const parent = getActiveContext()
+
+	const spanId = generateId()
+	const traceId = parent?.traceId ?? generateTraceId()
+	const parentSpanId = parent?.spanId ?? null
+
+	const span: SpanData = {
+		spanId,
+		traceId,
+		parentSpanId,
+		name,
+		kind: 'internal',
+		status: 'unset',
+		statusMessage: null,
+		startTime: Date.now(),
+		endTime: null,
+		durationMs: null,
+		attributes: {},
+		workerName: null,
+	}
+	store.insertSpan(span)
+
+	const fetchStack = parent?.fetchStack ?? { current: null }
+	const subrequests = parent?.subrequests ?? { count: 0 }
+
+	const handle: SpanHandle = {
+		setAttribute(key, value) {
+			store.updateAttributes(spanId, { [key]: value })
+		},
+		isTraced: true,
+	}
+
+	const succeed = (): void => {
+		const currentStatus = store.getSpanStatus(spanId)
+		store.endSpan(spanId, Date.now(), currentStatus === 'error' ? 'error' : 'ok')
+	}
+
+	const fail = (err: unknown): void => {
+		const message = err instanceof Error ? err.message : String(err)
+		store.endSpan(spanId, Date.now(), 'error', message)
+		store.addEvent({
+			spanId,
+			traceId,
+			timestamp: Date.now(),
+			name: 'exception',
+			level: 'error',
+			message,
+			attributes: err instanceof Error ? { stack: err.stack } : {},
+		})
+	}
+
+	try {
+		const result = runWithContext({ traceId, spanId, fetchStack, subrequests }, () => fn(handle, ...args))
+		if (result != null && typeof (result as { then?: unknown }).then === 'function') {
+			return (result as unknown as Promise<unknown>).then(
+				value => {
+					succeed()
+					return value
+				},
+				err => {
+					fail(err)
+					throw err
+				},
+			) as T
+		}
+		succeed()
+		return result
+	} catch (err) {
+		fail(err)
+		throw err
+	}
+}
+
+/** Cloudflare-compatible `tracing` namespace exported from `cloudflare:workers` and exposed as `ctx.tracing`. */
+export const tracing = { enterSpan }
+
 export function setSpanStatus(status: 'ok' | 'error', message?: string): void {
 	const ctx = getActiveContext()
 	if (!ctx) return
