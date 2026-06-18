@@ -6,7 +6,6 @@ import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
-import { addSpanEvent, setSpanAttribute, startSpan } from './tracing/span'
 
 let initialized = false
 
@@ -14,27 +13,17 @@ let initialized = false
  * Sets up global Cloudflare-compatible APIs:
  * caches, HTMLRewriter, WebSocketPair, IdentityTransformStream, FixedLengthStream,
  * navigator.userAgent, navigator.language, performance.timeOrigin, scheduler.wait(),
- * crypto extensions, and __lopata userland tracing API.
+ * and crypto extensions.
+ *
+ * Custom user spans are provided via the Cloudflare-native `tracing.enterSpan`
+ * API exported from `cloudflare:workers` (see src/virtual-modules.ts), not a
+ * Lopata-specific global.
  *
  * Idempotent — safe to call multiple times.
  */
 export function setupCloudflareGlobals() {
 	if (initialized) return
-	initialized = true // ─── Userland tracing API ────────────────────────────────────────────
-	 // Exposes a lightweight global that user code can call to create custom
-	// spans visible in the Lopata dashboard.  In production (without Lopata)
-	// the global is simply absent, so the user's thin wrapper becomes a no-op.
-	;(globalThis as any).__lopata = {
-		trace<T>(name: string, attrsOrFn: Record<string, unknown> | (() => T | Promise<T>), maybeFn?: () => T | Promise<T>): Promise<T> {
-			const fn = typeof attrsOrFn === 'function' ? attrsOrFn : maybeFn!
-			const attributes = typeof attrsOrFn === 'function' ? undefined : attrsOrFn
-			return startSpan({ name, attributes }, fn)
-		},
-		setAttribute: setSpanAttribute,
-		addEvent(name: string, message?: string, attrs?: Record<string, unknown>): void {
-			addSpanEvent(name, 'info', message ?? '', attrs)
-		},
-	}
+	initialized = true
 
 	// Register global `caches` object (CacheStorage) with tracing.
 	// Lazy: only creates the SqliteCacheStorage (and its getDatabase() call) on first access.

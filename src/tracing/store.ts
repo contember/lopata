@@ -596,3 +596,8 @@ export function getTraceStore(): TraceStore {
 	}
 	return defaultStore
 }
+
+/** Override the process-wide default store. Used by tests to inject an in-memory DB. */
+export function setTraceStore(store: TraceStore | null): void {
+	defaultStore = store
+}

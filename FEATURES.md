@@ -137,6 +137,7 @@
 - ✅ `ctx.props` — arbitrary JSON from Service Bindings
 - ❌ `ctx.exports` — loopback bindings for exports (enable_ctx_exports flag)
 - ✅ `waitUntil()` standalone import from `cloudflare:workers`
+- ✅ `ctx.tracing.enterSpan()` / `import { tracing } from "cloudflare:workers"` — custom trace spans (`span.setAttribute`, `span.isTraced`)
 
 ### 1.6 Fetch Handler
 

@@ -38,6 +38,15 @@ declare module 'cloudflare:workers' {
 	export const env: Record<string, any>
 
 	export function waitUntil(promise: Promise<unknown>): void
+
+	export interface Span {
+		setAttribute(key: string, value: string | number | boolean | undefined): void
+		readonly isTraced: boolean
+	}
+
+	export const tracing: {
+		enterSpan<T, A extends unknown[]>(name: string, callback: (span: Span, ...args: A) => T, ...args: A): T
+	}
 }
 
 declare module 'cloudflare:workflows' {

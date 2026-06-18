@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { tracing } from './tracing/span'
 
 const storage = new AsyncLocalStorage<ExecutionContext>()
 
@@ -13,6 +14,8 @@ export function runWithExecutionContext<T>(ctx: ExecutionContext, fn: () => T): 
 export class ExecutionContext {
 	private _promises: Promise<unknown>[] = []
 	readonly props: Record<string, unknown>
+	/** Cloudflare-compatible custom span API: `ctx.tracing.enterSpan(...)`. */
+	readonly tracing = tracing
 
 	constructor(props?: Record<string, unknown>) {
 		this.props = props ?? {}

@@ -7,6 +7,7 @@ import { WebSocketPair } from './bindings/websocket-pair'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
 import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
+import { tracing } from './tracing/span'
 
 /**
  * Registers virtual modules for `cloudflare:workers`, `cloudflare:workflows`,
@@ -43,6 +44,7 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 						ctx.waitUntil(promise)
 					}
 				},
+				tracing,
 			},
 			loader: 'object',
 		}
