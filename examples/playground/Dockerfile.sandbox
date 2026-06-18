@@ -1,2 +1,8 @@
-FROM docker.io/cloudflare/sandbox:0.7.4
+# Cloudflare publishes `cloudflare/sandbox` as amd64-only on purpose:
+# their production Containers runtime is linux/amd64, and shipping an
+# arm64 variant would let Apple Silicon hosts silently pull a different
+# build than prod uses (native modules / libc / etc. drift). Pin the
+# platform so local dev matches production; Docker Desktop runs amd64
+# under Rosetta on M-series Macs.
+FROM --platform=linux/amd64 docker.io/cloudflare/sandbox:0.7.4
 EXPOSE 8080

@@ -1,0 +1,13 @@
+{
+	"name": "thread-streaming-do",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "STREAM", "class_name": "StreamDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["StreamDO"] }
+	]
+}

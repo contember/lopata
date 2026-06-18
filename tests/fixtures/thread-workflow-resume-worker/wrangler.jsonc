@@ -1,0 +1,11 @@
+{
+	"name": "thread-workflow-resume-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"workflows": [
+		{ "name": "slow-flow", "binding": "SLOW_FLOW", "class_name": "SlowFlow" }
+	],
+	"kv_namespaces": [
+		{ "binding": "RUNS", "id": "runs" }
+	]
+}

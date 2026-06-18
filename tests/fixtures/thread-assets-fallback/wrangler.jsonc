@@ -1,0 +1,9 @@
+{
+	"name": "thread-assets-fallback",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"assets": {
+		"directory": "./public",
+		"run_worker_first": true
+	}
+}

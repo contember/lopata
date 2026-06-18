@@ -38,6 +38,24 @@ export function runWithContext<T>(ctx: SpanContext, fn: () => T): T {
 	return storage.run(ctx, fn)
 }
 
+/**
+ * Adopt a parent (traceId + spanId) sent across an isolate boundary — refs
+ * (`fetchStack`, `subrequests`) can't cross postMessage, so we re-seed empty
+ * ones and let sub-spans created on this side share them via `getActiveContext`.
+ * Note: the per-request subrequest budget resets on each side of the boundary;
+ * a nested service-binding hop into another thread effectively gets a fresh
+ * budget. Acceptable for dev; a real fix would round-trip the count.
+ */
+export function runWithParentContext<T>(parent: { traceId: string; spanId: string } | undefined, fn: () => T): T {
+	if (!parent) return fn()
+	return storage.run({
+		traceId: parent.traceId,
+		spanId: parent.spanId,
+		fetchStack: { current: null },
+		subrequests: { count: 0 },
+	}, fn)
+}
+
 export function generateId(byteCount = 8): string {
 	const bytes = new Uint8Array(byteCount)
 	crypto.getRandomValues(bytes)

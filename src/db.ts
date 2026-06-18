@@ -20,6 +20,7 @@ export function getDatabase(): Database {
 
 	instance = new Database(DB_PATH, { create: true })
 	instance.run('PRAGMA journal_mode=WAL')
+	instance.run('PRAGMA busy_timeout=5000')
 	runMigrations(instance)
 	return instance
 }

@@ -1,0 +1,482 @@
+/**
+ * Cross-thread WebSocket bridge — shared primitive.
+ *
+ * Used by both worker channels (main ↔ user-worker, main ↔ DO-instance worker)
+ * to ferry events for a CFWebSocket whose two halves live on opposite threads.
+ *
+ * Direction & terminology:
+ *  - *Guest* — the side that owns the user-facing peer (worker thread).
+ *    The user code created a `WebSocketPair` locally and shipped `pair[0]`
+ *    in a `Response{webSocket}`. The guest keeps `pair[1]` and forwards
+ *    everything the user does on it through to the host.
+ *  - *Host* — the side that hands the upgraded `CFWebSocket` to `Bun.serve`
+ *    (main thread). It owns a synthetic CFWebSocket whose `_peer` posts every
+ *    inbound event (from the real client) back to the guest.
+ *
+ * Each bridged socket is identified by an opaque `wsId` generated on the
+ * guest side. The host-side `register()` call is the message that ferries
+ * the id over and creates the local half. A late `deliverRemote*` for a
+ * wsId that hasn't been `register()`ed yet is buffered until it appears —
+ * see `_pendingEvents` for why.
+ *
+ * Channel-specific envelopes (`ws-worker-send` vs `fetch-ws-outgoing`, etc.)
+ * are encoded by the `WsBridgeEnvelopes` callbacks each consumer supplies.
+ */
+
+import { CFWebSocket, type WSEvent } from '../bindings/websocket-pair'
+import { generateId } from '../tracing/context'
+
+/**
+ * Channel-specific message builders. Each callback returns the exact envelope
+ * the consumer's transport expects; the bridge just calls `post(envelope)`.
+ */
+export interface WsHostEnvelopes<O> {
+	/** Inbound from the real client → guest's user peer. */
+	clientMessage(wsId: string, data: string | ArrayBuffer): O
+	clientClose(wsId: string, code: number, reason: string, wasClean: boolean): O
+}
+
+export interface WsGuestEnvelopes<O> {
+	/** User-facing peer sent bytes → forward to real client via host. */
+	remoteMessage(wsId: string, data: string | ArrayBuffer): O
+	remoteClose(wsId: string, code: number, reason: string, wasClean: boolean): O
+}
+
+/** Cap on the "recently forgotten" set. A long-lived bridge (DO executors live
+ *  until eviction and may serve many short-lived connections) would otherwise
+ *  grow this set unbounded. It only needs to catch late `deliver*` events racing
+ *  a recent close, so once over the cap, evicting the oldest id (Set preserves
+ *  insertion order) is safe. */
+const FORGOTTEN_CAP = 1024
+function rememberForgotten(set: Set<string>, wsId: string): void {
+	set.add(wsId)
+	if (set.size > FORGOTTEN_CAP) {
+		const oldest = set.values().next().value
+		if (oldest !== undefined) set.delete(oldest)
+	}
+}
+
+/**
+ * Host side: owns the `CFWebSocket` that gets handed to `Bun.serve.upgrade`
+ * and bridges events to/from the guest worker.
+ */
+export class WsHostBridge<O> {
+	/** wsId → cfSocket (the side handed to `Bun.serve.upgrade`). */
+	private _sockets = new Map<string, CFWebSocket>()
+	/**
+	 * Events from the guest that arrived before the matching `register()` /
+	 * `adoptExisting()` was called. The guest's `accept()` flushes queued events
+	 * synchronously and posts them; those posts race ahead of the binding-fetch /
+	 * fetch result that triggers host-side registration. Without buffering, the
+	 * first message would be lost.
+	 */
+	private _pendingEvents = new Map<string, WSEvent[]>()
+	/**
+	 * Subset of `_sockets` that was adopted with `bridgeEvents: true` — outbound
+	 * `deliverRemoteMessage` must `cfSocket.send(data)` (dispatch on peer) for
+	 * these, instead of `dispatchOrQueue` (dispatch on the adopted socket
+	 * itself, which is the right behavior only for the `Bun.serve` passthrough).
+	 */
+	private _bridgedAdoptions = new Set<string>()
+	/**
+	 * wsIds that were previously registered/adopted and have since closed.
+	 * Used to drop late `deliverRemote*` calls cleanly instead of stashing
+	 * them in `_pendingEvents` (where they'd be unreachable — wsIds are
+	 * unique per upgrade, so no future `register()` will ever match).
+	 */
+	private _forgotten = new Set<string>()
+	private _post: (msg: O) => void
+	private _envelopes: WsHostEnvelopes<O>
+
+	constructor(post: (msg: O) => void, envelopes: WsHostEnvelopes<O>) {
+		this._post = post
+		this._envelopes = envelopes
+	}
+
+	private _forget(wsId: string): void {
+		this._sockets.delete(wsId)
+		this._pendingEvents.delete(wsId)
+		this._bridgedAdoptions.delete(wsId)
+		rememberForgotten(this._forgotten, wsId)
+	}
+
+	/**
+	 * Build a host-side `CFWebSocket` paired with a bridge peer that posts every
+	 * inbound event back to the guest. Drains any pending events queued before
+	 * this call.
+	 */
+	register(wsId: string): CFWebSocket {
+		const cfSocket = new CFWebSocket()
+		const peer = new BridgeWebSocketPeer(wsId, this._post, this._envelopes, id => this._forget(id))
+		cfSocket._peer = peer
+		peer._peer = cfSocket
+		this._sockets.set(wsId, cfSocket)
+		const pending = this._pendingEvents.get(wsId)
+		if (pending) {
+			cfSocket._eventQueue.push(...pending)
+			this._pendingEvents.delete(wsId)
+			// A close buffered before register() (user did send()+close() on the
+			// server peer before returning the Response) must carry the same
+			// bookkeeping deliverRemoteClose does: mark the socket CLOSED and forget
+			// the id. The queued close event still dispatches to the real client on
+			// accept(). Without this the entry lingered in `_sockets` until
+			// disposeAll and the socket reported OPEN despite being closed.
+			if (pending.some((ev) => ev.type === 'close')) {
+				cfSocket.readyState = CFWebSocket.CLOSED
+				this._forget(wsId)
+			}
+		}
+		return cfSocket
+	}
+
+	/**
+	 * Adopt an already-real `CFWebSocket` (typically the client peer returned
+	 * from a DO/service binding inside a nested binding fetch). The peer is
+	 * already wired to its server counterpart, so we just need to keep it
+	 * addressable by id when the guest echoes the response back up.
+	 *
+	 * For the *passthrough* use (user-worker channel): the guest never reads or
+	 * writes through this socket — main eventually hands the same `cfSocket`
+	 * to `Bun.serve.upgrade()`, which owns both directions.
+	 *
+	 * For the *guest-driven* use (DO-worker env-binding channel): pass
+	 * `bridgeEvents: true` so we accept the socket here, forward every inbound
+	 * message/close to the guest as `clientMessage` / `clientClose` envelopes,
+	 * and `deliverRemoteMessage` routes outbound bytes via `cfSocket.send`
+	 * (which dispatches on its real peer) instead of dispatching on the
+	 * adopted socket itself.
+	 */
+	adoptExisting(ws: CFWebSocket, options: { bridgeEvents?: boolean } = {}): string {
+		const wsId = generateId(8)
+		this._sockets.set(wsId, ws)
+		if (options.bridgeEvents) {
+			this._wireBridgedAdoption(wsId, ws)
+		} else {
+			// Passthrough adoption: still attach a close listener so the entry is
+			// removed from `_sockets` when the upstream peer goes away — otherwise
+			// the map grows for the executor's lifetime.
+			ws.addEventListener('close', () => this._forget(wsId))
+		}
+		return wsId
+	}
+
+	private _wireBridgedAdoption(wsId: string, cfSocket: CFWebSocket): void {
+		cfSocket.addEventListener('message', (ev: Event) => {
+			const data = (ev as MessageEvent).data
+			this._post(this._envelopes.clientMessage(wsId, data))
+		})
+		cfSocket.addEventListener('close', (ev: Event) => {
+			const ce = ev as CloseEvent
+			this._post(this._envelopes.clientClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
+			this._forget(wsId)
+		})
+		cfSocket.accept()
+		this._bridgedAdoptions.add(wsId)
+	}
+
+	/** Look up a previously-registered or adopted CFWebSocket. */
+	getSocket(wsId: string): CFWebSocket | undefined {
+		return this._sockets.get(wsId)
+	}
+
+	/** Guest reports its user-facing peer emitted a message → fire it on the host socket. */
+	deliverRemoteMessage(wsId: string, data: string | ArrayBuffer): void {
+		const cfSocket = this._sockets.get(wsId)
+		const evt: WSEvent = { type: 'message', data }
+		if (!cfSocket) {
+			this._bufferPending(wsId, evt)
+			return
+		}
+		if (this._bridgedAdoptions.has(wsId)) {
+			// Adopted host socket — dispatching on it would fire its own listeners
+			// again (we wired ones in `_wireBridgedAdoption`). Route via `send` so
+			// the data lands on its real peer instead.
+			cfSocket.send(data)
+			return
+		}
+		cfSocket.dispatchOrQueue(evt)
+	}
+
+	/** Guest reports its user-facing peer closed → fire close on the host socket. */
+	deliverRemoteClose(wsId: string, code: number, reason: string, wasClean: boolean): void {
+		const cfSocket = this._sockets.get(wsId)
+		const evt: WSEvent = { type: 'close', code, reason, wasClean }
+		if (!cfSocket) {
+			this._bufferPending(wsId, evt)
+			return
+		}
+		if (this._bridgedAdoptions.has(wsId)) {
+			cfSocket.close(code, reason)
+			this._forget(wsId)
+			return
+		}
+		// Mark CLOSED before dispatching (mirrors the guest side) so any close
+		// handler on the host socket observes a closed socket and a nested close()
+		// no-ops instead of re-dispatching.
+		cfSocket.readyState = CFWebSocket.CLOSED
+		cfSocket.dispatchOrQueue(evt)
+		this._forget(wsId)
+	}
+
+	private _bufferPending(wsId: string, evt: WSEvent): void {
+		// Late event for a wsId that was already forgotten (peer closed first,
+		// host received this guest-side event after). No future `register()` will
+		// match this id, so buffering would leak. Drop it.
+		if (this._forgotten.has(wsId)) return
+		let q = this._pendingEvents.get(wsId)
+		if (!q) {
+			q = []
+			this._pendingEvents.set(wsId, q)
+		}
+		q.push(evt)
+	}
+
+	/**
+	 * Notify any active real clients that this generation is going away, then
+	 * drop them. Mirrors the `1012 Service Restart` close code WebSockets use
+	 * for planned restarts. Also drops any stranded pending events for ids that
+	 * never reached `register()` (e.g. binding-fetch errored mid-flight).
+	 */
+	disposeAll(): void {
+		for (const [wsId, cfSocket] of this._sockets) {
+			if (cfSocket.readyState === CFWebSocket.CLOSED) continue
+			if (this._bridgedAdoptions.has(wsId)) {
+				// Real socket — closing it propagates 1012 to the upstream peer
+				// (the synthetic side lives on the guest, which is going away).
+				// `close()` sets readyState to CLOSED for us.
+				cfSocket.close(1012, 'Service Restart')
+				continue
+			}
+			cfSocket.dispatchOrQueue({ type: 'close', code: 1012, reason: 'Service Restart', wasClean: true })
+			cfSocket.readyState = CFWebSocket.CLOSED
+		}
+		this._sockets.clear()
+		this._pendingEvents.clear()
+		this._bridgedAdoptions.clear()
+		this._forgotten.clear()
+	}
+}
+
+/**
+ * Peer that lives next to a host-side `CFWebSocket` and posts every dispatched
+ * event back to the guest. Pinned to `OPEN`/`accepted` so the cli/dev.ts
+ * upgrade handler — which only dispatches on accepted peers — can always
+ * relay client traffic.
+ */
+class BridgeWebSocketPeer<O> extends CFWebSocket {
+	private _wsId: string
+	private _post: (msg: O) => void
+	private _envelopes: WsHostEnvelopes<O>
+	private _onForget: (wsId: string) => void
+
+	constructor(wsId: string, post: (msg: O) => void, envelopes: WsHostEnvelopes<O>, onForget: (wsId: string) => void) {
+		super()
+		this._wsId = wsId
+		this._post = post
+		this._envelopes = envelopes
+		this._onForget = onForget
+		this._accepted = true
+		this.readyState = CFWebSocket.OPEN
+	}
+
+	override _dispatchWSEvent(evt: WSEvent): void {
+		if (evt.type === 'message' && evt.data !== undefined) {
+			// Drop late messages dispatched after a close (e.g. a queued event
+			// flushing after `_onForget` ran). The peer's state must stay
+			// coherent with the wsId having been forgotten on both sides.
+			if (this.readyState !== CFWebSocket.OPEN) return
+			this._post(this._envelopes.clientMessage(this._wsId, evt.data))
+			return
+		}
+		if (evt.type === 'close') {
+			if (this.readyState === CFWebSocket.CLOSED) return
+			this.readyState = CFWebSocket.CLOSED
+			this._post(this._envelopes.clientClose(this._wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true))
+			this._onForget(this._wsId)
+		}
+	}
+}
+
+/**
+ * Guest side: hooks the CFWebSocket that's about to ship in a Response and
+ * forwards events between the user-facing peer and the host.
+ */
+export class WsGuestBridge<O> {
+	private _sockets = new Map<string, { userPeer: CFWebSocket; closed: boolean }>()
+	/**
+	 * Client events that arrived before the matching `createBridgedSocket()` was
+	 * called. On the env-binding channel main adopts the upstream WS with
+	 * `bridgeEvents: true`, whose `accept()` flushes already-queued client events
+	 * synchronously — those posts race ahead of the `rpc-fetch-result` that
+	 * triggers `createBridgedSocket` here. Without buffering, the first inbound
+	 * message (or an early close) would be lost. Mirrors `WsHostBridge`.
+	 */
+	private _pendingEvents = new Map<string, WSEvent[]>()
+	/** wsIds already created+closed; drop late client events instead of re-buffering. */
+	private _forgotten = new Set<string>()
+	private _post: (msg: O) => void
+	private _envelopes: WsGuestEnvelopes<O>
+
+	constructor(post: (msg: O) => void, envelopes: WsGuestEnvelopes<O>) {
+		this._post = post
+		this._envelopes = envelopes
+	}
+
+	private _forget(wsId: string): void {
+		this._sockets.delete(wsId)
+		this._pendingEvents.delete(wsId)
+		rememberForgotten(this._forgotten, wsId)
+	}
+
+	private _bufferPending(wsId: string, evt: WSEvent): void {
+		if (this._forgotten.has(wsId)) return
+		let q = this._pendingEvents.get(wsId)
+		if (!q) {
+			q = []
+			this._pendingEvents.set(wsId, q)
+		}
+		q.push(evt)
+	}
+
+	/**
+	 * Reverse of `register`: build a fresh `CFWebSocket` for a wsId allocated on
+	 * the host (e.g. main adopted an upstream WS returned from an env-binding
+	 * fetch). The returned socket is what user code interacts with — calling
+	 * `accept()` / `send()` / `addEventListener('message')` here drives the
+	 * remote peer through the bridge.
+	 */
+	createBridgedSocket(wsId: string): CFWebSocket {
+		const userPeer = new CFWebSocket()
+		const bridgePeer = new BridgeGuestPeer<O>(wsId, this._post, this._envelopes, id => this._forget(id))
+		userPeer._peer = bridgePeer
+		bridgePeer._peer = userPeer
+		this._sockets.set(wsId, { userPeer, closed: false })
+		// Replay events buffered before this socket existed (see `_pendingEvents`).
+		const pending = this._pendingEvents.get(wsId)
+		if (pending) {
+			this._pendingEvents.delete(wsId)
+			for (const evt of pending) {
+				if (evt.type === 'close') {
+					this.deliverClientClose(wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true)
+				} else if (evt.data !== undefined) {
+					this.deliverClientMessage(wsId, evt.data)
+				}
+			}
+		}
+		return userPeer
+	}
+
+	/**
+	 * Hook up a `CFWebSocket` that's about to ship in a Response. Listeners must
+	 * be attached BEFORE `accept()` so the synchronous flush of any queued events
+	 * (e.g. the user already called `server.send()` before returning the response)
+	 * reaches the bridge instead of being lost.
+	 *
+	 * If the shipped peer was pre-accepted by user code (e.g. `client.accept()`
+	 * before returning the Response), any events dispatched between that
+	 * pre-accept and this `register()` call were emitted with no listeners
+	 * attached — they're already gone. We still attach listeners so anything
+	 * *after* this point flows correctly, and emit a console.warn so the user
+	 * knows to drop the early `accept()`.
+	 */
+	register(shipped: CFWebSocket): string {
+		const wsId = generateId(8)
+		const userPeer = shipped._peer
+		if (!userPeer) {
+			throw new Error('Response.webSocket has no peer — was it created via `new WebSocketPair()`?')
+		}
+		this._sockets.set(wsId, { userPeer, closed: false })
+
+		const wasPreAccepted = shipped._accepted
+
+		shipped.addEventListener('message', (ev: Event) => {
+			const data = (ev as MessageEvent).data
+			this._post(this._envelopes.remoteMessage(wsId, data))
+		})
+		shipped.addEventListener('close', (ev: Event) => {
+			const ce = ev as CloseEvent
+			this._post(this._envelopes.remoteClose(wsId, ce.code, ce.reason, ce.wasClean ?? true))
+			// `_forget` (not a bare delete) so the id enters `_forgotten`. The host
+			// closes the real socket in response and the `clientClose` echo comes
+			// back here; without the id in `_forgotten`, `_bufferPending` would stash
+			// that echo in `_pendingEvents` forever (wsIds are unique, so no future
+			// register matches it) — a leak on every server-initiated close.
+			this._forget(wsId)
+		})
+		shipped.accept()
+
+		if (wasPreAccepted) {
+			console.warn(
+				'[lopata] Response.webSocket was already accept()ed before returning; '
+					+ 'any events sent between accept() and the response return were lost. '
+					+ 'Remove the early accept() — lopata accepts the shipped peer for you.',
+			)
+		}
+
+		return wsId
+	}
+
+	/** Host delivered a message from the real client → fire it on the user peer. */
+	deliverClientMessage(wsId: string, data: string | ArrayBuffer): void {
+		const entry = this._sockets.get(wsId)
+		if (!entry) {
+			this._bufferPending(wsId, { type: 'message', data })
+			return
+		}
+		if (entry.closed) return
+		entry.userPeer.dispatchOrQueue({ type: 'message', data })
+	}
+
+	/** Host delivered a close from the real client → fire close on the user peer. */
+	deliverClientClose(wsId: string, code: number, reason: string, wasClean: boolean): void {
+		const entry = this._sockets.get(wsId)
+		if (!entry) {
+			this._bufferPending(wsId, { type: 'close', code, reason, wasClean })
+			return
+		}
+		if (entry.closed) return
+		entry.closed = true
+		// Mark CLOSED *before* dispatching so user code observes a closed socket
+		// inside its close handler. CF's hibernation template calls `ws.close()`
+		// from `webSocketClose`; with readyState still OPEN that re-enters
+		// `CFWebSocket.close()` and fires the handler a second time. Now the nested
+		// close() no-ops via its `readyState === CLOSED` early return.
+		entry.userPeer.readyState = CFWebSocket.CLOSED
+		entry.userPeer.dispatchOrQueue({ type: 'close', code, reason, wasClean })
+		this._forget(wsId)
+	}
+}
+
+/**
+ * Peer attached to the user-facing `CFWebSocket` returned by
+ * {@link WsGuestBridge.createBridgedSocket}. Pinned to `OPEN`/`accepted` so
+ * bytes the user-peer sends (`peer._dispatchWSEvent` from `CFWebSocket.send`)
+ * are forwarded to the host immediately without waiting for accept().
+ */
+class BridgeGuestPeer<O> extends CFWebSocket {
+	private _wsId: string
+	private _post: (msg: O) => void
+	private _envelopes: WsGuestEnvelopes<O>
+	private _onForget: (wsId: string) => void
+
+	constructor(wsId: string, post: (msg: O) => void, envelopes: WsGuestEnvelopes<O>, onForget: (wsId: string) => void) {
+		super()
+		this._wsId = wsId
+		this._post = post
+		this._envelopes = envelopes
+		this._onForget = onForget
+		this._accepted = true
+		this.readyState = CFWebSocket.OPEN
+	}
+
+	override _dispatchWSEvent(evt: WSEvent): void {
+		if (evt.type === 'message' && evt.data !== undefined) {
+			this._post(this._envelopes.remoteMessage(this._wsId, evt.data))
+			return
+		}
+		if (evt.type === 'close') {
+			this._post(this._envelopes.remoteClose(this._wsId, evt.code ?? 1000, evt.reason ?? '', evt.wasClean ?? true))
+			this._onForget(this._wsId)
+		}
+	}
+}

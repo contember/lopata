@@ -1,4 +1,3 @@
-import { ExecutionContext } from '../execution-context'
 import { persistError, startSpan } from '../tracing/span'
 
 export interface ScheduledController {
@@ -269,39 +268,47 @@ export function createScheduledController(cron: string, scheduledTime: number): 
 	}
 }
 
-type ScheduledHandler = (controller: ScheduledController, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>
-
-export function startCronScheduler(
+/**
+ * Generic cron timer. `invoke` is called with the matched expression and the
+ * tick time; the caller decides how to dispatch (in-process handler vs RPC).
+ */
+export function startCronTimer(
 	crons: string[],
-	handler: ScheduledHandler,
-	env: Record<string, unknown>,
+	invoke: (cronExpr: string, now: Date) => Promise<unknown>,
 	workerName?: string,
+	/**
+	 * Per-cron last-fired-minute dedup state, keyed by cron expression. Pass a map
+	 * OWNED BY THE GENERATION MANAGER (not per-generation) so it survives reloads:
+	 * a fresh per-generation map would start empty and re-fire a cron for a minute
+	 * the previous generation already handled — for `* * * * *` that's nearly every
+	 * save. Defaults to a local map for standalone callers/tests.
+	 */
+	lastFiredMinute: Map<string, number> = new Map(),
 ): NodeJS.Timer {
 	const parsed = crons.map(parseCron)
 
-	// Check every 60 seconds, aligned to the start of each minute
-	const interval = setInterval(() => {
+	// Poll a few times per minute and fire each cron at most once per matching
+	// wall-clock minute. `setInterval` is NOT minute-aligned (it fires relative
+	// to creation, and HMR reload resets that phase), so a once-per-60s check
+	// could drift past a matching minute or land on it twice. Polling at 15s +
+	// per-minute dedup makes firing robust to that drift.
+	return setInterval(() => {
 		const now = new Date()
-		for (const cron of parsed) {
-			if (cronMatchesDate(cron, now)) {
-				const controller = createScheduledController(cron.expression, now.getTime())
-				const ctx = new ExecutionContext()
-				console.log(`[lopata] Cron triggered: ${cron.expression}`)
-				startSpan({
-					name: 'scheduled',
-					kind: 'server',
-					attributes: { cron: cron.expression },
-					workerName,
-				}, async () => {
-					await handler(controller, env, ctx)
-					await ctx._awaitAll()
-				}).catch((err) => {
-					console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
-					persistError(err, 'scheduled', workerName)
-				})
-			}
-		}
-	}, 60_000)
-
-	return interval
+		const minuteKey = Math.floor(now.getTime() / 60_000)
+		parsed.forEach((cron) => {
+			if (!cronMatchesDate(cron, now)) return
+			if (lastFiredMinute.get(cron.expression) === minuteKey) return
+			lastFiredMinute.set(cron.expression, minuteKey)
+			console.log(`[lopata] Cron triggered: ${cron.expression}`)
+			startSpan({
+				name: 'scheduled',
+				kind: 'server',
+				attributes: { cron: cron.expression },
+				workerName,
+			}, () => invoke(cron.expression, now)).catch((err) => {
+				console.error(`[lopata] Scheduled handler error (${cron.expression}):`, err)
+				persistError(err, 'scheduled', workerName)
+			})
+		})
+	}, 15_000)
 }

@@ -1,3 +1,4 @@
+import { LOPATA_PID_LABEL_KEY } from './container-cleanup'
 import { DockerManager, type DockerRunOptions } from './container-docker'
 import { DurableObjectBase, type DurableObjectStateImpl } from './durable-object'
 
@@ -97,20 +98,32 @@ export class ContainerRuntime {
 
 		this._transition('running')
 
-		// Check if a container with this name already exists (e.g. after process crash)
+		// Check if a container with this name already exists (e.g. survived a reload
+		// in this same process, or was left behind by a crashed/foreign lopata run).
 		const existing = await this._docker.inspect(this._containerName)
 		if (existing) {
-			if (existing.state === 'running') {
+			// Only adopt a running container THIS process created (matching pid
+			// label). A stale label means the creator crashed/exited — its config,
+			// env and port mappings may not match what we'd build now, so removing
+			// and recreating is safer than silently adopting foreign state. (Labels
+			// are immutable, so an adopted container keeps the dead creator's pid.)
+			const ownerPid = existing.labels[LOPATA_PID_LABEL_KEY]
+			const ownedByThisProcess = ownerPid === String(process.pid)
+			if (existing.state === 'running' && ownedByThisProcess) {
 				// Recover port mappings from the running container
 				this._hostPorts.clear()
 				this._recoverPortMappings(existing.ports)
+				// `run()` would have fired onRegister; do the same for adoption so
+				// the process-exit cleanup tracks recovered containers too.
+				this._docker.registerExisting(this._containerName)
 				await this.onStart?.()
 				this._startHealthCheck()
 				this._startMonitor()
 				this.renewActivityTimeout()
 				return
 			}
-			// Container exists but isn't running — remove it before creating a new one
+			// Not running, or owned by a different/dead lopata process — remove it
+			// before creating a fresh one.
 			await this._docker.remove(this._containerName)
 		}
 
@@ -292,15 +305,17 @@ export class ContainerRuntime {
 	// ─── Private ────────────────────────────────────────────────────────────
 
 	/**
-	 * Recover host port mappings from docker inspect Ports object.
-	 * Format: { "8080/tcp": [{ "HostIp": "...", "HostPort": "49152" }], ... }
+	 * Recover host port mappings from the flattened ports map returned by
+	 * `DockerManager.inspect()`: { "8080/tcp": "0.0.0.0:32768", ... }.
+	 * (inspect() already flattens docker's raw `[{HostIp,HostPort}]` shape, so
+	 * the value here is a "host:port" string, not an array.)
 	 */
-	private _recoverPortMappings(ports: Record<string, unknown>) {
-		for (const [key, bindings] of Object.entries(ports)) {
-			if (!Array.isArray(bindings) || bindings.length === 0) continue
+	private _recoverPortMappings(ports: Record<string, string>) {
+		for (const [key, value] of Object.entries(ports)) {
+			if (typeof value !== 'string') continue
 			const containerPort = parseInt(key, 10)
 			if (Number.isNaN(containerPort)) continue
-			const hostPort = parseInt(bindings[0].HostPort, 10)
+			const hostPort = parseInt(value.split(':').pop() ?? '', 10)
 			if (Number.isNaN(hostPort)) continue
 			this._hostPorts.set(containerPort, hostPort)
 		}

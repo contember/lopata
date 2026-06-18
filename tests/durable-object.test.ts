@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { DOExecutor, DOExecutorFactory } from '../src/bindings/do-executor'
 import {
 	DurableObjectBase,
 	DurableObjectIdImpl,
@@ -325,6 +326,23 @@ describe('DurableObjectNamespace', () => {
 		expect(await stub2.getCount()).toBe(1)
 	})
 
+	test("named id then nameless idFromString(sameHash) keeps each stub's id.name", () => {
+		const namedId = ns.idFromName('alpha')
+		const namedStub = ns.get(namedId) as { id: { name?: string } }
+		expect(namedStub.id.name).toBe('alpha')
+
+		// A caller who only has the raw hash gets back a stub whose id is nameless,
+		// not the cached named one (the cache used to key on idStr only and leaked
+		// `name: 'alpha'` to this caller).
+		const namelessId = ns.idFromString(namedId.toString())
+		const namelessStub = ns.get(namelessId) as { id: { name?: string } }
+		expect(namelessStub.id.name).toBeUndefined()
+
+		// And the named stub is still the cached one for the original lookup.
+		const namedStub2 = ns.get(namedId) as { id: { name?: string } }
+		expect(namedStub2).toBe(namedStub)
+	})
+
 	test('blockConcurrencyWhile defers proxy calls until ready', async () => {
 		const order: string[] = []
 
@@ -361,6 +379,50 @@ describe('DurableObjectNamespace', () => {
 		ns2._setClass(TestCounter, {})
 		const stub2 = ns2.get(id) as any
 		expect(await stub2.getCount()).toBe(2)
+	})
+
+	describe('hasAlarmHandler', () => {
+		test('in-process: detects alarm() on the wired class', () => {
+			class WithAlarm extends DurableObjectBase {
+				async alarm() {}
+			}
+			class WithoutAlarm extends DurableObjectBase {}
+
+			const withNs = new DurableObjectNamespaceImpl(db, 'WithAlarm', undefined, { evictionTimeoutMs: 0 })
+			withNs._setClass(WithAlarm, {})
+			const withoutNs = new DurableObjectNamespaceImpl(db, 'WithoutAlarm', undefined, { evictionTimeoutMs: 0 })
+			withoutNs._setClass(WithoutAlarm, {})
+
+			expect(withNs.hasAlarmHandler()).toBe(true)
+			expect(withoutNs.hasAlarmHandler()).toBe(false)
+		})
+
+		test('thread mode: defers to _setAlarmHandlerHint', () => {
+			const ns = new DurableObjectNamespaceImpl(db, 'ThreadDO', undefined, { evictionTimeoutMs: 0 })
+			ns._setExternalClass('ThreadDO', {})
+
+			// Before the hint arrives: defaults to false (matches pre-fix behavior).
+			expect(ns.hasAlarmHandler()).toBe(false)
+
+			ns._setAlarmHandlerHint(true)
+			expect(ns.hasAlarmHandler()).toBe(true)
+
+			// Idempotent / overwrites — simulates hot-reload removing the handler.
+			ns._setAlarmHandlerHint(false)
+			expect(ns.hasAlarmHandler()).toBe(false)
+		})
+
+		test("thread mode: _setExternalClass clears the previous generation's hint", () => {
+			const ns = new DurableObjectNamespaceImpl(db, 'ThreadDO', undefined, { evictionTimeoutMs: 0 })
+			ns._setExternalClass('ThreadDO', {})
+			ns._setAlarmHandlerHint(true)
+			expect(ns.hasAlarmHandler()).toBe(true)
+
+			// Re-wire (e.g. user removed `alarm()` between reloads). The next hint may
+			// arrive asynchronously; until it does, `hasAlarmHandler()` must report false.
+			ns._setExternalClass('ThreadDO', {})
+			expect(ns.hasAlarmHandler()).toBe(false)
+		})
 	})
 })
 
@@ -1794,5 +1856,176 @@ describe('transactionSync', () => {
 		})
 		// kv write committed
 		expect(storage.kv.get('key')).toBe('kv-value')
+	})
+})
+
+describe('Executor crash recovery', () => {
+	// Fake executor whose backing "worker" we can declare dead via `isDisposed()`,
+	// to exercise the namespace's recreate-on-next-access path without a real
+	// Worker crash.
+	class FakeExecutor implements DOExecutor {
+		disposed = false
+		disposeCount = 0
+		constructor(readonly serial: number) {}
+		async executeFetch(): Promise<Response> {
+			return new Response(`ok-${this.serial}`)
+		}
+		async executeRpc(): Promise<unknown> {
+			return null
+		}
+		async executeRpcGet(): Promise<unknown> {
+			return null
+		}
+		async executeAlarm(): Promise<void> {}
+		isActive() {
+			return false
+		}
+		isBlocked() {
+			return false
+		}
+		activeWebSocketCount() {
+			return 0
+		}
+		isAborted() {
+			return false
+		}
+		isDisposed() {
+			return this.disposed
+		}
+		async dispose() {
+			this.disposeCount++
+			this.disposed = true
+		}
+	}
+
+	class FakeFactory implements DOExecutorFactory {
+		created: FakeExecutor[] = []
+		create(): DOExecutor {
+			const e = new FakeExecutor(this.created.length)
+			this.created.push(e)
+			return e
+		}
+	}
+
+	test('a disposed (crashed) executor is dropped and recreated on next access', async () => {
+		const factory = new FakeFactory()
+		const ns = new DurableObjectNamespaceImpl(db, 'CrashDO', undefined, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const stub = ns.get(ns.idFromName('a')) as unknown as { fetch(input: Request): Promise<Response> }
+
+		expect(await (await stub.fetch(new Request('http://do/'))).text()).toBe('ok-0')
+		expect(factory.created.length).toBe(1)
+
+		// Simulate the worker crashing under this executor.
+		factory.created[0]!.disposed = true
+
+		// Next access must drop the dead executor (disposing it) and create a fresh
+		// one — not post to the terminated worker (which would hang).
+		expect(await (await stub.fetch(new Request('http://do/'))).text()).toBe('ok-1')
+		expect(factory.created.length).toBe(2)
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+	})
+
+	test('the idle reaper evicts a dead executor', async () => {
+		const factory = new FakeFactory()
+		const ns = new DurableObjectNamespaceImpl(db, 'CrashDO2', undefined, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const stub = ns.get(ns.idFromName('b')) as unknown as { fetch(input: Request): Promise<Response> }
+		await stub.fetch(new Request('http://do/'))
+
+		factory.created[0]!.disposed = true
+		;(ns as any)._evictIdle()
+
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+		// A fresh executor is created on the next access.
+		await stub.fetch(new Request('http://do/'))
+		expect(factory.created.length).toBe(2)
+	})
+})
+
+describe('DurableObjectNamespaceImpl.destroy({ force })', () => {
+	// A fake executor that always reports a live WebSocket, so the non-force
+	// destroy keeps it alive and `force` is the only thing that disposes it.
+	class WsHoldingExecutor implements DOExecutor {
+		disposeCount = 0
+		async executeFetch(): Promise<Response> {
+			return new Response('ok')
+		}
+		async executeRpc(): Promise<unknown> {
+			return null
+		}
+		async executeRpcGet(): Promise<unknown> {
+			return null
+		}
+		async executeAlarm(): Promise<void> {}
+		isActive() {
+			return false
+		}
+		isBlocked() {
+			return false
+		}
+		activeWebSocketCount() {
+			return 1
+		}
+		isAborted() {
+			return false
+		}
+		isDisposed() {
+			return false
+		}
+		async dispose() {
+			this.disposeCount++
+		}
+	}
+	class WsFactory implements DOExecutorFactory {
+		created: WsHoldingExecutor[] = []
+		create(): DOExecutor {
+			const e = new WsHoldingExecutor()
+			this.created.push(e)
+			return e
+		}
+	}
+
+	async function setup(name: string) {
+		const factory = new WsFactory()
+		const ns = new DurableObjectNamespaceImpl(db, name, undefined, { evictionTimeoutMs: 30_000 }, factory)
+		ns._setClass(class extends DurableObjectBase {} as any, {})
+		const id = ns.idFromName('a')
+		const stub = ns.get(id) as unknown as { fetch(r: Request): Promise<Response> }
+		await stub.fetch(new Request('http://do/')) // force lazy executor creation
+		return { factory, ns, id }
+	}
+
+	function evictionTimer(ns: DurableObjectNamespaceImpl): unknown {
+		return (ns as unknown as { _evictionTimer: unknown })._evictionTimer
+	}
+
+	// TESTS-2: the final-teardown path (test dispose / shutdown) must dispose
+	// even WS-holding executors and must NOT restart the 30s eviction interval —
+	// there's no next generation to reap survivors and a live timer would outlive
+	// the DB close that follows. A regression would hang the suite, not fail an
+	// assertion, so assert it directly.
+	test('force disposes a WS-holding executor and leaves no eviction timer', async () => {
+		const { factory, ns, id } = await setup('DestroyWsForce')
+		expect(factory.created[0]!.activeWebSocketCount()).toBe(1)
+
+		ns.destroy({ force: true })
+
+		expect(factory.created[0]!.disposeCount).toBeGreaterThan(0)
+		expect(ns._getExecutor(id.toString())).toBe(null)
+		expect(evictionTimer(ns)).toBe(null)
+	})
+
+	test('without force, a WS-holding executor survives and the eviction timer is re-armed', async () => {
+		const { factory, ns, id } = await setup('DestroyWsKeep')
+
+		ns.destroy() // no force — the WS-holding executor must survive
+
+		expect(factory.created[0]!.disposeCount).toBe(0)
+		expect(ns._getExecutor(id.toString())).not.toBe(null)
+		expect(evictionTimer(ns)).not.toBe(null)
+
+		// Teardown: force-destroy so the re-armed 30s interval doesn't outlive the test.
+		ns.destroy({ force: true })
 	})
 })

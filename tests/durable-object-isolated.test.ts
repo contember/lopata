@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WorkerExecutorFactory } from '../src/bindings/do-executor-worker'
 import { DurableObjectIdImpl, DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
+import type { CFWebSocket } from '../src/bindings/websocket-pair'
 import { runMigrations } from '../src/db'
 
 /**
@@ -80,6 +81,116 @@ beforeAll(() => {
       }
     }
 
+    export class HibernationDO extends DurableObject {
+      async fetch(request) {
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected websocket', { status: 426 });
+        }
+        const pair = new WebSocketPair();
+        const client = pair[0];
+        const server = pair[1];
+        this.ctx.acceptWebSocket(server);
+        return new Response(null, { status: 101, webSocket: client });
+      }
+    }
+
+    export class AbortDO extends DurableObject {
+      async ping() { return "pong"; }
+      async doAbort() {
+        this.ctx.abort("boom");
+        return "aborting";
+      }
+    }
+
+    export class BlockDO extends DurableObject {
+      async startBlock(ms) {
+        // Fire-and-forget block so the method returns while the gate is held.
+        this.ctx.blockConcurrencyWhile(() => new Promise(r => setTimeout(r, ms)));
+        return "blocking";
+      }
+    }
+
+    export class PlainWsDO extends DurableObject {
+      // Returns a WebSocket WITHOUT the hibernation acceptWebSocket() API.
+      async fetch(request) {
+        if (request.headers.get('Upgrade') !== 'websocket') {
+          return new Response('Expected websocket', { status: 426 });
+        }
+        const pair = new WebSocketPair();
+        pair[1].accept();
+        return new Response(null, { status: 101, webSocket: pair[0] });
+      }
+    }
+
+    export class SelfRefDO extends DurableObject {
+      async whoAmI() {
+        // Identify the instance by its name (preserved via instanceName flow).
+        return this.ctx.id.name ?? '<no-name>';
+      }
+      async incHere() {
+        const v = ((await this.ctx.storage.get('n')) ?? 0) + 1;
+        await this.ctx.storage.put('n', v);
+        return v;
+      }
+      async getHere() {
+        return (await this.ctx.storage.get('n')) ?? 0;
+      }
+      async callPeer(name) {
+        // Cross-DO call to the same class via env-RPC. Lands on a separate
+        // singleton instance ("peer") owned by main's namespace.
+        const id = this.env.SELF_REF.idFromName(name);
+        const stub = this.env.SELF_REF.get(id);
+        const who = await stub.whoAmI();
+        const n = await stub.incHere();
+        return { who, n };
+      }
+      async callOther(name) {
+        // Cross-class DO call via env-RPC.
+        const id = this.env.OTHER_DO.idFromName(name);
+        return this.env.OTHER_DO.get(id).noop();
+      }
+      async fetchPeer(name, path) {
+        // Cross-DO fetch via env-RPC.
+        const stub = this.env.SELF_REF.get(this.env.SELF_REF.idFromName(name));
+        const resp = await stub.fetch('http://peer' + path);
+        return { status: resp.status, body: await resp.text() };
+      }
+      async fetch(request) {
+        const url = new URL(request.url);
+        if (url.pathname === '/who') {
+          return new Response(this.ctx.id.name ?? '<no-name>');
+        }
+        return new Response('not found', { status: 404 });
+      }
+    }
+
+    export class OtherDO extends DurableObject {
+      async noop() { return 'noop'; }
+      async whoAmI() { return this.ctx.id.name ?? '<no-name>'; }
+    }
+
+    export class EnvCallDO extends DurableObject {
+      async callSlowService() {
+        // Outbound env-call leaves this DO worker toward main mid-command.
+        return this.env.SLOW_SVC.ping();
+      }
+    }
+
+    export class StreamDO extends DurableObject {
+      async fetch() {
+        const { readable, writable } = new TransformStream();
+        const writer = writable.getWriter();
+        const enc = new TextEncoder();
+        (async () => {
+          await writer.write(enc.encode("first"));
+          await new Promise(r => setTimeout(r, 150));
+          await writer.write(enc.encode("second"));
+          await writer.close();
+        })();
+        return new Response(readable);
+      }
+    }
+
     export default {
       async fetch() {
         return new Response("ok");
@@ -100,8 +211,19 @@ beforeAll(() => {
 					{ name: 'COUNTER', class_name: 'TestCounter' },
 					{ name: 'ALARM', class_name: 'AlarmDO' },
 					{ name: 'FIRE_AND_FORGET', class_name: 'FireAndForgetDO' },
+					{ name: 'HIBERNATION', class_name: 'HibernationDO' },
+					{ name: 'ABORT', class_name: 'AbortDO' },
+					{ name: 'BLOCK', class_name: 'BlockDO' },
+					{ name: 'PLAIN_WS', class_name: 'PlainWsDO' },
+					{ name: 'SELF_REF', class_name: 'SelfRefDO' },
+					{ name: 'OTHER_DO', class_name: 'OtherDO' },
+					{ name: 'STREAM_DO', class_name: 'StreamDO' },
+					{ name: 'ENV_CALL_DO', class_name: 'EnvCallDO' },
 				],
 			},
+			// Service binding used by EnvCallDO — env-calls resolve it against the
+			// env passed to _setClass on main (the test supplies a stub SLOW_SVC).
+			services: [{ binding: 'SLOW_SVC', service: 'slow-svc' }],
 		}),
 	)
 
@@ -185,6 +307,71 @@ describe('Isolated DO — basic RPC', () => {
 		if (exec1) await exec1.dispose()
 		if (exec2) await exec2.dispose()
 	})
+})
+
+describe('Isolated DO — open streams keep the instance active', () => {
+	test('a streamed body keeps isActive() true until consumed', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'StreamDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('stream-active')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch('http://fake/stream')
+
+		// Headers settled the fetch command, but the body is still streaming —
+		// the executor must report active so _evictIdle / _disposeExecutorWhenIdle
+		// can't dispose it mid-body (the caller would get "Worker terminated").
+		const executor = ns._getExecutor(id.toString())
+		if (!executor) throw new Error('executor not created')
+		expect(executor.isActive()).toBe(true)
+
+		expect(await resp.text()).toBe('firstsecond')
+		expect(executor.isActive()).toBe(false)
+
+		await executor.dispose()
+	})
+})
+
+describe('Isolated DO — eviction vs in-flight env-call', () => {
+	// TEST-3: an outbound env-call (this.env.SVC.ping() leaving the DO worker
+	// toward main) runs inside a pending inbound command, which must keep the
+	// executor isActive() so the idle reaper can't dispose it mid-call.
+	test('an eviction tick during an env-call does not dispose the executor', async () => {
+		let release: () => void = () => {}
+		const gate = new Promise<void>(r => {
+			release = r
+		})
+		const mainEnv = {
+			SLOW_SVC: {
+				async ping() {
+					await gate
+					return 'pong'
+				},
+			},
+		}
+		// evictionTimeoutMs 0 → every executor is past the idle window; only the
+		// activity guards stand between the tick and dispose().
+		const ns = new DurableObjectNamespaceImpl(db, 'EnvCallDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, mainEnv)
+
+		const id = ns.idFromName('env-call-evict')
+		const stub = ns.get(id) as any
+		const pending = stub.callSlowService()
+
+		// Wait until the env-call is parked on the gate inside main…
+		await new Promise(r => setTimeout(r, 300)) // …then force an eviction scan mid-call.
+		;(ns as any)._evictIdle()
+
+		const executor = ns._getExecutor(id.toString())
+		expect(executor).not.toBeNull()
+		expect(executor?.isDisposed?.()).toBe(false)
+
+		release()
+		expect(await pending).toBe('pong')
+
+		const cleanupExec = ns._getExecutor(id.toString())
+		if (cleanupExec) await cleanupExec.dispose()
+	}, 15_000)
 })
 
 describe('Isolated DO — dispose terminates worker', () => {
@@ -293,4 +480,280 @@ describe('Isolated DO — data persistence', () => {
 		const exec2 = ns2._getExecutor(id.toString())
 		if (exec2) await exec2.dispose()
 	})
+})
+
+describe('Isolated DO — cross-DO routing via env-RPC', () => {
+	/**
+	 * Main owns the namespace; both DO bindings on the worker side are env-RPC
+	 * proxies. To exercise the full cross-DO flow we share the same namespaces
+	 * with main's executor factory so DO A's worker can route a call back into
+	 * main, which dispatches to DO B's separate executor.
+	 */
+	function buildEnv(): { selfNs: DurableObjectNamespaceImpl; otherNs: DurableObjectNamespaceImpl; env: Record<string, unknown> } {
+		const selfNs = new DurableObjectNamespaceImpl(db, 'SelfRefDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		const otherNs = new DurableObjectNamespaceImpl(db, 'OtherDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		const env = { SELF_REF: selfNs, OTHER_DO: otherNs }
+		selfNs._setClass(class {} as any, env)
+		otherNs._setClass(class {} as any, env)
+		return { selfNs, otherNs, env }
+	}
+
+	test('self-DO call lands on a separate executor for the peer id', async () => {
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.callPeer('peer')
+		expect(result).toEqual({ who: 'peer', n: 1 })
+
+		// The peer increment landed on a separate executor (different id),
+		// not on the caller's storage.
+		const peerId = selfNs.idFromName('peer')
+		const peer = selfNs.get(peerId) as any
+		expect(await peer.getHere()).toBe(1)
+		expect(await caller.getHere()).toBe(0)
+
+		// And the two executors really are distinct singletons.
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(peerId.toString())
+		expect(callerExec).not.toBe(null)
+		expect(peerExec).not.toBe(null)
+		expect(callerExec).not.toBe(peerExec)
+
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
+	})
+
+	test('cross-class DO call routes through main to the other namespace', async () => {
+		const { selfNs, otherNs } = buildEnv()
+		const callerId = selfNs.idFromName('cross-caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.callOther('cross-target')
+		expect(result).toBe('noop')
+
+		// The target executor lives on the other namespace, not on SELF_REF.
+		const targetId = otherNs.idFromName('cross-target')
+		expect(otherNs._getExecutor(targetId.toString())).not.toBe(null)
+		expect(selfNs._getExecutor(targetId.toString())).toBe(null)
+
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const targetExec = otherNs._getExecutor(targetId.toString())
+		if (callerExec) await callerExec.dispose()
+		if (targetExec) await targetExec.dispose()
+	})
+
+	test('cross-DO fetch through env-RPC reaches the peer instance', async () => {
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('fetch-caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.fetchPeer('fetch-peer', '/who')
+		expect(result).toEqual({ status: 200, body: 'fetch-peer' })
+
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(selfNs.idFromName('fetch-peer').toString())
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
+	})
+
+	test('instanceName flows through env-RPC — ctx.id.name preserved on the target', async () => {
+		// `whoAmI()` reads `this.ctx.id.name` on the peer. That value only
+		// matches the caller-supplied name when `instanceName` is carried in
+		// the `BindingTarget` and main reconstructs `DurableObjectIdImpl(idStr,
+		// instanceName)` before resolving the executor.
+		const { selfNs } = buildEnv()
+		const callerId = selfNs.idFromName('name-caller')
+		const caller = selfNs.get(callerId) as any
+
+		const result = await caller.callPeer('name-target')
+		expect(result.who).toBe('name-target')
+
+		const callerExec = selfNs._getExecutor(callerId.toString())
+		const peerExec = selfNs._getExecutor(selfNs.idFromName('name-target').toString())
+		if (callerExec) await callerExec.dispose()
+		if (peerExec) await peerExec.dispose()
+	})
+
+	test('self-DO call to the host id reaches the same executor (no deadlock, no fork)', async () => {
+		// `env.SELF_REF.get(idFromName('A'))` from inside A resolves the same
+		// singleton executor on main. The DO worker handles the re-entered
+		// command in parallel (concurrent handler invocations, not a separate
+		// fork): both calls see the same storage. Before the fix, this would
+		// either throw (loud-throw stub) or silently fork into a duplicate
+		// in-worker namespace.
+		const { selfNs } = buildEnv()
+		const id = selfNs.idFromName('reentry')
+		const stub = selfNs.get(id) as any
+
+		// Bump storage from inside, then verify the re-entrant peer call sees
+		// the same storage (it ran on the same executor — no fork).
+		await stub.incHere()
+		const result = await stub.callPeer('reentry')
+		expect(result.who).toBe('reentry')
+		// `callPeer` calls `incHere()` on the peer (= same instance), so the
+		// counter goes from 1 → 2 on the same storage row.
+		expect(result.n).toBe(2)
+		expect(await stub.getHere()).toBe(2)
+
+		const executor = selfNs._getExecutor(id.toString())
+		if (executor) await executor.dispose()
+	})
+})
+
+describe('Isolated DO — pump on disposed executor (Finding C)', () => {
+	test('executeFetch on a disposed executor cancels (not locks) the body source', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'TestCounter', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('disposed-pump')
+		const stub = ns.get(id) as any
+		// Warm up so the worker is actually created, then dispose.
+		await stub.fetch('http://do/count')
+		const executor = ns._getExecutor(id.toString())!
+		await executor.dispose()
+
+		// Streaming body — `Request.body` becomes a `ReadableStream` from this.
+		// Before the fix, `_pumpFetchRequestBody` would still kick off after
+		// `_sendCommand` rejected; `pumpStream` grabbed the source reader and
+		// its loop returned early because `_disposed=true` (so it never
+		// released the reader), leaving the source stream perpetually locked.
+		// After the fix, the disposed branch cancels the body directly.
+		let cancelReason: unknown = null
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('chunk1'))
+				// Don't close — simulates a long-lived upload.
+			},
+			cancel(reason) {
+				cancelReason = reason ?? 'cancelled'
+			},
+		})
+		const request = new Request('http://do/stream', { method: 'POST', body, duplex: 'half' } as RequestInit)
+
+		await expect(executor.executeFetch(request)).rejects.toThrow()
+
+		// The body must have been cancelled (no longer locked, and `cancel`
+		// callback fired). Pre-fix, neither happened.
+		await new Promise(r => setTimeout(r, 50))
+		expect(cancelReason).not.toBe(null)
+		expect(body.locked).toBe(false)
+	})
+})
+
+describe('Isolated DO — hibernation WS count (Finding B)', () => {
+	test('state.acceptWebSocket increments activeWebSocketCount on main', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'HibernationDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('hib-count')
+		const stub = ns.get(id) as any
+		const upgrade = new Request('http://do/', { headers: { Upgrade: 'websocket' } })
+		const resp = await stub.fetch(upgrade)
+		expect(resp.status).toBe(101)
+		expect((resp as Response & { webSocket?: unknown }).webSocket).toBeDefined()
+
+		// The post-`ws-bridge ws-accept` signal hops to main asynchronously;
+		// give it a tick to land. Without the fix the counter never moves.
+		await new Promise(r => setTimeout(r, 50))
+
+		// Without the fix, `state.acceptWebSocket(server)` never signalled main
+		// and `activeWebSocketCount()` stayed 0, so `hasActiveWebSockets()`
+		// returned false and the idle reaper would evict the executor mid-WS.
+		expect(ns.hasActiveWebSockets()).toBe(true)
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.activeWebSocketCount()).toBeGreaterThan(0)
+
+		await executor.dispose()
+	})
+
+	test('client disconnect decrements the count even when webSocketClose omits ws.close() (CORR-WS-1)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'HibernationDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('hib-client-disconnect')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch(new Request('http://do/', { headers: { Upgrade: 'websocket' } }))
+		expect(resp.status).toBe(101)
+		await new Promise(r => setTimeout(r, 50))
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.activeWebSocketCount()).toBe(1)
+
+		// Simulate the real client disconnecting — in production cli/dev.ts
+		// dispatches the close on the host socket's bridge peer. HibernationDO has
+		// NO webSocketClose handler that calls ws.close(), so the server peer never
+		// closes back; without the fix `_wsCount` would stay 1 forever and pin the
+		// worker alive past the eviction timer.
+		const hostWs = (resp as Response & { webSocket: CFWebSocket }).webSocket
+		hostWs._peer?.dispatchOrQueue({ type: 'close', code: 1000, reason: '', wasClean: true })
+
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.activeWebSocketCount()).toBe(0)
+		expect(ns.hasActiveWebSockets()).toBe(false)
+
+		await executor.dispose()
+	})
+
+	test('a plain (non-hibernation) WebSocket also pins the executor (CORR-32)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'PlainWsDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('plain-ws')
+		const stub = ns.get(id) as any
+		const resp = await stub.fetch(new Request('http://do/', { headers: { Upgrade: 'websocket' } }))
+		expect(resp.status).toBe(101)
+
+		const executor = ns._getExecutor(id.toString())!
+		// No acceptWebSocket() was called, yet the open socket must pin the executor
+		// so the idle reaper doesn't evict it and 1012 the live client.
+		expect(executor.activeWebSocketCount()).toBe(1)
+
+		const hostWs = (resp as Response & { webSocket: CFWebSocket }).webSocket
+		hostWs._peer?.dispatchOrQueue({ type: 'close', code: 1000, reason: '', wasClean: true })
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.activeWebSocketCount()).toBe(0)
+
+		await executor.dispose()
+	})
+})
+
+describe('Isolated DO — abort & block lifecycle', () => {
+	test('state.abort() marks the executor aborted so the reaper recreates it (CORR-19)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'AbortDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('abort-me')
+		const stub = ns.get(id) as any
+		expect(await stub.ping()).toBe('pong')
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.isAborted()).toBe(false)
+
+		await stub.doAbort()
+		// The do-state signal hops to main asynchronously.
+		await new Promise(r => setTimeout(r, 50))
+		expect(executor.isAborted()).toBe(true)
+
+		await executor.dispose()
+	})
+
+	test('blockConcurrencyWhile marks the executor blocked, then clears (CORR-28)', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'BlockDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setClass(class {} as any, {})
+
+		const id = ns.idFromName('block-me')
+		const stub = ns.get(id) as any
+		await stub.startBlock(600)
+		await new Promise(r => setTimeout(r, 50))
+
+		const executor = ns._getExecutor(id.toString())!
+		expect(executor.isBlocked()).toBe(true)
+
+		await new Promise(r => setTimeout(r, 700))
+		expect(executor.isBlocked()).toBe(false)
+
+		await executor.dispose()
+	}, 5_000)
 })

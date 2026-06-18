@@ -1,0 +1,16 @@
+{
+	"name": "thread-workflow-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"workflows": [
+		{ "name": "greeter", "binding": "GREETER", "class_name": "Greeter" }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "WF_CALLER", "class_name": "WfCaller" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["WfCaller"] }
+	]
+}

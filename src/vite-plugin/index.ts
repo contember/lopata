@@ -12,7 +12,14 @@ export interface LopataPluginConfig {
 	viteEnvironment?: { name?: string }
 	/** Host patterns that route to the main worker (takes priority over wildcard auxiliary hosts). */
 	hosts?: string[]
-	/** Auxiliary workers loaded via native Bun import (not through Vite). */
+	/**
+	 * Auxiliary workers. Unlike the main worker (which runs in-process via Vite
+	 * SSR), each aux worker runs in its own Bun Worker thread and is loaded via
+	 * native Bun import — it does NOT go through Vite's transform pipeline
+	 * (aliases, `import.meta.glob`, env replacement, plugins). Intended for
+	 * workers reached over a service binding (APIs, queue/cron consumers) that
+	 * don't rely on Vite transforms; author them as plain Bun-resolvable modules.
+	 */
 	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
 }
 

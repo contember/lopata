@@ -213,7 +213,12 @@ describe('WebSocket HMR E2E — standalone', () => {
 		cleanup()
 	})
 
-	test('WebSocket survives reload and routes to new code', async () => {
+	// Surviving a reload requires hot-swapping the DO class while keeping the
+	// hibernated WebSockets alive. In worker-thread isolation a reload disposes
+	// the worker (that's what fixes the transitive HMR bug), so for now active
+	// WS connections are closed with `1012 Service Restart` and clients must
+	// reconnect. Re-enable if/when in-place class swap in the DO worker lands.
+	test.skip('WebSocket survives reload and routes to new code', async () => {
 		// Connect WebSocket and verify v1
 		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do`)
 		client.send('hello')
@@ -237,7 +242,7 @@ describe('WebSocket HMR E2E — standalone', () => {
 		client.close()
 	}, 20_000)
 
-	test('second reload also preserves WebSocket', async () => {
+	test.skip('second reload also preserves WebSocket', async () => {
 		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do-2`)
 		client.send('ping')
 		const msg1 = await client.waitForMessage()
@@ -253,5 +258,34 @@ describe('WebSocket HMR E2E — standalone', () => {
 		expect(msg2).toBe('v3:ping')
 
 		client.close()
+	}, 20_000)
+
+	// Counterpart to the unit test in `tests/ws-bridge-shared.test.ts` that
+	// asserts `WsHostBridge.disposeAll()` posts `1012 Service Restart`. This
+	// test drives the full pipeline: a real client WS, a worker reload, and
+	// the close frame surfacing back to the client.
+	test('reload closes connected WebSocket with 1012 Service Restart', async () => {
+		const client = await connectWS(`ws://localhost:${PORT}/ws/test-do-reload-close`)
+
+		// Sanity-check the channel is live before we touch the source file —
+		// otherwise the close could be coming from the connection never having
+		// been accepted in the first place.
+		client.send('hello')
+		const hello = await client.waitForMessage()
+		expect(hello).toMatch(/^v\d+:hello$/)
+
+		output.mark()
+		// Bump VERSION to whichever value is currently in the file (the prior
+		// skipped tests don't run, but be tolerant in case ordering ever
+		// changes). We just need *some* mutation that triggers a reload.
+		const current = readFileSync(WORKER_SRC, 'utf-8')
+		const match = current.match(/VERSION = '(v\d+)'/)
+		if (!match) throw new Error('Could not find VERSION = vN in worker source')
+		const next = `v${Number(match[1]!.slice(1)) + 1}`
+		mutateWorkerSource(`VERSION = '${match[1]}'`, `VERSION = '${next}'`)
+
+		const closeEv = await client.waitForClose(10_000)
+		expect(closeEv.code).toBe(1012)
+		expect(closeEv.reason).toBe('Service Restart')
 	}, 20_000)
 })

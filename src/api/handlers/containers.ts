@@ -1,5 +1,6 @@
 import { $ } from 'bun'
 import type { ContainerBase } from '../../bindings/container'
+import { unregisterContainer } from '../../bindings/container-cleanup'
 import { DockerManager } from '../../bindings/container-docker'
 import { getDatabase } from '../../db'
 import type { ContainerDetail, ContainerInstance, ContainerSummary, HandlerContext, OkResponse } from '../types'
@@ -186,7 +187,7 @@ export const handlers = {
 	},
 
 	async 'containers.destroy'({ className, id }: { className: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
-		const docker = new DockerManager()
+		const docker = new DockerManager({ onRemove: unregisterContainer })
 		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 		await docker.remove(containerName)
 		return { ok: true }

@@ -1,0 +1,350 @@
+/**
+ * Stateless-binding env builder for the main worker-thread runtime.
+ *
+ * Builds the bindings whose state lives on disk (.lopata SQLite/files) —
+ * the same physical files the main thread uses. WAL mode + busy_timeout
+ * make multiple `bun:sqlite` handles to the same file safe.
+ */
+
+import { Database } from 'bun:sqlite'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
+import { AiBinding } from '../bindings/ai'
+import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
+import { BrowserBinding } from '../bindings/browser'
+import { openD1Database } from '../bindings/d1'
+import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
+import { EmailMessage } from '../bindings/email'
+import { HyperdriveBinding } from '../bindings/hyperdrive'
+import { ImagesBinding } from '../bindings/images'
+import { SqliteKVNamespace } from '../bindings/kv'
+import { MediaBinding } from '../bindings/media'
+import { FileR2Bucket } from '../bindings/r2'
+import { makeBindingProxy } from '../bindings/rpc-stub'
+import { serviceBindingConnectError } from '../bindings/service-binding'
+import { StaticAssets } from '../bindings/static-assets'
+import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { SqliteWorkflowBinding } from '../bindings/workflow'
+import type { WranglerConfig } from '../config'
+import { runMigrations } from '../db'
+import { parseDevVars } from '../env'
+import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
+import { getActiveContext } from '../tracing/context'
+import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
+import type { BindingTarget, WorkerMessage } from './protocol'
+import type { RpcClient } from './rpc-client'
+import { tagCloneable } from './rpc-shared'
+import type { WsGuestBridge } from './ws-bridge-shared'
+
+export interface ThreadEnvOptions {
+	config: WranglerConfig
+	/** Per-worker dir for `.dev.vars`/`.env`/assets resolution only. */
+	baseDir: string
+	/** Shared `.lopata` data dir (main's `getDataDir()`) — the SQLite/r2/d1 files
+	 *  main and the DO workers use. Distinct from `baseDir` in multi-worker mode. */
+	dataDir: string
+	rpc: RpcClient
+	/** Guest-side bridge for WebSockets returned by env-binding fetches. */
+	envWsBridge: WsGuestBridge<WorkerMessage>
+	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+}
+
+export interface ThreadEnvBuilt {
+	env: Record<string, unknown>
+	/** Thread-local DB handle — shared with the workflow + queue consumer wiring
+	 *  the caller does after the user module loads. */
+	db: Database
+	/** Workflows the caller still needs to wire after the user module loads. */
+	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
+}
+
+export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
+	mkdirSync(dataDir, { recursive: true })
+	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
+	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })
+
+	const db = new Database(path.join(dataDir, 'data.sqlite'), { create: true })
+	db.run('PRAGMA journal_mode=WAL')
+	db.run('PRAGMA busy_timeout=5000')
+	runMigrations(db)
+
+	const env: Record<string, unknown> = {}
+
+	if (config.vars) {
+		for (const [key, value] of Object.entries(config.vars)) {
+			env[key] = value
+		}
+	}
+
+	const devVarsPath = path.join(baseDir, '.dev.vars')
+	const envPath = path.join(baseDir, '.env')
+	const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null
+	if (filePath) {
+		const devVars = parseDevVars(readFileSync(filePath, 'utf-8'))
+		for (const [key, value] of Object.entries(devVars)) {
+			env[key] = value
+		}
+	}
+
+	for (const kv of config.kv_namespaces ?? []) {
+		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
+			type: 'kv',
+			name: kv.binding,
+			methods: ['get', 'getWithMetadata', 'put', 'delete', 'list'],
+		})
+	}
+
+	for (const r2 of config.r2_buckets ?? []) {
+		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, dataDir), {
+			type: 'r2',
+			name: r2.binding,
+			methods: ['get', 'put', 'delete', 'list', 'head', 'createMultipartUpload'],
+		})
+	}
+
+	for (const d1 of config.d1_databases ?? []) {
+		env[d1.binding] = instrumentD1(openD1Database(dataDir, d1.database_name), d1.binding)
+	}
+
+	for (const producer of config.queues?.producers ?? []) {
+		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc, envWsBridge)
+	}
+
+	for (const email of config.send_email ?? []) {
+		env[email.name] = makeSendEmailProxy(email.name, rpc, envWsBridge)
+	}
+
+	for (const svc of config.services ?? []) {
+		env[svc.binding] = makeServiceBindingProxy(svc.binding, rpc, envWsBridge)
+	}
+
+	for (const doBinding of config.durable_objects?.bindings ?? []) {
+		env[doBinding.name] = makeDONamespaceProxy(doBinding.name, rpc, envWsBridge)
+	}
+
+	// Container DOs whose class isn't already declared under `durable_objects`
+	// — main's `buildEnv` synthesises a DO namespace for them, so we need the
+	// matching proxy in the worker env or the binding is missing at runtime.
+	const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name))
+	for (const container of config.containers ?? []) {
+		if (doClassNames.has(container.class_name)) continue
+		const bindingName = container.name ?? container.class_name
+		env[bindingName] = makeDONamespaceProxy(bindingName, rpc, envWsBridge)
+	}
+
+	// Workflows live entirely in the worker thread — class refs and the
+	// state machine are both here; main never sees the binding. Caller wires
+	// the class once the user module is imported.
+	const workflows: ThreadEnvBuilt['workflows'] = []
+	for (const wf of config.workflows ?? []) {
+		const binding = new SqliteWorkflowBinding(db, wf.binding, wf.class_name, wf.limits)
+		env[wf.binding] = binding
+		workflows.push({ bindingName: wf.binding, className: wf.class_name, binding })
+	}
+
+	if (config.assets?.binding) {
+		const assetsDir = path.resolve(baseDir, config.assets.directory)
+		env[config.assets.binding] = instrumentBinding(
+			new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling),
+			{ type: 'assets', name: config.assets.binding, methods: ['fetch'] },
+		)
+	}
+
+	if (config.images) {
+		env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
+			type: 'images',
+			name: config.images.binding,
+			methods: ['info'],
+		})
+	}
+
+	if (config.media) {
+		env[config.media.binding] = instrumentBinding(new MediaBinding(), {
+			type: 'media',
+			name: config.media.binding,
+			methods: [],
+		})
+	}
+
+	for (const hd of config.hyperdrive ?? []) {
+		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
+	}
+
+	if (config.browser) {
+		env[config.browser.binding] = instrumentBinding(new BrowserBinding(browserConfig ?? {}), {
+			type: 'browser',
+			name: config.browser.binding,
+			methods: ['launch', 'connect', 'sessions'],
+		})
+	}
+
+	if (config.ai) {
+		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
+		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
+		env[config.ai.binding] = instrumentBinding(new AiBinding(db, accountId, apiToken), {
+			type: 'ai',
+			name: config.ai.binding,
+			methods: ['run', 'models'],
+		})
+	}
+
+	for (const ae of config.analytics_engine_datasets ?? []) {
+		env[ae.binding] = instrumentBinding(new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding), {
+			type: 'analytics_engine',
+			name: ae.binding,
+			methods: ['writeDataPoint'],
+		})
+	}
+
+	if (config.version_metadata) {
+		env[config.version_metadata.binding] = {
+			id: 'local-dev',
+			tag: '',
+			timestamp: new Date().toISOString(),
+		}
+	}
+
+	return { env, db, workflows }
+}
+
+function makeQueueProducerProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
+	return makeRpcProxy({ binding: bindingName }, rpc, envWsBridge)
+}
+
+async function materializeEmailRaw(raw: unknown): Promise<Uint8Array | ArrayBuffer | string> {
+	if (typeof raw === 'string' || raw instanceof Uint8Array || raw instanceof ArrayBuffer) return raw
+	if (raw && typeof (raw as ReadableStream).getReader === 'function') {
+		return new Response(raw as ReadableStream).arrayBuffer()
+	}
+	throw new Error('EmailMessage.raw must be a string, Uint8Array, ArrayBuffer, or ReadableStream')
+}
+
+async function proxyFetch(
+	target: BindingTarget,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+	input: Request | string | URL,
+	init?: RequestInit,
+): Promise<Response> {
+	const url = input instanceof URL ? input.toString() : input
+	const request = typeof url === 'string' ? new Request(url, init) : url
+	const serialized = await rpc.callFetch(target, request)
+	const response = rpc.makeResponse(serialized) as ResponseWithWebSocket
+	// If the binding's response carried a WebSocket upgrade, main adopted the
+	// upstream peer (bridgeEvents) under `webSocketId`. Reconstruct a real
+	// user-facing CFWebSocket bridged to it so user code can `.accept()` /
+	// `.addEventListener('message')` it — and reshipping it just re-registers it on
+	// the top-level WS bridge in entry.ts (double-bridge through to the client).
+	if (serialized.webSocketId !== undefined) {
+		response.webSocket = envWsBridge.createBridgedSocket(serialized.webSocketId)
+	}
+	return response
+}
+
+/**
+ * Per-top-level-request subrequest budget, counted on the WORKER side. The
+ * main-side `ServiceBinding._checkSubrequestLimit` is effectively dead in thread
+ * mode — every binding call arrives as its own RPC dispatch wrapped in
+ * `runWithParentContext`, which re-seeds `count: 0`, so it never trips. The
+ * worker's fetch context (seeded once per request and shared across all its
+ * binding calls via AsyncLocalStorage) is where the budget actually accumulates.
+ */
+const MAX_SUBREQUESTS = 1000
+
+function checkSubrequestLimit(): void {
+	const counter = getActiveContext()?.subrequests
+	if (!counter) return
+	counter.count++
+	if (counter.count > MAX_SUBREQUESTS) {
+		throw new Error(`Subrequest limit exceeded (max ${MAX_SUBREQUESTS} per request)`)
+	}
+}
+
+function makeRpcProxy(
+	target: BindingTarget,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+	extras: Record<string | symbol, unknown> = {},
+): Record<string, unknown> {
+	return makeBindingProxy(
+		{
+			fetch: (input, init) => {
+				checkSubrequestLimit()
+				return proxyFetch(target, rpc, envWsBridge, input, init)
+			},
+			call: (prop, args) => {
+				// Restore the in-process path's dev-time warning for args that won't
+				// survive the cross-thread hop (functions, RpcTargets, …) — otherwise
+				// the postMessage just throws an opaque DataCloneError with no guidance.
+				warnInvalidRpcArgs(args, prop)
+				warnCrossThreadRpcArgs(args, prop)
+				checkSubrequestLimit()
+				return rpc.call(target, prop, args)
+			},
+			getProperty: prop => rpc.callGet(target, prop),
+		},
+		extras,
+	)
+}
+
+function makeDOStubProxy(
+	bindingName: string,
+	idStr: string,
+	id: DurableObjectIdImpl,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+): unknown {
+	return makeRpcProxy({ binding: bindingName, instanceId: idStr, instanceName: id.name }, rpc, envWsBridge, { id, name: id.name })
+}
+
+function makeDONamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
+	const stubs = new Map<string, unknown>()
+	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
+	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
+	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
+	const get = (id: DurableObjectIdImpl) => {
+		const idStr = id.toString()
+		// Cache key includes name so a nameless `idFromString(hash)` and a named
+		// `idFromName(...)` resolving to the same hash get distinct stubs — each
+		// preserving its caller's `id.name`. Same id-shape → same cached stub.
+		const key = `${idStr}:${id.name ?? ''}`
+		let stub = stubs.get(key)
+		if (!stub) {
+			stub = makeDOStubProxy(bindingName, idStr, id, rpc, envWsBridge)
+			stubs.set(key, stub)
+		}
+		return stub
+	}
+	return {
+		idFromName,
+		idFromString,
+		newUniqueId,
+		get,
+		getByName: (name: string) => get(idFromName(name)),
+	}
+}
+
+function makeServiceBindingProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): unknown {
+	return makeRpcProxy({ binding: bindingName }, rpc, envWsBridge, {
+		connect: () => {
+			throw serviceBindingConnectError(bindingName)
+		},
+	})
+}
+
+function makeSendEmailProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	const taggedSend = async (message: unknown) => {
+		// Structured-clone strips EmailMessage's class identity, so tag it and
+		// let main rebuild via `reifyArgs` (registered reviver in email.ts).
+		const arg = message instanceof EmailMessage
+			? tagCloneable('EmailMessage', {
+				from: message.from,
+				to: message.to,
+				raw: await materializeEmailRaw(message.raw),
+			})
+			: message
+		return rpc.call(target, 'send', [arg])
+	}
+	return makeRpcProxy(target, rpc, envWsBridge, { send: taggedSend })
+}

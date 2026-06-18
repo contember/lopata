@@ -272,10 +272,12 @@ export class TestDurableObjectHandle {
 			throw new Error('DO fetch handler did not return a WebSocket upgrade response (no response.webSocket)')
 		}
 
-		// Accept the client side (simulates what Bun.serve does)
+		// Build the TestWebSocket FIRST so its message/close listeners are
+		// registered before `accept()` flushes any events the DO already queued
+		// (e.g. `server.send(...)` issued before the response was returned).
+		const tw = new TestWebSocket(serverWs)
 		serverWs.accept()
-
-		return new TestWebSocket(serverWs)
+		return tw
 	}
 
 	/** Get all accepted WebSockets for this DO instance (via DurableObjectState). */

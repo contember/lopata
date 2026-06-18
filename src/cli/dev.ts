@@ -6,6 +6,13 @@ process.on('unhandledRejection', (reason) => {
 	console.error('[lopata] Unhandled promise rejection:', reason)
 })
 
+// Last-resort guard so a synchronous throw on main (e.g. a worker message
+// handler choking on a non-serializable user value) logs instead of killing the
+// whole dev server — every worker, the dashboard and the file watcher with it.
+process.on('uncaughtException', (err) => {
+	console.error('[lopata] Uncaught exception (dev server kept alive):', err)
+})
+
 import '../plugin'
 import path from 'node:path'
 import {
@@ -17,14 +24,16 @@ import {
 	setRouteDispatcher,
 	setWorkerRegistry,
 } from '../api'
+import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
-import { autoLoadConfig, loadConfig } from '../config'
+import { autoLoadConfig, findConfigPath, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase } from '../db'
 import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
+import { ImportGraphWatcher } from '../import-graph'
 import { loadLopataConfig } from '../lopata-config'
 import { addCfProperty } from '../request-cf'
 import { extractHostname, RouteDispatcher } from '../route-matcher'
@@ -55,7 +64,14 @@ export async function run(ctx: CliContext, args: string[]) {
 	const portFlag = values.port
 
 	const baseDir = process.cwd()
-	const watchers: FileWatcher[] = []
+	const watchers: { stop(): void }[] = []
+
+	// Reap orphan containers left behind by previous lopata runs that crashed
+	// or were `kill -9`'d before the exit handler fired. Silently does nothing
+	// if docker isn't installed or nothing matches the label filter.
+	reapOrphanContainers().then(count => {
+		if (count > 0) console.log(`[lopata] Reaped ${count} orphan container(s) from previous run(s)`)
+	}).catch(() => {})
 
 	// Try to load lopata.config.ts for multi-worker mode
 	const lopataConfig = await loadLopataConfig(baseDir)
@@ -69,16 +85,22 @@ export async function run(ctx: CliContext, args: string[]) {
 		console.log('[lopata] Multi-worker mode (lopata.config.ts found)')
 		setLopataConfig(lopataConfig)
 
-		// Create executor factory based on isolation mode
-		let executorFactory: import('../bindings/do-executor').DOExecutorFactory | undefined
-		if (lopataConfig.isolation === 'isolated') {
-			const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
-			executorFactory = new WorkerExecutorFactory()
-			console.log('[lopata] DO isolation: isolated (Worker threads)')
-		} else if (lopataConfig.isolation && lopataConfig.isolation !== 'dev') {
-			console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}", using "dev"`)
+		if (lopataConfig.isolation) {
+			if (lopataConfig.isolation === 'dev' || lopataConfig.isolation === 'isolated') {
+				console.warn(
+					`[lopata] "isolation" is deprecated and has no effect — workers always run in their own Bun Worker thread. Remove it from lopata.config.ts.`,
+				)
+			} else {
+				console.warn(`[lopata] Unknown isolation mode "${lopataConfig.isolation}" — has no effect`)
+			}
 		}
-
+		// DOs always run in worker threads now — main thread can't host the user
+		// classes since the worker entry imports user code in its own thread.
+		// Each manager gets its OWN factory instance: the factory carries the
+		// owning worker's module/config path (set via configure() on every
+		// reload). A single shared instance would be clobbered by the
+		// last-reloaded worker, so aux-worker DOs would spawn with the wrong
+		// worker's module — see generation-manager._doReload().
 		registry = new WorkerRegistry()
 
 		// Load main worker config
@@ -92,7 +114,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			workerRegistry: registry,
 			isMain: true,
 			cron: lopataConfig.cron,
-			executorFactory,
+			executorFactory: await makeExecutorFactory(),
 			configPath: lopataConfig.main,
 			browserConfig: lopataConfig.browser,
 		})
@@ -111,7 +133,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				workerRegistry: registry,
 				isMain: false,
 				cron: lopataConfig.cron,
-				executorFactory,
+				executorFactory: await makeExecutorFactory(),
 				configPath: workerDef.config,
 			})
 			registry.register(workerDef.name, auxManager)
@@ -124,11 +146,15 @@ export async function run(ctx: CliContext, args: string[]) {
 				console.error(`[lopata] Failed to load auxiliary worker "${workerDef.name}":`, err)
 			}
 
-			// File watcher for aux worker
-			const auxSrcDir = path.dirname(path.resolve(auxBaseDir, auxConfig.main))
-			const auxWatcher = new FileWatcher(auxSrcDir, () => {
+			// Import-graph watcher for the aux worker — follows its transitive
+			// imports (matching single-worker mode), not just the entry's directory.
+			// `watchExtra` remains the answer for non-import assets / shared dirs.
+			const auxEntry = path.resolve(auxBaseDir, auxConfig.main)
+			const auxWatcher: ImportGraphWatcher = new ImportGraphWatcher(auxEntry, auxBaseDir, () => {
+				const onSettled = () => auxWatcher.rescan()
 				auxManager.reload().then(async gen => {
-					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id}`)
+					onSettled()
+					console.log(`[lopata] Auxiliary worker "${workerDef.name}" reloaded → generation ${gen.id} (watching ${auxWatcher.size} files)`)
 					// Re-read config and update routes in case routes changed
 					if (routeDispatcher) {
 						try {
@@ -138,13 +164,14 @@ export async function run(ctx: CliContext, args: string[]) {
 							console.warn(`[lopata] Failed to re-read config for "${workerDef.name}" routes:`, err)
 						}
 					}
-				}).catch(err => {
+				}, err => {
+					onSettled()
 					console.error(`[lopata] Reload failed for "${workerDef.name}":`, err)
 				})
 			})
 			auxWatcher.start()
 			watchers.push(auxWatcher)
-			console.log(`[lopata] Watching ${auxSrcDir} for changes (${workerDef.name})`)
+			console.log(`[lopata] Watching ${auxWatcher.size} imported files for changes (${workerDef.name})`)
 		}
 
 		// Load main worker after aux workers
@@ -205,15 +232,24 @@ export async function run(ctx: CliContext, args: string[]) {
 		setWorkerRegistry(registry)
 		setRouteDispatcher(routeDispatcher)
 
-		// File watcher for main worker
-		const mainSrcDir = path.dirname(path.resolve(mainBaseDir, mainConfig.main))
+		// Import-graph watcher for the main worker (follows its transitive imports).
+		const mainEntry = path.resolve(mainBaseDir, mainConfig.main)
 		const reloadMain = makeReloadCallback(mainManager, 'Main worker reloaded')
-		const mainWatcher = new FileWatcher(mainSrcDir, reloadMain)
+		const mainWatcher: ImportGraphWatcher = new ImportGraphWatcher(mainEntry, mainBaseDir, () => {
+			mainManager.reload().then(gen => {
+				mainWatcher.rescan()
+				console.log(`[lopata] Main worker reloaded → generation ${gen.id} (watching ${mainWatcher.size} files)`)
+			}, err => {
+				mainWatcher.rescan()
+				console.error('[lopata] Reload failed:', err)
+			})
+		})
 		mainWatcher.start()
 		watchers.push(mainWatcher)
-		console.log(`[lopata] Watching ${mainSrcDir} for changes (main)`)
+		console.log(`[lopata] Watching ${mainWatcher.size} imported files for changes (main)`)
 
-		// Extra directories that should also trigger a main reload (e.g. shared monorepo packages)
+		// Extra directories that should also trigger a main reload (e.g. shared
+		// monorepo packages / non-import assets the static scan won't follow).
 		for (const extraDir of lopataConfig.watchExtra ?? []) {
 			const extraWatcher = new FileWatcher(extraDir, reloadMain)
 			extraWatcher.start()
@@ -221,22 +257,52 @@ export async function run(ctx: CliContext, args: string[]) {
 			console.log(`[lopata] Watching ${extraDir} for changes (extra)`)
 		}
 	} else {
-		// ─── Single-worker mode (current behavior) ────────────────────
+		// ─── Single-worker mode ────────────────────────────────────────
 		const config = await autoLoadConfig(baseDir, envFlag)
 		console.log(`[lopata] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(config)
 
-		manager = new GenerationManager(config, baseDir)
+		const executorFactory = await makeExecutorFactory()
+		// Even in single-worker mode we need a registry so service bindings that
+		// reference the worker by name (self-bindings) resolve to its own
+		// thread executor instead of an empty `workerModule`.
+		registry = new WorkerRegistry()
+		manager = new GenerationManager(config, baseDir, {
+			workerName: config.name,
+			workerRegistry: registry,
+			isMain: true,
+			executorFactory,
+			configPath: findConfigPath(baseDir),
+		})
+		registry.register(config.name, manager, true)
 		const firstGen = await manager.reload()
 		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
+		setWorkerRegistry(registry)
 
-		// File watcher — watch the source directory
-		const srcDir = path.dirname(path.resolve(baseDir, config.main))
-		const watcher = new FileWatcher(srcDir, makeReloadCallback(manager, 'Reloaded'))
+		// File watcher — follow the worker's actual import graph, not just the
+		// entry's directory. This catches edits to code imported from elsewhere in
+		// the project (e.g. an entry at `workers/app.ts` importing `../app/**`),
+		// which a dir-only watcher would miss. A reload re-imports the whole graph,
+		// so after each one we rescan to pick up newly-added imports.
+		const entry = path.resolve(baseDir, config.main)
+		const watcher = new ImportGraphWatcher(entry, baseDir, () => {
+			manager.reload().then(gen => {
+				watcher.rescan()
+				console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)
+			}, err => {
+				// Rescan even on a FAILED reload: a newly-added import whose first
+				// build failed (it referenced a file with a syntax error), or a
+				// delete-then-recreate, must still enter the watch set — otherwise
+				// fixing that file produces no event and the dev server stays broken
+				// until an already-watched file is re-touched.
+				watcher.rescan()
+				console.error('[lopata] Reload failed:', err)
+			})
+		})
 		watcher.start()
 		watchers.push(watcher)
-		console.log(`[lopata] Watching ${srcDir} for changes`)
+		console.log(`[lopata] Watching ${watcher.size} imported files for changes`)
 	}
 
 	// Start server — one Bun.serve(), delegates to active generation
@@ -451,11 +517,10 @@ export async function run(ctx: CliContext, args: string[]) {
 				}
 
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
-				if (cfSocket._peer?._accepted) {
-					cfSocket._peer._dispatchWSEvent({ type: 'message', data: typeof message === 'string' ? message : message.buffer as ArrayBuffer })
-				} else if (cfSocket._peer) {
-					cfSocket._peer._eventQueue.push({ type: 'message', data: typeof message === 'string' ? message : message.buffer as ArrayBuffer })
-				}
+				cfSocket._peer?.dispatchOrQueue({
+					type: 'message',
+					data: typeof message === 'string' ? message : message.buffer as ArrayBuffer,
+				})
 			},
 			close(ws, code, reason) {
 				const data = ws.data as unknown as Record<string, unknown>
@@ -470,12 +535,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
 				if (cfSocket._peer && cfSocket._peer.readyState !== 3 /* CLOSED */) {
-					const evt = { type: 'close' as const, code: code ?? 1000, reason: reason ?? '', wasClean: true }
-					if (cfSocket._peer._accepted) {
-						cfSocket._peer._dispatchWSEvent(evt)
-					} else {
-						cfSocket._peer._eventQueue.push(evt)
-					}
+					cfSocket._peer.dispatchOrQueue({ type: 'close', code: code ?? 1000, reason: reason ?? '', wasClean: true })
 					cfSocket._peer.readyState = 3
 				}
 				cfSocket.readyState = 3
@@ -519,6 +579,11 @@ function resolveWorkerParam(url: URL, registry: WorkerRegistry | undefined, fall
 		return fallback
 	}
 	return target
+}
+
+async function makeExecutorFactory(): Promise<import('../bindings/do-executor').DOExecutorFactory> {
+	const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker')
+	return new WorkerExecutorFactory()
 }
 
 function matchGlob(text: string, pattern: string): boolean {

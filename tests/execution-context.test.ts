@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import { ExecutionContext } from '../src/execution-context'
 import { addCfProperty } from '../src/request-cf'
+import { trackBackgroundWork, WorkerExecutionContext } from '../src/worker-thread/execution-context'
+import type { WorkerMessage } from '../src/worker-thread/protocol'
 
 describe('ExecutionContext', () => {
 	test('waitUntil tracks and awaits promises', async () => {
@@ -49,6 +51,42 @@ describe('ExecutionContext', () => {
 		)
 		await ctx._awaitAll()
 		expect(results).toEqual([1, 2, 3])
+	})
+})
+
+describe('WorkerExecutionContext waitUntil accounting', () => {
+	const ids = (posted: WorkerMessage[], type: 'wait-until-add' | 'wait-until-settle') => posted.flatMap(m => m.type === type ? [m.id] : [])
+	// logIfRejected chains microtask hops (resolve coercion + catch)
+	const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+
+	test('settles the wait-until id for resolved and rejected promises', async () => {
+		const posted: WorkerMessage[] = []
+		const ctx = new WorkerExecutionContext(msg => posted.push(msg))
+		ctx.waitUntil(Promise.resolve('ok'))
+		ctx.waitUntil(Promise.reject(new Error('boom')))
+		await settle()
+		expect(ids(posted, 'wait-until-add')).toEqual(ids(posted, 'wait-until-settle'))
+		expect(ids(posted, 'wait-until-add')).toHaveLength(2)
+	})
+
+	test('a non-thenable does not leak the wait-until id (would pin the generation non-idle)', async () => {
+		const posted: WorkerMessage[] = []
+		const ctx = new WorkerExecutionContext(msg => posted.push(msg))
+		// CF tolerates ctx.waitUntil(undefined); Reflect.apply bypasses the
+		// Promise param type the way untyped user code does. Must not throw.
+		Reflect.apply(ctx.waitUntil, ctx, [undefined])
+		Reflect.apply(ctx.waitUntil, ctx, [42])
+		await settle()
+		expect(ids(posted, 'wait-until-add')).toEqual(ids(posted, 'wait-until-settle'))
+		expect(ids(posted, 'wait-until-add')).toHaveLength(2)
+	})
+
+	test('trackBackgroundWork settles for non-thenables too', async () => {
+		const posted: WorkerMessage[] = []
+		Reflect.apply(trackBackgroundWork, undefined, [(msg: WorkerMessage) => posted.push(msg), null])
+		await settle()
+		expect(ids(posted, 'wait-until-add')).toEqual(ids(posted, 'wait-until-settle'))
+		expect(ids(posted, 'wait-until-add')).toHaveLength(1)
 	})
 })
 

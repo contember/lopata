@@ -1,0 +1,5 @@
+{
+	"name": "thread-do-env-ws-aux",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12"
+}

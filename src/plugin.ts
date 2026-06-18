@@ -22,6 +22,13 @@ Object.defineProperty(globalThis, 'addEventListener', {
 }) /** @internal Get the registered service worker fetch handler */
 ;(globalThis as any).__lopata_sw_handlers = _serviceWorkerHandlers
 
+/** The fetch handler registered via the legacy `addEventListener('fetch', …)`
+ *  service-worker syntax, if any. The worker-thread runtime falls back to this
+ *  when the module has no `export default { fetch }`. */
+export function getServiceWorkerFetchHandler(): ((event: unknown) => void) | undefined {
+	return _serviceWorkerHandlers.fetch
+}
+
 // ─── Console instrumentation ─────────────────────────────────────────
 // Captures console.log/info/warn/error/debug as span events when inside a trace context.
 

@@ -12,7 +12,7 @@ import { runMigrations } from '../src/db'
 
 class MockDockerManager extends DockerManager {
 	builtImages: string[] = []
-	runningContainers = new Map<string, { image: string; ports: Map<number, number>; state: string; exitCode: number }>()
+	runningContainers = new Map<string, { image: string; ports: Map<number, number>; state: string; exitCode: number; labels: Record<string, string> }>()
 	signals: { name: string; sig: number }[] = []
 	removed: string[] = []
 
@@ -27,6 +27,9 @@ class MockDockerManager extends DockerManager {
 			ports: new Map(options.ports),
 			state: 'running',
 			exitCode: 0,
+			// Simulate the real DockerManager stamping the owner-pid label so the
+			// adoption pid-check (CORR-23) treats this as own-process on inspect.
+			labels: { 'lopata.pid': String(process.pid) },
 		})
 		return id
 	}
@@ -59,6 +62,7 @@ class MockDockerManager extends DockerManager {
 			state: container.state,
 			exitCode: container.exitCode,
 			ports: {},
+			labels: container.labels,
 		}
 	}
 
@@ -98,6 +102,31 @@ describe('ContainerRuntime', () => {
 		await runtime.start()
 		expect(runtime.status).toBe('running')
 		expect(mockDocker.runningContainers.has('lopata-TestContainer-abcdef123456')).toBe(true)
+	})
+
+	const NAME = 'lopata-TestContainer-abcdef123456'
+
+	test('adopts an existing running container owned by this process (CORR-23)', async () => {
+		await runtime.start() // creates the container with this process's pid label
+		// A fresh runtime (e.g. after a reload) starts against the same name.
+		const fresh = new ContainerRuntime('TestContainer', 'abcdef123456', 'test-image', mockDocker)
+		fresh.sleepAfter = undefined
+		await fresh.start()
+		expect(fresh.status).toBe('running')
+		// Adopted, not removed + recreated.
+		expect(mockDocker.removed).not.toContain(NAME)
+	})
+
+	test('does NOT adopt a container left by a crashed/foreign process (CORR-23)', async () => {
+		await runtime.start()
+		// Simulate a stale owner: the container carries a different (dead) pid label.
+		mockDocker.runningContainers.get(NAME)!.labels = { 'lopata.pid': '999999999' }
+		const fresh = new ContainerRuntime('TestContainer', 'abcdef123456', 'test-image', mockDocker)
+		fresh.sleepAfter = undefined
+		await fresh.start()
+		// Removed the foreign container and recreated a fresh one (now ours).
+		expect(mockDocker.removed).toContain(NAME)
+		expect(mockDocker.runningContainers.get(NAME)!.labels['lopata.pid']).toBe(String(process.pid))
 	})
 
 	test('start is idempotent when already running', async () => {

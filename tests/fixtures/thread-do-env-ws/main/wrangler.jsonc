@@ -1,0 +1,17 @@
+{
+	"name": "thread-do-env-ws-main",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"services": [
+		{ "binding": "AUX", "service": "aux" }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "BRIDGE", "class_name": "BridgeDO" },
+			{ "name": "UPSTREAM", "class_name": "UpstreamDO" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["BridgeDO", "UpstreamDO"] }
+	]
+}

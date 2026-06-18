@@ -1,0 +1,20 @@
+{
+	"name": "thread-stateless-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"vars": {
+		"GREETING": "hello-from-vars"
+	},
+	"kv_namespaces": [
+		{ "binding": "MY_KV", "id": "thread-stateless-kv" }
+	],
+	"r2_buckets": [
+		{ "binding": "MY_R2", "bucket_name": "thread-stateless-r2" }
+	],
+	"d1_databases": [
+		{ "binding": "MY_D1", "database_name": "thread-stateless-d1", "database_id": "ignored-locally" }
+	],
+	"assets": {
+		"directory": "./public"
+	}
+}

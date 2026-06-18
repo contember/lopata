@@ -7,7 +7,7 @@ import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
-import { NON_RPC_PROPS } from './rpc-stub'
+import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 
 // --- SQL Storage Cursor ---
 
@@ -122,6 +122,11 @@ export class SqlStorage {
 				mkdirSync(dir, { recursive: true })
 				this._db = new Database(this._dbPath, { create: true })
 				this._db.run('PRAGMA journal_mode=WAL')
+				// This per-DO file now lives in the DO worker thread while the dashboard
+				// opens the same file from main; WAL allows one writer at a time, so
+				// without busy_timeout an overlapping write fails instantly with
+				// SQLITE_BUSY. Matches db.ts / do-worker-env.ts on data.sqlite.
+				this._db.run('PRAGMA busy_timeout=5000')
 			} else {
 				this._db = new Database(':memory:')
 			}
@@ -530,6 +535,18 @@ export class DurableObjectIdImpl {
 	}
 }
 
+/** Deterministic id from name. Shared by the in-process namespace and the thread-mode proxy. */
+export function hashIdFromName(name: string): string {
+	const hasher = new Bun.CryptoHasher('sha256')
+	hasher.update(name)
+	return hasher.digest('hex')
+}
+
+/** Random 128-bit id matching CF's `newUniqueId` hex shape. */
+export function randomUniqueIdHex(): string {
+	return crypto.randomUUID().replace(/-/g, '')
+}
+
 // --- State ---
 
 interface AcceptedWebSocket {
@@ -767,12 +784,35 @@ const STUB_PROPS = new Set(['id', 'name', 'fetch'])
 
 // --- Namespace ---
 
+/**
+ * Placeholder class handed to `ExecutorConfig.cls` for external (thread-mode)
+ * namespaces. The factory in this case (`WorkerExecutorFactory`) never reads
+ * `cls`; this class throws on accidental instantiation by any other factory.
+ */
+const _externalClassSentinel = class ExternalDurableObject {
+	constructor() {
+		throw new Error('Durable Object is wired in thread mode; its real class lives in the worker thread, not main.')
+	}
+}
+
 export class DurableObjectNamespaceImpl {
 	private _executors = new Map<string, DOExecutor>()
+	/** In-flight disposals per id (container DOs only). A respawn for the same id
+	 *  chains its first command on this so a fresh `docker run` doesn't race the
+	 *  old container's teardown. */
+	private _disposing = new Map<string, Promise<void>>()
 	private _stubs = new Map<string, unknown>()
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
-	private _env?: unknown
+	private _externalClassName?: string
+	/**
+	 * In thread mode the real DO class isn't available on main. The user-worker
+	 * introspects its prototype and reports `alarm()` presence back through the
+	 * `'ready'` message; `GenerationManager` forwards it via `_setAlarmHandlerHint`.
+	 * Read by `hasAlarmHandler()` when `_externalClassName` is set.
+	 */
+	private _externalAlarmHandler?: boolean
+	private _env?: Record<string, unknown>
 	private db: Database
 	private namespaceName: string
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -810,7 +850,7 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** Called after worker module is loaded to wire the actual class */
-	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, generationId?: number) {
+	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: Record<string, unknown>, generationId?: number) {
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
 				// Hot-swap: reuse state + WebSocket connections, create new instance with new code
@@ -823,15 +863,65 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = cls
+		this._externalClassName = undefined
 		this._env = env
 		this._generationId = generationId
 		// Restore persisted alarms on startup
 		this._restoreAlarms()
 	}
 
+	/**
+	 * Thread-mode counterpart of `_setClass`: the real DO class lives in a worker
+	 * thread, so main only stores the className for diagnostics and treats the
+	 * namespace as wired. Must be used with an executor factory that does not
+	 * need the JS class on main (e.g. `WorkerExecutorFactory`).
+	 */
+	_setExternalClass(className: string, env: Record<string, unknown>, generationId?: number) {
+		// Thread-mode executors (the only kind that lands here) can't hot-swap their
+		// class — the class lives in a Bun Worker and the only reload mechanism is
+		// terminate + respawn, which is what `dispose()` does. Active WebSockets are
+		// dropped along with the executor; preserving them would require a class-level
+		// swap that Bun Worker can't perform without re-importing the user module.
+		for (const [idStr, executor] of this._executors) {
+			// Detach from the namespace first so new requests get a fresh executor on
+			// the new code instead of reusing this one.
+			this._executors.delete(idStr)
+			this._lastActivity.delete(idStr)
+			if (executor.isActive()) {
+				// An old-generation request is mid-DO-call. Disposing now rejects it
+				// with "Worker terminated" → 500, defeating the reload drain. Let the
+				// in-flight command settle, then dispose (bounded so a hung call can't
+				// keep the old worker thread alive indefinitely).
+				this._disposeExecutorWhenIdle(idStr, executor)
+			} else {
+				this._disposeExecutor(idStr, executor)
+			}
+		}
+
+		this._class = undefined
+		this._externalClassName = className
+		// Clear the previous generation's hint; the new generation's `'ready'` message
+		// will deliver a fresh one via `_setAlarmHandlerHint`. Without this, removing
+		// `alarm()` between reloads would leave `hasAlarmHandler()` reporting stale
+		// `true` until the hint arrives — matching the doc comment on `hasAlarmHandler`.
+		this._externalAlarmHandler = undefined
+		this._env = env
+		this._generationId = generationId
+		this._restoreAlarms()
+	}
+
 	/** Set container config for this namespace (makes it a container namespace) */
 	_setContainerConfig(config: ContainerConfig) {
 		this._containerConfig = config
+	}
+
+	/**
+	 * Hint for thread-mode namespaces: whether the (worker-side) DO class defines
+	 * an `alarm()` handler. Called by `GenerationManager` after the worker's
+	 * `'ready'` message lands. Idempotent — overwrites on each reload.
+	 */
+	_setAlarmHandlerHint(value: boolean) {
+		this._externalAlarmHandler = value
 	}
 
 	/** @internal Restore all persisted alarms for this namespace */
@@ -903,8 +993,16 @@ export class DurableObjectNamespaceImpl {
 
 	/** @internal Get or create a DO executor by id string */
 	private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
-		if (this._executors.has(idStr)) return this._executors.get(idStr)!
-		if (!this._class) return null
+		const existing = this._executors.get(idStr)
+		if (existing) {
+			// A crashed worker leaves a dead executor behind; drop it so the access
+			// below recreates a fresh one instead of posting to a terminated Worker.
+			if (!existing.isDisposed?.()) return existing
+			this._disposeExecutor(idStr, existing)
+			this._executors.delete(idStr)
+			this._lastActivity.delete(idStr)
+		}
+		if (!this._isWired()) return null
 
 		// Use provided doId, or look up known id (preserves name after eviction), or create new
 		const id = doId ?? this._knownIds.get(idStr) ?? new DurableObjectIdImpl(idStr)
@@ -919,11 +1017,14 @@ export class DurableObjectNamespaceImpl {
 			id,
 			db: this.db,
 			namespaceName: this.namespaceName,
-			cls: this._class,
-			env: this._env,
+			cls: this._class ?? (_externalClassSentinel as any),
+			env: this._env ?? {},
 			dataDir: this.dataDir,
 			limits: this.limits,
 			containerConfig: this._containerConfig,
+			// Serialize a respawn behind the prior executor's container teardown
+			// (container DOs only — see `_disposing`).
+			_priorDisposal: this._containerConfig ? this._disposing.get(idStr) : undefined,
 			onAlarmSet: (time) => {
 				if (time === null) {
 					const t = this.alarmTimers.get(idStr)
@@ -940,15 +1041,77 @@ export class DurableObjectNamespaceImpl {
 		return executor
 	}
 
+	/**
+	 * @internal Dispose an executor and, for container DOs, record the disposal so a
+	 * respawn for the same id can wait for the old container's teardown (`docker rm`)
+	 * to finish before its own `docker run` — otherwise the teardown can race and
+	 * `docker rm -f` the freshly started replacement. Non-container DOs skip the
+	 * tracking (dispose is fast and there's no shared Docker name to collide on).
+	 */
+	private _disposeExecutor(idStr: string, executor: DOExecutor): Promise<void> {
+		const p = executor.dispose().catch(() => {})
+		if (this._containerConfig) {
+			this._disposing.set(idStr, p)
+			void p.finally(() => {
+				if (this._disposing.get(idStr) === p) this._disposing.delete(idStr)
+			})
+		}
+		return p
+	}
+
+	/**
+	 * @internal Dispose an executor detached from the namespace (during reload swap)
+	 * once its in-flight command settles, so an old-generation request mid-DO-call
+	 * isn't rejected with "Worker terminated". Polls `isActive()`; bounded (≈10s) so
+	 * a hung command can't keep the old worker thread alive indefinitely.
+	 */
+	private _disposeExecutorWhenIdle(idStr: string, executor: DOExecutor, attemptsLeft = 200): void {
+		// Container DOs: register the future teardown EAGERLY. The actual
+		// `docker rm` only starts once the poll ends, but a respawn for this id
+		// created mid-poll must already find a `_disposing` entry to serialize
+		// behind (`_priorDisposal`) — otherwise the deferred teardown can
+		// `docker rm` the very container the fresh executor adopted by name.
+		if (this._containerConfig && !this._disposing.has(idStr)) {
+			let settle: () => void = () => {}
+			const gate = new Promise<void>(resolve => {
+				settle = resolve
+			})
+			this._disposing.set(idStr, gate)
+			void gate.then(() => {
+				// `_disposeExecutor` replaces the entry with its own promise at poll
+				// end; only clean up if ours is still the registered one.
+				if (this._disposing.get(idStr) === gate) this._disposing.delete(idStr)
+			})
+			this._pollThenDispose(idStr, executor, attemptsLeft, settle)
+			return
+		}
+		this._pollThenDispose(idStr, executor, attemptsLeft)
+	}
+
+	private _pollThenDispose(idStr: string, executor: DOExecutor, attemptsLeft: number, onSettled?: () => void): void {
+		if (!executor.isActive() || attemptsLeft <= 0) {
+			void this._disposeExecutor(idStr, executor).then(onSettled)
+			return
+		}
+		setTimeout(() => this._pollThenDispose(idStr, executor, attemptsLeft - 1, onSettled), 50)
+	}
+
 	/** @internal Evict idle executors */
 	private _evictIdle() {
 		const now = this.clock.now()
 		for (const [idStr, lastActivity] of this._lastActivity) {
 			const executor = this._executors.get(idStr)
 			if (!executor) continue
+			// Drop dead executors (crashed Worker) immediately so they don't linger.
+			if (executor.isDisposed?.()) {
+				this._disposeExecutor(idStr, executor)
+				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
+				continue
+			}
 			// Evict aborted instances immediately (once they have no active requests)
 			if (executor.isAborted() && !executor.isActive()) {
-				executor.dispose().catch(() => {})
+				this._disposeExecutor(idStr, executor)
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
 				continue
@@ -958,7 +1121,7 @@ export class DurableObjectNamespaceImpl {
 			if (executor.isActive()) continue
 			if (executor.activeWebSocketCount() > 0) continue
 			// Evict
-			executor.dispose().catch(() => {})
+			this._disposeExecutor(idStr, executor)
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
 			// _knownIds and alarmTimers survive eviction
@@ -971,21 +1134,37 @@ export class DurableObjectNamespaceImpl {
 		this.alarmTimers.clear()
 	}
 
-	/** @internal Destroy this namespace: clear timers, evict executors without active WebSockets */
-	destroy(): void {
+	/**
+	 * @internal Destroy this namespace: clear timers, evict executors without
+	 * active WebSockets. Pass `{ force: true }` for final teardown (test dispose /
+	 * shutdown) to dispose EVERY executor and never restart the eviction timer —
+	 * there's no next generation to reap survivors, and a restarted 30s interval
+	 * would outlive teardown (and the DB close that follows).
+	 */
+	destroy(options?: { force?: boolean }): void {
 		if (this._evictionTimer) {
 			clearInterval(this._evictionTimer)
 			this._evictionTimer = null
 		}
 		this.clearAlarmTimers()
-		// Dispose executors without active WebSockets; keep the rest alive
+		// Dispose executors without active WebSockets; keep the rest alive (unless
+		// forced).
 		for (const [idStr, executor] of this._executors) {
-			if (executor.activeWebSocketCount() === 0) {
+			if (options?.force || executor.activeWebSocketCount() === 0) {
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
+				this._lastActivity.delete(idStr)
 			}
 		}
-		this._lastActivity.clear()
+		// If any WS-holding executor survived, keep its _lastActivity entry and
+		// restart the eviction timer so it eventually gets reaped once the WS
+		// half-closes (no FIN). Otherwise the executor would linger forever. Never
+		// restart under `force` — teardown must leave no live timer.
+		if (!options?.force && this._executors.size > 0 && this._evictionTimeoutMs > 0) {
+			this._evictionTimer = setInterval(() => this._evictIdle(), 30_000)
+		} else {
+			this._lastActivity.clear()
+		}
 	}
 
 	/** @internal Get a raw instance for testing (no proxy) */
@@ -1013,6 +1192,14 @@ export class DurableObjectNamespaceImpl {
 		return result
 	}
 
+	/** @internal Whether any executor in this namespace currently holds at least one accepted WebSocket. */
+	hasActiveWebSockets(): boolean {
+		for (const executor of this._executors.values()) {
+			if (executor.activeWebSocketCount() > 0) return true
+		}
+		return false
+	}
+
 	/** @internal List all instance IDs in this namespace (from DB). */
 	_listInstanceIds(): string[] {
 		const rows = this.db
@@ -1021,9 +1208,22 @@ export class DurableObjectNamespaceImpl {
 		return rows.map(r => r.id)
 	}
 
-	/** Whether the DO class defines an alarm() handler */
+	/**
+	 * Whether the DO class defines an alarm() handler. In thread mode the class
+	 * lives on the worker, so main relies on the hint shipped through the
+	 * worker's `'ready'` message (see `_setAlarmHandlerHint`). Returns `false`
+	 * during the brief window between `_setExternalClass` and the hint arriving.
+	 */
 	hasAlarmHandler(): boolean {
+		if (this._externalClassName !== undefined) {
+			return this._externalAlarmHandler ?? false
+		}
 		return typeof this._class?.prototype?.alarm === 'function'
+	}
+
+	/** @internal Whether the namespace is wired (class set, in-process or external). */
+	private _isWired(): boolean {
+		return this._class !== undefined || this._externalClassName !== undefined
 	}
 
 	/** @internal Trigger the alarm handler immediately (used by dashboard) */
@@ -1073,7 +1273,11 @@ export class DurableObjectNamespaceImpl {
 			executor.dispose().catch(() => {})
 			this._executors.delete(idStr)
 		}
-		this._stubs.delete(idStr)
+		// Stub keys are `${idStr}:${name ?? ''}` — drop every variant for this id.
+		const stubPrefix = `${idStr}:`
+		for (const key of this._stubs.keys()) {
+			if (key.startsWith(stubPrefix)) this._stubs.delete(key)
+		}
 		this._knownIds.delete(idStr)
 		this._lastActivity.delete(idStr)
 
@@ -1103,15 +1307,11 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {
-		return new DurableObjectIdImpl(crypto.randomUUID().replace(/-/g, ''))
+		return new DurableObjectIdImpl(randomUniqueIdHex())
 	}
 
 	idFromName(name: string): DurableObjectIdImpl {
-		// Deterministic ID from name using simple hash
-		const hasher = new Bun.CryptoHasher('sha256')
-		hasher.update(name)
-		const hex = hasher.digest('hex')
-		return new DurableObjectIdImpl(hex, name)
+		return new DurableObjectIdImpl(hashIdFromName(name), name)
 	}
 
 	idFromString(id: string): DurableObjectIdImpl {
@@ -1124,11 +1324,15 @@ export class DurableObjectNamespaceImpl {
 
 	get(id: DurableObjectIdImpl): unknown {
 		const idStr = id.toString()
+		// Cache by `${idStr}:${name ?? ''}` so a nameless `idFromString(hash)` and a
+		// named `idFromName(...)` resolving to the same hash get distinct stubs —
+		// each preserving its caller's `id.name`. Same id-shape → same cached stub.
+		const stubKey = `${idStr}:${id.name ?? ''}`
 
 		// Return cached stub if available — stub survives eviction
-		if (this._stubs.has(idStr)) return this._stubs.get(idStr)!
+		if (this._stubs.has(stubKey)) return this._stubs.get(stubKey)!
 
-		if (!this._class) throw new Error('DurableObject class not wired yet. Call _setClass() first.')
+		if (!this._isWired()) throw new Error('DurableObject class not wired yet. Call _setClass() first.')
 
 		// Store the known id (preserves name)
 		this._knownIds.set(idStr, id)
@@ -1164,7 +1368,7 @@ export class DurableObjectNamespaceImpl {
 				const rpcCallable = (...args: unknown[]) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
 					self._lastActivity.set(idStr, self.clock.now())
-					return executor.executeRpc(String(prop), args)
+					return executor.executeRpc(String(prop), args).then((r) => wrapRpcReturnValue(r, String(prop)))
 				}
 
 				// Make it thenable for property access: `await stub.myProp`
@@ -1174,7 +1378,7 @@ export class DurableObjectNamespaceImpl {
 				) => {
 					const executor = self._getOrCreateExecutor(idStr, id)!
 					self._lastActivity.set(idStr, self.clock.now())
-					const promise = executor.executeRpcGet(String(prop))
+					const promise = executor.executeRpcGet(String(prop)).then((r) => wrapRpcReturnValue(r, String(prop)))
 					return promise.then(onFulfilled, onRejected)
 				}
 
@@ -1182,7 +1386,7 @@ export class DurableObjectNamespaceImpl {
 			},
 		})
 
-		this._stubs.set(idStr, stub)
+		this._stubs.set(stubKey, stub)
 		return stub
 	}
 }

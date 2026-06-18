@@ -1,6 +1,7 @@
 import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import { startSpan } from '../tracing/span'
+import { registerCloneable } from '../worker-thread/rpc-shared'
 
 export class EmailMessage {
 	readonly from: string
@@ -13,6 +14,11 @@ export class EmailMessage {
 		this.raw = raw
 	}
 }
+
+registerCloneable('EmailMessage', (raw) => {
+	const { from, to, raw: body } = raw as { from: string; to: string; raw: unknown }
+	return new EmailMessage(from, to, body as Uint8Array | ArrayBuffer | string)
+})
 
 export interface EmailAddress {
 	name: string

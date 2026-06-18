@@ -101,11 +101,13 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		entry.binding.resumeInterrupted()
 	}
 
-	// Wire service bindings — self-referencing
+	// Wire service bindings — self-referencing (always in-process for tests)
 	for (const entry of registry.serviceBindings) {
-		const wire = entry.proxy._wire as ((resolver: () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void) | undefined
+		const wire = entry.proxy._wire as
+			| ((resolver: () => { kind: 'in-process'; workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void)
+			| undefined
 		if (wire) {
-			wire(() => ({ workerModule, env }))
+			wire(() => ({ kind: 'in-process', workerModule, env }))
 		}
 	}
 
@@ -254,7 +256,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		for (const tw of testWorkflows) tw.dispose()
 		for (const td of testDOs) td.dispose()
 		for (const entry of registry.durableObjects) {
-			entry.namespace.destroy()
+			// force: final teardown — dispose every executor and leave no eviction
+			// timer running past db.close() below.
+			entry.namespace.destroy({ force: true })
 		}
 		for (const entry of registry.workflows) {
 			entry.binding.abortRunning()

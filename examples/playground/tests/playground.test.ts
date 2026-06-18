@@ -438,6 +438,121 @@ describe('playground — handlers', () => {
 	})
 })
 
+describe('playground — WebSocket', () => {
+	test('Counter DO broadcasts initial count and updates on inc/dec/reset', async () => {
+		const t = await setup()
+		const counter = t.durableObject('COUNTER').get('ws-test')
+		const ws = await counter.connectWebSocket()
+
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 0 })
+
+		ws.send('inc')
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 1 })
+
+		ws.send('inc')
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 2 })
+
+		ws.send('dec')
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 1 })
+
+		ws.send('reset')
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 0 })
+
+		ws.close()
+	})
+
+	test('Counter DO broadcasts RPC-driven changes to existing subscribers', async () => {
+		const t = await setup()
+		const counter = t.durableObject('COUNTER').get('ws-broadcast')
+		const ws = await counter.connectWebSocket()
+
+		// Drain the initial state message.
+		await ws.waitForMessage()
+
+		// Mutate via direct RPC (not the WS) — every subscriber should still see it.
+		expect(await counter.stub.increment()).toBe(1)
+		expect(JSON.parse(await ws.waitForMessage() as string)).toEqual({ type: 'count', value: 1 })
+
+		ws.close()
+	})
+
+	test('/ws/echo without Upgrade header returns 426', async () => {
+		const t = await setup()
+		const res = await t.fetch('/ws/echo')
+		expect(res.status).toBe(426)
+	})
+
+	test('/ws/echo returns 101 with a webSocket on upgrade', async () => {
+		const t = await setup()
+		const res = await t.fetch(
+			new Request('http://localhost/ws/echo', {
+				headers: { upgrade: 'websocket' },
+			}),
+		)
+		expect(res.status).toBe(101)
+		const ws = (res as Response & { webSocket?: unknown }).webSocket
+		expect(ws).toBeDefined()
+	})
+})
+
+describe('playground fetch — streaming routes', () => {
+	test('GET /stream/sse emits 20 ticks then closes', { timeout: 15000 }, async () => {
+		const t = await setup()
+		const res = await t.fetch('/stream/sse')
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('text/event-stream')
+		expect(res.body).toBeDefined()
+
+		const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader()
+		let buf = ''
+		const ticks: { n: number; sin: number }[] = []
+		while (true) {
+			const r = await reader.read()
+			if (r.done) break
+			buf += r.value
+			let idx: number
+			while ((idx = buf.indexOf('\n\n')) !== -1) {
+				const frame = buf.slice(0, idx)
+				buf = buf.slice(idx + 2)
+				const line = frame.split('\n').find(l => l.startsWith('data:'))
+				if (!line) continue
+				ticks.push(JSON.parse(line.slice(5).trim()))
+			}
+		}
+		expect(ticks.length).toBe(20)
+		expect(ticks[0]!.n).toBe(0)
+		expect(ticks[19]!.n).toBe(19)
+		expect(Math.abs(ticks[0]!.sin)).toBeLessThan(1e-9)
+	})
+
+	test('POST /stream/upload-echo echoes chunks with byte length prefix', async () => {
+		const t = await setup()
+		const enc = new TextEncoder()
+		const chunks = ['hello ', 'streamed ', 'world']
+		const body = new ReadableStream({
+			start(controller) {
+				for (const c of chunks) controller.enqueue(enc.encode(c))
+				controller.close()
+			},
+		})
+		const res = await t.fetch(
+			new Request('http://localhost/stream/upload-echo', {
+				method: 'POST',
+				body,
+				// @ts-expect-error duplex is non-standard in lib.dom but accepted by Bun
+				duplex: 'half',
+				headers: { 'Content-Type': 'text/plain' },
+			}),
+		)
+		expect(res.status).toBe(200)
+		expect(res.headers.get('content-type')).toContain('text/plain')
+		const text = await res.text()
+		expect(text).toContain('[6B] hello ')
+		expect(text).toContain('[9B] streamed ')
+		expect(text).toContain('[5B] world')
+	})
+})
+
 describe('playground — misc', () => {
 	test('GET / returns HTML', async () => {
 		const t = await setup()

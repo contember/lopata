@@ -1,0 +1,16 @@
+{
+	"name": "thread-queue-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"kv_namespaces": [
+		{ "binding": "MY_KV", "id": "thread-queue-kv" }
+	],
+	"queues": {
+		"producers": [
+			{ "binding": "WORK_QUEUE", "queue": "thread-q-work" }
+		],
+		"consumers": [
+			{ "queue": "thread-q-work", "max_batch_size": 10, "max_batch_timeout": 1 }
+		]
+	}
+}

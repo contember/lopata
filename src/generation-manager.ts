@@ -1,78 +1,30 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import type { WranglerConfig } from './config'
-import { buildEnv, setGlobalEnv, wireClassRefs } from './env'
-import { ExecutionContext } from './execution-context'
+import { buildEnv, wireServiceBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
-import { invalidateUserModules } from './module-cache'
 import type { WorkerRegistry } from './worker-registry'
-
-function isEntrypointClass(exp: unknown): exp is new(ctx: ExecutionContext, env: unknown) => Record<string, unknown> {
-	return typeof exp === 'function' && exp.prototype
-		&& typeof exp.prototype.fetch === 'function'
-}
-
-/**
- * Detect and patch web frameworks (Hono, etc.) that use .then()/.catch()
- * for request dispatch. This breaks async stack traces in Bun because
- * errors that propagate through .then() callbacks lose their async context.
- *
- * err.stack is set once at Error creation and doesn't change, but Bun
- * appends async frames (callers) only when the error is caught via `await`,
- * not via `.catch()`. The user's error handler may re-throw inside .catch(),
- * which creates a new rejection without those async frames.
- *
- * Fix: wrap each route handler with try/catch to snapshot err.stack
- * (which includes async frames at that point) before the error enters
- * the .then()/.catch() chain. If the error handler re-throws, we
- * restore the full stack.
- */
-function patchFrameworkDispatch(defaultExport: Record<string, unknown>): void {
-	if (typeof defaultExport.fetch !== 'function') return
-
-	// Detect Hono by characteristic properties
-	const isHono = 'routes' in defaultExport && 'router' in defaultExport && '_basePath' in defaultExport
-	if (!isHono) return
-
-	const app = defaultExport as Record<string, any>
-	const routes: { handler: Function }[] = app.routes
-	if (!Array.isArray(routes)) return
-
-	// Wrap each route handler to capture err.stack before .then() destroys it
-	for (const route of routes) {
-		const orig = route.handler
-		route.handler = async function(this: unknown, c: unknown, next: unknown) {
-			try {
-				return await orig.call(this, c, next)
-			} catch (err: unknown) {
-				// Save the full stack (with async frames) before .then()/.catch() strips them
-				if (err instanceof Error) {
-					;(err as any).__asyncStack = err.stack
-				}
-				throw err
-			}
-		}
-	}
-
-	// Patch error handler: if the user's handler re-throws, restore the saved stack
-	const origErrorHandler = app.errorHandler
-	app.errorHandler = (err: unknown, c: unknown) => {
-		if (err instanceof Error && (err as any).__asyncStack) {
-			err.stack = (err as any).__asyncStack
-			delete (err as any).__asyncStack
-		}
-		return origErrorHandler(err, c)
-	}
-}
+import { type WorkerReadyInfo, WorkerThreadExecutor } from './worker-thread/executor'
 
 export class GenerationManager {
 	private generations = new Map<number, Generation>()
 	private nextGenId = 1
 	private _activeGenId: number | null = null
 	private _reloading: Promise<Generation> | null = null
-	private _pendingReload = false
+	/** Coalesced follow-up: one reload queued to run after the in-flight one, with
+	 *  its real promise handed to every caller that arrived during the in-flight
+	 *  reload (so they observe the result/error of the reload reflecting their
+	 *  request, not a stale `this.active`). */
+	private _pendingReloadPromise: Promise<Generation> | null = null
 	/** DO namespaces shared across generations to preserve WebSocket connections on reload */
 	private _doNamespaces = new Map<string, import('./bindings/durable-object').DurableObjectNamespaceImpl>()
+	/** Per-cron last-fired-minute dedup, shared across generations so a reload
+	 *  mid-minute doesn't re-run a scheduled handler the previous generation already
+	 *  fired (keyed by cron expression). */
+	private _cronLastFired = new Map<string, number>()
+	/** Generation ids whose interrupted workflows have already been resumed, so a
+	 *  generation isn't resumed twice (which would re-execute the same instances). */
+	private _resumedGenIds = new Set<number>()
 
 	gracePeriodMs = 10_000
 
@@ -85,7 +37,7 @@ export class GenerationManager {
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
 	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
-	/** @internal Path to the wrangler config file (for isolated mode worker threads) */
+	/** @internal Path to the wrangler config file (DO worker threads re-load it). */
 	_configPath: string = ''
 
 	constructor(
@@ -124,120 +76,158 @@ export class GenerationManager {
 	 * Serialized: if called while already reloading, queues one reload.
 	 */
 	async reload(): Promise<Generation> {
+		// A reload is already running. Queue exactly one follow-up that starts once
+		// it finishes, and hand every caller that arrives during the in-flight reload
+		// that same promise — so they all resolve/reject with the result of the
+		// reload that actually reflects their edit, instead of the previous
+		// generation (or a null `this.active` when every reload so far has failed).
 		if (this._reloading) {
-			this._pendingReload = true
-			// Wait for current reload, then re-trigger
-			await this._reloading
-			if (this._pendingReload) {
-				this._pendingReload = false
-				return this.reload()
-			}
-			return this.active!
+			this._pendingReloadPromise ??= this._reloading
+				.catch(() => {})
+				.then(() => this.reload())
+			return this._pendingReloadPromise
 		}
 
 		this._reloading = this._doReload()
 		try {
-			const gen = await this._reloading
-			return gen
+			return await this._reloading
 		} finally {
 			this._reloading = null
-			if (this._pendingReload) {
-				this._pendingReload = false
-				this.reload()
-			}
+			this._pendingReloadPromise = null
 		}
 	}
 
 	private async _doReload(): Promise<Generation> {
-		// 1. Configure executor factory with module/config paths (for isolated mode)
-		if (this.executorFactory && 'configure' in this.executorFactory) {
-			;(this.executorFactory as any).configure(this.workerPath, this._configPath)
+		this.executorFactory?.configure?.(this.workerPath, this._configPath, this.config)
+
+		// Stateful bindings (DO namespaces, queue producers, workflows,
+		// service bindings, email, browser, containers) live in main — the worker
+		// RPCs into them. Stateless ones duplicate in the thread. Static assets
+		// stay main-side for the auto-serve fallback.
+		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
+		wireServiceBindings(registry, {}, env, this.workerRegistry)
+
+		const executor = new WorkerThreadExecutor({
+			modulePath: this.workerPath,
+			config: this.config,
+			baseDir: this.baseDir,
+			workerName: this.workerName,
+			browserConfig: this.browserConfig,
+			mainEnv: env,
+		})
+		let readyInfo: WorkerReadyInfo
+		try {
+			readyInfo = await executor.ready()
+		} catch (err) {
+			executor.dispose()
+			throw err
 		}
 
-		// 2. Build new env with fresh binding instances (same underlying DB)
-		//    Reuse existing DO namespaces to preserve WebSocket connections across reloads
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
-
-		// Update shared namespace map
+		// Rewire the shared DO namespaces to this generation only after the new
+		// worker has loaded successfully. `_setExternalClass` disposes the
+		// previous generation's live DO executors (active WebSockets included)
+		// and repoints the namespace at the new env — doing it before `ready()`
+		// would tear down working Durable Objects on a *failed* reload (e.g. a
+		// syntax error mid-edit) and leave the still-serving old generation
+		// returning 500s for every DO request. Forwarding the `alarm()`
+		// introspection hint here (rather than in a later pass) keeps the
+		// dashboard's "trigger alarm" UI working in thread mode — main can't
+		// introspect because the user module is only loaded inside the worker.
 		for (const entry of registry.durableObjects) {
 			this._doNamespaces.set(entry.className, entry.namespace)
+			entry.namespace._setExternalClass(entry.className, env, this.nextGenId)
+			entry.namespace._setAlarmHandlerHint(readyInfo.doAlarmHandlers[entry.className] ?? false)
 		}
 
-		// 3. Update globalEnv BEFORE importing the worker module so that
-		//    top-level `import { env } from "cloudflare:workers"` sees bindings
-		//    during module evaluation (main worker only).
-		if (this.isMain) {
-			setGlobalEnv(env)
+		// Prune namespaces for DO classes removed from config: a stale entry would
+		// otherwise keep firing persisted alarms (spawning DO threads for a class
+		// that no longer exists) and keep its 30s eviction interval alive until the
+		// process exits. Force-destroy tears those down (the class is gone, so there
+		// are no WS connections worth preserving).
+		const liveClassNames = new Set(registry.durableObjects.map(e => e.className))
+		for (const [className, namespace] of this._doNamespaces) {
+			if (!liveClassNames.has(className)) {
+				namespace.destroy({ force: true })
+				this._doNamespaces.delete(className)
+			}
 		}
 
-		// 3a. Invalidate every cached user-code module under baseDir. The
-		//     `?v=<ts>` cache-bust below only invalidates the entry; static
-		//     imports inside it would otherwise resolve through Bun's module
-		//     registry to the cached transitive modules — so edits to any
-		//     file other than the entry itself would silently no-op. See
-		//     `tests/hmr-e2e.test.ts` "transitive dep change" cases.
-		invalidateUserModules(this.baseDir)
-
-		// 4. Import fresh worker module using cache-busting query string
-		const workerModule = await import(`${this.workerPath}?v=${Date.now()}`)
-
-		// 5. Wire DO and Workflow class references
-		wireClassRefs(registry, workerModule, env, this.workerRegistry, this.nextGenId)
-
-		// 5. Validate default export (or service worker fetch handler)
-		const defaultExport = workerModule.default
-		const classBasedExport = isEntrypointClass(defaultExport)
-		const swHandlers = (globalThis as any).__lopata_sw_handlers as { fetch?: (event: any) => void } | undefined
-		const hasServiceWorkerFetch = !!swHandlers?.fetch
-
-		if (!classBasedExport && !defaultExport?.fetch && !hasServiceWorkerFetch) {
-			throw new Error(
-				'Worker module must export a default object with a fetch() method, a class with a fetch() method on its prototype, or use addEventListener("fetch", handler)',
-			)
+		// Route dashboard workflow control through the worker thread. The main-side
+		// binding built by `buildEnv` is hollow (no `_class`, empty in-memory event
+		// waiters / sleep resolvers / abort controllers) — the live state machine
+		// runs in the worker. This is the workflow analog of `_setExternalClass`,
+		// installed here rather than via the (skipped) `wireClassRefs`.
+		for (const entry of registry.workflows) {
+			entry.binding._setThreadRouter((op) => executor.executeWorkflowControl(entry.bindingName, op))
 		}
 
-		// 5b. Patch frameworks that use .then()/.catch() for dispatch (e.g. Hono)
-		// This destroys async stack traces in Bun. We replace their fetch with an
-		// async wrapper so errors propagate through proper await chains.
-		if (!classBasedExport) {
-			patchFrameworkDispatch(defaultExport)
-		}
-
-		// 6. Create new generation
 		const genId = this.nextGenId++
-		const gen = new Generation(genId, workerModule, defaultExport, classBasedExport, env, registry, this.config, this.workerName, this.cronEnabled)
+		const gen = new Generation(genId, env, registry, this.config, executor, this.workerName, this.cronEnabled)
 		this.generations.set(genId, gen)
 
-		// 7. Drain old generation
 		const oldGenId = this._activeGenId
 		if (oldGenId !== null) {
 			const oldGen = this.generations.get(oldGenId)
 			if (oldGen && oldGen.state === 'active') {
-				oldGen.drain()
-				if (oldGen.isIdle()) {
-					// No in-flight work — stop immediately
-					this._stopGeneration(oldGenId)
-				} else {
-					// Poll for idle state, with grace period as hard maximum
-					oldGen.drainPollTimer = setInterval(() => {
-						if (oldGen.isIdle()) {
-							this._stopGeneration(oldGenId)
-						}
-					}, 200)
-					oldGen.drainTimer = setTimeout(() => {
-						this._stopGeneration(oldGenId)
-					}, this.gracePeriodMs)
-				}
+				// Skip clearing alarm timers for namespaces shared with this new
+				// generation — it just restored them via `_restoreAlarms()`, so
+				// clearing here would silently drop pending alarms across the reload.
+				oldGen.drain(new Set(this._doNamespaces.values()))
+				this._scheduleDrainAndStop(oldGenId, oldGen)
 			}
 		}
 
-		// 8. Mark new generation as active
 		this._activeGenId = genId
-
-		// 9. Start consumers + cron on new generation
-		gen.startConsumers()
-
+		gen.startConsumers(this._cronLastFired)
+		// First load: no previous worker could be running these, so resume any
+		// interrupted instances now. On a reload, resume is deferred until the old
+		// generation's worker is disposed (see _scheduleDrainAndStop) so a workflow
+		// never runs in two threads at once.
+		if (oldGenId === null) this._resumeWorkflows(gen)
 		return gen
+	}
+
+	/**
+	 * Resume interrupted (running/waiting) workflow instances on `gen`'s worker,
+	 * routed through the live worker-side binding. Guarded so a generation is
+	 * resumed at most once even when several older generations stop in sequence —
+	 * a second resume would re-execute the same instances (the bug this avoids).
+	 */
+	private _resumeWorkflows(gen: Generation): void {
+		if (gen.registry.workflows.length === 0) return
+		if (this._resumedGenIds.has(gen.id)) return
+		this._resumedGenIds.add(gen.id)
+		for (const entry of gen.registry.workflows) {
+			entry.binding.executeControl({ kind: 'resumeInterrupted' }).catch(err => {
+				console.error(`[lopata] workflow resume failed (${entry.bindingName}):`, err)
+			})
+		}
+	}
+
+	private _scheduleDrainAndStop(genId: number, gen: Generation): void {
+		const finish = () => {
+			this._stopGeneration(genId)
+			// Resume only once EVERY older generation's worker is gone, not just
+			// the one whose grace window elapsed here. Rapid reloads leave several
+			// older generations in overlapping grace windows; one of them may
+			// still be mid-execution of the very instances `resumeInterrupted`
+			// selects (their DB rows stay 'running' until the step settles), and
+			// resuming then would run one workflow in two threads at once.
+			const active = this.active
+			if (!active) return
+			for (const [id, g] of this.generations) {
+				if (id < active.id && g.state !== 'stopped') return
+			}
+			this._resumeWorkflows(active)
+		}
+		if (gen.isIdle()) {
+			finish()
+			return
+		}
+		void Promise.race([
+			waitUntilIdle(gen),
+			sleep(this.gracePeriodMs),
+		]).then(finish)
 	}
 
 	private _stopGeneration(genId: number): void {
@@ -248,6 +238,7 @@ export class GenerationManager {
 		// Remove after another grace period to let dashboard show it
 		setTimeout(() => {
 			this.generations.delete(genId)
+			this._resumedGenIds.delete(genId)
 		}, 60_000)
 	}
 
@@ -255,7 +246,7 @@ export class GenerationManager {
 	drain(genId: number): void {
 		const gen = this.generations.get(genId)
 		if (!gen) return
-		gen.drain()
+		gen.drain(new Set(this._doNamespaces.values()))
 	}
 
 	/** Force-stop a specific generation */
@@ -276,5 +267,15 @@ export class GenerationManager {
 	/** List all generations for dashboard */
 	list(): GenerationInfo[] {
 		return Array.from(this.generations.values()).map(g => g.getInfo())
+	}
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitUntilIdle(gen: Generation, pollMs = 200): Promise<void> {
+	while (gen.state !== 'stopped' && !gen.isIdle()) {
+		await sleep(pollMs)
 	}
 }

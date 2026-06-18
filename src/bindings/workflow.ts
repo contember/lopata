@@ -3,6 +3,7 @@ import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveContext } from '../tracing/context'
 import { addSpanEvent, persistError, startSpan } from '../tracing/span'
+import type { WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
 
 // --- Limits ---
 
@@ -720,6 +721,27 @@ export function parseDuration(duration: string | number): number {
 
 // --- Base class ---
 
+/**
+ * Wire a workflow class from the user module onto a `SqliteWorkflowBinding`.
+ * Both the in-process `wireClassRefs` and the worker-thread entry use this
+ * — keeps the lookup-throw-setClass-resumeInterrupted contract in one place.
+ */
+export function wireWorkflowClass(
+	binding: SqliteWorkflowBinding,
+	className: string,
+	workerModule: Record<string, unknown>,
+	env: Record<string, unknown>,
+): void {
+	const cls = workerModule[className]
+	if (!cls) throw new Error(`Workflow class "${className}" not exported from worker module`)
+	binding._setClass(cls as new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env)
+	// NOTE: resumeInterrupted() is deliberately NOT called here. Resuming during
+	// worker init would re-execute running/waiting instances while the previous
+	// generation's worker (terminated only after drain) is still running them —
+	// duplicate side effects. Main drives resume via a `resumeInterrupted` control
+	// op once the old generation's worker is disposed (see GenerationManager).
+}
+
 export class WorkflowEntrypointBase {
 	ctx: { env: unknown; waitUntil(p: Promise<unknown>): void }
 	env: unknown
@@ -880,6 +902,13 @@ export class SqliteWorkflowBinding {
 	private counter = 0
 	private limits: Required<WorkflowLimits>
 	private clock: Clock
+	/**
+	 * Thread-mode router for dashboard control ops. The real state machine lives
+	 * in the worker thread, so when this is set `executeControl` forwards there
+	 * instead of running against this (hollow) main-side binding. `null`/unset =
+	 * in-process: run locally. Installed by `GenerationManager` on each reload.
+	 */
+	private _threadRouter?: (op: WorkflowControlOp) => Promise<WorkflowControlResult>
 
 	constructor(db: Database, workflowName: string, className: string, limits?: WorkflowLimits, clock?: Clock) {
 		this.db = db
@@ -1069,6 +1098,68 @@ export class SqliteWorkflowBinding {
 			.get(id) as { id: string } | null
 		if (!row) throw new Error(`Workflow instance ${id} not found`)
 		return new SqliteWorkflowInstance(this.db, id, this)
+	}
+
+	/**
+	 * Install the thread-mode router (see {@link _threadRouter}). Called by
+	 * `GenerationManager` on each reload so the dashboard's control ops reach the
+	 * live worker-side binding. Mirrors the DO namespace's `_setExternalClass`.
+	 */
+	_setThreadRouter(router: (op: WorkflowControlOp) => Promise<WorkflowControlResult>): void {
+		this._threadRouter = router
+	}
+
+	/**
+	 * Execute a dashboard control operation. In thread mode the real state
+	 * machine (abort controllers, event waiters, sleep resolvers, the wired
+	 * class) lives in the worker, so when a thread router is installed this
+	 * forwards there; otherwise (in-process / worker-side binding) it runs
+	 * locally. Mutating ops resolve to `{ kind: 'ok' }`; `create` reports the new
+	 * id; the introspection reads report their value.
+	 */
+	async executeControl(op: WorkflowControlOp): Promise<WorkflowControlResult> {
+		if (this._threadRouter) return this._threadRouter(op)
+		switch (op.kind) {
+			case 'create': {
+				const instance = await this.create({ id: op.id, params: op.params })
+				return { kind: 'create', id: instance.id }
+			}
+			case 'status': {
+				return { kind: 'status', value: await (await this.get(op.instanceId)).status() }
+			}
+			case 'resumeInterrupted': {
+				this.resumeInterrupted()
+				return { kind: 'ok' }
+			}
+			case 'terminate': {
+				await (await this.get(op.instanceId)).terminate()
+				return { kind: 'ok' }
+			}
+			case 'pause': {
+				await (await this.get(op.instanceId)).pause()
+				return { kind: 'ok' }
+			}
+			case 'resume': {
+				await (await this.get(op.instanceId)).resume()
+				return { kind: 'ok' }
+			}
+			case 'restart': {
+				await (await this.get(op.instanceId)).restart(op.fromStep ? { fromStep: op.fromStep } : undefined)
+				return { kind: 'ok' }
+			}
+			case 'skipSleep': {
+				await (await this.get(op.instanceId)).skipSleep()
+				return { kind: 'ok' }
+			}
+			case 'sendEvent': {
+				await (await this.get(op.instanceId)).sendEvent({ type: op.eventType, payload: op.payload })
+				return { kind: 'ok' }
+			}
+			case 'isSleeping':
+				return { kind: 'isSleeping', value: isInstanceSleeping(op.instanceId) }
+			case 'waitingEventTypes':
+				return { kind: 'waitingEventTypes', value: getWaitingEventTypes(op.instanceId) }
+		}
 	}
 
 	/** Resume any workflow instances that were running/waiting when the process last exited. */

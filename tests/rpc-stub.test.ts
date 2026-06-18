@@ -6,6 +6,7 @@ import {
 	createRpcPromise,
 	createRpcStub,
 	isRpcTarget,
+	makeBindingProxy,
 	NON_RPC_PROPS,
 	RPC_TARGET_BRAND,
 	wrapRpcReturnValue,
@@ -193,12 +194,22 @@ describe('private member filtering', () => {
 })
 
 describe('Symbol.dispose and dup()', () => {
-	test('stub has Symbol.dispose (no-op)', () => {
+	test('stub has Symbol.dispose / Symbol.asyncDispose as no-op functions', () => {
 		const target = makeRpcTarget({})
 		const stub = createRpcStub(target) as any
 		expect(typeof stub[Symbol.dispose]).toBe('function')
-		// Should not throw
+		expect(typeof stub[Symbol.asyncDispose]).toBe('function')
 		stub[Symbol.dispose]()
+		stub[Symbol.asyncDispose]()
+	})
+
+	test('using stub exits cleanly (no DataCloneError, no TypeError)', () => {
+		const target = makeRpcTarget({ greet: () => 'hi' })
+		const runUsing = () => {
+			using _stub = createRpcStub(target) as Disposable
+			void _stub
+		}
+		expect(runUsing).not.toThrow()
 	})
 
 	test('dup() returns an independent stub', async () => {
@@ -230,6 +241,81 @@ describe('Symbol.dispose and dup()', () => {
 		const dup = stub.dup()
 		expect(dup).not.toBe(stub)
 		expect(await dup(5)).toBe(10)
+	})
+
+	test('using makeBindingProxy stub exits cleanly (no DataCloneError on Symbol.dispose)', () => {
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: () => {
+				throw new Error('should not be invoked by Symbol.dispose')
+			},
+		})
+		const run = () => {
+			using _p = proxy as unknown as Disposable
+			void _p
+		}
+		expect(run).not.toThrow()
+	})
+})
+
+describe('makeBindingProxy — property access (thenable)', () => {
+	test('await binding.prop issues a property-get, not a method call', async () => {
+		const calls: { prop: string; args: unknown[] }[] = []
+		const gets: string[] = []
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: (prop, args) => {
+				calls.push({ prop, args })
+				return 'method-result'
+			},
+			getProperty: async prop => {
+				gets.push(prop)
+				return `value-of-${prop}`
+			},
+		})
+
+		// Awaited → property-get RPC (the regressed path).
+		expect(await (proxy as Record<string, unknown>).version).toBe('value-of-version')
+		expect(gets).toEqual(['version'])
+		expect(calls).toEqual([])
+	})
+
+	test('binding.method(args) still does a method call', async () => {
+		const calls: { prop: string; args: unknown[] }[] = []
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: (prop, args) => {
+				calls.push({ prop, args })
+				return 'method-result'
+			},
+			getProperty: async prop => `value-of-${prop}`,
+		})
+
+		const fn = (proxy as Record<string, (...a: unknown[]) => unknown>).doThing!
+		const result = fn(1, 2)
+		expect(result).toBe('method-result')
+		expect(calls).toEqual([{ prop: 'doThing', args: [1, 2] }])
+	})
+
+	test('without getProperty, the callable is not thenable (back-compat)', () => {
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: () => 'x',
+		})
+		const fn = (proxy as Record<string, unknown>).whatever as { then?: unknown }
+		expect(typeof fn).toBe('function')
+		expect(fn.then).toBeUndefined()
+	})
+
+	test('arbitrary symbol props return undefined (no DataCloneError)', () => {
+		const proxy = makeBindingProxy({
+			fetch: async () => new Response('ok'),
+			call: () => {
+				throw new Error('symbol prop must not become an RPC call')
+			},
+		})
+		expect((proxy as Record<symbol, unknown>)[Symbol.for('lopata.test')]).toBeUndefined()
+		expect((proxy as Record<symbol, unknown>)[Symbol.iterator]).toBeUndefined()
 	})
 })
 
@@ -300,11 +386,12 @@ describe('createRpcPromise — promise pipelining', () => {
 		expect(version).toBe('2.0')
 	})
 
-	test('pipelining: Symbol.dispose is no-op', () => {
+	test('pipelining: Symbol.dispose / Symbol.asyncDispose are no-op functions', () => {
 		const promise = createRpcPromise(Promise.resolve(42))
-		const dispose = (promise as any)[Symbol.dispose]
-		expect(typeof dispose).toBe('function')
-		dispose()
+		expect(typeof (promise as any)[Symbol.dispose]).toBe('function')
+		expect(typeof (promise as any)[Symbol.asyncDispose]).toBe('function')
+		;(promise as any)[Symbol.dispose]()
+		;(promise as any)[Symbol.asyncDispose]()
 	})
 
 	test('pipelining: dup() returns new RpcPromise', async () => {
@@ -506,5 +593,51 @@ describe('Integration: Service binding with RpcTarget return', () => {
 		const fn = await getCallback()
 		expect(typeof fn).toBe('function')
 		expect(await fn(3, 4)).toBe(12)
+	})
+
+	test('thread-mode property read (`await env.SVC.field`) resolves via executor', async () => {
+		const calls: Array<{ kind: 'method' | 'property'; name: string; args?: unknown[] }> = []
+		// Mock executor mimicking WorkerThreadExecutor's surface used by ServiceBinding.toProxy.
+		const fakeExecutor = {
+			executeFetch: async () => new Response('unused'),
+			executeEntrypointRpc: async (
+				_entrypoint: string | undefined,
+				method: string,
+				args: unknown[],
+			) => {
+				calls.push({ kind: 'method', name: method, args })
+				return null
+			},
+			executeEntrypointPropertyGet: async (
+				_entrypoint: string | undefined,
+				property: string,
+			) => {
+				calls.push({ kind: 'property', name: property })
+				if (property === 'banner') return { kind: 'value' as const, value: 'aux-banner-v1' }
+				if (property === 'doIt') return { kind: 'function' as const }
+				return { kind: 'value' as const, value: undefined }
+			},
+		}
+
+		const proxy = createServiceBinding('test-worker') as Record<string, unknown> & {
+			_wire: (resolver: () => unknown) => void
+		}
+		proxy._wire(() => ({ kind: 'thread', env: {}, executor: fakeExecutor as unknown as never }))
+
+		// Property read — the thenable path.
+		const banner = await (proxy as any).banner
+		expect(banner).toBe('aux-banner-v1')
+		expect(calls).toEqual([{ kind: 'property', name: 'banner' }])
+
+		// Function-valued property — the thenable returns a function-stub that
+		// RPCs through on call.
+		calls.length = 0
+		const fn = await (proxy as any).doIt as (x: number) => Promise<unknown>
+		expect(typeof fn).toBe('function')
+		await fn(7)
+		expect(calls).toEqual([
+			{ kind: 'property', name: 'doIt' },
+			{ kind: 'method', name: 'doIt', args: [7] },
+		])
 	})
 })

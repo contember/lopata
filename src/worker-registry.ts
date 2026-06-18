@@ -1,4 +1,9 @@
 import type { GenerationManager } from './generation-manager'
+import type { WorkerThreadExecutor } from './worker-thread/executor'
+
+export type ResolvedTarget =
+	| { kind: 'thread'; env: Record<string, unknown>; executor: WorkerThreadExecutor }
+	| { kind: 'in-process'; env: Record<string, unknown>; workerModule: Record<string, unknown> }
 
 /**
  * Central registry holding all worker GenerationManagers, keyed by worker name.
@@ -33,7 +38,7 @@ export class WorkerRegistry {
 	 * Lazily resolve a target worker's module and env from its active generation.
 	 * Called on each service binding invocation so hot-reloaded workers are picked up.
 	 */
-	resolveTarget(workerName: string): { workerModule: Record<string, unknown>; env: Record<string, unknown> } {
+	resolveTarget(workerName: string): ResolvedTarget {
 		const manager = this.managers.get(workerName)
 		if (!manager) {
 			throw new Error(`Worker "${workerName}" is not registered in the worker registry`)
@@ -42,7 +47,15 @@ export class WorkerRegistry {
 		if (!gen) {
 			throw new Error(`Worker "${workerName}" has no active generation (failed to load?)`)
 		}
-		return { workerModule: gen.workerModule, env: gen.env }
+		const threadExecutor = (gen as unknown as { threadExecutor?: WorkerThreadExecutor }).threadExecutor
+		if (threadExecutor) {
+			return { kind: 'thread', env: gen.env, executor: threadExecutor }
+		}
+		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule
+		if (!workerModule) {
+			throw new Error(`Worker "${workerName}" generation has neither a thread executor nor a workerModule`)
+		}
+		return { kind: 'in-process', env: gen.env, workerModule }
 	}
 
 	/** List all registered managers (for dashboard) */

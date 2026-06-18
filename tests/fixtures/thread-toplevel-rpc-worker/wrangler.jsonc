@@ -1,0 +1,10 @@
+{
+	"name": "thread-toplevel-rpc-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"queues": {
+		"producers": [
+			{ "binding": "WORK_QUEUE", "queue": "thread-toplevel-q" }
+		]
+	}
+}

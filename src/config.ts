@@ -93,12 +93,15 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
  * Auto-detect config file in a directory. Tries wrangler.jsonc, wrangler.json, wrangler.toml.
  */
 export async function autoLoadConfig(baseDir: string, envName?: string): Promise<WranglerConfig> {
+	return loadConfig(findConfigPath(baseDir), envName)
+}
+
+/** Resolve the wrangler config path under `baseDir` (jsonc | json | toml). */
+export function findConfigPath(baseDir: string): string {
 	const candidates = ['wrangler.jsonc', 'wrangler.json', 'wrangler.toml']
 	for (const name of candidates) {
 		const fullPath = join(baseDir, name)
-		if (existsSync(fullPath)) {
-			return loadConfig(fullPath, envName)
-		}
+		if (existsSync(fullPath)) return fullPath
 	}
 	throw new Error(`No wrangler config found in ${baseDir} (tried: ${candidates.join(', ')})`)
 }

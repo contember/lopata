@@ -15,9 +15,9 @@ export interface LopataConfig {
 	/** Enable real cron scheduling based on wrangler triggers.crons (default: false) */
 	cron?: boolean
 	/**
-	 * DO isolation mode:
-	 * - "dev" (default) — all DO instances run in-process (fast, shared memory, hot reload)
-	 * - "isolated" — each DO instance runs in a separate Bun Worker thread (faithful to CF production)
+	 * @deprecated Has no effect. Workers and DO instances always run in their own
+	 * Bun Worker thread now; the in-process path was removed. Kept only so existing
+	 * configs don't fail to parse — see the deprecation warning in `cli/dev.ts`.
 	 */
 	isolation?: 'dev' | 'isolated'
 	/** AI SQL generation config for the D1 console */

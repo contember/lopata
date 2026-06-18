@@ -4,6 +4,7 @@ import { AiBinding } from './bindings/ai'
 import { SqliteAnalyticsEngine } from './bindings/analytics-engine'
 import { BrowserBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
+import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
 import { DockerManager } from './bindings/container-docker'
 import { openD1Database } from './bindings/d1'
 import type { DOExecutorFactory } from './bindings/do-executor'
@@ -17,11 +18,11 @@ import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
 import { FileR2Bucket } from './bindings/r2'
 import { createServiceBinding } from './bindings/service-binding'
 import { StaticAssets } from './bindings/static-assets'
-import { SqliteWorkflowBinding } from './bindings/workflow'
+import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
 import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
-import type { WorkerRegistry } from './worker-registry'
+import type { ResolvedTarget, WorkerRegistry } from './worker-registry'
 
 /**
  * Global reference to the built env object. Used by cloudflare:workers `env` export.
@@ -313,10 +314,14 @@ export function buildEnv(
 				console.log(`[lopata] Container: ${container.class_name} (reusing DO binding, image: ${container.image})`)
 			}
 		} else {
-			// Create a new DO namespace for this container
+			// Reuse the existing namespace across reloads (like the DO-binding branch
+			// above) — constructing a fresh one would orphan the old namespace while a
+			// new executor opens the same do-sql file for the same id, breaking DO
+			// single-threading.
 			const bindingName = container.name ?? container.class_name
 			console.log(`[lopata] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`)
-			const namespace = new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
+			const existingNs = existingNamespaces?.get(container.class_name)
+			const namespace = existingNs ?? new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
 			env[bindingName] = instrumentDONamespace(namespace, container.class_name)
 			registry.durableObjects.push({
 				bindingName,
@@ -386,15 +391,17 @@ export function wireClassRefs(
 	}
 
 	for (const entry of registry.workflows) {
-		const cls = workerModule[entry.className]
-		if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`)
-		entry.binding._setClass(cls as any, env)
-		entry.binding.resumeInterrupted()
+		wireWorkflowClass(entry.binding, entry.className, workerModule, env)
 		console.log(`[lopata] Wired Workflow class: ${entry.className}`)
 	}
 
-	// Wire container configs onto namespaces
-	const dockerManager = new DockerManager()
+	// Wire container configs onto namespaces. Main-side path goes through the
+	// cleanup registry directly (no postMessage needed — this *is* main).
+	const dockerManager = new DockerManager({
+		onRegister: registerContainer,
+		onRemove: unregisterContainer,
+		labels: containerLabels(),
+	})
 	for (const entry of registry.containers) {
 		entry.namespace._setContainerConfig({
 			className: entry.className,
@@ -405,18 +412,30 @@ export function wireClassRefs(
 		console.log(`[lopata] Wired container config: ${entry.className} (image: ${entry.image})`)
 	}
 
-	// Wire service bindings
+	wireServiceBindings(registry, workerModule, env, workerRegistry)
+}
+
+/**
+ * Service-binding wiring extracted so thread-mode generations (which skip
+ * `wireClassRefs` entirely — DO/Workflow classes live in the worker) can
+ * still resolve cross-worker fetches through the registry.
+ */
+export function wireServiceBindings(
+	registry: ClassRegistry,
+	workerModule: Record<string, unknown>,
+	env: Record<string, unknown>,
+	workerRegistry?: WorkerRegistry,
+) {
 	for (const entry of registry.serviceBindings) {
-		const wire = entry.proxy._wire as ((resolver: () => { workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void) | undefined
-		if (wire) {
-			if (workerRegistry) {
-				// Resolve through registry (handles both self-ref and cross-worker)
-				wire(() => workerRegistry.resolveTarget(entry.serviceName))
-			} else {
-				// Backward compat: self-reference
-				wire(() => ({ workerModule, env }))
-			}
-			console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
+		const wire = entry.proxy._wire as ((resolver: () => ResolvedTarget) => void) | undefined
+		if (!wire) continue
+		if (workerRegistry) {
+			// Resolve through registry (handles both self-ref and cross-worker)
+			wire(() => workerRegistry.resolveTarget(entry.serviceName))
+		} else {
+			// Backward compat: self-reference, in-process
+			wire(() => ({ kind: 'in-process', workerModule, env }))
 		}
+		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 	}
 }

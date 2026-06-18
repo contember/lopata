@@ -6,15 +6,18 @@
  * Events are buffered until accept() is called.
  */
 
-type WSEventType = 'message' | 'close' | 'error' | 'open'
+export type WSEventType = 'message' | 'close' | 'error' | 'open'
 
-interface WSEvent {
+export interface WSEvent {
 	type: WSEventType
 	data?: string | ArrayBuffer
 	code?: number
 	reason?: string
 	wasClean?: boolean
 }
+
+/** Response with optional CF `webSocket` property — used by upgrade flows. */
+export type ResponseWithWebSocket = Response & { webSocket?: CFWebSocket }
 
 const CONNECTING = 0
 const OPEN = 1
@@ -68,7 +71,10 @@ export class CFWebSocket extends EventTarget {
 	accept(): void {
 		if (this._accepted) return
 		this._accepted = true
-		this.readyState = OPEN
+		// Don't re-open a socket that was already closed before accept() (e.g. a
+		// bridged peer whose close was buffered ahead of registration). The queued
+		// close event below still dispatches to listeners.
+		if (this.readyState !== CLOSED) this.readyState = OPEN
 
 		// Flush queued events
 		const queue = this._eventQueue
@@ -132,6 +138,16 @@ export class CFWebSocket extends EventTarget {
 		} else {
 			this._eventQueue.push(closeEvt)
 		}
+	}
+
+	/**
+	 * Deliver `evt` to local listeners if the peer is already `accept()`ed;
+	 * otherwise queue it for replay. Centralises the "dispatch or queue" branch
+	 * that every bridge implementation otherwise inlines.
+	 */
+	dispatchOrQueue(evt: WSEvent): void {
+		if (this._accepted) this._dispatchWSEvent(evt)
+		else this._eventQueue.push(evt)
 	}
 
 	/** @internal */

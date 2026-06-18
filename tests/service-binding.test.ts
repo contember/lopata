@@ -461,6 +461,35 @@ describe('Service Binding', () => {
 			expect(proxy._subrequestCount).toBe(0)
 		})
 
+		test('failed fetch on unwired binding does not consume budget', async () => {
+			// Not wired → _resolve() throws "not wired". The counter must NOT move,
+			// otherwise repeated failed calls would eventually report
+			// "subrequest limit exceeded" instead of the real wiring error.
+			const proxy = createServiceBinding('my-worker', undefined, { maxSubrequests: 2 })
+			const fetch = proxy.fetch as Function
+
+			await expect(fetch('http://localhost/1')).rejects.toThrow('not wired')
+			await expect(fetch('http://localhost/2')).rejects.toThrow('not wired')
+			await expect(fetch('http://localhost/3')).rejects.toThrow('not wired')
+
+			expect(proxy._subrequestCount).toBe(0) // After wiring, the full budget is still available.
+			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
+			await fetch('http://localhost/ok-1')
+			await fetch('http://localhost/ok-2')
+			await expect(fetch('http://localhost/ok-3')).rejects.toThrow('subrequest limit exceeded')
+		})
+
+		test('failed RPC call on unwired binding does not consume budget', () => {
+			const proxy = createServiceBinding('my-worker', undefined, { maxSubrequests: 2 })
+			const noop = proxy.noop as Function
+
+			expect(() => noop()).toThrow('not wired')
+			expect(() => noop()).toThrow('not wired')
+			expect(() => noop()).toThrow('not wired')
+
+			expect(proxy._subrequestCount).toBe(0)
+		})
+
 		test('budget is per top-level request, not per binding lifetime', async () => {
 			const proxy = createServiceBinding('my-worker', undefined, { maxSubrequests: 3 })
 			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
