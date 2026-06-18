@@ -82,17 +82,23 @@ describe('tracing.enterSpan (Cloudflare custom spans)', () => {
 		expect(attrs['cache.hit']).toBe(true)
 	})
 
+	test('setAttribute with undefined is a no-op', async () => {
+		await enterSpan('handleRequest', span => {
+			span.setAttribute('kept', 'yes')
+			span.setAttribute('skipped', undefined)
+		})
+
+		const attrs = JSON.parse(firstSpan().attributes ?? '{}')
+		expect(attrs.kept).toBe('yes')
+		expect('skipped' in attrs).toBe(false)
+	})
+
 	test('isTraced is true inside a span', () => {
 		let traced: boolean | undefined
 		enterSpan('check', span => {
 			traced = span.isTraced
 		})
 		expect(traced).toBe(true)
-	})
-
-	test('forwards extra arguments to the callback', () => {
-		const doubled = enterSpan('compute', (_span, x: number) => x * 2, 21)
-		expect(doubled).toBe(42)
 	})
 
 	test('nests child spans under the active span in the same trace', () => {
