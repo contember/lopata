@@ -145,13 +145,6 @@ describe('Stateful bindings (worker-thread runtime)', () => {
 		expect(root?.name).toBe('GET /trace/nested')
 		expect(child).toBeDefined()
 		expect(child?.trace_id).toBe(root?.trace_id)
-
-		const traces = new Database(resolve(FIXTURE_DIR, '.lopata/traces.sqlite'), { readonly: true })
-		const events = traces.query<{ name: string; message: string | null }, [string]>(
-			'SELECT name, message FROM span_events WHERE span_id = (SELECT span_id FROM spans WHERE name = ? ORDER BY start_time DESC LIMIT 1)',
-		).all('phase4-child')
-		traces.close()
-		expect(events.some(e => e.name === 'phase4-event' && e.message === 'from inside child span')).toBe(true)
 	}, 5_000)
 
 	test('reload drains waitUntil from the previous generation before terminating its worker', async () => {

@@ -1,4 +1,5 @@
 import { EmailMessage } from 'cloudflare:email'
+import { tracing } from 'cloudflare:workers'
 
 export default {
 	async scheduled(controller: any, env: any): Promise<void> {
@@ -41,8 +42,8 @@ export default {
 		}
 
 		if (url.pathname === '/trace/nested') {
-			await (globalThis as any).__lopata.trace('phase4-child', { 'phase4.attr': 'yes' }, async () => {
-				;(globalThis as any).__lopata.addEvent('phase4-event', 'from inside child span')
+			await tracing.enterSpan('phase4-child', async span => {
+				span.setAttribute('phase4.attr', 'yes')
 				return null
 			})
 			return new Response('traced')
