@@ -109,7 +109,11 @@ describe('tracing.enterSpan (Cloudflare custom spans)', () => {
 	})
 
 	test('marks the span errored and records an exception event on a synchronous throw', () => {
-		expect(() => enterSpan('boom', () => { throw new Error('kaboom') })).toThrow('kaboom')
+		expect(() =>
+			enterSpan('boom', () => {
+				throw new Error('kaboom')
+			})
+		).toThrow('kaboom')
 
 		const span = firstSpan()
 		expect(span.status).toBe('error')
