@@ -25,7 +25,9 @@
  *   - `_sample_interval` is always 1, so `sum(_sample_interval)` == `count()`.
  *   - The `timestamp` column is stored as **ms epoch**; ClickHouse treats it as
  *     a `DateTime` (seconds). We canonicalise to **seconds** on read so
- *     `now()` / `INTERVAL` arithmetic lines up.
+ *     `now()` / `INTERVAL` arithmetic lines up, then render `DateTime` *output*
+ *     columns as ClickHouse `YYYY-MM-DD HH:MM:SS` (UTC) strings to match the real
+ *     SQL API — so `new Date(row.bucket)` behaves the same locally as in prod.
  */
 
 import type { Database } from 'bun:sqlite'
@@ -881,6 +883,42 @@ function deriveMetaFromRows(rows: Record<string, unknown>[]): { name: string; ty
 	return keys.map(k => ({ name: k, type: colType(k) }))
 }
 
+/**
+ * Render an epoch-seconds value as a ClickHouse `DateTime` string
+ * (`YYYY-MM-DD HH:MM:SS`, UTC) — the form the real Analytics Engine SQL API
+ * returns. Fractional seconds are truncated (ClickHouse `DateTime` is
+ * second-resolution).
+ */
+function formatDateTime(epochSeconds: number): string {
+	const d = new Date(Math.floor(epochSeconds) * 1000)
+	const p = (n: number) => String(n).padStart(2, '0')
+	return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+}
+
+/**
+ * Convert `DateTime` output columns from their internal numeric form to ClickHouse
+ * datetime strings, in place — the final projection step so prod and local agree
+ * on the result shape. Non-`*` queries canonicalise timestamps to **seconds** in
+ * the emitted SQL; `SELECT *` returns the raw `timestamp` column, stored as **ms**.
+ * NULL DateTimes (e.g. `max(timestamp)` over an empty dataset) are left untouched.
+ */
+function formatDateTimeColumns(data: Record<string, unknown>[], t: TranslatedQuery): void {
+	if (t.hasStar) {
+		for (const row of data) {
+			const v = row.timestamp
+			if (typeof v === 'number') row.timestamp = formatDateTime(v / 1000)
+		}
+		return
+	}
+	const dtCols = t.columns.filter(c => c.type === 'DateTime').map(c => c.name)
+	for (const row of data) {
+		for (const name of dtCols) {
+			const v = row[name]
+			if (typeof v === 'number') row[name] = formatDateTime(v)
+		}
+	}
+}
+
 function isQuantile(node: Node): node is Extract<Node, { kind: 'func' }> {
 	return node.kind === 'func' && QUANTILE_FNS.has(node.name.toLowerCase())
 }
@@ -1055,6 +1093,7 @@ export function runAnalyticsEngineSql(db: Database, sql: string, nowMs: number =
 	const translated = translateAnalyticsEngineSql(sql, Math.floor(nowMs / 1000))
 	let data = executeTranslated(db, translated)
 	if (translated.postProcess) data = applyPostProcess(data, translated.postProcess, translated.columns)
+	formatDateTimeColumns(data, translated)
 	const meta = translated.hasStar ? deriveMetaFromRows(data) : translated.columns
 	return {
 		meta,
@@ -1076,6 +1115,7 @@ export function buildAnalyticsEngineSqlResponse(db: Database, sql: string): Resp
 		const translated = translateAnalyticsEngineSql(trimmed, Math.floor(Date.now() / 1000))
 		let data = executeTranslated(db, translated)
 		if (translated.postProcess) data = applyPostProcess(data, translated.postProcess, translated.columns)
+		formatDateTimeColumns(data, translated)
 		if (translated.format === 'JSONEACHROW') {
 			const body = data.map(row => JSON.stringify(row)).join('\n')
 			return new Response(body, { headers: { 'content-type': 'application/x-ndjson' } })
