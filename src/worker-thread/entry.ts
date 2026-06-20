@@ -1,5 +1,6 @@
 /** Worker-thread entry: imports user module, builds env, dispatches fetch. */
 
+import './request-clone-fix' // global Request shim — must load before user code
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
