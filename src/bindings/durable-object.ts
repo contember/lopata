@@ -176,6 +176,11 @@ export class SqlStorage {
 					const rowsWritten = hasReturning && !isPlainRead
 						? (db.query('SELECT changes() as c').get() as { c: number }).c
 						: 0
+					// rowsRead is an approximation. workerd derives it from libSQL's
+					// LIBSQL_STMTSTATUS_ROWS_READ counter — rows physically scanned from
+					// tables/indexes (its billing metric), which is neither the returned-row
+					// count nor 0 for a RETURNING write. Stock bun:sqlite exposes no such
+					// counter, so we report the returned-row count as the closest stand-in.
 					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, rowsWritten)
 				} else {
 					stmt.run(...bindings)
