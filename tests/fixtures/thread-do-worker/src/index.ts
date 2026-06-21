@@ -21,6 +21,14 @@ export class Counter {
 		if (url.pathname === '/name') {
 			return new Response(String(this.state.id.name ?? ''))
 		}
+		if (url.pathname === '/echo') {
+			// Reads the forwarded request BODY across the worker → main → DO-worker
+			// bridge. Regression guard: a Worker that re-wraps its incoming request via
+			// `new Request(request, { headers })` to forward it used to deadlock here
+			// (Bun's Request clone hangs on a JS ReadableStream body).
+			const data = await request.json()
+			return Response.json({ echoed: data })
+		}
 		return new Response('not found', { status: 404 })
 	}
 
@@ -40,6 +48,17 @@ export default {
 			const stub = env.COUNTER.get(id)
 			const res = await stub.fetch(`http://do/${action}`)
 			return new Response(`${name}:${await res.text()}`)
+		}
+
+		// Forward the incoming POST to the DO by RE-WRAPPING the incoming request via
+		// `new Request(request, { headers })` — the idiomatic proxy-to-DO pattern, and
+		// the case that used to deadlock the DO's `await request.json()`. The DO
+		// response is returned directly.
+		if (url.pathname === '/echo') {
+			const stub = env.COUNTER.get(env.COUNTER.idFromName('echo'))
+			const headers = new Headers(request.headers)
+			headers.set('x-forwarded-by', 'worker')
+			return stub.fetch(new Request(request, { headers }))
 		}
 
 		if (url.pathname.startsWith('/greet/')) {

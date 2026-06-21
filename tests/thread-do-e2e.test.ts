@@ -66,6 +66,24 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect(await res.text()).toBe('alice:alice')
 	})
 
+	// A Worker that forwards its incoming request to a DO by re-wrapping it
+	// (`stub.fetch(new Request(request, { headers }))`) and the DO reads the body
+	// (`await request.json()`) — the idiomatic proxy-to-DO pattern. This deadlocked
+	// before: the incoming request body was a JS ReadableStream, and Bun's
+	// `new Request(req, init)` clone hangs on such a body. A global `Request`
+	// subclass (src/worker-thread/request-clone-fix.ts) now special-cases that
+	// re-wrap, rebuilding the request from the source URL + forwarded stream body
+	// so the body stays readable downstream.
+	test('a re-wrapped incoming request body survives the worker → DO hop', async () => {
+		const res = await fetch(`${base}/echo`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ hello: 'world', n: 42 }),
+		})
+		expect(res.status).toBe(200)
+		expect(await res.json()).toEqual({ echoed: { hello: 'world', n: 42 } })
+	})
+
 	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
 	// the main-side check never trips in thread mode. The budget must
 	// accumulate across all binding calls of ONE request (a per-call re-seed of

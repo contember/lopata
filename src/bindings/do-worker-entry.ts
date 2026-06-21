@@ -5,6 +5,7 @@
  * postMessage from the main thread (handshake), then initializes.
  */
 
+import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
