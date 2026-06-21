@@ -150,15 +150,38 @@ export class SqlStorage {
 				const db = this._getDb()
 				const stmt = db.prepare(query)
 
-				// Determine if this is a query that returns rows
+				// Determine if this is a query that returns rows. Plain
+				// SELECT/WITH/PRAGMA do, and so does any INSERT/UPDATE/DELETE that
+				// carries a RETURNING clause — workerd's DO SQLite surfaces those rows,
+				// so we must too (running such a write via stmt.run() would silently
+				// drop the echoed rows). The `\bRETURNING\b` test is a heuristic: a
+				// RETURNING substring inside a string literal is a false positive, but a
+				// harmless one — stmt.all() still executes the statement, and rowsWritten
+				// is gated on it being a write (below), so a misdetected read reports 0.
 				const trimmed = query.trim().toUpperCase()
-				const isSelect = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
+				const yieldsRows = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
+				const hasReturning = /\bRETURNING\b/.test(trimmed)
 
-				if (isSelect) {
+				if (yieldsRows || hasReturning) {
 					const rows = stmt.all(...bindings) as Record<string, unknown>[]
-					const columnNames = stmt.columnNames as string[] ?? []
+					const columnNames = (stmt.columnNames as string[]) ?? []
 					const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
-					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, 0)
+					// A RETURNING write still mutates rows: report changes() as written.
+					// A real RETURNING clause only exists on INSERT/UPDATE/DELETE — which may
+					// be CTE-wrapped (`WITH … DELETE … RETURNING`, which starts with WITH) —
+					// so we can't gate on the leading keyword. SELECT/PRAGMA can never modify
+					// rows, so attribute changes() to any RETURNING statement that isn't one
+					// of those plain reads.
+					const isPlainRead = trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA')
+					const rowsWritten = hasReturning && !isPlainRead
+						? (db.query('SELECT changes() as c').get() as { c: number }).c
+						: 0
+					// rowsRead is an approximation. workerd derives it from libSQL's
+					// LIBSQL_STMTSTATUS_ROWS_READ counter — rows physically scanned from
+					// tables/indexes (its billing metric), which is neither the returned-row
+					// count nor 0 for a RETURNING write. Stock bun:sqlite exposes no such
+					// counter, so we report the returned-row count as the closest stand-in.
+					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, rowsWritten)
 				} else {
 					stmt.run(...bindings)
 					const changes = db.query('SELECT changes() as c').get() as { c: number }

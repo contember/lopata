@@ -217,6 +217,76 @@ describe('DurableObjectStorage', () => {
 	})
 })
 
+describe('SqlStorage.exec', () => {
+	let sql: SqlStorage
+
+	beforeEach(() => {
+		// dbPath=null -> in-memory; one fresh DB per test
+		sql = new SqlStorage(null, 'TestDO', 'instance1')
+		sql.exec('CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)')
+	})
+
+	test('SELECT returns rows', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('SELECT * FROM t')
+		const rows = cursor.toArray()
+		expect(rows).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.columnNames).toEqual(['id', 'name'])
+		expect(cursor.rowsRead).toBe(1)
+		expect(cursor.rowsWritten).toBe(0)
+	})
+
+	test('plain INSERT returns no rows but reports rowsWritten', () => {
+		const cursor = sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		expect(cursor.toArray()).toEqual([])
+		expect(cursor.rowsWritten).toBe(1)
+	})
+
+	test('INSERT ... RETURNING * surfaces the inserted row (workerd parity)', () => {
+		const cursor = sql.exec('INSERT INTO t (name) VALUES (?) RETURNING *', 'alice')
+		const rows = cursor.toArray()
+		expect(rows).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.columnNames).toEqual(['id', 'name'])
+		expect(cursor.rowsWritten).toBe(1)
+		// the write must also have persisted
+		expect(sql.exec('SELECT name FROM t WHERE id = 1').toArray()).toEqual([{ name: 'alice' }])
+	})
+
+	test('UPDATE ... RETURNING surfaces the updated row', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('UPDATE t SET name = ? WHERE id = ? RETURNING id, name', 'ALICE', 1)
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'ALICE' }])
+		expect(cursor.rowsWritten).toBe(1)
+	})
+
+	test('DELETE ... RETURNING surfaces the deleted row', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('DELETE FROM t WHERE id = ? RETURNING *', 1)
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.rowsWritten).toBe(1)
+		expect(sql.exec('SELECT * FROM t').toArray()).toEqual([])
+	})
+
+	test('CTE-wrapped DELETE ... RETURNING reports rowsWritten (not 0)', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?), (?)', 'alice', 'bob')
+		// Starts with WITH, so the leading-keyword check sees a "read" — but it is a
+		// write and must still report rowsWritten.
+		const cursor = sql.exec('WITH doomed AS (SELECT id FROM t WHERE name = ?) DELETE FROM t WHERE id IN (SELECT id FROM doomed) RETURNING *', 'alice')
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.rowsWritten).toBe(1)
+		expect(sql.exec('SELECT name FROM t').toArray()).toEqual([{ name: 'bob' }])
+	})
+
+	test('a RETURNING substring inside a string literal is a benign false positive', () => {
+		// The heuristic matches RETURNING here, routing the read through stmt.all().
+		// It must still behave as a pure read: rows returned, rowsWritten === 0.
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'the RETURNING soldier')
+		const cursor = sql.exec("SELECT name FROM t WHERE name = 'the RETURNING soldier'")
+		expect(cursor.toArray()).toEqual([{ name: 'the RETURNING soldier' }])
+		expect(cursor.rowsWritten).toBe(0)
+	})
+})
+
 describe('DurableObjectState', () => {
 	test('blockConcurrencyWhile executes callback and returns result', async () => {
 		const id = new DurableObjectIdImpl('test-id')
