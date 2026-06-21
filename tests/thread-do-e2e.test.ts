@@ -70,8 +70,10 @@ describe('Durable Objects (worker-thread runtime)', () => {
 	// (`stub.fetch(new Request(request, { headers }))`) and the DO reads the body
 	// (`await request.json()`) — the idiomatic proxy-to-DO pattern. This deadlocked
 	// before: the incoming request body was a JS ReadableStream, and Bun's
-	// `new Request(req, init)` clone hangs on such a body. The worker bridge now
-	// materializes incoming request bodies so they survive re-wrapping.
+	// `new Request(req, init)` clone hangs on such a body. A global `Request`
+	// subclass (src/worker-thread/request-clone-fix.ts) now special-cases that
+	// re-wrap, rebuilding the request from the source URL + forwarded stream body
+	// so the body stays readable downstream.
 	test('a re-wrapped incoming request body survives the worker → DO hop', async () => {
 		const res = await fetch(`${base}/echo`, {
 			method: 'POST',
