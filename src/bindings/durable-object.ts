@@ -150,15 +150,25 @@ export class SqlStorage {
 				const db = this._getDb()
 				const stmt = db.prepare(query)
 
-				// Determine if this is a query that returns rows
+				// Determine if this is a query that returns rows. Plain
+				// SELECT/WITH/PRAGMA do, and so does any INSERT/UPDATE/DELETE that
+				// carries a RETURNING clause — workerd's DO SQLite surfaces those rows,
+				// so we must too (running such a write via stmt.run() would silently
+				// drop the echoed rows).
 				const trimmed = query.trim().toUpperCase()
 				const isSelect = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
+				const hasReturning = /\bRETURNING\b/.test(trimmed)
 
-				if (isSelect) {
+				if (isSelect || hasReturning) {
 					const rows = stmt.all(...bindings) as Record<string, unknown>[]
 					const columnNames = stmt.columnNames as string[] ?? []
 					const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
-					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, 0)
+					// A RETURNING write still mutates rows: report changes() as written,
+					// while a pure read reports none.
+					const rowsWritten = hasReturning && !isSelect
+						? (db.query('SELECT changes() as c').get() as { c: number }).c
+						: 0
+					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, rowsWritten)
 				} else {
 					stmt.run(...bindings)
 					const changes = db.query('SELECT changes() as c').get() as { c: number }

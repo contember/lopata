@@ -217,6 +217,57 @@ describe('DurableObjectStorage', () => {
 	})
 })
 
+describe('SqlStorage.exec', () => {
+	let sql: SqlStorage
+
+	beforeEach(() => {
+		// dbPath=null -> in-memory; one fresh DB per test
+		sql = new SqlStorage(null, 'TestDO', 'instance1')
+		sql.exec('CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)')
+	})
+
+	test('SELECT returns rows', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('SELECT * FROM t')
+		const rows = cursor.toArray()
+		expect(rows).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.columnNames).toEqual(['id', 'name'])
+		expect(cursor.rowsRead).toBe(1)
+		expect(cursor.rowsWritten).toBe(0)
+	})
+
+	test('plain INSERT returns no rows but reports rowsWritten', () => {
+		const cursor = sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		expect(cursor.toArray()).toEqual([])
+		expect(cursor.rowsWritten).toBe(1)
+	})
+
+	test('INSERT ... RETURNING * surfaces the inserted row (workerd parity)', () => {
+		const cursor = sql.exec('INSERT INTO t (name) VALUES (?) RETURNING *', 'alice')
+		const rows = cursor.toArray()
+		expect(rows).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.columnNames).toEqual(['id', 'name'])
+		expect(cursor.rowsWritten).toBe(1)
+		// the write must also have persisted
+		expect(sql.exec('SELECT name FROM t WHERE id = 1').toArray()).toEqual([{ name: 'alice' }])
+	})
+
+	test('UPDATE ... RETURNING surfaces the updated row', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('UPDATE t SET name = ? WHERE id = ? RETURNING id, name', 'ALICE', 1)
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'ALICE' }])
+		expect(cursor.rowsWritten).toBe(1)
+	})
+
+	test('DELETE ... RETURNING surfaces the deleted row', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
+		const cursor = sql.exec('DELETE FROM t WHERE id = ? RETURNING *', 1)
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.rowsWritten).toBe(1)
+		expect(sql.exec('SELECT * FROM t').toArray()).toEqual([])
+	})
+})
+
 describe('DurableObjectState', () => {
 	test('blockConcurrencyWhile executes callback and returns result', async () => {
 		const id = new DurableObjectIdImpl('test-id')
