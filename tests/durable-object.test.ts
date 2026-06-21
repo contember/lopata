@@ -266,6 +266,25 @@ describe('SqlStorage.exec', () => {
 		expect(cursor.rowsWritten).toBe(1)
 		expect(sql.exec('SELECT * FROM t').toArray()).toEqual([])
 	})
+
+	test('CTE-wrapped DELETE ... RETURNING reports rowsWritten (not 0)', () => {
+		sql.exec('INSERT INTO t (name) VALUES (?), (?)', 'alice', 'bob')
+		// Starts with WITH, so the leading-keyword check sees a "read" — but it is a
+		// write and must still report rowsWritten.
+		const cursor = sql.exec('WITH doomed AS (SELECT id FROM t WHERE name = ?) DELETE FROM t WHERE id IN (SELECT id FROM doomed) RETURNING *', 'alice')
+		expect(cursor.toArray()).toEqual([{ id: 1, name: 'alice' }])
+		expect(cursor.rowsWritten).toBe(1)
+		expect(sql.exec('SELECT name FROM t').toArray()).toEqual([{ name: 'bob' }])
+	})
+
+	test('a RETURNING substring inside a string literal is a benign false positive', () => {
+		// The heuristic matches RETURNING here, routing the read through stmt.all().
+		// It must still behave as a pure read: rows returned, rowsWritten === 0.
+		sql.exec('INSERT INTO t (name) VALUES (?)', 'the RETURNING soldier')
+		const cursor = sql.exec("SELECT name FROM t WHERE name = 'the RETURNING soldier'")
+		expect(cursor.toArray()).toEqual([{ name: 'the RETURNING soldier' }])
+		expect(cursor.rowsWritten).toBe(0)
+	})
 })
 
 describe('DurableObjectState', () => {
