@@ -67,6 +67,10 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 	db.run('PRAGMA journal_mode=WAL')
 	db.run('PRAGMA busy_timeout=5000')
 	runMigrations(db)
+	// Expose this thread's DB handle so the fetch patch (plugin.ts) can serve the
+	// intercepted Analytics Engine SQL API from the right data dir in multi-worker setups.
+	const threadGlobals = globalThis as { __lopata_db?: Database }
+	threadGlobals.__lopata_db = db
 
 	const env: Record<string, unknown> = {}
 

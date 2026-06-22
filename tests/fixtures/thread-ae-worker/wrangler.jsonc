@@ -1,0 +1,8 @@
+{
+	"name": "thread-ae-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"analytics_engine_datasets": [
+		{ "binding": "ANALYTICS", "dataset": "my_metrics" }
+	]
+}

@@ -161,6 +161,10 @@ export function buildWorkerEnv(
 	// SQLITE_BUSY instead of waiting.
 	db.run('PRAGMA busy_timeout=5000')
 	runMigrations(db)
+	// Expose this thread's DB handle so the fetch patch (plugin.ts) can serve the
+	// intercepted Analytics Engine SQL API from this DO worker's data dir.
+	const threadGlobals = globalThis as { __lopata_db?: Database }
+	threadGlobals.__lopata_db = db
 
 	const env: Record<string, unknown> = {}
 

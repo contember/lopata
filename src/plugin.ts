@@ -1,4 +1,6 @@
 import { plugin } from 'bun'
+import type { Database } from 'bun:sqlite'
+import { buildAnalyticsEngineSqlResponse, isAnalyticsEngineSqlUrl, isLocalAnalyticsEngineToken } from './bindings/analytics-engine-sql'
 import type { ImageTransformOptions, OutputOptions } from './bindings/images'
 import { setupCloudflareGlobals } from './setup-globals'
 import { getActiveContext } from './tracing/context'
@@ -158,6 +160,41 @@ async function applyCfImageTransform(response: Response, imageOpts: Record<strin
 
 const _originalFetch = globalThis.fetch
 globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
+	// Intercept the Cloudflare Analytics Engine SQL API (no Worker binding exists
+	// for reads) and serve it from the local SQLite store — same code runs in dev
+	// and prod unchanged.
+	const aeMethod = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
+	const aeUrl = typeof input === 'string'
+		? input
+		: input instanceof URL
+		? input.href
+		: input instanceof Request
+		? input.url
+		: undefined
+	// Gate on the bearer token: missing or `Bearer local` is served locally; a real
+	// token falls through to the actual Cloudflare API (prod).
+	const aeAuth = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get('authorization')
+	if (aeMethod === 'POST' && typeof aeUrl === 'string' && isAnalyticsEngineSqlUrl(aeUrl) && isLocalAnalyticsEngineToken(aeAuth)) {
+		// Set per worker-thread by buildThreadEnv / buildDoWorkerEnv before user code
+		// runs. Fail loudly rather than fall back to a possibly-wrong data dir, which
+		// would return plausible but incorrect numbers.
+		const db = (globalThis as { __lopata_db?: Database }).__lopata_db
+		if (!db) throw new Error('Analytics Engine SQL API was intercepted before the worker-thread database was wired')
+		const aeReq = new Request(input, init)
+		if (!getActiveContext()) return aeReq.text().then(sql => buildAnalyticsEngineSqlResponse(db, sql))
+		return startSpan({
+			name: 'analytics_engine sql',
+			kind: 'client',
+			attributes: { 'http.method': 'POST', 'http.url': aeUrl },
+		}, async () => {
+			const sql = (await aeReq.text()).trim()
+			if (sql) setSpanAttribute('db.statement', sql)
+			const res = buildAnalyticsEngineSqlResponse(db, sql)
+			setSpanAttribute('http.status_code', res.status)
+			return res
+		})
+	}
+
 	const ctx = getActiveContext()
 	if (ctx) {
 		ctx.fetchStack.current = new Error()
