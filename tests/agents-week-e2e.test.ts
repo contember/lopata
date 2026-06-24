@@ -1,8 +1,11 @@
 import type { Subprocess } from 'bun'
+import { Database } from 'bun:sqlite'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { setFlagValue } from '../src/bindings/flagship'
+import { runMigrations } from '../src/db'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/agents-week-worker')
 const CLI_PATH = resolve(import.meta.dir, '../src/cli.ts')
@@ -49,6 +52,19 @@ describe('Agents Week bindings (worker-thread runtime)', () => {
 	test('flagship returns the default for an unknown flag', async () => {
 		const res = await fetch(`${base}/flagship`)
 		expect(await res.json()).toEqual({ value: true, reason: 'DEFAULT' })
+	})
+
+	test('flagship returns a seeded flag value with reason STATIC', async () => {
+		// Seed a flag straight into the shared SQLite the worker thread reads from
+		// (the binding exposes no setter — same data file, separate connection).
+		const db = new Database(resolve(FIXTURE_DIR, '.lopata', 'data.sqlite'))
+		db.run('PRAGMA busy_timeout=5000')
+		runMigrations(db)
+		setFlagValue(db, 'agents-week-app', 'feature-x', 'boolean', true)
+		db.close()
+
+		const res = await fetch(`${base}/flagship/static`)
+		expect(await res.json()).toEqual({ value: true, reason: 'STATIC' })
 	})
 
 	test('vpc network passes a fetch through to an absolute URL', async () => {

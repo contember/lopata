@@ -13,6 +13,13 @@ export default {
 			return Response.json(details)
 		}
 
+		// Flagship — reads a flag the test seeded into the shared SQLite; a hit
+		// returns reason STATIC, proving the in-thread binding sees committed writes.
+		if (url.pathname === '/flagship/static') {
+			const details = await env.FLAGS.getBooleanValueDetails('feature-x', false)
+			return Response.json(details)
+		}
+
 		// VPC Networks — pass-through fetch to an absolute URL supplied by the caller.
 		if (url.pathname === '/vpc') {
 			const target = url.searchParams.get('target')
