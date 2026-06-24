@@ -24,13 +24,14 @@ import {
 	setRouteDispatcher,
 	setWorkerRegistry,
 } from '../api'
+import { handleArtifactsGitRequest } from '../bindings/artifacts-git-http'
 import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
 import { autoLoadConfig, findConfigPath, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
-import { getDatabase } from '../db'
+import { getDatabase, getDataDir } from '../db'
 import { FileWatcher } from '../file-watcher'
 import { GenerationManager } from '../generation-manager'
 import { ImportGraphWatcher } from '../import-graph'
@@ -62,6 +63,15 @@ export async function run(ctx: CliContext, args: string[]) {
 	})
 	const envFlag = ctx.envName
 	const portFlag = values.port
+
+	// Resolve port + host early so baseUrls (e.g. the Artifacts git remote) can be
+	// built before the generation managers, which pass it into their worker threads.
+	const earlyPort = parseInt(portFlag ?? process.env.PORT ?? '8787', 10)
+	const earlyHost = values.host ? '0.0.0.0' : (values.listen ?? process.env.HOST ?? 'localhost')
+	const artifactsHost = earlyHost === '0.0.0.0' ? 'localhost' : earlyHost
+	const baseUrls = {
+		artifacts: process.env.LOPATA_ARTIFACTS_BASE_URL ?? `http://${artifactsHost}:${earlyPort}/__artifacts/git`,
+	}
 
 	const baseDir = process.cwd()
 	const watchers: { stop(): void }[] = []
@@ -117,6 +127,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			executorFactory: await makeExecutorFactory(),
 			configPath: lopataConfig.main,
 			browserConfig: lopataConfig.browser,
+			baseUrls,
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
@@ -135,6 +146,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				cron: lopataConfig.cron,
 				executorFactory: await makeExecutorFactory(),
 				configPath: workerDef.config,
+				baseUrls,
 			})
 			registry.register(workerDef.name, auxManager)
 
@@ -273,6 +285,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			isMain: true,
 			executorFactory,
 			configPath: findConfigPath(baseDir),
+			baseUrls,
 		})
 		registry.register(config.name, manager, true)
 		const firstGen = await manager.reload()
@@ -306,8 +319,8 @@ export async function run(ctx: CliContext, args: string[]) {
 	}
 
 	// Start server — one Bun.serve(), delegates to active generation
-	const port = parseInt(portFlag ?? process.env.PORT ?? '8787', 10)
-	const hostname = values.host ? '0.0.0.0' : (values.listen ?? process.env.HOST ?? 'localhost')
+	const port = earlyPort
+	const hostname = earlyHost
 
 	const server = Bun.serve({
 		port,
@@ -332,6 +345,15 @@ export async function run(ctx: CliContext, args: string[]) {
 			// Dashboard routes (HTML, assets)
 			if (url.pathname.startsWith('/__dashboard')) {
 				return handleDashboardRequest(request)
+			}
+
+			// Artifacts git HTTP backend (clone/fetch/push) — backed by `git http-backend`.
+			if (url.pathname.startsWith('/__artifacts/git/')) {
+				const resp = await handleArtifactsGitRequest(request, {
+					db: getDatabase(),
+					artifactsDir: path.join(getDataDir(), 'artifacts'),
+				})
+				if (resp) return resp
 			}
 
 			// S3-compatible proxy: /__s3/{bucket}/{key...} → R2 binding on active worker

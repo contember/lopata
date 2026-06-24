@@ -10,11 +10,14 @@ import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { AiBinding } from '../bindings/ai'
+import { AiSearchNamespaceBinding } from '../bindings/ai-search'
 import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
+import { ArtifactsBinding } from '../bindings/artifacts'
 import { BrowserBinding } from '../bindings/browser'
 import { openD1Database } from '../bindings/d1'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
+import { FlagshipBinding } from '../bindings/flagship'
 import { HyperdriveBinding } from '../bindings/hyperdrive'
 import { ImagesBinding } from '../bindings/images'
 import { SqliteKVNamespace } from '../bindings/kv'
@@ -23,7 +26,9 @@ import { FileR2Bucket } from '../bindings/r2'
 import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { StaticAssets } from '../bindings/static-assets'
+import { VpcNetworkBinding } from '../bindings/vpc-network'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { WorkerLoaderBinding } from '../bindings/worker-loader'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
@@ -47,6 +52,8 @@ export interface ThreadEnvOptions {
 	/** Guest-side bridge for WebSockets returned by env-binding fetches. */
 	envWsBridge: WsGuestBridge<WorkerMessage>
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
+	artifactsBaseUrl?: string
 }
 
 export interface ThreadEnvBuilt {
@@ -58,7 +65,7 @@ export interface ThreadEnvBuilt {
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 }
 
-export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, browserConfig }: ThreadEnvOptions): ThreadEnvBuilt {
+export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, browserConfig, artifactsBaseUrl }: ThreadEnvOptions): ThreadEnvBuilt {
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
 	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })
@@ -197,6 +204,66 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 			type: 'analytics_engine',
 			name: ae.binding,
 			methods: ['writeDataPoint'],
+		})
+	}
+
+	// VPC Networks — pass-through fetcher (network_id = Mesh, tunnel_id = tunnel)
+	for (const vpc of config.vpc_networks ?? []) {
+		const networkId = vpc.network_id ?? vpc.tunnel_id
+		if (!networkId) {
+			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
+		}
+		env[vpc.binding] = instrumentBinding(new VpcNetworkBinding({ networkId, bindingName: vpc.binding }), {
+			type: 'vpc_network',
+			name: vpc.binding,
+			methods: ['fetch'],
+		})
+	}
+
+	// AI Search namespaces — proxy to the CF AI Search REST API
+	for (const ns of config.ai_search_namespaces ?? []) {
+		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
+		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
+		env[ns.binding] = instrumentBinding(new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken), {
+			type: 'ai_search',
+			name: ns.binding,
+			methods: ['create', 'get', 'list', 'delete', 'search', 'chatCompletions'],
+		})
+	}
+
+	// Artifacts — control plane (SQLite + bare git repos under dataDir/artifacts);
+	// the git-over-HTTP endpoint is served by main's Bun.serve at /__artifacts/git/*.
+	for (const artifacts of config.artifacts ?? []) {
+		const remoteBase = (artifactsBaseUrl ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
+		env[artifacts.binding] = instrumentBinding(
+			new ArtifactsBinding(db, artifacts.namespace, path.join(dataDir, 'artifacts'), remoteBase),
+			{ type: 'artifacts', name: artifacts.binding, methods: ['create', 'get', 'list', 'import', 'delete'] },
+		)
+	}
+
+	// Worker Loader — dynamic Workers, each its own nested Bun worker thread. Not wrapped
+	// in instrumentBinding: load()/get() return live WorkerStub handles synchronously, and
+	// the async span wrapper would turn them into Promises (breaking the
+	// `loader.get(id).getEntrypoint().fetch()` chaining the Cloudflare API requires).
+	for (const loader of config.worker_loaders ?? []) {
+		env[loader.binding] = new WorkerLoaderBinding(path.join(dataDir, 'worker-loader'))
+	}
+
+	// Flagship — SQLite-backed feature flags
+	if (config.flagship) {
+		env[config.flagship.binding] = instrumentBinding(new FlagshipBinding(db, config.flagship.app_id), {
+			type: 'flagship',
+			name: config.flagship.binding,
+			methods: [
+				'getBooleanValue',
+				'getStringValue',
+				'getNumberValue',
+				'getObjectValue',
+				'getBooleanValueDetails',
+				'getStringValueDetails',
+				'getNumberValueDetails',
+				'getObjectValueDetails',
+			],
 		})
 	}
 

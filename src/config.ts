@@ -31,12 +31,31 @@ export interface WranglerConfig {
 		name: string
 		destination_address?: string
 		allowed_destination_addresses?: string[]
+		remote?: boolean
 	}[]
 	ai?: { binding: string }
+	ai_search_namespaces?: {
+		binding: string
+		namespace: string
+		remote?: boolean
+	}[]
+	artifacts?: {
+		binding: string
+		namespace: string
+	}[]
+	worker_loaders?: {
+		binding: string
+	}[]
 	hyperdrive?: {
 		binding: string
 		id: string
 		localConnectionString?: string
+	}[]
+	vpc_networks?: {
+		binding: string
+		network_id?: string
+		tunnel_id?: string
+		remote?: boolean
 	}[]
 	services?: { binding: string; service: string; entrypoint?: string; props?: Record<string, unknown> }[]
 	triggers?: { crons?: string[] }
@@ -65,6 +84,7 @@ export interface WranglerConfig {
 	analytics_engine_datasets?: { binding: string; dataset?: string }[]
 	browser?: { binding: string }
 	version_metadata?: { binding: string }
+	flagship?: { binding: string; app_id: string }
 	migrations?: {
 		tag: string
 		new_classes?: string[]

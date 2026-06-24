@@ -37,6 +37,7 @@ export class GenerationManager {
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
 	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
+	readonly baseUrls: { artifacts?: string } | undefined
 	/** @internal Path to the wrangler config file (DO worker threads re-load it). */
 	_configPath: string = ''
 
@@ -51,6 +52,7 @@ export class GenerationManager {
 			executorFactory?: DOExecutorFactory
 			configPath?: string
 			browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+			baseUrls?: { artifacts?: string }
 		},
 	) {
 		this.config = config
@@ -62,6 +64,7 @@ export class GenerationManager {
 		this.cronEnabled = options?.cron ?? false
 		this.executorFactory = options?.executorFactory
 		this.browserConfig = options?.browserConfig
+		this.baseUrls = options?.baseUrls
 		this._configPath = options?.configPath ?? ''
 	}
 
@@ -104,7 +107,7 @@ export class GenerationManager {
 		// service bindings, email, browser, containers) live in main — the worker
 		// RPCs into them. Stateless ones duplicate in the thread. Static assets
 		// stay main-side for the auto-serve fallback.
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces)
+		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
 		wireServiceBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
@@ -113,6 +116,7 @@ export class GenerationManager {
 			baseDir: this.baseDir,
 			workerName: this.workerName,
 			browserConfig: this.browserConfig,
+			artifactsBaseUrl: this.baseUrls?.artifacts,
 			mainEnv: env,
 		})
 		let readyInfo: WorkerReadyInfo
