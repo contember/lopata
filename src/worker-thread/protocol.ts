@@ -152,6 +152,8 @@ export interface WorkerInitConfig {
 	workerName?: string
 	/** Browser Rendering local dev config (Chrome wsEndpoint or executable path). */
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
+	artifactsBaseUrl?: string
 }
 
 /** Names of the worker handlers we know how to invoke via RPC. */

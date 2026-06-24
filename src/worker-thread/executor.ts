@@ -49,6 +49,8 @@ export interface WorkerThreadExecutorOptions {
 	baseDir: string
 	workerName?: string
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
+	artifactsBaseUrl?: string
 	/** Main-thread env holding the stateful binding instances the worker calls into via RPC. */
 	mainEnv: Record<string, unknown>
 }
@@ -204,6 +206,7 @@ export class WorkerThreadExecutor {
 						dataDir: getDataDir(),
 						workerName: this._initConfig.workerName,
 						browserConfig: this._initConfig.browserConfig,
+						artifactsBaseUrl: this._initConfig.artifactsBaseUrl,
 					},
 				})
 				break

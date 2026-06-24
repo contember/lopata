@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { AiBinding } from './bindings/ai'
+import { AiSearchNamespaceBinding } from './bindings/ai-search'
 import { SqliteAnalyticsEngine } from './bindings/analytics-engine'
+import { ArtifactsBinding } from './bindings/artifacts'
 import { BrowserBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
 import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
@@ -10,6 +12,7 @@ import { openD1Database } from './bindings/d1'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { SendEmailBinding } from './bindings/email'
+import { FlagshipBinding } from './bindings/flagship'
 import { HyperdriveBinding } from './bindings/hyperdrive'
 import { ImagesBinding } from './bindings/images'
 import { SqliteKVNamespace } from './bindings/kv'
@@ -18,6 +21,8 @@ import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
 import { FileR2Bucket } from './bindings/r2'
 import { createServiceBinding } from './bindings/service-binding'
 import { StaticAssets } from './bindings/static-assets'
+import { VpcNetworkBinding } from './bindings/vpc-network'
+import { WorkerLoaderBinding } from './bindings/worker-loader'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
@@ -88,6 +93,7 @@ export function buildEnv(
 	executorFactory?: DOExecutorFactory,
 	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean },
 	existingNamespaces?: Map<string, DurableObjectNamespaceImpl>,
+	baseUrls?: { artifacts?: string },
 ): { env: Record<string, unknown>; registry: ClassRegistry } {
 	const env: Record<string, unknown> = {}
 	const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null }
@@ -361,6 +367,71 @@ export function buildEnv(
 			new BrowserBinding(browserConfig ?? {}),
 			{ type: 'browser', name: config.browser.binding, methods: ['launch', 'connect', 'sessions'] },
 		)
+	}
+
+	// VPC Networks — pass-through fetcher (network_id = Mesh, tunnel_id = tunnel)
+	for (const vpc of config.vpc_networks ?? []) {
+		const networkId = vpc.network_id ?? vpc.tunnel_id
+		if (!networkId) {
+			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
+		}
+		console.log(`[lopata] VPC Network: ${vpc.binding} (${vpc.tunnel_id ? 'tunnel' : 'network'}: ${networkId})`)
+		env[vpc.binding] = instrumentBinding(new VpcNetworkBinding({ networkId, bindingName: vpc.binding }), {
+			type: 'vpc_network',
+			name: vpc.binding,
+			methods: ['fetch'],
+		})
+	}
+
+	// AI Search namespaces — proxy to the CF AI Search REST API
+	for (const ns of config.ai_search_namespaces ?? []) {
+		const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID) as string | undefined
+		const apiToken = (env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN) as string | undefined
+		console.log(`[lopata] AI Search namespace: ${ns.binding} (namespace: ${ns.namespace})`)
+		env[ns.binding] = instrumentBinding(new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken), {
+			type: 'ai_search',
+			name: ns.binding,
+			methods: ['create', 'get', 'list', 'delete', 'search', 'chatCompletions'],
+		})
+	}
+
+	// Artifacts — control plane (SQLite + bare git repos); the git-over-HTTP endpoint
+	// is served by the dev server at /__artifacts/git/* (see cli/dev.ts).
+	for (const artifacts of config.artifacts ?? []) {
+		const remoteBase = (baseUrls?.artifacts ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
+		console.log(`[lopata] Artifacts binding: ${artifacts.binding} (namespace: ${artifacts.namespace})`)
+		env[artifacts.binding] = instrumentBinding(
+			new ArtifactsBinding(db, artifacts.namespace, path.join(getDataDir(), 'artifacts'), remoteBase),
+			{ type: 'artifacts', name: artifacts.binding, methods: ['create', 'get', 'list', 'import', 'delete'] },
+		)
+	}
+
+	// Worker Loader — dynamic Workers (each its own Bun worker thread). Not wrapped in
+	// instrumentBinding: load()/get() return live WorkerStub handles *synchronously*, and
+	// the async span wrapper would turn them into Promises, breaking the
+	// `loader.get(id).getEntrypoint().fetch()` chaining the Cloudflare API requires.
+	for (const loader of config.worker_loaders ?? []) {
+		console.log(`[lopata] Worker Loader: ${loader.binding}`)
+		env[loader.binding] = new WorkerLoaderBinding(path.join(getDataDir(), 'worker-loader'))
+	}
+
+	// Flagship — SQLite-backed feature flags
+	if (config.flagship) {
+		console.log(`[lopata] Flagship binding: ${config.flagship.binding} (app: ${config.flagship.app_id})`)
+		env[config.flagship.binding] = instrumentBinding(new FlagshipBinding(db, config.flagship.app_id), {
+			type: 'flagship',
+			name: config.flagship.binding,
+			methods: [
+				'getBooleanValue',
+				'getStringValue',
+				'getNumberValue',
+				'getObjectValue',
+				'getBooleanValueDetails',
+				'getStringValueDetails',
+				'getNumberValueDetails',
+				'getObjectValueDetails',
+			],
+		})
 	}
 
 	// Version metadata binding

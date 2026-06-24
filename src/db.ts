@@ -257,6 +257,60 @@ export function runMigrations(db: Database): void {
 			tag TEXT PRIMARY KEY
 		)
 	`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS artifacts_repos (
+			id TEXT PRIMARY KEY,
+			namespace TEXT NOT NULL,
+			name TEXT NOT NULL,
+			description TEXT,
+			default_branch TEXT NOT NULL DEFAULT 'main',
+			read_only INTEGER NOT NULL DEFAULT 0,
+			forked_from TEXT,
+			created_at INTEGER NOT NULL,
+			UNIQUE(namespace, name)
+		)
+	`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS artifacts_tokens (
+			id TEXT PRIMARY KEY,
+			repo_id TEXT NOT NULL,
+			plaintext TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'write',
+			expires_at INTEGER,
+			created_at INTEGER NOT NULL,
+			revoked_at INTEGER
+		)
+	`)
+	db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_tokens_repo ON artifacts_tokens(repo_id)`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS ai_search_requests (
+			id TEXT PRIMARY KEY,
+			namespace TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			input_summary TEXT,
+			output_summary TEXT,
+			duration_ms INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'ok',
+			error TEXT,
+			created_at INTEGER NOT NULL
+		)
+	`)
+	db.run(`CREATE INDEX IF NOT EXISTS idx_ai_search_requests_ts ON ai_search_requests(created_at)`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS flagship_flags (
+			app_id TEXT NOT NULL,
+			flag_key TEXT NOT NULL,
+			type TEXT NOT NULL,
+			value TEXT NOT NULL,
+			variant TEXT,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (app_id, flag_key)
+		)
+	`)
 }
 
 /** Returns the path to the .lopata data directory. */

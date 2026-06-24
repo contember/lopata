@@ -191,6 +191,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		dataDir: init.dataDir,
 		rpc,
 		browserConfig: init.browserConfig,
+		artifactsBaseUrl: init.artifactsBaseUrl,
 		envWsBridge,
 	})
 	const { env } = built
