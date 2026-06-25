@@ -1,0 +1,9 @@
+{
+	"name": "assets-method-gate",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS"
+	}
+}
