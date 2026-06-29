@@ -926,8 +926,16 @@ function nodeStreamToReadable(stream: IncomingMessage): ReadableStream<Uint8Arra
 async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
 	const headerRecord: Record<string, string | string[]> = {}
 	response.headers.forEach((value, key) => {
+		// Set-Cookie is special: a response may carry several (e.g. an auth
+		// library's session token + a cached session). Headers.forEach folds
+		// same-name headers into one comma-joined value, which corrupts cookies.
+		// Collect them via getSetCookie() and pass the array so Node emits one
+		// Set-Cookie header per cookie.
+		if (key.toLowerCase() === 'set-cookie') return
 		headerRecord[key] = value
 	})
+	const setCookies = response.headers.getSetCookie?.() ?? []
+	if (setCookies.length > 0) headerRecord['set-cookie'] = setCookies
 	res.writeHead(response.status, headerRecord)
 
 	if (!response.body) {

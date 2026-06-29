@@ -58,7 +58,13 @@ const requestStreams = new StreamReceiver(
 function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): SerializedResponse {
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	const headers: [string, string][] = []
-	response.headers.forEach((v, k) => headers.push([k, v]))
+	// Push each Set-Cookie individually (getSetCookie); Headers.forEach folds
+	// multiple Set-Cookie into one comma-joined value, dropping all but one
+	// cookie when the response is rebuilt on the other side.
+	response.headers.forEach((v, k) => {
+		if (k.toLowerCase() !== 'set-cookie') headers.push([k, v])
+	})
+	for (const cookie of response.headers.getSetCookie?.() ?? []) headers.push(['set-cookie', cookie])
 	const base = { status: response.status, statusText: response.statusText, headers, body: null }
 	if (response.status === 101 && cfSocket) {
 		// Always a CFWebSocket: `new WebSocketPair()` peers are, and a peer that

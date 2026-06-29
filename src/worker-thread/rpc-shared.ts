@@ -187,7 +187,13 @@ export async function dispatchRpcFetch(
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	const isWsUpgrade = response.status === 101 && cfSocket instanceof CFWebSocket
 	const headers: [string, string][] = []
-	response.headers.forEach((v, k) => headers.push([k, v]))
+	// Push each Set-Cookie individually (getSetCookie); Headers.forEach folds
+	// multiple Set-Cookie into one comma-joined value, dropping all but one
+	// cookie when the response is rebuilt on the other side.
+	response.headers.forEach((v, k) => {
+		if (k.toLowerCase() !== 'set-cookie') headers.push([k, v])
+	})
+	for (const cookie of response.headers.getSetCookie?.() ?? []) headers.push(['set-cookie', cookie])
 	const serialized: SerializedResponse = {
 		status: response.status,
 		statusText: response.statusText,
