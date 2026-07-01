@@ -98,17 +98,34 @@ export class Generation {
 		try {
 			const assets = this.registry.staticAssets
 			let response: Response
-			if (!assets || this.config.assets?.binding) {
+			if (!assets) {
 				response = await this.threadExecutor.executeFetch(request)
 			} else {
+				// Cloudflare Static Assets are served FIRST for any existing asset,
+				// even when an `assets.binding` is configured — the binding only adds
+				// programmatic `env.ASSETS.fetch()` access, it does NOT make the worker
+				// own routing. The worker runs first ONLY for paths in `run_worker_first`
+				// (or when it's `true`). Some framework adapters (e.g. Astro's Cloudflare
+				// worker) greedily route-match catch-alls like `/[slug]` and 404 instead
+				// of delegating to ASSETS, so honoring assets-first here is required to
+				// match workerd — otherwise directory-index assets like `/account/`
+				// (served from `/account/index.html`) never reach the asset layer.
 				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				if (!workerFirst) {
+				// Cloudflare only serves static assets for GET/HEAD; every other
+				// method goes straight to the worker. WebSocket upgrades are GETs but
+				// must reach the worker's upgrade handler, so they're excluded too.
+				// Without this gate, assets-first routing would answer e.g.
+				// `POST /account/` with `/account/index.html` (200) and silently drop
+				// the write, or serve a colliding asset to a WS upgrade.
+				const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+				const canServeAssets = (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade
+				if (!workerFirst && canServeAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
 					response = await this.threadExecutor.executeFetch(request)
 				} else {
 					response = await this.threadExecutor.executeFetch(request)
-					if (response.status === 404) {
+					if (response.status === 404 && canServeAssets) {
 						// Drop the worker's streaming body so the source pump on the
 						// other side stops — we're discarding this response in favour
 						// of the assets fallback.
