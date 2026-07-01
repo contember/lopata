@@ -22,7 +22,7 @@ import type {
 import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
-import { deserializeRequest } from './serialize'
+import { deserializeRequest, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
@@ -57,14 +57,7 @@ const requestStreams = new StreamReceiver(
  */
 function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): SerializedResponse {
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
-	const headers: [string, string][] = []
-	// Push each Set-Cookie individually (getSetCookie); Headers.forEach folds
-	// multiple Set-Cookie into one comma-joined value, dropping all but one
-	// cookie when the response is rebuilt on the other side.
-	response.headers.forEach((v, k) => {
-		if (k.toLowerCase() !== 'set-cookie') headers.push([k, v])
-	})
-	for (const cookie of response.headers.getSetCookie?.() ?? []) headers.push(['set-cookie', cookie])
+	const headers = serializeResponseHeaders(response)
 	const base = { status: response.status, statusText: response.statusText, headers, body: null }
 	if (response.status === 101 && cfSocket) {
 		// Always a CFWebSocket: `new WebSocketPair()` peers are, and a peer that
