@@ -7,6 +7,7 @@ import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypo
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
+import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
@@ -1128,17 +1129,19 @@ function nodeStreamToReadable(stream: IncomingMessage): ReadableStream<Uint8Arra
  * through `getSetCookie()`: Headers iteration yields it once per cookie (and a
  * keyed record would keep only the last one), so a multi-cookie response —
  * e.g. better-auth's session_token + session_data — would silently lose
- * cookies. Exported for tests.
+ * cookies. `serializeResponseHeaders` emits one pair per cookie; collecting
+ * those into an array lets Node write each as its own header line. Exported
+ * for tests.
  */
 export function buildNodeHeaders(response: Response): Record<string, string | string[]> {
 	const headerRecord: Record<string, string | string[]> = {}
-	response.headers.forEach((value, key) => {
-		if (key.toLowerCase() === 'set-cookie') return
-		headerRecord[key] = value
-	})
-	const setCookies = response.headers.getSetCookie()
-	if (setCookies.length > 0) {
-		headerRecord['set-cookie'] = setCookies
+	for (const [key, value] of serializeResponseHeaders(response)) {
+		if (key.toLowerCase() === 'set-cookie') {
+			const existing = headerRecord['set-cookie']
+			headerRecord['set-cookie'] = Array.isArray(existing) ? [...existing, value] : [value]
+		} else {
+			headerRecord[key] = value
+		}
 	}
 	return headerRecord
 }
