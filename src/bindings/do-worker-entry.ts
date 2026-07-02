@@ -8,6 +8,7 @@
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
+import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
@@ -254,8 +255,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 					}
 					const clientWs = (response as { webSocket?: unknown }).webSocket
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
-					const resHeaders: [string, string][] = []
-					response.headers.forEach((v: string, k: string) => resHeaders.push([k, v]))
+					const resHeaders = serializeResponseHeaders(response)
 
 					let fetchWebSocketId: string | undefined
 					if (hasWebSocket) {

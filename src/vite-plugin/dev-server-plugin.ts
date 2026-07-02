@@ -4,6 +4,7 @@ import type { Plugin, ViteDevServer } from 'vite'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
+import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
@@ -924,10 +925,14 @@ function nodeStreamToReadable(stream: IncomingMessage): ReadableStream<Uint8Arra
 }
 
 async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
+	// serializeResponseHeaders emits one pair per Set-Cookie (which must not be
+	// comma-folded); grouping repeated keys into arrays lets Node emit each one
+	// as its own header line.
 	const headerRecord: Record<string, string | string[]> = {}
-	response.headers.forEach((value, key) => {
-		headerRecord[key] = value
-	})
+	for (const [key, value] of serializeResponseHeaders(response)) {
+		const existing = headerRecord[key]
+		headerRecord[key] = existing === undefined ? value : Array.isArray(existing) ? [...existing, value] : [existing, value]
+	}
 	res.writeHead(response.status, headerRecord)
 
 	if (!response.body) {

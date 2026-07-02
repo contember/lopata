@@ -22,7 +22,7 @@ import type {
 import { deserializeError, serializeError } from './protocol'
 import { RemoteTraceStore } from './remote-trace-store'
 import { RpcClient } from './rpc-shared'
-import { deserializeRequest } from './serialize'
+import { deserializeRequest, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
@@ -57,8 +57,7 @@ const requestStreams = new StreamReceiver(
  */
 function serializeResponse(response: Response, ws: WsGuestBridge<WorkerMessage>): SerializedResponse {
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
-	const headers: [string, string][] = []
-	response.headers.forEach((v, k) => headers.push([k, v]))
+	const headers = serializeResponseHeaders(response)
 	const base = { status: response.status, statusText: response.statusText, headers, body: null }
 	if (response.status === 101 && cfSocket) {
 		// Always a CFWebSocket: `new WebSocketPair()` peers are, and a peer that

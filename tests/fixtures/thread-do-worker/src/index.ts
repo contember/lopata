@@ -29,6 +29,14 @@ export class Counter {
 			const data = await request.json()
 			return Response.json({ echoed: data })
 		}
+		if (url.pathname === '/cookies') {
+			// Two Set-Cookie headers — regression guard for header serialization
+			// across the DO-worker → main bridge folding them into one value.
+			const headers = new Headers()
+			headers.append('set-cookie', 'a=1; Path=/')
+			headers.append('set-cookie', 'b=2; Path=/; HttpOnly')
+			return new Response('cookies', { headers })
+		}
 		return new Response('not found', { status: 404 })
 	}
 
@@ -59,6 +67,13 @@ export default {
 			const headers = new Headers(request.headers)
 			headers.set('x-forwarded-by', 'worker')
 			return stub.fetch(new Request(request, { headers }))
+		}
+
+		// Forward the DO response (carrying two Set-Cookie headers) directly to the
+		// caller so the test can assert they survive both bridge hops un-folded.
+		if (url.pathname === '/cookies') {
+			const stub = env.COUNTER.get(env.COUNTER.idFromName('cookies'))
+			return stub.fetch('http://do/cookies')
 		}
 
 		if (url.pathname.startsWith('/greet/')) {

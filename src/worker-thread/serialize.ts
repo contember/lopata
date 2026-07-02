@@ -28,6 +28,23 @@ export function deserializeRequest(
 	})
 }
 
+/**
+ * Serialize response headers to a `[k, v][]` array, emitting each `Set-Cookie`
+ * as its own entry. `Headers.forEach` folds same-name headers into one
+ * comma-joined value, which corrupts multiple `Set-Cookie` (the shape every
+ * cookie-based auth library produces); `getSetCookie()` gives them back
+ * individually, and appending each pair round-trips through
+ * `new Response(body, { headers })` on the other side.
+ */
+export function serializeResponseHeaders(response: Response): [string, string][] {
+	const headers: [string, string][] = []
+	response.headers.forEach((v, k) => {
+		if (k.toLowerCase() !== 'set-cookie') headers.push([k, v])
+	})
+	for (const cookie of response.headers.getSetCookie()) headers.push(['set-cookie', cookie])
+	return headers
+}
+
 export function deserializeResponse(serialized: SerializedResponse): Response {
 	return new Response(serialized.body, {
 		status: serialized.status,
