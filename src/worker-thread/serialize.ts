@@ -41,7 +41,7 @@ export function serializeResponseHeaders(response: Response): [string, string][]
 	response.headers.forEach((v, k) => {
 		if (k.toLowerCase() !== 'set-cookie') headers.push([k, v])
 	})
-	for (const cookie of response.headers.getSetCookie?.() ?? []) headers.push(['set-cookie', cookie])
+	for (const cookie of response.headers.getSetCookie()) headers.push(['set-cookie', cookie])
 	return headers
 }
 

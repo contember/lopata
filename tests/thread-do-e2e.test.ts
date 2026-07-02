@@ -84,6 +84,17 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect(await res.json()).toEqual({ echoed: { hello: 'world', n: 42 } })
 	})
 
+	// A DO response with multiple Set-Cookie headers must reach the caller with
+	// each cookie intact — guards the header serialization across the
+	// DO-worker → main → user-worker bridges against folding same-name headers
+	// into one comma-joined value (what a spec-classic `Headers.forEach` does).
+	test('multiple Set-Cookie headers on a DO response survive the bridge un-folded', async () => {
+		const res = await fetch(`${base}/cookies`)
+		expect(res.status).toBe(200)
+		const cookies = res.headers.getSetCookie()
+		expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/; HttpOnly'])
+	})
+
 	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
 	// the main-side check never trips in thread mode. The budget must
 	// accumulate across all binding calls of ONE request (a per-call re-seed of

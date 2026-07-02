@@ -12,6 +12,8 @@
  * access behave identically to the parent.
  */
 
+import { serializeResponseHeaders } from '../worker-thread/serialize'
+
 declare var self: Worker
 
 export interface LoaderInitMessage {
@@ -117,7 +119,7 @@ async function handleCommand(cmd: LoaderCommand): Promise<LoaderResult> {
 				type: 'fetch',
 				status: response.status,
 				statusText: response.statusText,
-				headers: Array.from(response.headers.entries()),
+				headers: serializeResponseHeaders(response),
 				body: buf.byteLength ? buf : null,
 			}
 		}

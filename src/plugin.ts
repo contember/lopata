@@ -84,11 +84,16 @@ function isTextContent(ct: string | null): boolean {
 	return TEXT_TYPES.some(t => ct.includes(t))
 }
 
-function headersToRecord(h: Headers): Record<string, string> {
-	const obj: Record<string, string> = {}
+function headersToRecord(h: Headers): Record<string, string | string[]> {
+	const obj: Record<string, string | string[]> = {}
 	h.forEach((v, k) => {
+		if (k === 'set-cookie') return // handled below — forEach comma-joins multiple values
 		obj[k] = v
 	})
+	const setCookie = h.getSetCookie()
+	if (setCookie.length > 0) {
+		obj['set-cookie'] = setCookie
+	}
 	return obj
 }
 

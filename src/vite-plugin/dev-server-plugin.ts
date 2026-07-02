@@ -4,6 +4,7 @@ import type { Plugin, ViteDevServer } from 'vite'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
+import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
 	configPath?: string
@@ -924,18 +925,14 @@ function nodeStreamToReadable(stream: IncomingMessage): ReadableStream<Uint8Arra
 }
 
 async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
+	// serializeResponseHeaders emits one pair per Set-Cookie (which must not be
+	// comma-folded); grouping repeated keys into arrays lets Node emit each one
+	// as its own header line.
 	const headerRecord: Record<string, string | string[]> = {}
-	response.headers.forEach((value, key) => {
-		// Set-Cookie is special: a response may carry several (e.g. an auth
-		// library's session token + a cached session). Headers.forEach folds
-		// same-name headers into one comma-joined value, which corrupts cookies.
-		// Collect them via getSetCookie() and pass the array so Node emits one
-		// Set-Cookie header per cookie.
-		if (key.toLowerCase() === 'set-cookie') return
-		headerRecord[key] = value
-	})
-	const setCookies = response.headers.getSetCookie?.() ?? []
-	if (setCookies.length > 0) headerRecord['set-cookie'] = setCookies
+	for (const [key, value] of serializeResponseHeaders(response)) {
+		const existing = headerRecord[key]
+		headerRecord[key] = existing === undefined ? value : Array.isArray(existing) ? [...existing, value] : [existing, value]
+	}
 	res.writeHead(response.status, headerRecord)
 
 	if (!response.body) {
