@@ -923,12 +923,28 @@ function nodeStreamToReadable(stream: IncomingMessage): ReadableStream<Uint8Arra
 	})
 }
 
-async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
+/**
+ * Convert Response headers to a node writeHead record. `set-cookie` must go
+ * through `getSetCookie()`: Headers iteration yields it once per cookie (and a
+ * keyed record would keep only the last one), so a multi-cookie response —
+ * e.g. better-auth's session_token + session_data — would silently lose
+ * cookies. Exported for tests.
+ */
+export function buildNodeHeaders(response: Response): Record<string, string | string[]> {
 	const headerRecord: Record<string, string | string[]> = {}
 	response.headers.forEach((value, key) => {
+		if (key.toLowerCase() === 'set-cookie') return
 		headerRecord[key] = value
 	})
-	res.writeHead(response.status, headerRecord)
+	const setCookies = response.headers.getSetCookie()
+	if (setCookies.length > 0) {
+		headerRecord['set-cookie'] = setCookies
+	}
+	return headerRecord
+}
+
+async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
+	res.writeHead(response.status, buildNodeHeaders(response))
 
 	if (!response.body) {
 		res.end()
