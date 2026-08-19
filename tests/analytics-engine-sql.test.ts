@@ -679,3 +679,94 @@ describe('DateTime columns render as ClickHouse strings (prod fidelity)', () => 
 		expect(body.data[0]!.ts).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 	})
 })
+
+// ClickHouse calendar functions — dashboards group by hour-of-day / day-of-week and
+// truncate to month or year, so the extractors have to agree with ClickHouse's
+// numbering (Monday = 1) and the truncations have to come back as `Date` strings.
+describe('calendar functions (toHour & friends)', () => {
+	// 2023-11-14T22:13:20Z — a Tuesday.
+	function seedNow() {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('a', 'metrics', ?, 1)", [NOW_MS])
+	}
+
+	const parts: [string, number][] = [
+		['toYear', 2023],
+		['toQuarter', 4],
+		['toMonth', 11],
+		['toDayOfMonth', 14],
+		['toDayOfWeek', 2], // Tuesday, ClickHouse mode 0 (Monday = 1)
+		['toDayOfYear', 318],
+		['toHour', 22],
+		['toMinute', 13],
+		['toSecond', 20],
+		['toUnixTimestamp', NOW_S],
+	]
+	for (const [fn, expected] of parts) {
+		test(`${fn}(timestamp) is ${expected}`, () => {
+			seedNow()
+			const r = runAnalyticsEngineSql(db, `SELECT ${fn}(timestamp) AS v FROM metrics`, NOW_MS)
+			expect(r.data).toEqual([{ v: expected }])
+		})
+	}
+
+	const truncations: [string, string][] = [
+		['toDate', '2023-11-14'],
+		['toMonday', '2023-11-13'],
+		['toStartOfWeek', '2023-11-12'], // mode 0 → week starts on Sunday
+		['toStartOfMonth', '2023-11-01'],
+		['toStartOfQuarter', '2023-10-01'],
+		['toStartOfYear', '2023-01-01'],
+	]
+	for (const [fn, expected] of truncations) {
+		test(`${fn}(timestamp) renders as the Date string ${expected}`, () => {
+			seedNow()
+			const r = runAnalyticsEngineSql(db, `SELECT ${fn}(timestamp) AS d FROM metrics`, NOW_MS)
+			expect(r.data).toEqual([{ d: expected }])
+			expect(r.meta).toEqual([{ name: 'd', type: 'Date' }])
+		})
+	}
+
+	test('toStartOfWeek with an odd mode starts the week on Monday', () => {
+		seedNow()
+		const r = runAnalyticsEngineSql(db, 'SELECT toStartOfWeek(timestamp, 1) AS d FROM metrics', NOW_MS)
+		expect(r.data).toEqual([{ d: '2023-11-13' }])
+	})
+
+	test('extractors carry ClickHouse result types in meta', () => {
+		seedNow()
+		const r = runAnalyticsEngineSql(db, 'SELECT toHour(timestamp) AS h, toYear(timestamp) AS y FROM metrics', NOW_MS)
+		expect(r.meta).toEqual([{ name: 'h', type: 'UInt8' }, { name: 'y', type: 'UInt16' }])
+	})
+
+	test('GROUP BY toHour buckets rows by hour of day across days', () => {
+		const hours = [
+			NOW_MS, // 22:13
+			NOW_MS - 86_400_000, // same hour, previous day
+			NOW_MS - 3600_000, // 21:13
+		]
+		hours.forEach((ts, i) => {
+			db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES (?, 'metrics', ?, 1)", [`h${i}`, ts])
+		})
+		const r = runAnalyticsEngineSql(db, 'SELECT toHour(timestamp) AS hour, count() AS n FROM metrics GROUP BY hour ORDER BY hour ASC', NOW_MS)
+		expect(r.data).toEqual([{ hour: 21, n: 1 }, { hour: 22, n: 2 }])
+	})
+
+	test('a date literal argument is resolved to epoch seconds, not compared as text', () => {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('old', 'metrics', ?, 1)", [NOW_MS - 86_400_000])
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('new', 'metrics', ?, 1)", [NOW_MS])
+		const r = runAnalyticsEngineSql(
+			db,
+			"SELECT count() AS n FROM metrics WHERE timestamp >= toDateTime('2023-11-14 00:00:00')",
+			NOW_MS,
+		)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('an unparseable date literal fails with a clear error', () => {
+		expect(() => translateAnalyticsEngineSql("SELECT toDate('yesterday') AS d FROM metrics", NOW_S)).toThrow(/expected 'YYYY-MM-DD'/)
+	})
+
+	test('a wrong-arity calendar call is rejected', () => {
+		expect(() => translateAnalyticsEngineSql('SELECT toHour(timestamp, 1) AS h FROM metrics', NOW_S)).toThrow(/exactly 1 argument/)
+	})
+})

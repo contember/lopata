@@ -700,6 +700,22 @@ const FN_ARITY: Record<string, [number, number]> = {
 	tostartofminute: [1, 1],
 	tostartofhour: [1, 1],
 	tostartofday: [1, 1],
+	tostartofweek: [1, 2],
+	tostartofmonth: [1, 1],
+	tostartofquarter: [1, 1],
+	tostartofyear: [1, 1],
+	tomonday: [1, 1],
+	todate: [1, 1],
+	toyear: [1, 1],
+	toquarter: [1, 1],
+	tomonth: [1, 1],
+	todayofmonth: [1, 1],
+	todayofweek: [1, 1],
+	todayofyear: [1, 1],
+	tohour: [1, 1],
+	tominute: [1, 1],
+	tosecond: [1, 1],
+	tounixtimestamp: [1, 1],
 	abs: [1, 1],
 	round: [1, 2],
 	min2: [2, 2],
@@ -728,6 +744,64 @@ function checkArity(node: Extract<Node, { kind: 'func' }>): void {
 	throw new SqlError(`Function '${node.name}' expects ${expected}, got ${got}`)
 }
 
+/**
+ * Functions whose first argument is a DateTime. A string literal there is a
+ * ClickHouse date literal (`toDateTime('2024-01-01 00:00:00')`), which we resolve
+ * to epoch seconds at translate time so it compares as a number, not as text.
+ */
+const DATETIME_ARG_FNS = new Set([
+	'todatetime',
+	'todate',
+	'tostartofinterval',
+	'tostartofminute',
+	'tostartofhour',
+	'tostartofday',
+	'tostartofweek',
+	'tostartofmonth',
+	'tostartofquarter',
+	'tostartofyear',
+	'tomonday',
+	'toyear',
+	'toquarter',
+	'tomonth',
+	'todayofmonth',
+	'todayofweek',
+	'todayofyear',
+	'tohour',
+	'tominute',
+	'tosecond',
+	'tounixtimestamp',
+])
+
+/**
+ * Parse a ClickHouse date/datetime literal (`YYYY-MM-DD` or
+ * `YYYY-MM-DD HH:MM:SS`, always UTC) to epoch seconds.
+ */
+function parseDateTimeLiteral(text: string): number {
+	const m = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2}))?$/.exec(text.trim())
+	const ms = m ? Date.parse(`${m[1]}T${m[2] ?? '00:00:00'}Z`) : Number.NaN
+	if (Number.isNaN(ms)) throw new SqlError(`Cannot parse '${text}' as a DateTime — expected 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'`)
+	return Math.floor(ms / 1000)
+}
+
+/**
+ * Extract a calendar part from an epoch-seconds expression. Analytics Engine
+ * timestamps are UTC and our DateTime is epoch seconds, so `'unixepoch'` alone
+ * (no `'localtime'`) is the right reading.
+ */
+function datePart(fmt: string, expr: string): string {
+	return `CAST(strftime('${fmt}', CAST(${expr} AS INTEGER), 'unixepoch') AS INTEGER)`
+}
+
+/**
+ * Truncate an epoch-seconds expression to a calendar boundary, staying in epoch
+ * seconds — `Date`/`DateTime` columns are rendered from numbers at the very end.
+ * `modifiers` are SQLite date modifiers (SQL fragments) applied after `'unixepoch'`.
+ */
+function truncateTo(expr: string, ...modifiers: string[]): string {
+	return `CAST(strftime('%s', CAST(${expr} AS INTEGER), 'unixepoch', ${modifiers.join(', ')}) AS INTEGER)`
+}
+
 function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 	const fn = node.name.toLowerCase()
 	if (QUANTILE_FNS.has(fn)) {
@@ -738,6 +812,8 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 	}
 	checkArity(node)
 	const a = node.args.map(arg => emit(arg, ctx))
+	const first = node.args[0]
+	if (first?.kind === 'str' && DATETIME_ARG_FNS.has(fn)) a[0] = String(parseDateTimeLiteral(first.value))
 	switch (fn) {
 		// --- aggregates ---
 		case 'count':
@@ -780,7 +856,48 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 		case 'tostartofhour':
 			return `((CAST(${a[0]} AS INTEGER) / 3600) * 3600)`
 		case 'tostartofday':
+		case 'todate':
 			return `((CAST(${a[0]} AS INTEGER) / 86400) * 86400)`
+		case 'tostartofweek': {
+			// ClickHouse mode 0 (the default) starts the week on Sunday; odd modes start on Monday.
+			const mode = node.args[1]
+			if (mode && mode.kind !== 'num') throw new SqlError('toStartOfWeek requires a numeric mode literal as its 2nd argument')
+			const weekday = mode && mode.value % 2 === 1 ? "'weekday 1'" : "'weekday 0'"
+			// Step back a full week first, then forward to the next matching weekday:
+			// that lands on the previous-or-same one.
+			return truncateTo(a[0]!, "'start of day'", "'-6 days'", weekday)
+		}
+		case 'tomonday':
+			return truncateTo(a[0]!, "'start of day'", "'-6 days'", "'weekday 1'")
+		case 'tostartofmonth':
+			return truncateTo(a[0]!, "'start of month'")
+		case 'tostartofquarter':
+			return truncateTo(a[0]!, "'start of year'", `'+' || (((${datePart('%m', a[0]!)} - 1) / 3) * 3) || ' months'`)
+		case 'tostartofyear':
+			return truncateTo(a[0]!, "'start of year'")
+		// --- calendar parts ---
+		case 'toyear':
+			return datePart('%Y', a[0]!)
+		case 'toquarter':
+			return `((${datePart('%m', a[0]!)} - 1) / 3 + 1)`
+		case 'tomonth':
+			return datePart('%m', a[0]!)
+		case 'todayofmonth':
+			return datePart('%d', a[0]!)
+		case 'todayofweek':
+			// ClickHouse mode 0: Monday = 1 … Sunday = 7; strftime('%w') is Sunday = 0.
+			return `((${datePart('%w', a[0]!)} + 6) % 7 + 1)`
+		case 'todayofyear':
+			return datePart('%j', a[0]!)
+		case 'tohour':
+			return datePart('%H', a[0]!)
+		case 'tominute':
+			return datePart('%M', a[0]!)
+		case 'tosecond':
+			return datePart('%S', a[0]!)
+		case 'tounixtimestamp':
+			// Our DateTime is already epoch seconds.
+			return `CAST(${a[0]} AS INTEGER)`
 		// --- misc passthrough (SQLite has these) ---
 		case 'abs':
 		case 'round':
@@ -800,6 +917,30 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 		default:
 			throw new SqlError(`Function '${node.name}' is not supported by the local Analytics Engine emulation yet`)
 	}
+}
+
+/**
+ * Result types of the emulated ClickHouse date functions, for the `meta` block.
+ * Only those that aren't plain `DateTime` — the calendar truncations return
+ * `Date`, the extractors return small unsigned ints.
+ */
+const DATE_FN_TYPES: Record<string, string> = {
+	todate: 'Date',
+	tomonday: 'Date',
+	tostartofweek: 'Date',
+	tostartofmonth: 'Date',
+	tostartofquarter: 'Date',
+	tostartofyear: 'Date',
+	toyear: 'UInt16',
+	todayofyear: 'UInt16',
+	toquarter: 'UInt8',
+	tomonth: 'UInt8',
+	todayofmonth: 'UInt8',
+	todayofweek: 'UInt8',
+	tohour: 'UInt8',
+	tominute: 'UInt8',
+	tosecond: 'UInt8',
+	tounixtimestamp: 'UInt32',
 }
 
 function inferType(node: Node): string {
@@ -825,6 +966,8 @@ function inferType(node: Node): string {
 			if (['sum', 'avg', 'tofloat64', 'tofloat32', 'abs', 'round'].includes(fn)) return 'Float64'
 			if (['min', 'max', 'coalesce', 'if'].includes(fn)) return node.args[0] ? inferType(node.args[0]) : 'String'
 			if (['touint32', 'touint64', 'toint32', 'toint64', 'intdiv', 'floor', 'length'].includes(fn)) return 'UInt64'
+			const dateType = DATE_FN_TYPES[fn]
+			if (dateType) return dateType
 			if (fn.startsWith('tostartof') || fn === 'todatetime' || fn === 'now') return 'DateTime'
 			if (['lower', 'upper', 'tostring'].includes(fn)) return 'String'
 			return 'Float64'
@@ -895,12 +1038,18 @@ function formatDateTime(epochSeconds: number): string {
 	return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
 }
 
+/** Render epoch seconds as a ClickHouse `Date` string (`YYYY-MM-DD`, UTC). */
+function formatDate(epochSeconds: number): string {
+	return formatDateTime(epochSeconds).slice(0, 10)
+}
+
 /**
- * Convert `DateTime` output columns from their internal numeric form to ClickHouse
- * datetime strings, in place — the final projection step so prod and local agree
- * on the result shape. Non-`*` queries canonicalise timestamps to **seconds** in
- * the emitted SQL; `SELECT *` returns the raw `timestamp` column, stored as **ms**.
- * NULL DateTimes (e.g. `max(timestamp)` over an empty dataset) are left untouched.
+ * Convert `DateTime`/`Date` output columns from their internal numeric form to
+ * ClickHouse datetime strings, in place — the final projection step so prod and
+ * local agree on the result shape. Non-`*` queries canonicalise timestamps to
+ * **seconds** in the emitted SQL; `SELECT *` returns the raw `timestamp` column,
+ * stored as **ms**. NULLs (e.g. `max(timestamp)` over an empty dataset) are left
+ * untouched.
  */
 function formatDateTimeColumns(data: Record<string, unknown>[], t: TranslatedQuery): void {
 	if (t.hasStar) {
@@ -910,11 +1059,13 @@ function formatDateTimeColumns(data: Record<string, unknown>[], t: TranslatedQue
 		}
 		return
 	}
-	const dtCols = t.columns.filter(c => c.type === 'DateTime').map(c => c.name)
+	const dtCols = t.columns
+		.filter(c => c.type === 'DateTime' || c.type === 'Date')
+		.map(c => ({ name: c.name, format: c.type === 'Date' ? formatDate : formatDateTime }))
 	for (const row of data) {
-		for (const name of dtCols) {
+		for (const { name, format } of dtCols) {
 			const v = row[name]
-			if (typeof v === 'number') row[name] = formatDateTime(v)
+			if (typeof v === 'number') row[name] = format(v)
 		}
 	}
 }
