@@ -1,3 +1,4 @@
+import { randomUUIDv7 } from 'bun'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
@@ -55,6 +56,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	let getTraceStore: Function
 	let handleS3ProxyRequest: typeof import('../s3/proxy.ts').handleS3ProxyRequest
 	let matchS3Path: typeof import('../s3/proxy.ts').matchS3Path
+	let ForwardableEmailMessage: typeof import('../bindings/email.ts').ForwardableEmailMessage
+	let getDatabase: typeof import('../db.ts').getDatabase
 
 	// Route dispatcher for multi-worker route-based dispatching
 	let routeDispatcher: RouteDispatcher | undefined
@@ -141,6 +144,32 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	}
 
 	/**
+	 * Resolve a named handler off the worker's default export, honoring both entrypoint
+	 * shapes: `export default { fetch(request, env, ctx) }`, and
+	 * `export default class extends WorkerEntrypoint { async fetch(request) }`, where the
+	 * method lives on the prototype and env/ctx arrive through the constructor instead.
+	 *
+	 * Mirrors `resolveHandler` in src/worker-thread/entry.ts, which does the same for the
+	 * CLI path — without this, class-based entrypoints look handler-less under Vite.
+	 * Class methods ignore the trailing (env, ctx) arguments, so callers of the returned
+	 * function can use one calling convention for both shapes.
+	 */
+	function resolveWorkerHandler(
+		activeModule: Record<string, unknown>,
+		name: 'fetch' | 'scheduled' | 'email',
+		ctx: unknown,
+	): ((...args: unknown[]) => unknown) | null {
+		const defaultExport = activeModule.default as any
+		if (typeof defaultExport === 'function' && defaultExport.prototype) {
+			if (typeof defaultExport.prototype[name] !== 'function') return null
+			const instance = new defaultExport(ctx, env)
+			return instance[name].bind(instance)
+		}
+		const fn = defaultExport?.[name]
+		return typeof fn === 'function' ? fn.bind(defaultExport) : null
+	}
+
+	/**
 	 * Dispatch a request through the worker's fetch() handler with tracing
 	 * and generation tracking. Throws on HMR race conditions so the caller
 	 * can retry.
@@ -154,17 +183,17 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const request = nodeReqToRequest(req)
 			const parsedUrl = new URL(request.url)
 
-			const handler = activeModule.default as Record<string, unknown>
-			if (!handler || typeof handler.fetch !== 'function') {
+			// Capture caller stack before entering the worker (for async stack stitching)
+			const callerStack = new Error()
+
+			const ctx = new ExecutionContext()
+			const fetchHandler = resolveWorkerHandler(activeModule, 'fetch', ctx)
+			if (!fetchHandler) {
 				console.error('[lopata:vite] Worker module default export has no fetch() method')
 				next()
 				return
 			}
 
-			// Capture caller stack before entering the worker (for async stack stitching)
-			const callerStack = new Error()
-
-			const ctx = new ExecutionContext()
 			const response = await (startSpan as Function)({
 				name: `${request.method} ${parsedUrl.pathname}`,
 				kind: 'server',
@@ -172,7 +201,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			}, () =>
 				runWithExecutionContext(ctx, async () => {
 					try {
-						const resp = await (handler.fetch as Function).call(handler, request, env, ctx) as Response
+						const resp = await fetchHandler(request, env, ctx) as Response
 						;(setSpanAttribute as Function)('http.status_code', resp.status)
 
 						// Intercept React Router error boundary responses with lopata error page
@@ -222,12 +251,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const activeModule = await ensureWorkerModule()
 		const genId = currentGenerationId
 
-		const handler = activeModule.default as Record<string, unknown>
-		if (!handler || typeof handler.scheduled !== 'function') {
+		const ctx = new ExecutionContext()
+		const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
+		if (!handler) {
 			return new Response('No scheduled handler defined', { status: 404 })
 		}
 
-		const ctx = new ExecutionContext()
 		const controller = createScheduledController(cronExpr, Date.now())
 
 		return await (startSpan as Function)({
@@ -237,7 +266,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		}, () =>
 			runWithExecutionContext(ctx, async () => {
 				try {
-					await (handler.scheduled as Function).call(handler, controller, env, ctx)
+					await handler(controller, env, ctx)
 					// waitUntil work outlives the trigger, as it does on a real cron tick — the
 					// dev server stays up, so let it settle instead of blocking the response.
 					ctx._awaitAll().catch(() => {})
@@ -245,6 +274,48 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				} catch (err) {
 					console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
 					persistError(err, 'scheduled', config.name)
+					throw err
+				}
+			}))
+	}
+
+	/**
+	 * Deliver a message through the worker's email() handler.
+	 *
+	 * Same story as `handleWorkerScheduled`: the dashboard reaches this via
+	 * `active.callEmail()`. Mirrors `Generation.callEmail` — the row lands in
+	 * `email_messages` before the handler runs, because `setReject()` / `forward()` on the
+	 * message look themselves up there by id.
+	 */
+	async function handleWorkerEmail(rawBytes: Uint8Array, from: string, to: string): Promise<Response> {
+		const activeModule = await ensureWorkerModule()
+		const genId = currentGenerationId
+
+		const ctx = new ExecutionContext()
+		const handler = resolveWorkerHandler(activeModule, 'email', ctx)
+		if (!handler) {
+			return new Response('No email handler defined', { status: 404 })
+		}
+
+		return await (startSpan as Function)({
+			name: 'email',
+			kind: 'server',
+			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': genId },
+		}, () =>
+			runWithExecutionContext(ctx, async () => {
+				const db = getDatabase()
+				const messageId = randomUUIDv7()
+				db.run(
+					"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+					[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
+				)
+				try {
+					await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
+					ctx._awaitAll().catch(() => {})
+					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
+				} catch (err) {
+					console.error('[lopata:vite] email handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+					persistError(err, 'email', config.name)
 					throw err
 				}
 			}))
@@ -299,6 +370,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const apiMod = await import('../api/index.ts')
 			const traceMod = await import('../tracing/store.ts')
 			const s3Mod = await import('../s3/proxy.ts')
+			const emailMod = await import('../bindings/email.ts')
+			const dbMod = await import('../db.ts')
 
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
@@ -314,6 +387,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			getTraceStore = traceMod.getTraceStore
 			handleS3ProxyRequest = s3Mod.handleS3ProxyRequest
 			matchS3Path = s3Mod.matchS3Path
+			ForwardableEmailMessage = emailMod.ForwardableEmailMessage
+			getDatabase = dbMod.getDatabase
 
 			// 1. Load wrangler config
 			if (options.configPath) {
@@ -371,6 +446,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						},
 						callScheduled(cronExpr: string) {
 							return handleWorkerScheduled(cronExpr)
+						},
+						callEmail(rawBytes: Uint8Array, from: string, to: string) {
+							return handleWorkerEmail(rawBytes, from, to)
 						},
 					}
 				},
@@ -607,6 +685,35 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							}
 						} catch (err) {
 							console.error('[lopata:vite] Scheduled trigger error:', err)
+							if (!res.headersSent) {
+								res.writeHead(500, { 'content-type': 'text/plain' })
+								res.end(String(err))
+							}
+						}
+						return
+					}
+
+					// Manual email delivery: POST /cdn-cgi/handler/email?from=…&to=…&worker=<name>
+					if ((url.split('?')[0] ?? url) === '/cdn-cgi/handler/email' && req.method === 'POST') {
+						try {
+							const params = new URL(url, 'http://localhost').searchParams
+							const from = params.get('from') ?? ''
+							const to = params.get('to') ?? ''
+							const raw = new Uint8Array(await nodeReqToRequest(req).arrayBuffer())
+							const targetWorker = params.get('worker')
+							if (targetWorker && targetWorker !== config.name) {
+								const auxGen = workerRegistry.getManager(targetWorker)?.active
+								if (!auxGen) {
+									res.writeHead(503, { 'content-type': 'text/plain' })
+									res.end(`Worker "${targetWorker}" has no active generation`)
+									return
+								}
+								await writeResponse(await auxGen.callEmail(raw, from, to), res)
+							} else {
+								await writeResponse(await handleWorkerEmail(raw, from, to), res)
+							}
+						} catch (err) {
+							console.error('[lopata:vite] Email trigger error:', err)
 							if (!res.headersSent) {
 								res.writeHead(500, { 'content-type': 'text/plain' })
 								res.end(String(err))
