@@ -1,0 +1,8 @@
+{
+	"name": "assets-only-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"services": [
+		{ "binding": "SITE", "service": "site" }
+	]
+}

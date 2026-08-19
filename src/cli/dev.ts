@@ -29,7 +29,7 @@ import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
-import { autoLoadConfig, findConfigPath, loadConfig } from '../config'
+import { autoLoadConfig, findConfigPath, hasScript, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase, getDataDir } from '../db'
 import { FileWatcher } from '../file-watcher'
@@ -158,6 +158,13 @@ export async function run(ctx: CliContext, args: string[]) {
 				console.error(`[lopata] Failed to load auxiliary worker "${workerDef.name}":`, err)
 			}
 
+			// Assets-only aux worker: no module graph to watch. Its files are read from
+			// disk per request, so an edit is picked up without a reload.
+			if (!hasScript(auxConfig)) {
+				console.log(`[lopata] "${workerDef.name}" is assets-only (${auxConfig.assets?.directory}) — served without a worker thread`)
+				continue
+			}
+
 			// Import-graph watcher for the aux worker — follows its transitive
 			// imports (matching single-worker mode), not just the entry's directory.
 			// `watchExtra` remains the answer for non-import assets / shared dirs.
@@ -245,20 +252,24 @@ export async function run(ctx: CliContext, args: string[]) {
 		setRouteDispatcher(routeDispatcher)
 
 		// Import-graph watcher for the main worker (follows its transitive imports).
-		const mainEntry = path.resolve(mainBaseDir, mainConfig.main)
 		const reloadMain = makeReloadCallback(mainManager, 'Main worker reloaded')
-		const mainWatcher: ImportGraphWatcher = new ImportGraphWatcher(mainEntry, mainBaseDir, () => {
-			mainManager.reload().then(gen => {
-				mainWatcher.rescan()
-				console.log(`[lopata] Main worker reloaded → generation ${gen.id} (watching ${mainWatcher.size} files)`)
-			}, err => {
-				mainWatcher.rescan()
-				console.error('[lopata] Reload failed:', err)
+		if (hasScript(mainConfig)) {
+			const mainEntry = path.resolve(mainBaseDir, mainConfig.main)
+			const mainWatcher: ImportGraphWatcher = new ImportGraphWatcher(mainEntry, mainBaseDir, () => {
+				mainManager.reload().then(gen => {
+					mainWatcher.rescan()
+					console.log(`[lopata] Main worker reloaded → generation ${gen.id} (watching ${mainWatcher.size} files)`)
+				}, err => {
+					mainWatcher.rescan()
+					console.error('[lopata] Reload failed:', err)
+				})
 			})
-		})
-		mainWatcher.start()
-		watchers.push(mainWatcher)
-		console.log(`[lopata] Watching ${mainWatcher.size} imported files for changes (main)`)
+			mainWatcher.start()
+			watchers.push(mainWatcher)
+			console.log(`[lopata] Watching ${mainWatcher.size} imported files for changes (main)`)
+		} else {
+			console.log(`[lopata] Main worker is assets-only (${mainConfig.assets?.directory}) — served without a worker thread`)
+		}
 
 		// Extra directories that should also trigger a main reload (e.g. shared
 		// monorepo packages / non-import assets the static scan won't follow).
@@ -298,24 +309,31 @@ export async function run(ctx: CliContext, args: string[]) {
 		// the project (e.g. an entry at `workers/app.ts` importing `../app/**`),
 		// which a dir-only watcher would miss. A reload re-imports the whole graph,
 		// so after each one we rescan to pick up newly-added imports.
-		const entry = path.resolve(baseDir, config.main)
-		const watcher = new ImportGraphWatcher(entry, baseDir, () => {
-			manager.reload().then(gen => {
-				watcher.rescan()
-				console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)
-			}, err => {
-				// Rescan even on a FAILED reload: a newly-added import whose first
-				// build failed (it referenced a file with a syntax error), or a
-				// delete-then-recreate, must still enter the watch set — otherwise
-				// fixing that file produces no event and the dev server stays broken
-				// until an already-watched file is re-touched.
-				watcher.rescan()
-				console.error('[lopata] Reload failed:', err)
+		//
+		// An assets-only worker has no graph: its files are read from disk per
+		// request, so edits are picked up with no reload at all.
+		if (hasScript(config)) {
+			const entry = path.resolve(baseDir, config.main)
+			const watcher = new ImportGraphWatcher(entry, baseDir, () => {
+				manager.reload().then(gen => {
+					watcher.rescan()
+					console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)
+				}, err => {
+					// Rescan even on a FAILED reload: a newly-added import whose first
+					// build failed (it referenced a file with a syntax error), or a
+					// delete-then-recreate, must still enter the watch set — otherwise
+					// fixing that file produces no event and the dev server stays broken
+					// until an already-watched file is re-touched.
+					watcher.rescan()
+					console.error('[lopata] Reload failed:', err)
+				})
 			})
-		})
-		watcher.start()
-		watchers.push(watcher)
-		console.log(`[lopata] Watching ${watcher.size} imported files for changes`)
+			watcher.start()
+			watchers.push(watcher)
+			console.log(`[lopata] Watching ${watcher.size} imported files for changes`)
+		} else {
+			console.log(`[lopata] Assets-only worker (${config.assets?.directory}) — served without a worker thread`)
+		}
 	}
 
 	// Start server — one Bun.serve(), delegates to active generation

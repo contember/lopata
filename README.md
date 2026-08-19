@@ -204,6 +204,28 @@ export default defineConfig({
 
 Workers can call each other via service bindings configured in their respective `wrangler.jsonc`. Both HTTP (`binding.fetch()`) and RPC (`binding.myMethod()`) modes are supported, including promise pipelining.
 
+### Assets-only workers
+
+A worker with `assets` and no `main` is a static site — Cloudflare runs no script for it,
+and neither does lopata:
+
+```jsonc
+// site/wrangler.jsonc
+{
+	"name": "my-site",
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "single-page-application"
+	}
+}
+```
+
+Run it on its own (`bunx lopata dev` in that directory) or list it in `lopata.config.ts`
+next to your scripted workers — as `main` or as an auxiliary worker with `hosts`/`routes`.
+No worker thread is spawned and no file watcher is needed: assets are read from disk per
+request, so edits appear immediately. A service binding to such a worker serves its assets
+through `binding.fetch()`; it has no RPC methods.
+
 ### Route patterns
 
 In multi-worker setups, auxiliary workers can use Cloudflare-style `routes` in their `wrangler.jsonc` to handle specific URL patterns. The main worker acts as a fallback for unmatched requests.

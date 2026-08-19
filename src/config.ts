@@ -5,7 +5,12 @@ import type { WorkflowLimits } from './bindings/workflow'
 
 export interface WranglerConfig {
 	name: string
-	main: string
+	/**
+	 * Entry module. Optional: a worker that only has `assets` is an assets-only
+	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
+	 * A config with neither `main` nor `assets` is rejected by `loadConfig`.
+	 */
+	main?: string
 	compatibility_date?: string
 	compatibility_flags?: string[]
 	kv_namespaces?: { binding: string; id: string }[]
@@ -106,7 +111,23 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	} else {
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
-	return applyEnvOverrides(config, envName)
+	const resolved = applyEnvOverrides(config, envName)
+	// `main` is only optional for assets-only workers. Without either there is
+	// nothing to serve, and every downstream consumer would fail far from the cause.
+	if (!resolved.main && !resolved.assets) {
+		throw new Error(`${path}: config has neither "main" nor "assets" — nothing to serve`)
+	}
+	return resolved
+}
+
+/**
+ * True when the worker has a script. A worker WITHOUT one is assets-only: Cloudflare
+ * serves it purely from `assets`, so there is no module to import, spawn or watch.
+ *
+ * A type guard so callers that go on to resolve `config.main` are narrowed.
+ */
+export function hasScript(config: WranglerConfig): config is WranglerConfig & { main: string } {
+	return !!config.main
 }
 
 /**

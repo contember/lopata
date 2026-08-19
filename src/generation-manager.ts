@@ -30,7 +30,8 @@ export class GenerationManager {
 
 	readonly config: WranglerConfig
 	readonly baseDir: string
-	readonly workerPath: string
+	/** Entry module, or null for an assets-only worker (no script to run). */
+	readonly workerPath: string | null
 	readonly workerName: string | undefined
 	readonly workerRegistry: WorkerRegistry | undefined
 	readonly isMain: boolean
@@ -57,7 +58,9 @@ export class GenerationManager {
 	) {
 		this.config = config
 		this.baseDir = baseDir
-		this.workerPath = path.resolve(baseDir, config.main)
+		// An assets-only worker has no entry module: Cloudflare runs no script for it,
+		// so there is nothing to resolve, spawn or hot-reload.
+		this.workerPath = config.main ? path.resolve(baseDir, config.main) : null
 		this.workerName = options?.workerName
 		this.workerRegistry = options?.workerRegistry
 		this.isMain = options?.isMain ?? true
@@ -101,6 +104,11 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
+		// Assets-only: build the env (so an `assets.binding` and any stateless
+		// bindings still exist) but spawn no worker thread. `Generation` serves such
+		// requests straight from `registry.staticAssets`.
+		if (this.workerPath === null) return this._doReloadAssetsOnly()
+
 		this.executorFactory?.configure?.(this.workerPath, this._configPath, this.config)
 
 		// Stateful bindings (DO namespaces, queue producers, workflows,
@@ -188,6 +196,35 @@ export class GenerationManager {
 		// generation's worker is disposed (see _scheduleDrainAndStop) so a workflow
 		// never runs in two threads at once.
 		if (oldGenId === null) this._resumeWorkflows(gen)
+		return gen
+	}
+
+	/**
+	 * Reload path for an assets-only worker.
+	 *
+	 * There is no user module, so there is no worker thread, no Durable Object or
+	 * Workflow class to wire (declaring either without a script is meaningless), and
+	 * no queue consumer or cron handler to start. All that is needed is the env — so
+	 * an `assets.binding` and any stateless bindings still resolve — and a Generation
+	 * that answers every request from `registry.staticAssets`.
+	 */
+	private async _doReloadAssetsOnly(): Promise<Generation> {
+		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
+		wireServiceBindings(registry, {}, env, this.workerRegistry)
+
+		const genId = this.nextGenId++
+		const gen = new Generation(genId, env, registry, this.config, null, this.workerName, this.cronEnabled)
+		this.generations.set(genId, gen)
+
+		const oldGenId = this._activeGenId
+		if (oldGenId !== null) {
+			const oldGen = this.generations.get(oldGenId)
+			if (oldGen && oldGen.state === 'active') {
+				oldGen.drain(new Set(this._doNamespaces.values()))
+				this._scheduleDrainAndStop(oldGenId, oldGen)
+			}
+		}
+		this._activeGenId = genId
 		return gen
 	}
 

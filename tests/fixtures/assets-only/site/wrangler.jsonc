@@ -1,0 +1,8 @@
+{
+	"name": "assets-only-site",
+	"compatibility_date": "2026-02-12",
+	"assets": {
+		"directory": "./public",
+		"html_handling": "drop-trailing-slash"
+	}
+}

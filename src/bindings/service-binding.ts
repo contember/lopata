@@ -124,6 +124,13 @@ export class ServiceBinding {
 
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
 		const resolved = this._resolve()
+		// An assets-only worker has no script, so it exposes no RPC surface at all —
+		// say that plainly instead of blaming thread isolation.
+		if (resolved.kind === 'assets') {
+			throw new Error(
+				`Service binding "${this._serviceName}": the target is an assets-only worker (no "main"), so it has no RPC methods — only fetch() is available`,
+			)
+		}
 		if (resolved.kind !== 'in-process') {
 			throw new Error(
 				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through the thread executor`,
@@ -143,6 +150,11 @@ export class ServiceBinding {
 		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
 			return resolved.executor.executeFetch(request, this._props)
+		}
+		// Assets-only target: no script to invoke — its asset layer answers, including
+		// its own html_handling / not_found_handling.
+		if (resolved.kind === 'assets') {
+			return resolved.assets.fetch(request)
 		}
 
 		const execCtx = new ExecutionContext(this._props)

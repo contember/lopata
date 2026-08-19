@@ -558,7 +558,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						console.error(`[lopata:vite] Failed to load auxiliary worker "${workerName}":`, err)
 					}
 
-					// File watcher for aux worker reload
+					// File watcher for aux worker reload. An assets-only aux worker has no
+					// module to watch — its files are read from disk per request.
+					if (!configMod.hasScript(auxConfig)) {
+						console.log(`[lopata:vite] Auxiliary worker "${workerName}" is assets-only — no watcher`)
+						continue
+					}
 					const auxSrcDir = dirname(resolve(auxBaseDir, auxConfig.main))
 					const auxWatcher = new FileWatcher(auxSrcDir, () => {
 						auxManager.reload().then(async gen => {

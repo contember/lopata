@@ -922,7 +922,19 @@
 - ✅ Fetcher interface, hostname irrelevant
 - ✅ Respects html_handling and not_found_handling config
 
-### 9.2 Configuration
+### 9.2 Assets-Only Workers (no `main`)
+
+- ✅ A config with `assets` and no `main` runs as a static-site worker — no module is
+  imported, no worker thread is spawned, and no import-graph watcher is started
+- ✅ Works as the single worker, and as a `main`/auxiliary worker in `lopata.config.ts`
+  (including host- and route-based dispatch)
+- ✅ `html_handling` / `not_found_handling` / `_headers` / `_redirects` apply as usual
+- ✅ A service binding into one resolves to its asset layer (`binding.fetch()`); an RPC
+  call throws, since there is no script to expose methods
+- ✅ Asset edits are picked up per request — there is nothing to hot-reload
+- ✅ A config with neither `main` nor `assets` is rejected at load with a clear error
+
+### 9.3 Configuration
 
 - ✅ `assets.directory` — path to static files folder
 - ✅ `assets.binding` — binding name in Worker code
@@ -930,14 +942,14 @@
 - ✅ `assets.not_found_handling` — "none" (default) | "single-page-application" | "404-page"
 - ✅ `assets.run_worker_first` — false (default) | true | string[] (glob patterns)
 
-### 9.3 HTML Handling Modes
+### 9.4 HTML Handling Modes
 
 - ✅ `auto-trailing-slash` — .html stripped, index.html with slash, redirects for canonical URLs
 - ✅ `force-trailing-slash` — all URLs require trailing slash (307 redirect)
 - ✅ `drop-trailing-slash` — no trailing slashes (307 redirect)
 - ✅ `none` — only exact file paths with extensions resolve
 
-### 9.4 `_headers` File
+### 9.5 `_headers` File
 
 - ✅ Custom headers per URL path/pattern
 - ✅ Splats (*) and placeholders (:name)
@@ -945,7 +957,7 @@
 - ✅ Max 100 rules, 2,000 chars per line — configurable via StaticAssetsLimits
 - ✅ Only applies to static asset responses
 
-### 9.5 `_redirects` File
+### 9.6 `_redirects` File
 
 - ✅ Static and dynamic redirects
 - ✅ Status codes: 301, 302, 303, 307, 308; 200 for proxying
@@ -953,7 +965,7 @@
 - ✅ Max 2,000 static + 100 dynamic redirects
 - ✅ Applied before headers, before asset matching
 
-### 9.6 Default Headers on Assets
+### 9.7 Default Headers on Assets
 
 - ✅ Content-Type — detected by file extension (via Bun.file().type)
 - ✅ Cache-Control — `public, max-age=0, must-revalidate`
@@ -961,7 +973,7 @@
 - ✅ If-None-Match — returns 304 when ETag matches
 - ❌ CF-Cache-Status — HIT or MISS — not added
 
-### 9.7 Static Assets Limits
+### 9.8 Static Assets Limits
 
 - ❌ Files per version: 20,000 (free), 100,000 (paid) — not enforced
 - ❌ Max file size: 25 MiB per file — not enforced
