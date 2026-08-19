@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
+import { createScheduledController } from '../bindings/scheduled.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
@@ -46,6 +47,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	// Tracing functions (lazy-loaded)
 	let startSpan: Function
 	let setSpanAttribute: Function
+	let persistError: Function
 	let getActiveContext: Function
 	let renderErrorPage: Function
 	let handleDashboardRequest: Function
@@ -208,6 +210,47 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	}
 
 	/**
+	 * Dispatch a cron tick through the worker's scheduled() handler.
+	 *
+	 * The dashboard's manual trigger reaches this via `active.callScheduled()` on the
+	 * generation adapter below. Under the CLI that adapter is a real `Generation`, which
+	 * hands the cron to its worker thread; in Vite mode the worker lives in this process
+	 * behind the SSR runner, so mirror `handleWorkerFetch` instead — same module, env,
+	 * ExecutionContext and tracing, with a ScheduledController in place of a Request.
+	 */
+	async function handleWorkerScheduled(cronExpr: string): Promise<Response> {
+		const activeModule = await ensureWorkerModule()
+		const genId = currentGenerationId
+
+		const handler = activeModule.default as Record<string, unknown>
+		if (!handler || typeof handler.scheduled !== 'function') {
+			return new Response('No scheduled handler defined', { status: 404 })
+		}
+
+		const ctx = new ExecutionContext()
+		const controller = createScheduledController(cronExpr, Date.now())
+
+		return await (startSpan as Function)({
+			name: 'scheduled',
+			kind: 'server',
+			attributes: { cron: cronExpr, 'lopata.generation_id': genId },
+		}, () =>
+			runWithExecutionContext(ctx, async () => {
+				try {
+					await (handler.scheduled as Function).call(handler, controller, env, ctx)
+					// waitUntil work outlives the trigger, as it does on a real cron tick — the
+					// dev server stays up, so let it settle instead of blocking the response.
+					ctx._awaitAll().catch(() => {})
+					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
+				} catch (err) {
+					console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+					persistError(err, 'scheduled', config.name)
+					throw err
+				}
+			}))
+	}
+
+	/**
 	 * Resolve an auxiliary worker for the given request.
 	 * Returns null if the request should be handled by the main worker.
 	 */
@@ -263,6 +306,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			runWithExecutionContext = ecMod.runWithExecutionContext
 			startSpan = spanMod.startSpan
 			setSpanAttribute = spanMod.setSpanAttribute
+			persistError = spanMod.persistError
 			getActiveContext = ctxMod.getActiveContext
 			renderErrorPage = errorPageMod.renderErrorPage
 			handleDashboardRequest = dashboardMod.handleDashboardRequest
@@ -317,6 +361,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							registry,
 							callFetch(_request: Request, _server: unknown) {
 								throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
+							},
+							callScheduled(cronExpr: string) {
+								return handleWorkerScheduled(cronExpr)
 							},
 						}
 						: null
