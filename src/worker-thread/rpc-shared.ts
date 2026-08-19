@@ -38,7 +38,7 @@ import type {
 	SerializedResponse,
 } from './protocol'
 import { deserializeError, serializeError } from './protocol'
-import { deserializeRequest, serializeRequestShell } from './serialize'
+import { deserializeRequest, serializeRequestShell, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
@@ -186,8 +186,7 @@ export async function dispatchRpcFetch(
 
 	const cfSocket = (response as ResponseWithWebSocket).webSocket
 	const isWsUpgrade = response.status === 101 && cfSocket instanceof CFWebSocket
-	const headers: [string, string][] = []
-	response.headers.forEach((v, k) => headers.push([k, v]))
+	const headers = serializeResponseHeaders(response)
 	const serialized: SerializedResponse = {
 		status: response.status,
 		statusText: response.statusText,

@@ -84,6 +84,18 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect(await res.json()).toEqual({ echoed: { hello: 'world', n: 42 } })
 	})
 
+	// Characterization test rather than a regression guard: the DO-worker → main
+	// → user-worker bridges already delivered both cookies before the
+	// serializeResponseHeaders refactor (checked against the pre-refactor tree).
+	// It pins that behavior so a later rewrite of the bridge header handling
+	// cannot quietly start folding repeated names.
+	test('multiple Set-Cookie headers on a DO response survive the bridge un-folded', async () => {
+		const res = await fetch(`${base}/cookies`)
+		expect(res.status).toBe(200)
+		const cookies = res.headers.getSetCookie()
+		expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/; HttpOnly'])
+	})
+
 	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
 	// the main-side check never trips in thread mode. The budget must
 	// accumulate across all binding calls of ONE request (a per-call re-seed of
