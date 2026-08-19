@@ -33,21 +33,16 @@ function spawnDev(port: number): Subprocess {
 	})
 }
 
-async function readChunks(res: Response): Promise<{ text: string; arrivals: number[] }> {
+async function readChunks(res: Response): Promise<string> {
 	const reader = res.body!.getReader()
 	const decoder = new TextDecoder()
 	let text = ''
-	const arrivals: number[] = []
 	while (true) {
 		const { done, value } = await reader.read()
 		if (done) break
-		if (value?.length) {
-			arrivals.push(Date.now())
-			text += decoder.decode(value, { stream: true })
-		}
+		if (value?.length) text += decoder.decode(value, { stream: true })
 	}
-	text += decoder.decode()
-	return { text, arrivals }
+	return text + decoder.decode()
 }
 
 describe('Response streaming through service-binding (cross-thread)', () => {
@@ -131,12 +126,20 @@ describe('Response streaming through service-binding (cross-thread)', () => {
 			body: stream,
 			duplex: 'half',
 		})
-		const { text, arrivals } = await readChunks(res)
+		const text = await readChunks(res)
 		for (let i = 0; i < count; i++) {
 			expect(text).toContain(`chunk-${i}-`)
 		}
-		expect(arrivals.length).toBeGreaterThan(1)
-		const spread = arrivals[arrivals.length - 1]! - arrivals[0]!
+		// Timing is read from the `-at-<ms>` stamps aux writes into each echoed
+		// line, i.e. when the *bound worker* received each chunk. Client-side
+		// arrival times cannot be used here: if this process is descheduled the
+		// whole response piles up in the socket and is read in one burst, which is
+		// indistinguishable from a buffering bridge. Measuring at the far end is
+		// load-proof — a slow runner can only stretch the gaps aux observes, never
+		// compress them below the producer's own delays.
+		const stamps = [...text.matchAll(/-at-(\d+)/g)].map(m => Number(m[1]!))
+		expect(stamps.length).toBe(count)
+		const spread = stamps[stamps.length - 1]! - stamps[0]!
 		expect(spread).toBeGreaterThan((count - 1) * delay * 0.4)
 	}, 15_000)
 
