@@ -353,20 +353,26 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const mainAdapter: import('../route-matcher.ts').RoutableManager & Record<string, unknown> = {
 				config,
 				gracePeriodMs: 0,
+				// The Vite generation exists as soon as env and the registry are built; the
+				// worker module itself is imported lazily, on first use. Gating this on
+				// `currentModule` would report "No active generation" until something loaded
+				// the app — precisely the state the dashboard's Trigger buttons are for — so
+				// expose the generation right away and let `workerModule` stay null until the
+				// import lands. `handleWorkerScheduled` awaits `ensureWorkerModule()` itself.
 				get active() {
-					return currentModule
-						? {
-							workerModule: currentModule,
-							env,
-							registry,
-							callFetch(_request: Request, _server: unknown) {
-								throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
-							},
-							callScheduled(cronExpr: string) {
-								return handleWorkerScheduled(cronExpr)
-							},
-						}
-						: null
+					return {
+						get workerModule() {
+							return currentModule
+						},
+						env,
+						registry,
+						callFetch(_request: Request, _server: unknown) {
+							throw new Error('Main worker in Vite mode should be dispatched via handleWorkerFetch, not callFetch')
+						},
+						callScheduled(cronExpr: string) {
+							return handleWorkerScheduled(cronExpr)
+						},
+					}
 				},
 				list() {
 					return Array.from(viteGenerations.values()).map(g => ({
@@ -572,6 +578,35 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							await writeResponse(response, res)
 						} catch (err) {
 							console.error('[lopata:vite] Dashboard error:', err)
+							if (!res.headersSent) {
+								res.writeHead(500, { 'content-type': 'text/plain' })
+								res.end(String(err))
+							}
+						}
+						return
+					}
+
+					// Manual cron trigger: GET /cdn-cgi/handler/scheduled?cron=<expression>&worker=<name>
+					// Same URL shape `bunx lopata dev` exposes (see src/cli/dev.ts), so scripted
+					// triggers work identically under Vite.
+					if ((url.split('?')[0] ?? url) === '/cdn-cgi/handler/scheduled') {
+						try {
+							const params = new URL(url, 'http://localhost').searchParams
+							const cronExpr = params.get('cron') ?? '* * * * *'
+							const targetWorker = params.get('worker')
+							if (targetWorker && targetWorker !== config.name) {
+								const auxGen = workerRegistry.getManager(targetWorker)?.active
+								if (!auxGen) {
+									res.writeHead(503, { 'content-type': 'text/plain' })
+									res.end(`Worker "${targetWorker}" has no active generation`)
+									return
+								}
+								await writeResponse(await auxGen.callScheduled(cronExpr), res)
+							} else {
+								await writeResponse(await handleWorkerScheduled(cronExpr), res)
+							}
+						} catch (err) {
+							console.error('[lopata:vite] Scheduled trigger error:', err)
 							if (!res.headersSent) {
 								res.writeHead(500, { 'content-type': 'text/plain' })
 								res.end(String(err))

@@ -17,17 +17,47 @@ const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
 const PORT = 18799
 const CRON = '0 0 1 1 *'
 
-async function waitForServer(url: string, timeoutMs: number): Promise<void> {
+/**
+ * Drains the dev server's stdout+stderr. Piped output that nobody reads eventually
+ * fills the OS pipe buffer and blocks the server, and keeping the text around makes a
+ * boot failure debuggable instead of a bare readiness timeout.
+ */
+class OutputLog {
+	private text = ''
+
+	constructor(proc: Subprocess) {
+		void this.drain(proc.stdout as ReadableStream<Uint8Array>)
+		void this.drain(proc.stderr as ReadableStream<Uint8Array>)
+	}
+
+	private async drain(stream: ReadableStream<Uint8Array>): Promise<void> {
+		const decoder = new TextDecoder()
+		for await (const chunk of stream) {
+			this.text += decoder.decode(chunk, { stream: true })
+		}
+	}
+
+	get(): string {
+		return this.text
+	}
+}
+
+/**
+ * Wait for the dashboard API, deliberately without touching the worker's own routes:
+ * the first test asserts the cold path, where nothing has imported the worker module yet.
+ */
+async function waitForDashboard(timeoutMs: number, log: OutputLog): Promise<void> {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
 		try {
-			await fetch(url)
-			return
+			const { status, body } = await rpc('scheduled.listTriggers', {})
+			if (status === 200 && Array.isArray(body)) return
 		} catch {
-			await new Promise(r => setTimeout(r, 250))
+			// server not listening yet
 		}
+		await new Promise(r => setTimeout(r, 250))
 	}
-	throw new Error(`Server at ${url} did not become ready within ${timeoutMs}ms`)
+	throw new Error(`Dashboard API on :${PORT} did not become ready within ${timeoutMs}ms\n--- server output ---\n${log.get()}`)
 }
 
 async function rpc(procedure: string, input: unknown): Promise<{ status: number; body: any }> {
@@ -50,6 +80,7 @@ function cleanup() {
 
 describe('Scheduled trigger E2E — vite', () => {
 	let proc: Subprocess
+	let log: OutputLog
 
 	beforeAll(async () => {
 		cleanup()
@@ -58,7 +89,8 @@ describe('Scheduled trigger E2E — vite', () => {
 			stdout: 'pipe',
 			stderr: 'pipe',
 		})
-		await waitForServer(`http://localhost:${PORT}/ticks`, 60_000)
+		log = new OutputLog(proc)
+		await waitForDashboard(60_000, log)
 	}, 90_000)
 
 	afterAll(() => {
@@ -71,9 +103,10 @@ describe('Scheduled trigger E2E — vite', () => {
 		expect(body).toMatchObject([{ expression: CRON, workerName: null }])
 	})
 
-	test("triggering the cron runs the worker's scheduled() handler", async () => {
-		expect((await ticks()).ticks).toBe(0)
-
+	// Runs first, and nothing above it requests a worker route: on a fresh dev server the
+	// worker module has not been imported yet, which is exactly when someone opens the
+	// dashboard and hits Trigger. The generation adapter has to be live already.
+	test("triggering the cron runs the worker's scheduled() handler, with no prior app request", async () => {
 		const { status, body } = await rpc('scheduled.trigger', { cron: CRON })
 		expect(status).toBe(200)
 		expect(body).toEqual({ ok: true })
@@ -85,5 +118,13 @@ describe('Scheduled trigger E2E — vite', () => {
 		const { body } = await rpc('scheduled.trigger', { cron: CRON })
 		expect(body).toEqual({ ok: true })
 		expect((await ticks()).ticks).toBe(2)
+	}, 15_000)
+
+	// CLI parity: `bunx lopata dev` exposes the same URL for scripted triggers.
+	test('GET /cdn-cgi/handler/scheduled triggers the handler too', async () => {
+		const res = await fetch(`http://localhost:${PORT}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(CRON)}`)
+		expect(res.status).toBe(200)
+
+		expect(await ticks()).toEqual({ ticks: 3, lastCron: CRON, waitUntilRan: true })
 	}, 15_000)
 })
