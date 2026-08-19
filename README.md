@@ -223,7 +223,7 @@ and neither does lopata:
 Run it on its own (`bunx lopata dev` in that directory) or list it in `lopata.config.ts`
 next to your scripted workers — as `main` or as an auxiliary worker with `hosts`/`routes`.
 No worker thread is spawned and no file watcher is needed: assets are read from disk per
-request, so edits appear immediately. A service binding to such a worker serves its assets
+request, so edits appear immediately — `_headers` and `_redirects` included. A service binding to such a worker serves its assets
 through `binding.fetch()`; it has no RPC methods.
 
 ### Route patterns

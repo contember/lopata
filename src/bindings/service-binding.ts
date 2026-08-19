@@ -152,8 +152,15 @@ export class ServiceBinding {
 			return resolved.executor.executeFetch(request, this._props)
 		}
 		// Assets-only target: no script to invoke — its asset layer answers, including
-		// its own html_handling / not_found_handling.
+		// its own html_handling / not_found_handling. A declared `entrypoint` names an
+		// export of a script that doesn't exist, so serving assets would quietly ignore
+		// what the binding asked for.
 		if (resolved.kind === 'assets') {
+			if (this._entrypoint) {
+				throw new Error(
+					`Service binding "${this._serviceName}": entrypoint "${this._entrypoint}" was requested, but the target is an assets-only worker (no "main") and exports nothing — drop the entrypoint to serve its static assets`,
+				)
+			}
 			return resolved.assets.fetch(request)
 		}
 

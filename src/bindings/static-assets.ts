@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 export interface StaticAssetsConfig {
@@ -38,13 +38,19 @@ interface RedirectRule {
 
 const VALID_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308, 200])
 
+/** Parsed rules plus the stat stamp of the file they came from (`null` = file absent). */
+interface RuleCache<T> {
+	stamp: string | null
+	rules: T[]
+}
+
 export class StaticAssets {
 	private directory: string
 	private htmlHandling: string
 	private notFoundHandling: string
 	private limits: Required<StaticAssetsLimits>
-	private headerRules: HeaderRule[] | null = null
-	private redirectRules: RedirectRule[] | null = null
+	private headerRules: RuleCache<HeaderRule> | null = null
+	private redirectRules: RuleCache<RedirectRule> | null = null
 
 	constructor(
 		directory: string,
@@ -119,20 +125,35 @@ export class StaticAssets {
 		return new Response('Not Found', { status: 404 })
 	}
 
+	/**
+	 * Stat stamp of a rules file, or `null` when it doesn't exist.
+	 *
+	 * Every other asset is read from disk per request, so `_headers` / `_redirects`
+	 * must behave the same way. A plain memo would pin the first parse for the life
+	 * of the instance, and an assets-only worker has no watcher and never reloads —
+	 * so an edit would only take effect after restarting the dev server.
+	 */
+	private ruleFileStamp(filePath: string): string | null {
+		try {
+			// Nanosecond mtime, not `mtimeMs`: two edits within the same millisecond that
+			// keep the byte count identical (`X-Test: one` → `X-Test: two`) are exactly
+			// what an editor produces, and would otherwise look unchanged.
+			const st = statSync(filePath, { bigint: true })
+			return `${st.mtimeNs}:${st.size}`
+		} catch {
+			return null
+		}
+	}
+
 	private getRedirectRules(): RedirectRule[] {
-		if (this.redirectRules !== null) {
-			return this.redirectRules
-		}
-
 		const redirectsPath = path.join(this.directory, '_redirects')
-		if (!existsSync(redirectsPath)) {
-			this.redirectRules = []
-			return this.redirectRules
+		const stamp = this.ruleFileStamp(redirectsPath)
+		if (this.redirectRules && this.redirectRules.stamp === stamp) {
+			return this.redirectRules.rules
 		}
-
-		const content = readFileSync(redirectsPath, 'utf-8')
-		this.redirectRules = parseRedirects(content, this.limits)
-		return this.redirectRules
+		const rules = stamp === null ? [] : parseRedirects(readFileSync(redirectsPath, 'utf-8'), this.limits)
+		this.redirectRules = { stamp, rules }
+		return rules
 	}
 
 	/**
@@ -257,19 +278,14 @@ export class StaticAssets {
 	}
 
 	private getHeaderRules(): HeaderRule[] {
-		if (this.headerRules !== null) {
-			return this.headerRules
-		}
-
 		const headersPath = path.join(this.directory, '_headers')
-		if (!existsSync(headersPath)) {
-			this.headerRules = []
-			return this.headerRules
+		const stamp = this.ruleFileStamp(headersPath)
+		if (this.headerRules && this.headerRules.stamp === stamp) {
+			return this.headerRules.rules
 		}
-
-		const content = readFileSync(headersPath, 'utf-8')
-		this.headerRules = parseHeadersFile(content, this.limits)
-		return this.headerRules
+		const rules = stamp === null ? [] : parseHeadersFile(readFileSync(headersPath, 'utf-8'), this.limits)
+		this.headerRules = { stamp, rules }
+		return rules
 	}
 
 	private applyHeaderRules(pathname: string, headers: Headers): void {

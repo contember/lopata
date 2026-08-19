@@ -100,11 +100,28 @@ export class Generation {
 			const assets = this.registry.staticAssets
 			const executor = this.threadExecutor
 			let response: Response
-			// Assets-only worker: no script runs, so `assets` answers everything —
+			// Cloudflare only serves static assets for GET/HEAD; every other
+			// method goes straight to the worker. WebSocket upgrades are GETs but
+			// must reach the worker's upgrade handler, so they're excluded too.
+			// Without this gate, assets-first routing would answer e.g.
+			// `POST /account/` with `/account/index.html` (200) and silently drop
+			// the write, or serve a colliding asset to a WS upgrade.
+			const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+			const canServeAssets = (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade
+			// Assets-only worker: no script runs, so `assets` answers everything it can —
 			// including its own 404 / not-found handling (SPA fallback, 404.html).
 			if (!executor) {
 				if (!assets) {
 					return new Response('Worker has neither a script nor static assets', { status: 500 })
+				}
+				// Nothing can pick up what the asset layer won't serve: there is no
+				// script to take the write or accept the upgrade. Answering those from
+				// a colliding asset would return 200 for a request that did nothing.
+				if (!canServeAssets) {
+					if (isWebSocketUpgrade) {
+						return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
+					}
+					return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
 				}
 				return assets.fetch(request)
 			}
@@ -121,14 +138,6 @@ export class Generation {
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
 				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				// Cloudflare only serves static assets for GET/HEAD; every other
-				// method goes straight to the worker. WebSocket upgrades are GETs but
-				// must reach the worker's upgrade handler, so they're excluded too.
-				// Without this gate, assets-first routing would answer e.g.
-				// `POST /account/` with `/account/index.html` (200) and silently drop
-				// the write, or serve a colliding asset to a WS upgrade.
-				const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
-				const canServeAssets = (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade
 				if (!workerFirst && canServeAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse

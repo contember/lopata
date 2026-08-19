@@ -931,7 +931,8 @@
 - ✅ `html_handling` / `not_found_handling` / `_headers` / `_redirects` apply as usual
 - ✅ A service binding into one resolves to its asset layer (`binding.fetch()`); an RPC
   call throws, since there is no script to expose methods
-- ✅ Asset edits are picked up per request — there is nothing to hot-reload
+- ✅ Asset edits are picked up per request — including `_headers` / `_redirects`, whose
+  rules are re-read when the file changes. There is nothing to hot-reload
 - ✅ A config with neither `main` nor `assets` is rejected at load with a clear error
 
 ### 9.3 Configuration

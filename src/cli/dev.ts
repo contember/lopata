@@ -158,8 +158,9 @@ export async function run(ctx: CliContext, args: string[]) {
 				console.error(`[lopata] Failed to load auxiliary worker "${workerDef.name}":`, err)
 			}
 
-			// Assets-only aux worker: no module graph to watch. Its files are read from
-			// disk per request, so an edit is picked up without a reload.
+			// Assets-only aux worker: no module graph to watch. Its files are read from disk
+			// per request — `_headers` / `_redirects` re-parse when they change — so an edit
+			// is picked up without a reload.
 			if (!hasScript(auxConfig)) {
 				console.log(`[lopata] "${workerDef.name}" is assets-only (${auxConfig.assets?.directory}) — served without a worker thread`)
 				continue

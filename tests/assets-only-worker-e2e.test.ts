@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { createServiceBinding } from '../src/bindings/service-binding'
+import { WorkerRegistry } from '../src/worker-registry'
 
 // A worker with `assets` and no `main` is how Cloudflare serves a static site: there is
 // no script, so nothing is bundled, spawned or hot-reloaded. lopata used to reject that
@@ -145,6 +147,44 @@ describe('assets-only worker as the only worker', () => {
 		const res = await fetch(`${base}/`)
 		expect((await res.text()).trim()).toBe('site-index')
 	})
+
+	test('non-GET/HEAD is 405, not a 200 from a colliding asset', async () => {
+		// Cloudflare only serves static assets for GET/HEAD, and here there is no script
+		// to take the write — answering `POST /hello.txt` with the file would report
+		// success for a request that did nothing.
+		for (const method of ['POST', 'PUT', 'DELETE']) {
+			const res = await fetch(`${base}/hello.txt`, { method })
+			expect(res.status).toBe(405)
+			expect(res.headers.get('allow')).toBe('GET, HEAD')
+		}
+	})
+
+	test('a WebSocket upgrade is rejected rather than answered with an asset', async () => {
+		const res = await fetch(`${base}/`, { headers: { upgrade: 'websocket', connection: 'Upgrade' } })
+		expect(res.status).toBe(400)
+		expect(await res.text()).toContain('WebSocket upgrade')
+	})
+
+	test('`_headers` edits are picked up without a restart', async () => {
+		// An assets-only worker has no watcher and never reloads, so the StaticAssets
+		// instance lives for the whole process — its rules must not be memoized for good.
+		const headersFile = join(dir, 'public/_headers')
+		try {
+			writeFileSync(headersFile, '/hello.txt\n  X-Test: one\n')
+			const first = await fetch(`${base}/hello.txt`)
+			expect(first.headers.get('x-test')).toBe('one')
+
+			writeFileSync(headersFile, '/hello.txt\n  X-Test: two\n')
+			const second = await fetch(`${base}/hello.txt`)
+			expect(second.headers.get('x-test')).toBe('two')
+
+			rmSync(headersFile)
+			const third = await fetch(`${base}/hello.txt`)
+			expect(third.headers.get('x-test')).toBeNull()
+		} finally {
+			rmSync(headersFile, { force: true })
+		}
+	})
 })
 
 describe('config validation', () => {
@@ -157,5 +197,52 @@ describe('config validation', () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
+	})
+})
+
+describe('service binding into an assets-only worker', () => {
+	function bindingTo(assets: { fetch(req: Request): Promise<Response> }, entrypoint?: string) {
+		const proxy = createServiceBinding('site', entrypoint)
+		;(proxy._wire as Function)(() => ({ kind: 'assets', env: {}, assets }))
+		return proxy
+	}
+
+	const assets = { fetch: async () => new Response('asset body') }
+
+	test('serves the assets when no entrypoint is declared', async () => {
+		const res = await (bindingTo(assets).fetch as Function)('http://site/hello.txt')
+		expect(await res.text()).toBe('asset body')
+	})
+
+	test('a declared entrypoint is an error, not silently ignored', async () => {
+		// `{ service: 'site', entrypoint: 'Foo' }` names an export of a script that does
+		// not exist — serving assets instead would quietly do something else entirely.
+		await expect((bindingTo(assets, 'Foo').fetch as Function)('http://site/hello.txt')).rejects.toThrow(
+			/entrypoint "Foo".*assets-only worker/s,
+		)
+	})
+})
+
+describe('WorkerRegistry.resolveTarget', () => {
+	function registryWith(config: { name: string; main?: string }, gen: unknown) {
+		const registry = new WorkerRegistry()
+		registry.register(config.name, { config, active: gen } as never)
+		return registry
+	}
+
+	const moduleLessGen = { env: {}, registry: { staticAssets: { fetch: async () => new Response('index.html') } } }
+
+	test('resolves to assets when the target genuinely has no script', () => {
+		const resolved = registryWith({ name: 'site' }, moduleLessGen).resolveTarget('site')
+		expect(resolved.kind).toBe('assets')
+	})
+
+	test('a scripted worker that has not imported its module yet does not fall through to assets', () => {
+		// The Vite main adapter exposes `active` before the first request imports the
+		// module, so `workerModule` is briefly null on a worker that *does* have a
+		// script. Serving index.html there would silently skip the worker.
+		expect(() => registryWith({ name: 'app', main: 'src/index.ts' }, moduleLessGen).resolveTarget('app')).toThrow(
+			/neither a thread executor nor a workerModule/,
+		)
 	})
 })
