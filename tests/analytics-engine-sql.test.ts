@@ -679,3 +679,231 @@ describe('DateTime columns render as ClickHouse strings (prod fidelity)', () => 
 		expect(body.data[0]!.ts).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 	})
 })
+
+// ClickHouse calendar functions — dashboards group by hour-of-day / day-of-week and
+// truncate to month or year, so the extractors have to agree with ClickHouse's
+// numbering (Monday = 1) and the truncations have to come back as `Date` strings.
+describe('calendar functions (toHour & friends)', () => {
+	// 2023-11-14T22:13:20Z — a Tuesday.
+	function seedNow() {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('a', 'metrics', ?, 1)", [NOW_MS])
+	}
+
+	const parts: [string, number][] = [
+		['toYear', 2023],
+		['toQuarter', 4],
+		['toMonth', 11],
+		['toDayOfMonth', 14],
+		['toDayOfWeek', 2], // Tuesday, ClickHouse mode 0 (Monday = 1)
+		['toDayOfYear', 318],
+		['toHour', 22],
+		['toMinute', 13],
+		['toSecond', 20],
+		['toUnixTimestamp', NOW_S],
+	]
+	for (const [fn, expected] of parts) {
+		test(`${fn}(timestamp) is ${expected}`, () => {
+			seedNow()
+			const r = runAnalyticsEngineSql(db, `SELECT ${fn}(timestamp) AS v FROM metrics`, NOW_MS)
+			expect(r.data).toEqual([{ v: expected }])
+		})
+	}
+
+	const truncations: [string, string][] = [
+		['toDate', '2023-11-14'],
+		['toMonday', '2023-11-13'],
+		['toStartOfWeek', '2023-11-12'], // mode 0 → week starts on Sunday
+		['toStartOfMonth', '2023-11-01'],
+		['toStartOfQuarter', '2023-10-01'],
+		['toStartOfYear', '2023-01-01'],
+	]
+	for (const [fn, expected] of truncations) {
+		test(`${fn}(timestamp) renders as the Date string ${expected}`, () => {
+			seedNow()
+			const r = runAnalyticsEngineSql(db, `SELECT ${fn}(timestamp) AS d FROM metrics`, NOW_MS)
+			expect(r.data).toEqual([{ d: expected }])
+			expect(r.meta).toEqual([{ name: 'd', type: 'Date' }])
+		})
+	}
+
+	test('toStartOfWeek with an odd mode starts the week on Monday', () => {
+		seedNow()
+		const r = runAnalyticsEngineSql(db, 'SELECT toStartOfWeek(timestamp, 1) AS d FROM metrics', NOW_MS)
+		expect(r.data).toEqual([{ d: '2023-11-13' }])
+	})
+
+	test('extractors carry ClickHouse result types in meta', () => {
+		seedNow()
+		const r = runAnalyticsEngineSql(db, 'SELECT toHour(timestamp) AS h, toYear(timestamp) AS y FROM metrics', NOW_MS)
+		expect(r.meta).toEqual([{ name: 'h', type: 'UInt8' }, { name: 'y', type: 'UInt16' }])
+	})
+
+	test('GROUP BY toHour buckets rows by hour of day across days', () => {
+		const hours = [
+			NOW_MS, // 22:13
+			NOW_MS - 86_400_000, // same hour, previous day
+			NOW_MS - 3600_000, // 21:13
+		]
+		hours.forEach((ts, i) => {
+			db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES (?, 'metrics', ?, 1)", [`h${i}`, ts])
+		})
+		const r = runAnalyticsEngineSql(db, 'SELECT toHour(timestamp) AS hour, count() AS n FROM metrics GROUP BY hour ORDER BY hour ASC', NOW_MS)
+		expect(r.data).toEqual([{ hour: 21, n: 1 }, { hour: 22, n: 2 }])
+	})
+
+	test('a date literal argument is resolved to epoch seconds, not compared as text', () => {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('old', 'metrics', ?, 1)", [NOW_MS - 86_400_000])
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('new', 'metrics', ?, 1)", [NOW_MS])
+		const r = runAnalyticsEngineSql(
+			db,
+			"SELECT count() AS n FROM metrics WHERE timestamp >= toDateTime('2023-11-14 00:00:00')",
+			NOW_MS,
+		)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('an unparseable date literal fails with a clear error', () => {
+		expect(() => translateAnalyticsEngineSql("SELECT toDate('yesterday') AS d FROM metrics", NOW_S)).toThrow(/expected 'YYYY-MM-DD'/)
+	})
+
+	test('a wrong-arity calendar call is rejected', () => {
+		expect(() => translateAnalyticsEngineSql("SELECT toHour(timestamp, 'UTC', 0) AS h FROM metrics", NOW_S)).toThrow(/1 to 2 arguments/)
+	})
+
+	test('a numeric argument in the timezone slot is rejected', () => {
+		expect(() => translateAnalyticsEngineSql('SELECT toHour(timestamp, 1) AS h FROM metrics', NOW_S)).toThrow(
+			/expects a timezone string as argument 2/,
+		)
+	})
+})
+
+// ClickHouse date functions carry an optional mode and/or timezone. Analytics
+// Engine is UTC-only, so a UTC zone is accepted and ignored — anything else would
+// silently shift every bucket and has to fail loudly instead.
+describe('calendar function mode and timezone arguments', () => {
+	function seedNow() {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('a', 'metrics', ?, 1)", [NOW_MS])
+	}
+
+	// NOW_MS is a Tuesday. 0: Mon = 1…Sun = 7, 1: Mon = 0…Sun = 6, 2: Sun = 0…Sat = 6, 3: Sun = 1…Sat = 7.
+	const dayOfWeekModes: [string, number][] = [['', 2], ['0', 2], ['1', 1], ['2', 2], ['3', 3]]
+	for (const [mode, expected] of dayOfWeekModes) {
+		test(`toDayOfWeek mode ${mode || '(default)'} is ${expected}`, () => {
+			seedNow()
+			const args = mode ? `timestamp, ${mode}` : 'timestamp'
+			const r = runAnalyticsEngineSql(db, `SELECT toDayOfWeek(${args}) AS d FROM metrics`, NOW_MS)
+			expect(r.data).toEqual([{ d: expected }])
+		})
+	}
+
+	test('an out-of-range toDayOfWeek mode is rejected', () => {
+		expect(() => translateAnalyticsEngineSql('SELECT toDayOfWeek(timestamp, 9) AS d FROM metrics', NOW_S)).toThrow(/mode must be 0, 1, 2 or 3/)
+	})
+
+	test('an out-of-range toStartOfWeek mode is rejected', () => {
+		expect(() => translateAnalyticsEngineSql('SELECT toStartOfWeek(timestamp, 12) AS d FROM metrics', NOW_S)).toThrow(
+			/mode must be an integer between 0 and 9/,
+		)
+	})
+
+	test('a UTC timezone argument is accepted and ignored', () => {
+		seedNow()
+		const r = runAnalyticsEngineSql(
+			db,
+			"SELECT toHour(timestamp, 'UTC') AS h, toStartOfMonth(timestamp, 'Etc/UTC') AS m, toStartOfWeek(timestamp, 1, 'UTC') AS w FROM metrics",
+			NOW_MS,
+		)
+		expect(r.data).toEqual([{ h: 22, m: '2023-11-01', w: '2023-11-13' }])
+	})
+
+	test('a non-UTC timezone fails loudly rather than shifting buckets silently', () => {
+		expect(() => translateAnalyticsEngineSql("SELECT toHour(timestamp, 'Europe/Prague') AS h FROM metrics", NOW_S)).toThrow(
+			/only supports the UTC timezone/,
+		)
+	})
+})
+
+// A string literal facing a DateTime has to be read as a date, not compared as
+// text — SQLite would otherwise match nothing and return a plausible-looking zero.
+describe('date literals in comparison position', () => {
+	function seedTwoDays() {
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('old', 'metrics', ?, 1)", [NOW_MS - 86_400_000])
+		db.run("INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval) VALUES ('new', 'metrics', ?, 1)", [NOW_MS])
+	}
+
+	test('timestamp compared against a datetime literal', () => {
+		seedTwoDays()
+		const r = runAnalyticsEngineSql(db, "SELECT count() AS n FROM metrics WHERE timestamp >= '2023-11-14 00:00:00'", NOW_MS)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('a literal on the left-hand side works too', () => {
+		seedTwoDays()
+		const r = runAnalyticsEngineSql(db, "SELECT count() AS n FROM metrics WHERE '2023-11-14 00:00:00' <= timestamp", NOW_MS)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('toDate() compared against a date literal', () => {
+		seedTwoDays()
+		const r = runAnalyticsEngineSql(db, "SELECT count() AS n FROM metrics WHERE toDate(timestamp) = '2023-11-13'", NOW_MS)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('BETWEEN two date literals', () => {
+		seedTwoDays()
+		const r = runAnalyticsEngineSql(
+			db,
+			"SELECT count() AS n FROM metrics WHERE timestamp BETWEEN '2023-11-13 00:00:00' AND '2023-11-14 00:00:00'",
+			NOW_MS,
+		)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+
+	test('IN a list of date literals', () => {
+		seedTwoDays()
+		const r = runAnalyticsEngineSql(db, "SELECT count() AS n FROM metrics WHERE toDate(timestamp) IN ('2023-11-13', '2023-11-14')", NOW_MS)
+		expect(r.data).toEqual([{ n: 2 }])
+	})
+
+	test('an ISO-8601 literal from Date.toISOString() is accepted', () => {
+		seedTwoDays()
+		const iso = new Date(NOW_MS - 86_400_000).toISOString() // 2023-11-13T22:13:20.000Z
+		const r = runAnalyticsEngineSql(db, `SELECT count() AS n FROM metrics WHERE timestamp >= toDateTime('${iso}')`, NOW_MS)
+		expect(r.data).toEqual([{ n: 2 }])
+	})
+
+	test('string columns still compare as text', () => {
+		ae.writeDataPoint({ blobs: ['2023-11-14'] })
+		const r = runAnalyticsEngineSql(db, "SELECT count() AS n FROM metrics WHERE blob1 = '2023-11-14'", NOW_MS)
+		expect(r.data).toEqual([{ n: 1 }])
+	})
+})
+
+// Computed columns selected alongside a `*` are real query expressions, so they
+// need the same Date/DateTime projection and typing as any other selected item.
+describe('computed date columns alongside SELECT *', () => {
+	beforeEach(() => {
+		db.run(
+			"INSERT INTO analytics_engine (id, dataset, timestamp, _sample_interval, blob1) VALUES ('a', 'metrics', ?, 1, 'GET')",
+			[NOW_MS],
+		)
+	})
+
+	test('SELECT * with computed date columns renders and types them', () => {
+		const r = runAnalyticsEngineSql(db, 'SELECT *, toDate(timestamp) AS d, toStartOfDay(timestamp) AS s FROM metrics', NOW_MS)
+		expect(r.data[0]).toMatchObject({
+			timestamp: '2023-11-14 22:13:20', // the raw ms column, still projected
+			blob1: 'GET',
+			d: '2023-11-14',
+			s: '2023-11-14 00:00:00',
+		})
+		expect(r.meta).toContainEqual({ name: 'd', type: 'Date' })
+		expect(r.meta).toContainEqual({ name: 's', type: 'DateTime' })
+	})
+
+	test('if() takes its type from the branches, not the condition', () => {
+		const r = runAnalyticsEngineSql(db, "SELECT if(blob1 = 'GET', toDate(timestamp), toDate(timestamp)) AS d FROM metrics", NOW_MS)
+		expect(r.data).toEqual([{ d: '2023-11-14' }])
+		expect(r.meta).toEqual([{ name: 'd', type: 'Date' }])
+	})
+})
