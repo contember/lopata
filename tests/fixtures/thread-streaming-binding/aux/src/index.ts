@@ -2,22 +2,37 @@
 // an `/infinite` source stream is cancelled the counter increments.
 let cancelCount = 0
 
+// Highest SSE event the caller has confirmed receiving, via `/sse-ack`. `/sse`
+// gates each event on it so incrementality is proven causally rather than by a
+// wall-clock threshold — see the comment on the endpoint below.
+let sseAck = -1
+
 export default {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
 
-		// Server-Sent Events: emits N events spaced out in time, then closes.
-		// With a buffered cross-thread bridge this would arrive in one burst at
-		// the end; with streaming it must arrive incrementally.
+		// Server-Sent Events, ack-gated: event i+1 is only emitted once the caller
+		// has acked event i via `/sse-ack`. That makes incrementality causal — if
+		// any hop in worker → main → worker → main → caller buffered the body, the
+		// caller could not see event 0, would never ack, and this stalls. Timing
+		// thresholds cannot express that: a descheduled caller reads a perfectly
+		// streamed response in one burst and looks identical to a buffered one.
+		// A stall emits a marker rather than hanging, so the caller fails loudly.
 		if (url.pathname === '/sse') {
 			const count = Number(url.searchParams.get('count') ?? '5')
-			const delayMs = Number(url.searchParams.get('delay') ?? '30')
 			const encoder = new TextEncoder()
+			sseAck = -1
 			const stream = new ReadableStream<Uint8Array>({
 				async start(controller) {
 					for (let i = 0; i < count; i++) {
 						controller.enqueue(encoder.encode(`data: event-${i}\n\n`))
-						await new Promise(r => setTimeout(r, delayMs))
+						if (i === count - 1) break
+						const deadline = Date.now() + 5000
+						while (sseAck < i && Date.now() < deadline) await new Promise(r => setTimeout(r, 5))
+						if (sseAck < i) {
+							controller.enqueue(encoder.encode(`data: stalled-waiting-ack-${i}\n\n`))
+							break
+						}
 					}
 					controller.close()
 				},
@@ -25,6 +40,14 @@ export default {
 			return new Response(stream, {
 				headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
 			})
+		}
+
+		// Caller confirms it has actually received SSE event `n`. Served while the
+		// `/sse` stream is still open, so it must not queue behind it.
+		if (url.pathname === '/sse-ack') {
+			const n = Number(url.searchParams.get('n') ?? '-1')
+			if (n > sseAck) sseAck = n
+			return new Response(String(sseAck), { headers: { 'content-type': 'text/plain' } })
 		}
 
 		// Multi-MB chunked body — exercises chunked transfer + correctness across

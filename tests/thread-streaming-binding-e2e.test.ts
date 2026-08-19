@@ -33,21 +33,16 @@ function spawnDev(port: number): Subprocess {
 	})
 }
 
-async function readChunks(res: Response): Promise<{ text: string; arrivals: number[] }> {
+async function readChunks(res: Response): Promise<string> {
 	const reader = res.body!.getReader()
 	const decoder = new TextDecoder()
 	let text = ''
-	const arrivals: number[] = []
 	while (true) {
 		const { done, value } = await reader.read()
 		if (done) break
-		if (value?.length) {
-			arrivals.push(Date.now())
-			text += decoder.decode(value, { stream: true })
-		}
+		if (value?.length) text += decoder.decode(value, { stream: true })
 	}
-	text += decoder.decode()
-	return { text, arrivals }
+	return text + decoder.decode()
 }
 
 describe('Response streaming through service-binding (cross-thread)', () => {
@@ -58,7 +53,7 @@ describe('Response streaming through service-binding (cross-thread)', () => {
 	beforeAll(async () => {
 		cleanup()
 		proc = spawnDev(PORT)
-		await waitForServer(`${base}/sse?count=1&delay=0`, 15_000)
+		await waitForServer(`${base}/sse?count=1`, 15_000)
 	}, 20_000)
 
 	afterAll(() => {
@@ -66,21 +61,41 @@ describe('Response streaming through service-binding (cross-thread)', () => {
 		cleanup()
 	})
 
+	// Ack-gated rather than timed: aux withholds event i+1 until this reader has
+	// acked event i, so seeing all `count` events *is* the proof that nothing
+	// buffered the body — a buffering hop would starve the acks and aux would
+	// emit `stalled-waiting-ack-*` instead. There is deliberately no wall-clock
+	// threshold: a loaded runner that reads a healthy stream in one burst is
+	// indistinguishable from a buffered one by arrival times, which is exactly
+	// how the previous spread assertion failed a release.
 	test('SSE through a service binding arrives incrementally, not buffered', async () => {
 		const count = 5
-		const delay = 80
-		const res = await fetch(`${base}/sse?count=${count}&delay=${delay}`)
+		const res = await fetch(`${base}/sse?count=${count}`)
 		expect(res.headers.get('content-type')).toContain('text/event-stream')
 
-		const { text, arrivals } = await readChunks(res)
+		const reader = res.body!.getReader()
+		const decoder = new TextDecoder()
+		let text = ''
+		const acked = new Set<number>()
+		while (true) {
+			const { done, value } = await reader.read()
+			if (done) break
+			if (!value?.length) continue
+			text += decoder.decode(value, { stream: true })
+			for (const m of text.matchAll(/data: event-(\d+)/g)) {
+				const n = Number(m[1]!)
+				if (acked.has(n)) continue
+				acked.add(n)
+				await fetch(`${base}/sse-ack?n=${n}`)
+			}
+		}
+		text += decoder.decode()
 
+		expect(text).not.toContain('stalled-waiting-ack')
 		for (let i = 0; i < count; i++) {
 			expect(text).toContain(`data: event-${i}`)
 		}
-		expect(arrivals.length).toBeGreaterThan(1)
-		const spread = arrivals[arrivals.length - 1]! - arrivals[0]!
-		// If the rpc-fetch reply had buffered, every chunk would land in one burst.
-		expect(spread).toBeGreaterThan((count - 1) * delay * 0.4)
+		expect(acked.size).toBe(count)
 	}, 15_000)
 
 	test('large body through a service binding round-trips intact', async () => {
@@ -111,12 +126,20 @@ describe('Response streaming through service-binding (cross-thread)', () => {
 			body: stream,
 			duplex: 'half',
 		})
-		const { text, arrivals } = await readChunks(res)
+		const text = await readChunks(res)
 		for (let i = 0; i < count; i++) {
 			expect(text).toContain(`chunk-${i}-`)
 		}
-		expect(arrivals.length).toBeGreaterThan(1)
-		const spread = arrivals[arrivals.length - 1]! - arrivals[0]!
+		// Timing is read from the `-at-<ms>` stamps aux writes into each echoed
+		// line, i.e. when the *bound worker* received each chunk. Client-side
+		// arrival times cannot be used here: if this process is descheduled the
+		// whole response piles up in the socket and is read in one burst, which is
+		// indistinguishable from a buffering bridge. Measuring at the far end is
+		// load-proof — a slow runner can only stretch the gaps aux observes, never
+		// compress them below the producer's own delays.
+		const stamps = [...text.matchAll(/-at-(\d+)/g)].map(m => Number(m[1]!))
+		expect(stamps.length).toBe(count)
+		const spread = stamps[stamps.length - 1]! - stamps[0]!
 		expect(spread).toBeGreaterThan((count - 1) * delay * 0.4)
 	}, 15_000)
 
