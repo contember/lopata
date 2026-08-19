@@ -597,6 +597,23 @@ function quoteStr(s: string): string {
 	return `'${s.replace(/'/g, "''")}'`
 }
 
+/** Comparison operators — the positions where a date literal can face a DateTime. */
+const COMPARE_OPS = new Set(['=', '!=', '<', '<=', '>', '>='])
+
+/**
+ * Emit one side of a comparison. A string literal facing a `DateTime`/`Date`
+ * expression is a ClickHouse date literal (`timestamp >= '2024-01-01 00:00:00'`)
+ * and has to become epoch seconds — SQLite would otherwise compare text against a
+ * number and quietly match nothing.
+ */
+function emitOperand(node: Node, against: Node, ctx: EmitCtx): string {
+	if (node.kind === 'str') {
+		const type = inferType(against)
+		if (type === 'DateTime' || type === 'Date') return String(parseDateTimeLiteral(node.value))
+	}
+	return emit(node, ctx)
+}
+
 function emit(node: Node, ctx: EmitCtx): string {
 	switch (node.kind) {
 		case 'num':
@@ -622,10 +639,11 @@ function emit(node: Node, ctx: EmitCtx): string {
 			// operands are integers — force real division to match.
 			if (node.op === '/') return `(${emit(node.left, ctx)} * 1.0 / ${emit(node.right, ctx)})`
 			const op = node.op === '<>' ? '!=' : node.op
-			return `(${emit(node.left, ctx)} ${op} ${emit(node.right, ctx)})`
+			if (!COMPARE_OPS.has(op)) return `(${emit(node.left, ctx)} ${op} ${emit(node.right, ctx)})`
+			return `(${emitOperand(node.left, node.right, ctx)} ${op} ${emitOperand(node.right, node.left, ctx)})`
 		}
 		case 'in': {
-			const list = node.list.map(n => emit(n, ctx)).join(', ')
+			const list = node.list.map(n => emitOperand(n, node.expr, ctx)).join(', ')
 			return `(${emit(node.expr, ctx)} ${node.negate ? 'NOT IN' : 'IN'} (${list}))`
 		}
 		case 'like':
@@ -634,7 +652,9 @@ function emit(node: Node, ctx: EmitCtx): string {
 			ctx.usesLike = true
 			return `(${emit(node.expr, ctx)} ${node.negate ? 'NOT LIKE' : 'LIKE'} ${emit(node.pattern, ctx)})`
 		case 'between':
-			return `(${emit(node.expr, ctx)} ${node.negate ? 'NOT BETWEEN' : 'BETWEEN'} ${emit(node.low, ctx)} AND ${emit(node.high, ctx)})`
+			return `(${emit(node.expr, ctx)} ${node.negate ? 'NOT BETWEEN' : 'BETWEEN'} ${emitOperand(node.low, node.expr, ctx)} AND ${
+				emitOperand(node.high, node.expr, ctx)
+			})`
 		case 'isnull':
 			return `(${emit(node.expr, ctx)} IS ${node.negate ? 'NOT NULL' : 'NULL'})`
 		case 'func':
@@ -694,28 +714,28 @@ const FN_ARITY: Record<string, [number, number]> = {
 	tofloat64: [1, 1],
 	tofloat32: [1, 1],
 	tostring: [1, 1],
-	todatetime: [1, 1],
+	todatetime: [1, 2],
 	intdiv: [2, 2],
-	tostartofinterval: [2, 2],
-	tostartofminute: [1, 1],
-	tostartofhour: [1, 1],
-	tostartofday: [1, 1],
-	tostartofweek: [1, 2],
-	tostartofmonth: [1, 1],
-	tostartofquarter: [1, 1],
-	tostartofyear: [1, 1],
-	tomonday: [1, 1],
-	todate: [1, 1],
-	toyear: [1, 1],
-	toquarter: [1, 1],
-	tomonth: [1, 1],
-	todayofmonth: [1, 1],
-	todayofweek: [1, 1],
-	todayofyear: [1, 1],
-	tohour: [1, 1],
-	tominute: [1, 1],
-	tosecond: [1, 1],
-	tounixtimestamp: [1, 1],
+	tostartofinterval: [2, 3],
+	tostartofminute: [1, 2],
+	tostartofhour: [1, 2],
+	tostartofday: [1, 2],
+	tostartofweek: [1, 3],
+	tostartofmonth: [1, 2],
+	tostartofquarter: [1, 2],
+	tostartofyear: [1, 2],
+	tomonday: [1, 2],
+	todate: [1, 2],
+	toyear: [1, 2],
+	toquarter: [1, 2],
+	tomonth: [1, 2],
+	todayofmonth: [1, 2],
+	todayofweek: [1, 3],
+	todayofyear: [1, 2],
+	tohour: [1, 2],
+	tominute: [1, 2],
+	tosecond: [1, 2],
+	tounixtimestamp: [1, 2],
 	abs: [1, 1],
 	round: [1, 2],
 	min2: [2, 2],
@@ -778,10 +798,47 @@ const DATETIME_ARG_FNS = new Set([
  * `YYYY-MM-DD HH:MM:SS`, always UTC) to epoch seconds.
  */
 function parseDateTimeLiteral(text: string): number {
-	const m = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2}))?$/.exec(text.trim())
+	// Fractional seconds and a trailing `Z` are accepted and dropped — `Date.toISOString()`
+	// is the obvious way to build these from worker code, and ClickHouse DateTime is
+	// second-resolution UTC either way.
+	const m = /^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?)?Z?$/.exec(text.trim())
 	const ms = m ? Date.parse(`${m[1]}T${m[2] ?? '00:00:00'}Z`) : Number.NaN
 	if (Number.isNaN(ms)) throw new SqlError(`Cannot parse '${text}' as a DateTime — expected 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM:SS'`)
 	return Math.floor(ms / 1000)
+}
+
+/** Timezone names that mean UTC — the only zone the local emulation can honour. */
+const UTC_ZONES = new Set(['utc', 'etc/utc', 'etc/gmt', 'gmt', 'z'])
+
+/** Date functions whose 2nd argument is a mode or an interval rather than the timezone. */
+const SECOND_ARG_FNS = new Set(['tostartofinterval', 'tostartofweek', 'todayofweek'])
+
+/**
+ * Check the optional trailing arguments of a date function. Everything past the
+ * mode slot is a timezone: Analytics Engine stores UTC and we read it back as UTC,
+ * so a UTC zone is accepted and ignored — any other zone would silently shift every
+ * bucket, and a non-string there is not a timezone at all, so both are rejected.
+ */
+function checkTimezoneArgs(node: Extract<Node, { kind: 'func' }>): void {
+	const reservedSlot = SECOND_ARG_FNS.has(node.name.toLowerCase()) ? 1 : -1
+	for (const [i, arg] of node.args.entries()) {
+		if (i === 0 || i === reservedSlot) continue
+		if (arg.kind !== 'str') throw new SqlError(`Function '${node.name}' expects a timezone string as argument ${i + 1}`)
+		if (!UTC_ZONES.has(arg.value.trim().toLowerCase())) {
+			throw new SqlError(`Function '${node.name}' only supports the UTC timezone in the local Analytics Engine emulation, got '${arg.value}'`)
+		}
+	}
+}
+
+/**
+ * Read an optional numeric mode argument. It has to be a literal to translate;
+ * a string in that position is the trailing timezone (checked separately).
+ */
+function modeArg(node: Extract<Node, { kind: 'func' }>, index: number): number | undefined {
+	const arg = node.args[index]
+	if (arg === undefined || arg.kind === 'str') return undefined
+	if (arg.kind !== 'num') throw new SqlError(`Function '${node.name}' requires a numeric mode literal as argument ${index + 1}`)
+	return arg.value
 }
 
 /**
@@ -813,7 +870,10 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 	checkArity(node)
 	const a = node.args.map(arg => emit(arg, ctx))
 	const first = node.args[0]
-	if (first?.kind === 'str' && DATETIME_ARG_FNS.has(fn)) a[0] = String(parseDateTimeLiteral(first.value))
+	if (DATETIME_ARG_FNS.has(fn)) {
+		if (first?.kind === 'str') a[0] = String(parseDateTimeLiteral(first.value))
+		checkTimezoneArgs(node)
+	}
 	switch (fn) {
 		// --- aggregates ---
 		case 'count':
@@ -859,10 +919,11 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 		case 'todate':
 			return `((CAST(${a[0]} AS INTEGER) / 86400) * 86400)`
 		case 'tostartofweek': {
-			// ClickHouse mode 0 (the default) starts the week on Sunday; odd modes start on Monday.
-			const mode = node.args[1]
-			if (mode && mode.kind !== 'num') throw new SqlError('toStartOfWeek requires a numeric mode literal as its 2nd argument')
-			const weekday = mode && mode.value % 2 === 1 ? "'weekday 1'" : "'weekday 0'"
+			// ClickHouse follows the MySQL WEEK() modes 0-9; the low bit picks the first
+			// day, so mode 0 (the default) starts the week on Sunday and odd modes on Monday.
+			const mode = modeArg(node, 1) ?? 0
+			if (!Number.isInteger(mode) || mode < 0 || mode > 9) throw new SqlError(`toStartOfWeek mode must be an integer between 0 and 9, got ${mode}`)
+			const weekday = mode % 2 === 1 ? "'weekday 1'" : "'weekday 0'"
 			// Step back a full week first, then forward to the next matching weekday:
 			// that lands on the previous-or-same one.
 			return truncateTo(a[0]!, "'start of day'", "'-6 days'", weekday)
@@ -884,9 +945,23 @@ function emitFunc(node: Extract<Node, { kind: 'func' }>, ctx: EmitCtx): string {
 			return datePart('%m', a[0]!)
 		case 'todayofmonth':
 			return datePart('%d', a[0]!)
-		case 'todayofweek':
-			// ClickHouse mode 0: Monday = 1 … Sunday = 7; strftime('%w') is Sunday = 0.
-			return `((${datePart('%w', a[0]!)} + 6) % 7 + 1)`
+		case 'todayofweek': {
+			// strftime('%w') is Sunday = 0 … Saturday = 6; ClickHouse renumbers per mode —
+			// 0: Mon = 1…Sun = 7, 1: Mon = 0…Sun = 6, 2: Sun = 0…Sat = 6, 3: Sun = 1…Sat = 7.
+			const w = datePart('%w', a[0]!)
+			switch (modeArg(node, 1) ?? 0) {
+				case 0:
+					return `((${w} + 6) % 7 + 1)`
+				case 1:
+					return `((${w} + 6) % 7)`
+				case 2:
+					return `(${w})`
+				case 3:
+					return `(${w} + 1)`
+				default:
+					throw new SqlError('toDayOfWeek mode must be 0, 1, 2 or 3')
+			}
+		}
 		case 'todayofyear':
 			return datePart('%j', a[0]!)
 		case 'tohour':
@@ -964,7 +1039,9 @@ function inferType(node: Node): string {
 			const fn = node.name.toLowerCase()
 			if (fn === 'count') return 'UInt64'
 			if (['sum', 'avg', 'tofloat64', 'tofloat32', 'abs', 'round'].includes(fn)) return 'Float64'
-			if (['min', 'max', 'coalesce', 'if'].includes(fn)) return node.args[0] ? inferType(node.args[0]) : 'String'
+			// `if(cond, then, else)` is typed by its branches — args[0] is the condition.
+			if (fn === 'if') return node.args[1] ? inferType(node.args[1]) : 'String'
+			if (['min', 'max', 'coalesce'].includes(fn)) return node.args[0] ? inferType(node.args[0]) : 'String'
 			if (['touint32', 'touint64', 'toint32', 'toint64', 'intdiv', 'floor', 'length'].includes(fn)) return 'UInt64'
 			const dateType = DATE_FN_TYPES[fn]
 			if (dateType) return dateType
@@ -1020,10 +1097,18 @@ export interface TranslatedQuery {
 	caseSensitiveLike?: boolean
 }
 
-/** Build `meta` from result-row keys (used for `SELECT *`, where columns aren't known up front). */
-function deriveMetaFromRows(rows: Record<string, unknown>[]): { name: string; type: string }[] {
+/**
+ * Build `meta` from result-row keys (used for `SELECT *`, where the columns aren't
+ * known up front). `declared` covers the items selected alongside the `*` — those
+ * are computed expressions, so their type comes from the query, not the column name.
+ */
+function deriveMetaFromRows(
+	rows: Record<string, unknown>[],
+	declared: { name: string; type: string }[],
+): { name: string; type: string }[] {
+	const declaredTypes = new Map(declared.map(c => [c.name, c.type]))
 	const keys = rows.length ? Object.keys(rows[0]!) : []
-	return keys.map(k => ({ name: k, type: colType(k) }))
+	return keys.map(k => ({ name: k, type: declaredTypes.get(k) ?? colType(k) }))
 }
 
 /**
@@ -1052,17 +1137,14 @@ function formatDate(epochSeconds: number): string {
  * untouched.
  */
 function formatDateTimeColumns(data: Record<string, unknown>[], t: TranslatedQuery): void {
-	if (t.hasStar) {
-		for (const row of data) {
-			const v = row.timestamp
-			if (typeof v === 'number') row.timestamp = formatDateTime(v / 1000)
-		}
-		return
-	}
+	// `SELECT *` returns the raw ms column — unless an explicit item shadows the name.
+	const rawTimestamp = t.hasStar && !t.columns.some(c => c.name === 'timestamp')
+	// Items selected alongside a `*` are computed in seconds like any other column.
 	const dtCols = t.columns
 		.filter(c => c.type === 'DateTime' || c.type === 'Date')
 		.map(c => ({ name: c.name, format: c.type === 'Date' ? formatDate : formatDateTime }))
 	for (const row of data) {
+		if (rawTimestamp && typeof row.timestamp === 'number') row.timestamp = formatDateTime(row.timestamp / 1000)
 		for (const { name, format } of dtCols) {
 			const v = row[name]
 			if (typeof v === 'number') row[name] = format(v)
@@ -1245,7 +1327,7 @@ export function runAnalyticsEngineSql(db: Database, sql: string, nowMs: number =
 	let data = executeTranslated(db, translated)
 	if (translated.postProcess) data = applyPostProcess(data, translated.postProcess, translated.columns)
 	formatDateTimeColumns(data, translated)
-	const meta = translated.hasStar ? deriveMetaFromRows(data) : translated.columns
+	const meta = translated.hasStar ? deriveMetaFromRows(data, translated.columns) : translated.columns
 	return {
 		meta,
 		data,
@@ -1271,7 +1353,7 @@ export function buildAnalyticsEngineSqlResponse(db: Database, sql: string): Resp
 			const body = data.map(row => JSON.stringify(row)).join('\n')
 			return new Response(body, { headers: { 'content-type': 'application/x-ndjson' } })
 		}
-		const meta = translated.hasStar ? deriveMetaFromRows(data) : translated.columns
+		const meta = translated.hasStar ? deriveMetaFromRows(data, translated.columns) : translated.columns
 		const result: AnalyticsEngineSqlResult = { meta, data, rows: data.length, rows_before_limit_at_least: data.length }
 		return new Response(JSON.stringify(result), { headers: { 'content-type': 'application/json' } })
 	} catch (err) {
