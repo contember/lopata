@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
+import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
@@ -61,6 +62,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	// Route dispatcher for multi-worker route-based dispatching
 	let routeDispatcher: RouteDispatcher | undefined
+
+	// Sentinel for "this worker has no fetch() at all" — distinct from any Response, so the
+	// fall-through to Vite's own middleware can be decided after the span has closed.
+	const NO_FETCH_HANDLER = Symbol('no-fetch-handler')
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
@@ -145,28 +150,15 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	/**
 	 * Resolve a named handler off the worker's default export, honoring both entrypoint
-	 * shapes: `export default { fetch(request, env, ctx) }`, and
-	 * `export default class extends WorkerEntrypoint { async fetch(request) }`, where the
-	 * method lives on the prototype and env/ctx arrive through the constructor instead.
-	 *
-	 * Mirrors `resolveHandler` in src/worker-thread/entry.ts, which does the same for the
-	 * CLI path — without this, class-based entrypoints look handler-less under Vite.
-	 * Class methods ignore the trailing (env, ctx) arguments, so callers of the returned
-	 * function can use one calling convention for both shapes.
+	 * shapes. Shared with the CLI worker thread and the test harness — see
+	 * src/entrypoint-handler.ts for why a class entrypoint has to be constructed first.
 	 */
 	function resolveWorkerHandler(
 		activeModule: Record<string, unknown>,
-		name: 'fetch' | 'scheduled' | 'email',
+		name: EntrypointHandlerName,
 		ctx: unknown,
 	): ((...args: unknown[]) => unknown) | null {
-		const defaultExport = activeModule.default as any
-		if (typeof defaultExport === 'function' && defaultExport.prototype) {
-			if (typeof defaultExport.prototype[name] !== 'function') return null
-			const instance = new defaultExport(ctx, env)
-			return instance[name].bind(instance)
-		}
-		const fn = defaultExport?.[name]
-		return typeof fn === 'function' ? fn.bind(defaultExport) : null
+		return resolveEntrypointHandler(activeModule.default, name, ctx, env)
 	}
 
 	/**
@@ -187,13 +179,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const callerStack = new Error()
 
 			const ctx = new ExecutionContext()
-			const fetchHandler = resolveWorkerHandler(activeModule, 'fetch', ctx)
-			if (!fetchHandler) {
-				console.error('[lopata:vite] Worker module default export has no fetch() method')
-				next()
-				return
-			}
-
 			const response = await (startSpan as Function)({
 				name: `${request.method} ${parsedUrl.pathname}`,
 				kind: 'server',
@@ -201,6 +186,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			}, () =>
 				runWithExecutionContext(ctx, async () => {
 					try {
+						// Resolved in here rather than up front because a class entrypoint is
+						// constructed at this point, and a throwing constructor deserves the same
+						// error page and persisted error as a throwing fetch().
+						const fetchHandler = resolveWorkerHandler(activeModule, 'fetch', ctx)
+						if (!fetchHandler) return NO_FETCH_HANDLER
 						const resp = await fetchHandler(request, env, ctx) as Response
 						;(setSpanAttribute as Function)('http.status_code', resp.status)
 
@@ -228,7 +218,13 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
 						return (renderErrorPage as Function)(err, request, env, config)
 					}
-				})) as Response
+				})) as Response | typeof NO_FETCH_HANDLER
+
+			if (response === NO_FETCH_HANDLER) {
+				console.error('[lopata:vite] Worker module default export has no fetch() method')
+				next()
+				return
+			}
 
 			writeResponse(response, res).catch(() => {})
 		} finally {
@@ -252,11 +248,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const genId = currentGenerationId
 
 		const ctx = new ExecutionContext()
-		const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
-		if (!handler) {
-			return new Response('No scheduled handler defined', { status: 404 })
-		}
-
 		const controller = createScheduledController(cronExpr, Date.now())
 
 		return await (startSpan as Function)({
@@ -265,6 +256,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			attributes: { cron: cronExpr, 'lopata.generation_id': genId },
 		}, () =>
 			runWithExecutionContext(ctx, async () => {
+				// Resolved inside the span: constructing a class entrypoint runs user code,
+				// which belongs in the trace and in persistError like the handler body itself.
+				const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
+				if (!handler) {
+					return new Response('No scheduled handler defined', { status: 404 })
+				}
 				try {
 					await handler(controller, env, ctx)
 					// waitUntil work outlives the trigger, as it does on a real cron tick — the
@@ -292,10 +289,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const genId = currentGenerationId
 
 		const ctx = new ExecutionContext()
-		const handler = resolveWorkerHandler(activeModule, 'email', ctx)
-		if (!handler) {
-			return new Response('No email handler defined', { status: 404 })
-		}
 
 		return await (startSpan as Function)({
 			name: 'email',
@@ -303,12 +296,19 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': genId },
 		}, () =>
 			runWithExecutionContext(ctx, async () => {
+				// Persist before dispatch, as Generation.callEmail does: a message the worker
+				// has no handler for still belongs in the dashboard's list, and setReject() /
+				// forward() resolve themselves from this row by id.
 				const db = getDatabase()
 				const messageId = randomUUIDv7()
 				db.run(
 					"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
 					[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
 				)
+				const handler = resolveWorkerHandler(activeModule, 'email', ctx)
+				if (!handler) {
+					return new Response('No email handler defined', { status: 404 })
+				}
 				try {
 					await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
 					ctx._awaitAll().catch(() => {})
@@ -319,6 +319,25 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					throw err
 				}
 			}))
+	}
+
+	/**
+	 * Resolve a `?worker=` param on the /cdn-cgi trigger routes.
+	 *
+	 * Mirrors `resolveWorkerParam` in src/cli/dev.ts: an unknown name — including every
+	 * name in a single-worker setup, where there is no auxiliary registry at all — warns
+	 * and falls back to the main worker rather than failing the request.
+	 */
+	function resolveTriggerTarget(params: URLSearchParams): { gen: any } | { inactive: string } | null {
+		const name = params.get('worker')
+		if (!name || name === config.name) return null
+		const manager = workerRegistry?.getManager(name)
+		if (!manager) {
+			console.warn(`[lopata:vite] Unknown worker "${name}" in ?worker= param, using main worker`)
+			return null
+		}
+		const gen = manager.active
+		return gen ? { gen } : { inactive: name }
 	}
 
 	/**
@@ -671,18 +690,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						try {
 							const params = new URL(url, 'http://localhost').searchParams
 							const cronExpr = params.get('cron') ?? '* * * * *'
-							const targetWorker = params.get('worker')
-							if (targetWorker && targetWorker !== config.name) {
-								const auxGen = workerRegistry.getManager(targetWorker)?.active
-								if (!auxGen) {
-									res.writeHead(503, { 'content-type': 'text/plain' })
-									res.end(`Worker "${targetWorker}" has no active generation`)
-									return
-								}
-								await writeResponse(await auxGen.callScheduled(cronExpr), res)
-							} else {
-								await writeResponse(await handleWorkerScheduled(cronExpr), res)
+							const target = resolveTriggerTarget(params)
+							if (target && 'inactive' in target) {
+								res.writeHead(503, { 'content-type': 'text/plain' })
+								res.end(`Worker "${target.inactive}" has no active generation`)
+								return
 							}
+							const response = target ? await target.gen.callScheduled(cronExpr) : await handleWorkerScheduled(cronExpr)
+							await writeResponse(response, res)
 						} catch (err) {
 							console.error('[lopata:vite] Scheduled trigger error:', err)
 							if (!res.headersSent) {
@@ -700,18 +715,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							const from = params.get('from') ?? ''
 							const to = params.get('to') ?? ''
 							const raw = new Uint8Array(await nodeReqToRequest(req).arrayBuffer())
-							const targetWorker = params.get('worker')
-							if (targetWorker && targetWorker !== config.name) {
-								const auxGen = workerRegistry.getManager(targetWorker)?.active
-								if (!auxGen) {
-									res.writeHead(503, { 'content-type': 'text/plain' })
-									res.end(`Worker "${targetWorker}" has no active generation`)
-									return
-								}
-								await writeResponse(await auxGen.callEmail(raw, from, to), res)
-							} else {
-								await writeResponse(await handleWorkerEmail(raw, from, to), res)
+							const target = resolveTriggerTarget(params)
+							if (target && 'inactive' in target) {
+								res.writeHead(503, { 'content-type': 'text/plain' })
+								res.end(`Worker "${target.inactive}" has no active generation`)
+								return
 							}
+							const response = target ? await target.gen.callEmail(raw, from, to) : await handleWorkerEmail(raw, from, to)
+							await writeResponse(response, res)
 						} catch (err) {
 							console.error('[lopata:vite] Email trigger error:', err)
 							if (!res.headersSent) {

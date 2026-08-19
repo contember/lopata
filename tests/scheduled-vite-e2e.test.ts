@@ -14,7 +14,7 @@ import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/scheduled-vite-worker')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
-const PORT = 18799
+const PORT = 18860
 const CRON = '0 0 1 1 *'
 
 /**
@@ -126,5 +126,27 @@ describe('Scheduled trigger E2E — vite', () => {
 		expect(res.status).toBe(200)
 
 		expect(await ticks()).toEqual({ ticks: 3, lastCron: CRON, waitUntilRan: true })
+	}, 15_000)
+
+	// This fixture is single-worker, so there is no auxiliary registry to look a name up
+	// in. `resolveWorkerParam` in the CLI warns and uses the main worker; dereferencing the
+	// absent registry instead would 500 on every `?worker=` request here.
+	test('an unknown ?worker= falls back to the main worker rather than failing', async () => {
+		const res = await fetch(
+			`http://localhost:${PORT}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(CRON)}&worker=does-not-exist`,
+		)
+		expect(res.status).toBe(200)
+
+		expect((await ticks()).ticks).toBe(4)
+	}, 15_000)
+
+	// This fixture has no email() handler, and Generation.callEmail persists the message
+	// before it discovers that — so the dashboard's Email list shows the attempt either way.
+	test('an email with no handler is still persisted for the dashboard', async () => {
+		const { status } = await rpc('email.trigger', { from: 'a@example.com', to: 'b@example.com', subject: 'x', body: 'y' })
+		expect(status).not.toBe(200)
+
+		const { body: messages } = await rpc('email.list', {})
+		expect(messages).toMatchObject([{ from_addr: 'a@example.com', to_addr: 'b@example.com', status: 'received' }])
 	}, 15_000)
 })

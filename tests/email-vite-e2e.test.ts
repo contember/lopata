@@ -13,7 +13,7 @@ import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/email-vite-worker')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
-const PORT = 18797
+const PORT = 18861
 
 /**
  * Drains the dev server's stdout+stderr. Piped output that nobody reads eventually

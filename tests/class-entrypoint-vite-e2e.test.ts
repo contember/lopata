@@ -16,7 +16,7 @@ import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/class-entrypoint-vite-worker')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
-const PORT = 18796
+const PORT = 18862
 const CRON = '0 0 1 1 *'
 
 /**
@@ -114,7 +114,7 @@ describe('Class-based entrypoint E2E — vite', () => {
 		expect(after.waitUntilRan).toBe(true)
 	}, 15_000)
 
-	test('the dashboard email trigger reaches email() on the prototype', async () => {
+	test('the dashboard email trigger reaches an email() declared as a class field', async () => {
 		const { status, body } = await rpc('email.trigger', {
 			from: 'sender@example.com',
 			to: 'inbox@example.com',
@@ -127,5 +127,19 @@ describe('Class-based entrypoint E2E — vite', () => {
 		expect((await state()).mails).toEqual([
 			{ from: 'sender@example.com', to: 'inbox@example.com', greeting: 'ahoj' },
 		])
+	}, 15_000)
+
+	// Constructing the entrypoint is user code, so a throwing constructor has to land in the
+	// same place a throwing fetch() does — the lopata error page, not the middleware's bare
+	// catch-all. `Accept: text/html` is what tells the two apart: renderErrorPage honors it,
+	// while writeRequestError always answers text/plain. Last test in the file — every
+	// construction fails after this, so nothing can run behind it.
+	test('a throwing constructor renders the lopata error page', async () => {
+		expect((await fetch(`http://localhost:${PORT}/arm-constructor-throw`)).status).toBe(200)
+
+		const res = await fetch(`http://localhost:${PORT}/state`, { headers: { Accept: 'text/html' } })
+		expect(res.status).toBe(500)
+		expect(res.headers.get('content-type')).toContain('text/html')
+		expect(await res.text()).toContain('constructor blew up')
 	}, 15_000)
 })
