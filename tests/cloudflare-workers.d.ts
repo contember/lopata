@@ -16,10 +16,10 @@ declare module 'cloudflare:workers' {
 		run(event: any, step: any): Promise<unknown>
 	}
 
-	export class WorkerEntrypoint {
-		protected ctx: unknown
-		protected env: unknown
-		constructor(ctx: unknown, env: unknown)
+	export class WorkerEntrypoint<Env = unknown> {
+		protected ctx: any
+		protected env: Env
+		constructor(ctx: any, env: Env)
 	}
 
 	export class RpcTarget {}

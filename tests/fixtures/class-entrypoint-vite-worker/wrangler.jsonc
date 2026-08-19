@@ -1,0 +1,12 @@
+{
+	"name": "class-entrypoint-vite-test-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"vars": {
+		"GREETING": "ahoj"
+	},
+	"triggers": {
+		// Never fires on its own (1 January, midnight) — the test triggers it by hand.
+		"crons": ["0 0 1 1 *"]
+	}
+}

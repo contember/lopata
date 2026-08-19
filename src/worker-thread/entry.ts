@@ -6,6 +6,7 @@ import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { getDatabase } from '../db'
+import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
@@ -288,13 +289,9 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
 		const ctx = new WorkerExecutionContext(post, props)
-		if (typeof defaultExport === 'function' && defaultExport.prototype?.fetch) {
-			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => { fetch: (r: Request) => Promise<Response> }
-			const instance = new Ctor(ctx, env)
-			return instance.fetch(request)
-		}
-		if (defaultExport && typeof defaultExport.fetch === 'function') {
-			return defaultExport.fetch(request, env, ctx) as Promise<Response>
+		const fetchHandler = resolveEntrypointHandler(defaultExport, 'fetch', ctx, env)
+		if (fetchHandler) {
+			return fetchHandler(request, env, ctx) as Promise<Response>
 		}
 		// Legacy service-worker syntax: `addEventListener('fetch', e => e.respondWith(...))`.
 		// The plugin shim captured the handler at module-import time.
@@ -307,16 +304,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	/** Resolve a named handler honoring class- vs object-based exports. */
 	function resolveHandler(name: WorkerHandlerName, ctx: WorkerExecutionContext): ((...args: unknown[]) => Promise<unknown>) | null {
-		if (typeof defaultExport === 'function' && defaultExport.prototype) {
-			const fn = defaultExport.prototype[name]
-			if (typeof fn !== 'function') return null
-			const Ctor = defaultExport as new(ctx: unknown, env: unknown) => Record<string, (...args: unknown[]) => Promise<unknown>>
-			const instance = new Ctor(ctx, env)
-			return instance[name]!.bind(instance)
-		}
-		const obj = defaultExport as Record<string, unknown> | null | undefined
-		const fn = obj?.[name]
-		return typeof fn === 'function' ? (fn as (...a: unknown[]) => Promise<unknown>).bind(obj) : null
+		return resolveEntrypointHandler(defaultExport, name, ctx, env) as ((...args: unknown[]) => Promise<unknown>) | null
 	}
 
 	const callScheduled = async (cronExpr: string, scheduledTime: number): Promise<{ ok: boolean; noHandler?: boolean }> => {

@@ -6,6 +6,13 @@ import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
+import {
+	constructEntrypoint,
+	type EntrypointHandlerName,
+	handlerFromInstance,
+	isClassEntrypoint,
+	resolveEntrypointHandler,
+} from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { TestClock } from './clock'
@@ -66,17 +73,13 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	if (typeof options.worker === 'string') {
 		workerModule = await import(resolve(options.worker))
 		defaultExport = workerModule.default
-		if (typeof defaultExport === 'function' && defaultExport.prototype) {
-			classBasedExport = typeof defaultExport.prototype.fetch === 'function'
-		}
+		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker && 'default' in options.worker) {
 		// WorkerModule — has a `default` export (class or object) + named exports
 		const mod = options.worker as WorkerModule
 		defaultExport = mod.default
 		workerModule = { ...mod }
-		if (typeof defaultExport === 'function' && defaultExport.prototype) {
-			classBasedExport = typeof defaultExport.prototype.fetch === 'function'
-		}
+		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker) {
 		// Inline handlers object — also expose extra properties (e.g. DO/Workflow classes)
 		// as top-level module exports so wireClassRefs can find them
@@ -116,19 +119,18 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 	// --- Handler dispatch helpers ---
 
-	function getHandler(name: string): ((...args: unknown[]) => Promise<unknown>) | undefined {
+	function getHandler(name: EntrypointHandlerName): ((...args: unknown[]) => Promise<unknown>) | undefined {
 		if (classBasedExport) {
-			if (typeof (defaultExport as any).prototype[name] === 'function') {
-				return (...args: unknown[]) => {
-					const ctx = new ExecutionContext()
-					const instance = new (defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env)
-					return (instance[name] as (...a: unknown[]) => Promise<unknown>)(...args)
-				}
+			// Probe on a throwaway instance — a class field only exists once constructed —
+			// then build a fresh one per call so each invocation gets its own ctx.
+			if (!handlerFromInstance(constructEntrypoint(defaultExport, new ExecutionContext(), env), name)) return undefined
+			return (...args: unknown[]) => {
+				const instance = constructEntrypoint(defaultExport, new ExecutionContext(), env)
+				return handlerFromInstance(instance, name)!(...args) as Promise<unknown>
 			}
-			return undefined
 		}
-		const method = (defaultExport as Record<string, unknown>)?.[name]
-		return typeof method === 'function' ? method.bind(defaultExport) : undefined
+		const handler = resolveEntrypointHandler(defaultExport, name, undefined, env)
+		return (handler as ((...args: unknown[]) => Promise<unknown>) | null) ?? undefined
 	}
 
 	async function fetchHandler(input: string | Request, init?: RequestInit): Promise<Response> {
@@ -143,17 +145,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		const ctx = new ExecutionContext()
 		return runWithExecutionContext(ctx, () =>
 			runWithFetchMock(fetchMock, async () => {
-				let response: Response
-				if (classBasedExport) {
-					const instance = new (defaultExport as new(ctx: ExecutionContext, env: unknown) => Record<string, unknown>)(ctx, env)
-					response = await (instance.fetch as (r: Request) => Promise<Response>)(request)
-				} else {
-					const handler = (defaultExport as Record<string, unknown>)?.fetch
-					if (typeof handler !== 'function') {
-						throw new Error('No fetch handler found')
-					}
-					response = await (handler as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, ctx)
-				}
+				const handler = resolveEntrypointHandler(defaultExport, 'fetch', ctx, env)
+				if (!handler) throw new Error('No fetch handler found')
+				const response = await handler(request, env, ctx) as Response
 				await ctx._awaitAll()
 				return response
 			}))

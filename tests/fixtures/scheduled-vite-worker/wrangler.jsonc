@@ -1,0 +1,10 @@
+{
+	"name": "scheduled-vite-test-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"triggers": {
+		// Never fires on its own (1 January, midnight) — the test triggers it by hand,
+		// so the tick count stays deterministic.
+		"crons": ["0 0 1 1 *"]
+	}
+}

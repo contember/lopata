@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { DurableObject, WorkflowEntrypoint } from 'cloudflare:workers'
+import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from 'cloudflare:workers'
 import type { TestEnv } from '../src/testing'
 import { createTestEnv } from '../src/testing'
 
@@ -1511,5 +1511,61 @@ describe('DO WebSocket', () => {
 
 		const room2Sockets = handle.getWebSockets('room-2')
 		expect(room2Sockets.length).toBe(1)
+	})
+})
+
+/**
+ * Class-based entrypoints in the harness. `WorkerEntrypoint` puts handlers on the
+ * prototype (or on the instance, for field initialisers) with env and ctx supplied to the
+ * constructor — the same resolution the CLI and the Vite dev server use, so a worker that
+ * runs under `lopata dev` can be exercised here unchanged.
+ */
+describe('createTestEnv — class entrypoints', () => {
+	test('dispatches fetch, scheduled and email off a class default export', async () => {
+		const seen: string[] = []
+
+		class Entrypoint extends WorkerEntrypoint<{ GREETING: string }> {
+			async fetch(request: Request) {
+				return new Response(`${new URL(request.url).pathname}|${this.env.GREETING}`)
+			}
+
+			async scheduled(controller: any) {
+				seen.push(`scheduled:${controller.cron}:${this.env.GREETING}`)
+			}
+
+			// A field initialiser, which exists only on a constructed instance.
+			email = async (message: any) => {
+				seen.push(`email:${message.from}:${this.env.GREETING}`)
+			}
+		}
+
+		t = await createTestEnv({
+			worker: { default: Entrypoint },
+			vars: { GREETING: 'ahoj' },
+		})
+
+		const res = await t.fetch('/hello')
+		expect(await res.text()).toBe('/hello|ahoj')
+
+		await t.scheduled({ cron: '0 * * * *' })
+		await t.email({
+			from: 'sender@example.com',
+			to: 'receiver@example.com',
+			raw: 'From: sender@example.com\r\nTo: receiver@example.com\r\n\r\nhi',
+		})
+
+		expect(seen).toEqual(['scheduled:0 * * * *:ahoj', 'email:sender@example.com:ahoj'])
+	})
+
+	test('a class with no scheduled handler reports none', async () => {
+		class Entrypoint extends WorkerEntrypoint {
+			async fetch() {
+				return new Response('ok')
+			}
+		}
+
+		t = await createTestEnv({ worker: { default: Entrypoint } })
+
+		expect(t.scheduled({ cron: '0 * * * *' })).rejects.toThrow(/No scheduled handler/)
 	})
 })
