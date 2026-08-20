@@ -102,12 +102,15 @@ export function instrumentD1<T extends object>(binding: T, name: string): T {
 }
 
 function wrapD1Stmt(stmt: object, name: string, sql: string | undefined): object {
-	const stmtMethods = ['first', 'all', 'run', 'raw']
+	const stmtMethods = ['first', 'all', 'run', 'raw', 'allUnlocked']
 	return new Proxy(stmt, {
 		get(s, sProp, sReceiver) {
 			const sValue = Reflect.get(s, sProp, sReceiver)
 			if (typeof sProp === 'string' && stmtMethods.includes(sProp) && typeof sValue === 'function') {
-				return wrapMethodWithExtraAttrs(sValue.bind(s), 'd1', name, sProp, 'client', sql ? { 'db.statement': sql } : {})
+				// `allUnlocked` is `all` minus the db lock its caller already holds — trace it under the
+				// public name so statements run inside a batch still show up as `d1.all`.
+				const method = sProp === 'allUnlocked' ? 'all' : sProp
+				return wrapMethodWithExtraAttrs(sValue.bind(s), 'd1', name, method, 'client', sql ? { 'db.statement': sql } : {})
 			}
 			// bind() returns a new statement — re-wrap it so execution methods stay instrumented
 			if (sProp === 'bind' && typeof sValue === 'function') {

@@ -113,6 +113,102 @@ describe('D1Database', () => {
 			expect((results[2]!.results[0] as { name: string }).name).toBe('Alice')
 		})
 
+		test('concurrent batches queue instead of nesting transactions', async () => {
+			// Real D1 serves each batch as its own request, so worker code fires several at once quite
+			// legitimately — a `Promise.all` over per-table writers, say. Locally they share one SQLite
+			// connection, and before these were serialised the second `BEGIN` landed inside the first
+			// transaction and the whole run died with `cannot start a transaction within a transaction`.
+			const results = await Promise.all([
+				d1.batch([d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Alice')]),
+				d1.batch([d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Bob')]),
+				d1.batch([d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Carol')]),
+			])
+			expect(results).toHaveLength(3)
+
+			// Every batch committed, and none of them lost a write to another's rollback.
+			const rows = await d1.prepare('SELECT name FROM users ORDER BY name').all()
+			expect((rows.results as { name: string }[]).map(r => r.name)).toEqual(['Alice', 'Bob', 'Carol'])
+		})
+
+		test('a failing batch does not poison a concurrent one', async () => {
+			const [failed, ok] = await Promise.allSettled([
+				d1.batch([
+					d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Doomed'),
+					d1.prepare('INSERT INTO nonexistent_table (x) VALUES (?)').bind('fail'),
+				]),
+				d1.batch([d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Survivor')]),
+			])
+			expect(failed!.status).toBe('rejected')
+			expect(ok!.status).toBe('fulfilled')
+
+			// The rollback took only its own batch's insert with it.
+			const rows = await d1.prepare('SELECT name FROM users ORDER BY name').all()
+			expect((rows.results as { name: string }[]).map(r => r.name)).toEqual(['Survivor'])
+		})
+
+		test('a standalone write cannot land inside an open batch transaction', async () => {
+			// The lock covers plain statements too, not only batch-vs-batch. A `run()` that landed inside
+			// another batch's open transaction was discarded by that batch's rollback — after it had already
+			// resolved reporting `changes: 1`, so the caller never learned the write was gone. The batch
+			// really does stay open across an await in production: the tracing proxy makes every statement
+			// inside it async. Gating on that await here instead of racing microtasks.
+			let enteredTransaction!: () => void
+			let releaseTransaction!: () => void
+			const entered = new Promise<void>(resolve => {
+				enteredTransaction = resolve
+			})
+			const held = new Promise<void>(resolve => {
+				releaseTransaction = resolve
+			})
+
+			const slow = d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Doomed')
+			const realAll = slow.allUnlocked.bind(slow)
+			slow.allUnlocked = (async () => {
+				enteredTransaction()
+				await held
+				return realAll()
+				// Cast through `unknown`: `allUnlocked` is declared sync, and it is the tracing proxy that
+				// hands `batch()` an async one. `batch()` awaits it either way.
+			}) as unknown as typeof slow.allUnlocked
+
+			const batched = d1.batch([slow, d1.prepare('INSERT INTO nonexistent_table (x) VALUES (?)').bind('fail')])
+			await entered
+
+			// Fired while the batch is provably mid-transaction.
+			const standalone = d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Standalone').run()
+			releaseTransaction()
+
+			const [failed, ok] = await Promise.allSettled([batched, standalone])
+			expect(failed!.status).toBe('rejected')
+			expect(ok!.status).toBe('fulfilled')
+
+			// It reported success, so the row has to still be there.
+			const rows = await d1.prepare('SELECT name FROM users ORDER BY name').all()
+			expect((rows.results as { name: string }[]).map(r => r.name)).toEqual(['Standalone'])
+		})
+
+		test('an auto-rollback failure keeps the original error', async () => {
+			// SQLite unwinds the transaction itself for `ON CONFLICT ROLLBACK`, so the explicit ROLLBACK in
+			// the catch then fails with `cannot rollback - no transaction is active`. That must not replace
+			// the constraint error the developer actually needs to see.
+			db.run('CREATE TABLE tags (name TEXT UNIQUE ON CONFLICT ROLLBACK)')
+			await d1.prepare('INSERT INTO tags (name) VALUES (?)').bind('dup').run()
+
+			let err: Error | undefined
+			try {
+				await d1.batch([d1.prepare('INSERT INTO tags (name) VALUES (?)').bind('dup')])
+			} catch (e) {
+				err = e as Error
+			}
+			expect(err).toBeInstanceOf(Error)
+			expect(err!.message).toContain('UNIQUE constraint failed')
+			expect(err!.message).not.toContain('no transaction is active')
+
+			// The lock was released despite the failure, so the database is still usable.
+			const after = await d1.prepare('SELECT name FROM tags').all()
+			expect(after.results).toHaveLength(1)
+		})
+
 		test('rolls back on error', async () => {
 			try {
 				await d1.batch([

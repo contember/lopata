@@ -157,6 +157,68 @@ function isReadStatement(sql: string): boolean {
 	return upper.startsWith('SELECT') || upper.startsWith('WITH') || upper.startsWith('PRAGMA')
 }
 
+// --- statement serialisation ---
+
+/**
+ * One in-flight database operation per connection, queued rather than interleaved.
+ *
+ * `batch()` opens a real transaction and awaits inside it. Two overlapping calls on the same
+ * connection therefore had the second issue `BEGIN` while the first was still open, and SQLite
+ * refuses: `cannot start a transaction within a transaction`. Real D1 has no such problem — each
+ * `batch()` is an independent request — so worker code that fires several concurrently (a
+ * `Promise.all` over per-table writers, say) is correct against production and failed only here.
+ *
+ * Standalone statements take the same lock. Each is synchronous on its own, but a statement that
+ * started while a batch held an open transaction would execute inside it and be discarded by that
+ * batch's rollback — a lost write that had already reported success. The statements `batch()` runs
+ * itself go through the `*Unlocked` variants, so holding the lock across a batch cannot deadlock
+ * against its own members.
+ *
+ * Mirrors `acquireDbTxnLock` in the durable-object binding, which solved the same collision for DO
+ * storage transactions.
+ */
+const dbLocks = new WeakMap<Database, Promise<void>>()
+
+async function acquireDbLock(db: Database): Promise<() => void> {
+	let unlock!: () => void
+	const next = new Promise<void>((resolve) => {
+		unlock = resolve
+	})
+	const ready = dbLocks.get(db) ?? Promise.resolve()
+	dbLocks.set(db, next)
+	await ready
+	return unlock
+}
+
+async function runBatchSerially<T>(db: Database, statements: LocalD1PreparedStatement[]): Promise<D1Result<T>[]> {
+	const unlock = await acquireDbLock(db)
+	try {
+		const results: D1Result<T>[] = []
+		db.run('BEGIN')
+		try {
+			for (const stmt of statements) {
+				// Awaits because the tracing proxy makes `allUnlocked` async; safe only because this
+				// call holds the db lock, so nothing else can slip into the open transaction.
+				results.push(await stmt.allUnlocked<T>())
+			}
+			db.run('COMMIT')
+		} catch (e) {
+			try {
+				db.run('ROLLBACK')
+			} catch {
+				// SQLite auto-rolls-back on some failures (ON CONFLICT ROLLBACK, SQLITE_FULL,
+				// SQLITE_IOERR, SQLITE_BUSY), leaving nothing to unwind. Swallowing that keeps the
+				// original error — the one the developer needs to see — from being replaced by
+				// `cannot rollback - no transaction is active`.
+			}
+			throw e
+		}
+		return results
+	} finally {
+		unlock()
+	}
+}
+
 export class LocalD1Database {
 	private db: Database
 
@@ -169,34 +231,28 @@ export class LocalD1Database {
 	}
 
 	async batch<T = Record<string, unknown>>(statements: LocalD1PreparedStatement[]): Promise<D1Result<T>[]> {
-		const results: D1Result<T>[] = []
-		this.db.run('BEGIN')
-		try {
-			for (const stmt of statements) {
-				results.push(await stmt.all<T>())
-			}
-			this.db.run('COMMIT')
-		} catch (e) {
-			this.db.run('ROLLBACK')
-			throw e
-		}
-		return results
+		return await runBatchSerially(this.db, statements)
 	}
 
 	async exec(sql: string): Promise<D1ExecResult> {
-		const start = performance.now()
-		let count = 0
-		const statements = splitStatements(sql)
-		for (const stmt of statements) {
-			try {
-				this.db.run(stmt)
-			} catch (e) {
-				const msg = e instanceof Error ? e.message : String(e)
-				throw new Error(`D1_EXEC_ERROR: Error in SQL statement [${stmt}]: ${msg}`)
+		const unlock = await acquireDbLock(this.db)
+		try {
+			const start = performance.now()
+			let count = 0
+			const statements = splitStatements(sql)
+			for (const stmt of statements) {
+				try {
+					this.db.run(stmt)
+				} catch (e) {
+					const msg = e instanceof Error ? e.message : String(e)
+					throw new Error(`D1_EXEC_ERROR: Error in SQL statement [${stmt}]: ${msg}`)
+				}
+				count++
 			}
-			count++
+			return { count, duration: performance.now() - start }
+		} finally {
+			unlock()
 		}
-		return { count, duration: performance.now() - start }
 	}
 
 	async dump(): Promise<ArrayBuffer> {
@@ -220,18 +276,7 @@ export class LocalD1DatabaseSession {
 	}
 
 	async batch<T = Record<string, unknown>>(statements: LocalD1PreparedStatement[]): Promise<D1Result<T>[]> {
-		const results: D1Result<T>[] = []
-		this.db.run('BEGIN')
-		try {
-			for (const stmt of statements) {
-				results.push(await stmt.all<T>())
-			}
-			this.db.run('COMMIT')
-		} catch (e) {
-			this.db.run('ROLLBACK')
-			throw e
-		}
-		return results
+		return await runBatchSerially(this.db, statements)
 	}
 
 	getBookmark(): string | null {
@@ -257,7 +302,16 @@ export class LocalD1PreparedStatement {
 	}
 
 	async first<T = Record<string, unknown>>(column?: string): Promise<T | null> {
-		const start = performance.now()
+		const unlock = await acquireDbLock(this.db)
+		try {
+			return this.firstUnlocked<T>(column)
+		} finally {
+			unlock()
+		}
+	}
+
+	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
+	firstUnlocked<T = Record<string, unknown>>(column?: string): T | null {
 		const row = this.db.query(this.sql).get(...this.params) as Record<string, unknown> | null
 		if (!row) return null
 		if (column) {
@@ -270,6 +324,16 @@ export class LocalD1PreparedStatement {
 	}
 
 	async run(): Promise<D1Result> {
+		const unlock = await acquireDbLock(this.db)
+		try {
+			return this.runUnlocked()
+		} finally {
+			unlock()
+		}
+	}
+
+	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
+	runUnlocked(): D1Result {
 		const start = performance.now()
 		this.db.query(this.sql).run(...this.params)
 		const duration = performance.now() - start
@@ -282,6 +346,16 @@ export class LocalD1PreparedStatement {
 	}
 
 	async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+		const unlock = await acquireDbLock(this.db)
+		try {
+			return this.allUnlocked<T>()
+		} finally {
+			unlock()
+		}
+	}
+
+	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
+	allUnlocked<T = Record<string, unknown>>(): D1Result<T> {
 		const start = performance.now()
 		const results = this.db.query(this.sql).all(...this.params) as T[]
 		const duration = performance.now() - start
@@ -295,13 +369,18 @@ export class LocalD1PreparedStatement {
 	}
 
 	async raw<T extends unknown[] = unknown[]>(options?: { columnNames?: boolean }): Promise<T[]> {
-		const query = this.db.query(this.sql)
-		const columns = query.columnNames
-		const rows = query.values(...this.params) as T[]
-		if (options?.columnNames) {
-			return [columns as unknown as T, ...rows]
+		const unlock = await acquireDbLock(this.db)
+		try {
+			const query = this.db.query(this.sql)
+			const columns = query.columnNames
+			const rows = query.values(...this.params) as T[]
+			if (options?.columnNames) {
+				return [columns as unknown as T, ...rows]
+			}
+			return rows
+		} finally {
+			unlock()
 		}
-		return rows
 	}
 }
 
@@ -311,5 +390,9 @@ export function openD1Database(dataDir: string, databaseName: string): LocalD1Da
 	const dbPath = join(d1Dir, `${databaseName}.sqlite`)
 	const db = new Database(dbPath, { create: true })
 	db.run('PRAGMA journal_mode=WAL')
+	// The in-process lock above only covers one connection. `openD1Database` is called separately
+	// from env, worker threads, DO workers and the CLI, so several connections hit the same file;
+	// without a timeout the loser of a write race fails instantly with `database is locked`.
+	db.run('PRAGMA busy_timeout=5000')
 	return new LocalD1Database(db)
 }
