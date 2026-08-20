@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { createServiceBinding } from '../src/bindings/service-binding'
+import { GenerationManager } from '../src/generation-manager'
 import { WorkerRegistry } from '../src/worker-registry'
 
 // A worker with `assets` and no `main` is how Cloudflare serves a static site: there is
@@ -188,12 +189,26 @@ describe('assets-only worker as the only worker', () => {
 })
 
 describe('config validation', () => {
-	test('a config with neither `main` nor `assets` is rejected with a clear message', async () => {
-		const dir = mkdtempSync(join(tmpdir(), 'lopata-empty-'))
+	test('a worker with neither `main` nor `assets` is rejected with a clear message', () => {
+		expect(() => new GenerationManager({ name: 'nothing', compatibility_date: '2026-02-12' }, process.cwd())).toThrow(
+			/neither "main" nor "assets"/,
+		)
+	})
+
+	test('`loadConfig` still accepts a bindings-only config', async () => {
+		// `lopata kv|r2|d1`, `d1-migrate` and the testing helper all load a wrangler config
+		// purely for its bindings — their worker (if any) comes from elsewhere, so an
+		// entrypoint check belongs on the serving path, not in the loader.
+		const dir = mkdtempSync(join(tmpdir(), 'lopata-bindings-only-'))
 		try {
-			writeFileSync(join(dir, 'wrangler.jsonc'), JSON.stringify({ name: 'nothing', compatibility_date: '2026-02-12' }))
+			const configPath = join(dir, 'wrangler.jsonc')
+			writeFileSync(
+				configPath,
+				JSON.stringify({ name: 'bindings-only', compatibility_date: '2026-02-12', kv_namespaces: [{ binding: 'KV', id: 'kv-1' }] }),
+			)
 			const { loadConfig } = await import('../src/config')
-			await expect(loadConfig(join(dir, 'wrangler.jsonc'))).rejects.toThrow(/neither "main" nor "assets"/)
+			const config = await loadConfig(configPath)
+			expect(config.kv_namespaces?.[0]?.binding).toBe('KV')
 		} finally {
 			rmSync(dir, { recursive: true, force: true })
 		}
@@ -212,6 +227,15 @@ describe('service binding into an assets-only worker', () => {
 	test('serves the assets when no entrypoint is declared', async () => {
 		const res = await (bindingTo(assets).fetch as Function)('http://site/hello.txt')
 		expect(await res.text()).toBe('asset body')
+	})
+
+	test('the method gate matches direct dispatch — no 200 for a write', async () => {
+		// A binding must not answer `POST /hello.txt` with the file when a request to the
+		// same worker over HTTP returns 405; a caller checking `res.ok` would record a
+		// write that never happened.
+		const res = await (bindingTo(assets).fetch as Function)('http://site/hello.txt', { method: 'POST' })
+		expect(res.status).toBe(405)
+		expect(res.headers.get('allow')).toBe('GET, HEAD')
 	})
 
 	test('a declared entrypoint is an error, not silently ignored', async () => {

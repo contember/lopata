@@ -8,7 +8,9 @@ export interface WranglerConfig {
 	/**
 	 * Entry module. Optional: a worker that only has `assets` is an assets-only
 	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
-	 * A config with neither `main` nor `assets` is rejected by `loadConfig`.
+	 * A config with neither `main` nor `assets` is rejected by `GenerationManager`;
+	 * `loadConfig` itself allows it, because `lopata kv|r2|d1`, `d1-migrate` and the
+	 * testing helper load bindings-only configs that are never served.
 	 */
 	main?: string
 	compatibility_date?: string
@@ -111,13 +113,7 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	} else {
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
-	const resolved = applyEnvOverrides(config, envName)
-	// `main` is only optional for assets-only workers. Without either there is
-	// nothing to serve, and every downstream consumer would fail far from the cause.
-	if (!resolved.main && !resolved.assets) {
-		throw new Error(`${path}: config has neither "main" nor "assets" — nothing to serve`)
-	}
-	return resolved
+	return applyEnvOverrides(config, envName)
 }
 
 /**

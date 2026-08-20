@@ -1,6 +1,7 @@
 import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
+import { assetsOnlyRejection, canServeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -106,23 +107,15 @@ export class Generation {
 			// Without this gate, assets-first routing would answer e.g.
 			// `POST /account/` with `/account/index.html` (200) and silently drop
 			// the write, or serve a colliding asset to a WS upgrade.
-			const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
-			const canServeAssets = (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade
+			const servableFromAssets = canServeAssets(request)
 			// Assets-only worker: no script runs, so `assets` answers everything it can —
 			// including its own 404 / not-found handling (SPA fallback, 404.html).
 			if (!executor) {
 				if (!assets) {
 					return new Response('Worker has neither a script nor static assets', { status: 500 })
 				}
-				// Nothing can pick up what the asset layer won't serve: there is no
-				// script to take the write or accept the upgrade. Answering those from
-				// a colliding asset would return 200 for a request that did nothing.
-				if (!canServeAssets) {
-					if (isWebSocketUpgrade) {
-						return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
-					}
-					return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
-				}
+				const rejection = assetsOnlyRejection(request)
+				if (rejection) return rejection
 				return assets.fetch(request)
 			}
 			if (!assets) {
@@ -138,13 +131,13 @@ export class Generation {
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
 				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				if (!workerFirst && canServeAssets) {
+				if (!workerFirst && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
 					response = await executor.executeFetch(request)
 				} else {
 					response = await executor.executeFetch(request)
-					if (response.status === 404 && canServeAssets) {
+					if (response.status === 404 && servableFromAssets) {
 						// Drop the worker's streaming body so the source pump on the
 						// other side stops — we're discarding this response in favour
 						// of the assets fallback.

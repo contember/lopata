@@ -933,7 +933,8 @@
   call throws, since there is no script to expose methods
 - ✅ Asset edits are picked up per request — including `_headers` / `_redirects`, whose
   rules are re-read when the file changes. There is nothing to hot-reload
-- ✅ A config with neither `main` nor `assets` is rejected at load with a clear error
+- ✅ A worker with neither `main` nor `assets` is rejected when it starts, with a clear
+  error (loading a bindings-only config for `lopata kv|r2|d1` or tests still works)
 
 ### 9.3 Configuration
 

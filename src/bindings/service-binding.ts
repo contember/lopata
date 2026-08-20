@@ -13,6 +13,7 @@ import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext, runWithContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
 import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
+import { assetsOnlyRejection } from './static-assets'
 
 type WorkerModule = Record<string, unknown>
 
@@ -161,6 +162,10 @@ export class ServiceBinding {
 					`Service binding "${this._serviceName}": entrypoint "${this._entrypoint}" was requested, but the target is an assets-only worker (no "main") and exports nothing — drop the entrypoint to serve its static assets`,
 				)
 			}
+			// Same gate as direct dispatch: a binding must not turn `POST /file` into a
+			// 200 that the worker itself would answer with 405.
+			const rejection = assetsOnlyRejection(request)
+			if (rejection) return rejection
 			return resolved.assets.fetch(request)
 		}
 

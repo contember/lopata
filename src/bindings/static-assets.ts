@@ -44,6 +44,40 @@ interface RuleCache<T> {
 	rules: T[]
 }
 
+/** Rule-file read failures repeat on every request — say it once per file. */
+const warnedRuleFiles = new Set<string>()
+function warnOnce(key: string, message: string): void {
+	if (warnedRuleFiles.has(key)) return
+	warnedRuleFiles.add(key)
+	console.warn(message)
+}
+
+/** A WebSocket upgrade is a GET, but no static file can ever answer one. */
+export function isWebSocketUpgrade(request: Request): boolean {
+	return request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+}
+
+/** Cloudflare only serves static assets for GET/HEAD; everything else belongs to the script. */
+export function canServeAssets(request: Request): boolean {
+	return (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade(request)
+}
+
+/**
+ * The response an assets-only worker owes a request its asset layer must not answer,
+ * or `null` when the request is servable.
+ *
+ * With no script there is nothing to pick up a write or accept an upgrade, so serving a
+ * colliding asset would report success for a request that did nothing. Shared by direct
+ * dispatch (`Generation`) and by service bindings, which must not drift apart.
+ */
+export function assetsOnlyRejection(request: Request): Response | null {
+	if (canServeAssets(request)) return null
+	if (isWebSocketUpgrade(request)) {
+		return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
+	}
+	return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
+}
+
 export class StaticAssets {
 	private directory: string
 	private htmlHandling: string
@@ -140,7 +174,14 @@ export class StaticAssets {
 			// what an editor produces, and would otherwise look unchanged.
 			const st = statSync(filePath, { bigint: true })
 			return `${st.mtimeNs}:${st.size}`
-		} catch {
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code
+			// Only a genuinely absent file means "no rules". Anything else (EACCES on the
+			// directory, ELOOP, a dangling symlink) is a broken setup: dropping every
+			// header/redirect rule silently would look like the file simply had none.
+			if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+				warnOnce(filePath, `[lopata] cannot read ${path.basename(filePath)} (${code}) — serving without its rules`)
+			}
 			return null
 		}
 	}

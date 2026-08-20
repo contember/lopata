@@ -56,6 +56,13 @@ export class GenerationManager {
 			baseUrls?: { artifacts?: string }
 		},
 	) {
+		// Neither a script nor assets means there is nothing to serve — catch it here,
+		// where a worker is about to be run, rather than in `loadConfig`: that is also
+		// how `lopata kv|r2|d1`, `d1-migrate` and the testing helper read a bindings-only
+		// wrangler config, which is legitimate (their worker comes from elsewhere).
+		if (!config.main && !config.assets) {
+			throw new Error(`Worker "${config.name}" has neither "main" nor "assets" — nothing to serve`)
+		}
 		this.config = config
 		this.baseDir = baseDir
 		// An assets-only worker has no entry module: Cloudflare runs no script for it,
