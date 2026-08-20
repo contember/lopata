@@ -237,6 +237,17 @@ function defineWebSocketTests(getPort: () => number) {
 			client.close()
 		})
 
+		// A worker that awaits before returning its 101 is the ordinary case — anything that reads a
+		// session, checks a token or asks a DO first. The handshake has to survive the event loop
+		// turning underneath it, and the client's first frame has to survive the wait.
+		test('a worker that awaits before returning 101 still connects and echoes', async () => {
+			const client = await connectWS(`${base()}/ws/plain-async`)
+			expect(client.ws.readyState).toBe(WebSocket.OPEN)
+			client.send('hello')
+			expect(await client.waitForMessage()).toBe('echo:hello')
+			client.close()
+		})
+
 		test('close from client', async () => {
 			const client = await connectWS(`${base()}/ws/plain`)
 			const closePromise = client.waitForClose()
@@ -465,4 +476,17 @@ describe('WebSocket E2E — vite', () => {
 	})
 
 	defineWebSocketTests(() => PORT)
+
+	// Vite only: the standalone server has its own trouble with a refused upgrade, which is not
+	// what this path does. Here the handshake completes before the worker has answered, so a
+	// refusal has to still read as a refusal rather than as a connection that works.
+	test('a worker that awaits and then refuses does not leave a usable socket', async () => {
+		const client = await connectWS(`ws://localhost:${PORT}/ws/plain-async-reject`, 5_000)
+			.catch(() => null)
+		if (client) {
+			const ev = await client.waitForClose(5_000)
+			expect(ev.code).toBe(1011)
+			expect(ev.reason).toContain('403')
+		}
+	})
 })
