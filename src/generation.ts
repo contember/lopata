@@ -1,6 +1,7 @@
 import { randomUUIDv7, type Server } from 'bun'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
+import { assetsOnlyRejection, canServeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -46,7 +47,8 @@ export class Generation {
 	readonly config: WranglerConfig
 	readonly workerName: string | undefined
 	readonly cronEnabled: boolean
-	readonly threadExecutor: WorkerThreadExecutor
+	/** null for an assets-only worker — there is no user module to run. */
+	readonly threadExecutor: WorkerThreadExecutor | null
 	activeRequests = 0
 
 	private cronTimer: NodeJS.Timer | ReturnType<typeof setInterval> | null = null
@@ -56,7 +58,7 @@ export class Generation {
 		env: Record<string, unknown>,
 		registry: ClassRegistry,
 		config: WranglerConfig,
-		threadExecutor: WorkerThreadExecutor,
+		threadExecutor: WorkerThreadExecutor | null,
 		workerName?: string,
 		cronEnabled?: boolean,
 	) {
@@ -97,9 +99,27 @@ export class Generation {
 		const callerStack = new Error('')
 		try {
 			const assets = this.registry.staticAssets
+			const executor = this.threadExecutor
 			let response: Response
+			// Cloudflare only serves static assets for GET/HEAD; every other
+			// method goes straight to the worker. WebSocket upgrades are GETs but
+			// must reach the worker's upgrade handler, so they're excluded too.
+			// Without this gate, assets-first routing would answer e.g.
+			// `POST /account/` with `/account/index.html` (200) and silently drop
+			// the write, or serve a colliding asset to a WS upgrade.
+			const servableFromAssets = canServeAssets(request)
+			// Assets-only worker: no script runs, so `assets` answers everything it can —
+			// including its own 404 / not-found handling (SPA fallback, 404.html).
+			if (!executor) {
+				if (!assets) {
+					return new Response('Worker has neither a script nor static assets', { status: 500 })
+				}
+				const rejection = assetsOnlyRejection(request)
+				if (rejection) return rejection
+				return assets.fetch(request)
+			}
 			if (!assets) {
-				response = await this.threadExecutor.executeFetch(request)
+				response = await executor.executeFetch(request)
 			} else {
 				// Cloudflare Static Assets are served FIRST for any existing asset,
 				// even when an `assets.binding` is configured — the binding only adds
@@ -111,21 +131,13 @@ export class Generation {
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
 				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				// Cloudflare only serves static assets for GET/HEAD; every other
-				// method goes straight to the worker. WebSocket upgrades are GETs but
-				// must reach the worker's upgrade handler, so they're excluded too.
-				// Without this gate, assets-first routing would answer e.g.
-				// `POST /account/` with `/account/index.html` (200) and silently drop
-				// the write, or serve a colliding asset to a WS upgrade.
-				const isWebSocketUpgrade = request.headers.get('upgrade')?.toLowerCase() === 'websocket'
-				const canServeAssets = (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade
-				if (!workerFirst && canServeAssets) {
+				if (!workerFirst && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
-					response = await this.threadExecutor.executeFetch(request)
+					response = await executor.executeFetch(request)
 				} else {
-					response = await this.threadExecutor.executeFetch(request)
-					if (response.status === 404 && canServeAssets) {
+					response = await executor.executeFetch(request)
+					if (response.status === 404 && servableFromAssets) {
 						// Drop the worker's streaming body so the source pump on the
 						// other side stops — we're discarding this response in favour
 						// of the assets fallback.
@@ -164,6 +176,7 @@ export class Generation {
 			workerName: this.workerName,
 		}, async () => {
 			try {
+				if (!this.threadExecutor) return new Response('No scheduled handler defined', { status: 404 })
 				const result = await this.threadExecutor.executeScheduled(cronExpr, Date.now())
 				if (!result.ok) return new Response('No scheduled handler defined', { status: 404 })
 				return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
@@ -190,6 +203,7 @@ export class Generation {
 				[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
 			)
 			try {
+				if (!this.threadExecutor) return new Response('No email handler defined', { status: 404 })
 				const result = await this.threadExecutor.executeEmail(messageId, from, to, rawBytes)
 				if (!result.ok) return new Response('No email handler defined', { status: 404 })
 				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
@@ -203,7 +217,7 @@ export class Generation {
 	 *  `cronLastFired` is the manager-owned per-minute dedup state, shared across
 	 *  generations so a reload mid-minute doesn't re-fire a cron already handled. */
 	startConsumers(cronLastFired?: Map<string, number>): void {
-		if (!this.cronEnabled) return
+		if (!this.cronEnabled || !this.threadExecutor) return
 		const crons = this.config.triggers?.crons ?? []
 		if (crons.length === 0) return
 		const executor = this.threadExecutor
@@ -231,7 +245,7 @@ export class Generation {
 		// Stop the worker thread's queue consumers from claiming NEW messages — the
 		// cron timer (stopConsumers above) is main-side, but queue consumers live in
 		// the worker. In-flight batches finish and are awaited via wait-until.
-		this.threadExecutor.stopQueueConsumers()
+		this.threadExecutor?.stopQueueConsumers()
 		// Stop firing this generation's alarms — but skip namespaces shared with
 		// the next generation, which has already restored their timers via
 		// `_restoreAlarms()`. Clearing a shared namespace here would wipe those
@@ -260,11 +274,13 @@ export class Generation {
 		// live in the worker.) Their DB rows stay 'running' and the next generation
 		// resumes them once this worker is gone — see GenerationManager's
 		// resumeInterrupted control op.
-		this.threadExecutor.dispose()
+		this.threadExecutor?.dispose()
 	}
 
 	isIdle(): boolean {
 		if (this.activeRequests > 0) return false
+		// Assets-only: no worker thread, so nothing beyond in-flight requests can pin it.
+		if (!this.threadExecutor) return true
 		if (this.threadExecutor.pendingWaitUntil() > 0) return false
 		// In-flight scheduled/email handlers and inbound service-binding RPCs are
 		// not counted by `activeRequests` (callScheduled/callEmail don't touch it),

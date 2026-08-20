@@ -1,9 +1,12 @@
+import { hasScript } from './config'
 import type { GenerationManager } from './generation-manager'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
 export type ResolvedTarget =
 	| { kind: 'thread'; env: Record<string, unknown>; executor: WorkerThreadExecutor }
 	| { kind: 'in-process'; env: Record<string, unknown>; workerModule: Record<string, unknown> }
+	/** An assets-only worker: no script, so a fetch is answered by its static assets. */
+	| { kind: 'assets'; env: Record<string, unknown>; assets: { fetch(req: Request): Promise<Response> } }
 
 /**
  * Central registry holding all worker GenerationManagers, keyed by worker name.
@@ -52,10 +55,23 @@ export class WorkerRegistry {
 			return { kind: 'thread', env: gen.env, executor: threadExecutor }
 		}
 		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule
-		if (!workerModule) {
-			throw new Error(`Worker "${workerName}" generation has neither a thread executor nor a workerModule`)
+		if (workerModule) {
+			return { kind: 'in-process', env: gen.env, workerModule }
 		}
-		return { kind: 'in-process', env: gen.env, workerModule }
+		// No executor and no module is the legitimate shape of an assets-only worker —
+		// binding to one is how a Worker serves a sibling static site internally.
+		// Gate on the config, not on the missing module: a *scripted* worker can also
+		// be momentarily module-less (the Vite main adapter imports lazily, on first
+		// use), and falling through to assets there would silently serve index.html
+		// instead of running the script.
+		if (!hasScript(manager.config)) {
+			const assets = gen.registry.staticAssets
+			if (assets) {
+				return { kind: 'assets', env: gen.env, assets }
+			}
+			throw new Error(`Worker "${workerName}" has no script and no static assets to serve`)
+		}
+		throw new Error(`Worker "${workerName}" generation has neither a thread executor nor a workerModule`)
 	}
 
 	/** List all registered managers (for dashboard) */

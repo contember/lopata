@@ -13,6 +13,7 @@ import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext, runWithContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
 import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
+import { assetsOnlyRejection } from './static-assets'
 
 type WorkerModule = Record<string, unknown>
 
@@ -124,6 +125,13 @@ export class ServiceBinding {
 
 	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
 		const resolved = this._resolve()
+		// An assets-only worker has no script, so it exposes no RPC surface at all —
+		// say that plainly instead of blaming thread isolation.
+		if (resolved.kind === 'assets') {
+			throw new Error(
+				`Service binding "${this._serviceName}": the target is an assets-only worker (no "main"), so it has no RPC methods — only fetch() is available`,
+			)
+		}
 		if (resolved.kind !== 'in-process') {
 			throw new Error(
 				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through the thread executor`,
@@ -143,6 +151,22 @@ export class ServiceBinding {
 		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
 			return resolved.executor.executeFetch(request, this._props)
+		}
+		// Assets-only target: no script to invoke — its asset layer answers, including
+		// its own html_handling / not_found_handling. A declared `entrypoint` names an
+		// export of a script that doesn't exist, so serving assets would quietly ignore
+		// what the binding asked for.
+		if (resolved.kind === 'assets') {
+			if (this._entrypoint) {
+				throw new Error(
+					`Service binding "${this._serviceName}": entrypoint "${this._entrypoint}" was requested, but the target is an assets-only worker (no "main") and exports nothing — drop the entrypoint to serve its static assets`,
+				)
+			}
+			// Same gate as direct dispatch: a binding must not turn `POST /file` into a
+			// 200 that the worker itself would answer with 405.
+			const rejection = assetsOnlyRejection(request)
+			if (rejection) return rejection
+			return resolved.assets.fetch(request)
 		}
 
 		const execCtx = new ExecutionContext(this._props)

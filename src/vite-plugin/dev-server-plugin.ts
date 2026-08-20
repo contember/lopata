@@ -418,6 +418,17 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			}
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
+			// The Vite plugin drives a worker built by Vite, so the main worker must have
+			// an entry module. `loadConfig` accepts an assets-only config (valid on its own
+			// via the CLI), but here there would be nothing for the SSR runner to import —
+			// fail with the reason instead of an `ERR_INVALID_ARG_TYPE` from `resolve()`.
+			if (!configMod.hasScript(config)) {
+				throw new Error(
+					`[lopata:vite] "${config.name}" has no "main" — an assets-only worker has no module for Vite to build. `
+						+ `Serve it with the lopata CLI (or as an auxiliary worker in lopata.config.ts) instead.`,
+				)
+			}
+
 			// 2. Build env with bindings
 			const built = envMod.buildEnv(config, projectRoot)
 			env = built.env
@@ -558,7 +569,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						console.error(`[lopata:vite] Failed to load auxiliary worker "${workerName}":`, err)
 					}
 
-					// File watcher for aux worker reload
+					// File watcher for aux worker reload. An assets-only aux worker has no
+					// module to watch — its files are read from disk per request.
+					if (!configMod.hasScript(auxConfig)) {
+						console.log(`[lopata:vite] Auxiliary worker "${workerName}" is assets-only — no watcher`)
+						continue
+					}
 					const auxSrcDir = dirname(resolve(auxBaseDir, auxConfig.main))
 					const auxWatcher = new FileWatcher(auxSrcDir, () => {
 						auxManager.reload().then(async gen => {

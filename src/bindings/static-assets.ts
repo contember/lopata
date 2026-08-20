@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 export interface StaticAssetsConfig {
@@ -38,13 +38,53 @@ interface RedirectRule {
 
 const VALID_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308, 200])
 
+/** Parsed rules plus the stat stamp of the file they came from (`null` = file absent). */
+interface RuleCache<T> {
+	stamp: string | null
+	rules: T[]
+}
+
+/** Rule-file read failures repeat on every request — say it once per file. */
+const warnedRuleFiles = new Set<string>()
+function warnOnce(key: string, message: string): void {
+	if (warnedRuleFiles.has(key)) return
+	warnedRuleFiles.add(key)
+	console.warn(message)
+}
+
+/** A WebSocket upgrade is a GET, but no static file can ever answer one. */
+export function isWebSocketUpgrade(request: Request): boolean {
+	return request.headers.get('upgrade')?.toLowerCase() === 'websocket'
+}
+
+/** Cloudflare only serves static assets for GET/HEAD; everything else belongs to the script. */
+export function canServeAssets(request: Request): boolean {
+	return (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade(request)
+}
+
+/**
+ * The response an assets-only worker owes a request its asset layer must not answer,
+ * or `null` when the request is servable.
+ *
+ * With no script there is nothing to pick up a write or accept an upgrade, so serving a
+ * colliding asset would report success for a request that did nothing. Shared by direct
+ * dispatch (`Generation`) and by service bindings, which must not drift apart.
+ */
+export function assetsOnlyRejection(request: Request): Response | null {
+	if (canServeAssets(request)) return null
+	if (isWebSocketUpgrade(request)) {
+		return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
+	}
+	return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
+}
+
 export class StaticAssets {
 	private directory: string
 	private htmlHandling: string
 	private notFoundHandling: string
 	private limits: Required<StaticAssetsLimits>
-	private headerRules: HeaderRule[] | null = null
-	private redirectRules: RedirectRule[] | null = null
+	private headerRules: RuleCache<HeaderRule> | null = null
+	private redirectRules: RuleCache<RedirectRule> | null = null
 
 	constructor(
 		directory: string,
@@ -119,20 +159,42 @@ export class StaticAssets {
 		return new Response('Not Found', { status: 404 })
 	}
 
+	/**
+	 * Stat stamp of a rules file, or `null` when it doesn't exist.
+	 *
+	 * Every other asset is read from disk per request, so `_headers` / `_redirects`
+	 * must behave the same way. A plain memo would pin the first parse for the life
+	 * of the instance, and an assets-only worker has no watcher and never reloads —
+	 * so an edit would only take effect after restarting the dev server.
+	 */
+	private ruleFileStamp(filePath: string): string | null {
+		try {
+			// Nanosecond mtime, not `mtimeMs`: two edits within the same millisecond that
+			// keep the byte count identical (`X-Test: one` → `X-Test: two`) are exactly
+			// what an editor produces, and would otherwise look unchanged.
+			const st = statSync(filePath, { bigint: true })
+			return `${st.mtimeNs}:${st.size}`
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code
+			// Only a genuinely absent file means "no rules". Anything else (EACCES on the
+			// directory, ELOOP, a dangling symlink) is a broken setup: dropping every
+			// header/redirect rule silently would look like the file simply had none.
+			if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+				warnOnce(filePath, `[lopata] cannot read ${path.basename(filePath)} (${code}) — serving without its rules`)
+			}
+			return null
+		}
+	}
+
 	private getRedirectRules(): RedirectRule[] {
-		if (this.redirectRules !== null) {
-			return this.redirectRules
-		}
-
 		const redirectsPath = path.join(this.directory, '_redirects')
-		if (!existsSync(redirectsPath)) {
-			this.redirectRules = []
-			return this.redirectRules
+		const stamp = this.ruleFileStamp(redirectsPath)
+		if (this.redirectRules && this.redirectRules.stamp === stamp) {
+			return this.redirectRules.rules
 		}
-
-		const content = readFileSync(redirectsPath, 'utf-8')
-		this.redirectRules = parseRedirects(content, this.limits)
-		return this.redirectRules
+		const rules = stamp === null ? [] : parseRedirects(readFileSync(redirectsPath, 'utf-8'), this.limits)
+		this.redirectRules = { stamp, rules }
+		return rules
 	}
 
 	/**
@@ -257,19 +319,14 @@ export class StaticAssets {
 	}
 
 	private getHeaderRules(): HeaderRule[] {
-		if (this.headerRules !== null) {
-			return this.headerRules
-		}
-
 		const headersPath = path.join(this.directory, '_headers')
-		if (!existsSync(headersPath)) {
-			this.headerRules = []
-			return this.headerRules
+		const stamp = this.ruleFileStamp(headersPath)
+		if (this.headerRules && this.headerRules.stamp === stamp) {
+			return this.headerRules.rules
 		}
-
-		const content = readFileSync(headersPath, 'utf-8')
-		this.headerRules = parseHeadersFile(content, this.limits)
-		return this.headerRules
+		const rules = stamp === null ? [] : parseHeadersFile(readFileSync(headersPath, 'utf-8'), this.limits)
+		this.headerRules = { stamp, rules }
+		return rules
 	}
 
 	private applyHeaderRules(pathname: string, headers: Headers): void {

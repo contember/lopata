@@ -5,7 +5,14 @@ import type { WorkflowLimits } from './bindings/workflow'
 
 export interface WranglerConfig {
 	name: string
-	main: string
+	/**
+	 * Entry module. Optional: a worker that only has `assets` is an assets-only
+	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
+	 * A config with neither `main` nor `assets` is rejected by `GenerationManager`;
+	 * `loadConfig` itself allows it, because `lopata kv|r2|d1`, `d1-migrate` and the
+	 * testing helper load bindings-only configs that are never served.
+	 */
+	main?: string
 	compatibility_date?: string
 	compatibility_flags?: string[]
 	kv_namespaces?: { binding: string; id: string }[]
@@ -107,6 +114,16 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
 	return applyEnvOverrides(config, envName)
+}
+
+/**
+ * True when the worker has a script. A worker WITHOUT one is assets-only: Cloudflare
+ * serves it purely from `assets`, so there is no module to import, spawn or watch.
+ *
+ * A type guard so callers that go on to resolve `config.main` are narrowed.
+ */
+export function hasScript(config: WranglerConfig): config is WranglerConfig & { main: string } {
+	return !!config.main
 }
 
 /**
