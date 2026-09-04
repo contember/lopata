@@ -120,6 +120,13 @@ export function buildEnv(
 		}
 	}
 
+	// process.env wins last, but only over names the worker already declares — a worker's env is
+	// its own config surface, so an undeclared host variable must never become a binding.
+	for (const key of Object.keys(env)) {
+		const fromProcess = process.env[key]
+		if (fromProcess !== undefined) env[key] = fromProcess
+	}
+
 	// KV namespaces
 	const db = getDatabase()
 
