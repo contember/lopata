@@ -74,6 +74,7 @@ describe('buildWorkerEnv — service binding fetch', () => {
 		mkdirSync(dataDir, { recursive: true })
 		db = new Database(join(dataDir, 'data.sqlite'), { create: true })
 		db.run('PRAGMA journal_mode=WAL')
+		db.run('PRAGMA busy_timeout=5000')
 		runMigrations(db)
 	})
 
@@ -162,6 +163,7 @@ describe('buildWorkerEnv — DO env bindings', () => {
 		mkdirSync(dataDir, { recursive: true })
 		db = new Database(join(dataDir, 'data.sqlite'), { create: true })
 		db.run('PRAGMA journal_mode=WAL')
+		db.run('PRAGMA busy_timeout=5000')
 		runMigrations(db)
 	})
 
@@ -304,6 +306,7 @@ describe('buildWorkerEnv — RPC call passthrough', () => {
 		mkdirSync(dataDir, { recursive: true })
 		db = new Database(join(dataDir, 'data.sqlite'), { create: true })
 		db.run('PRAGMA journal_mode=WAL')
+		db.run('PRAGMA busy_timeout=5000')
 		runMigrations(db)
 	})
 

@@ -231,6 +231,8 @@ beforeAll(() => {
 	const dbPath = join(dataDir, 'data.sqlite')
 	db = new Database(dbPath, { create: true })
 	db.run('PRAGMA journal_mode=WAL')
+	// The DO worker threads write to this same file; without a busy_timeout a main-side write loses the WAL race instantly.
+	db.run('PRAGMA busy_timeout=5000')
 	runMigrations(db)
 
 	// Create factory
