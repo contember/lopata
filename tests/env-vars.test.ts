@@ -128,3 +128,58 @@ describe('buildEnv - environment variables', () => {
 		rmSync(tmpDir, { recursive: true })
 	})
 })
+
+describe('buildEnv - process.env', () => {
+	const touched: string[] = []
+	const setEnv = (key: string, value: string) => {
+		touched.push(key)
+		process.env[key] = value
+	}
+
+	afterEach(() => {
+		for (const key of touched.splice(0)) delete process.env[key]
+	})
+
+	test('overrides a var declared in config', () => {
+		setEnv('API_HOST', 'http://from-process')
+
+		const { env } = buildEnv({ name: 'test', main: 'index.ts', vars: { API_HOST: 'https://api.example.com' } })
+		expect(env.API_HOST).toBe('http://from-process')
+	})
+
+	test('wins over .dev.vars', () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
+		writeFileSync(join(tmpDir, '.dev.vars'), 'KEY=from-dev-vars')
+		setEnv('KEY', 'from-process')
+
+		const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
+		expect(env.KEY).toBe('from-process')
+
+		rmSync(tmpDir, { recursive: true })
+	})
+
+	test('picks up a name that only .dev.vars declares', () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
+		writeFileSync(join(tmpDir, '.dev.vars'), 'SECRET_KEY=placeholder')
+		setEnv('SECRET_KEY', 'real-secret')
+
+		const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
+		expect(env.SECRET_KEY).toBe('real-secret')
+
+		rmSync(tmpDir, { recursive: true })
+	})
+
+	test('ignores host variables the worker does not declare', () => {
+		setEnv('HOME_GROWN_HOST_VAR', 'leaked')
+
+		const { env } = buildEnv({ name: 'test', main: 'index.ts', vars: { API_HOST: 'https://api.example.com' } })
+		expect(env.HOME_GROWN_HOST_VAR).toBeUndefined()
+	})
+
+	test('an empty process.env value still overrides', () => {
+		setEnv('API_HOST', '')
+
+		const { env } = buildEnv({ name: 'test', main: 'index.ts', vars: { API_HOST: 'https://api.example.com' } })
+		expect(env.API_HOST).toBe('')
+	})
+})

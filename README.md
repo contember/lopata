@@ -174,6 +174,18 @@ Variables are loaded in this order (later overrides earlier):
 2. `.dev.vars` file (dotenv format)
 3. `.env` file (fallback if no `.dev.vars`)
 4. `.dev.vars.<environment>` for env-specific overrides
+5. `process.env`, but **only for names one of the above already declares**
+
+The last step lets a secret manager or a container's environment supply the value without
+writing it to disk — declare the name with a placeholder in `[vars]` and export the real one:
+
+```sh
+API_TOKEN=… bun --bun vite      # overrides "vars": { "API_TOKEN": "set me" }
+```
+
+A host variable the worker does not declare is never injected. Workers have no ambient
+process environment, so leaking `PATH` or `HOME` into a binding would only hide the
+difference between local dev and a real deploy.
 
 ## Multi-worker setup
 
