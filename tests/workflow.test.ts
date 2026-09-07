@@ -72,6 +72,16 @@ class TimeoutEventWorkflow extends WorkflowEntrypointBase {
 	}
 }
 
+/** Wait for a terminal status by polling — a starved CI runner can delay the workflow's own timers past any fixed sleep. */
+async function waitForStatus(instance: SqliteWorkflowInstance, expected: string, timeoutMs = 5_000) {
+	const deadline = Date.now() + timeoutMs
+	while (true) {
+		const s = await instance.status()
+		if (s.status === expected || Date.now() >= deadline) return s
+		await new Promise((r) => setTimeout(r, 10))
+	}
+}
+
 let db: Database
 
 beforeEach(() => {
@@ -786,9 +796,8 @@ describe('status structure', () => {
 		const binding = new SqliteWorkflowBinding(db, 'ok-struct', 'TestWorkflow')
 		binding._setClass(TestWorkflow, { TEST: true })
 		const instance = await binding.create({ params: { value: 'test' } })
-		await new Promise((r) => setTimeout(r, 200))
 
-		const s = await instance.status()
+		const s = await waitForStatus(instance, 'complete')
 		expect(s.status).toBe('complete')
 		expect(s.error).toBeUndefined()
 		expect(s.output).toBeDefined()
@@ -859,9 +868,8 @@ describe('instance retention', () => {
 		binding._setClass(TestWorkflow, { TEST: true })
 
 		const instance = await binding.create({ params: { value: 'temp' } })
-		await new Promise((r) => setTimeout(r, 200))
 
-		const s = await instance.status()
+		const s = await waitForStatus(instance, 'complete')
 		expect(s.status).toBe('complete')
 
 		// Wait for retention period to expire
