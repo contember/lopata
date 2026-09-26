@@ -116,7 +116,7 @@ export class GenerationManager {
 		// requests straight from `registry.staticAssets`.
 		if (this.workerPath === null) return this._doReloadAssetsOnly()
 
-		this.executorFactory?.configure?.(this.workerPath, this._configPath, this.config)
+		this.executorFactory?.configure?.(this.workerPath, this._configPath, this.config, this.baseUrls?.artifacts)
 
 		// Stateful bindings (DO namespaces, queue producers, workflows,
 		// service bindings, email, browser, containers) live in main — the worker

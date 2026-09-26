@@ -7,7 +7,7 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { AiBinding } from '../bindings/ai'
 import { AiSearchNamespaceBinding } from '../bindings/ai-search'
@@ -32,7 +32,7 @@ import { WorkerLoaderBinding } from '../bindings/worker-loader'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
-import { parseDevVars } from '../env'
+import { resolveVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
@@ -79,23 +79,7 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 	const threadGlobals = globalThis as { __lopata_db?: Database }
 	threadGlobals.__lopata_db = db
 
-	const env: Record<string, unknown> = {}
-
-	if (config.vars) {
-		for (const [key, value] of Object.entries(config.vars)) {
-			env[key] = value
-		}
-	}
-
-	const devVarsPath = path.join(baseDir, '.dev.vars')
-	const envPath = path.join(baseDir, '.env')
-	const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null
-	if (filePath) {
-		const devVars = parseDevVars(readFileSync(filePath, 'utf-8'))
-		for (const [key, value] of Object.entries(devVars)) {
-			env[key] = value
-		}
-	}
+	const env: Record<string, unknown> = resolveVars(config, baseDir)
 
 	for (const kv of config.kv_namespaces ?? []) {
 		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {

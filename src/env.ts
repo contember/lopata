@@ -87,6 +87,33 @@ interface ClassRegistry {
 	staticAssets: StaticAssets | null
 }
 
+/**
+ * The plain-text vars of a worker's env: wrangler `vars`, then `.dev.vars` (or `.env`) from
+ * `devVarsDir`, then `process.env`. Shared by every env builder (main, worker thread, DO
+ * worker) so a DO's env equals the worker's env, as on Cloudflare.
+ */
+export function resolveVars(config: WranglerConfig, devVarsDir?: string): Record<string, unknown> {
+	const vars: Record<string, unknown> = { ...config.vars }
+
+	// .dev.vars takes priority over .env (matching CF behavior)
+	if (devVarsDir) {
+		const devVarsPath = path.join(devVarsDir, '.dev.vars')
+		const envPath = path.join(devVarsDir, '.env')
+		const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null
+		if (filePath) {
+			Object.assign(vars, parseDevVars(readFileSync(filePath, 'utf-8')))
+		}
+	}
+
+	// process.env wins last, but only over names the worker already declares — a worker's env is
+	// its own config surface, so an undeclared host variable must never become a binding.
+	for (const key of Object.keys(vars)) {
+		const fromProcess = process.env[key]
+		if (fromProcess !== undefined) vars[key] = fromProcess
+	}
+	return vars
+}
+
 export function buildEnv(
 	config: WranglerConfig,
 	devVarsDir?: string,
@@ -98,34 +125,7 @@ export function buildEnv(
 	const env: Record<string, unknown> = {}
 	const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null }
 
-	// Environment variables from config
-	if (config.vars) {
-		for (const [key, value] of Object.entries(config.vars)) {
-			env[key] = value
-		}
-	}
-
-	// Override with .dev.vars or .env file (if exists)
-	// .dev.vars takes priority over .env (matching CF behavior)
-	if (devVarsDir) {
-		const devVarsPath = path.join(devVarsDir, '.dev.vars')
-		const envPath = path.join(devVarsDir, '.env')
-		const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null
-		if (filePath) {
-			const content = readFileSync(filePath, 'utf-8')
-			const devVars = parseDevVars(content)
-			for (const [key, value] of Object.entries(devVars)) {
-				env[key] = value
-			}
-		}
-	}
-
-	// process.env wins last, but only over names the worker already declares — a worker's env is
-	// its own config surface, so an undeclared host variable must never become a binding.
-	for (const key of Object.keys(env)) {
-		const fromProcess = process.env[key]
-		if (fromProcess !== undefined) env[key] = fromProcess
-	}
+	Object.assign(env, resolveVars(config, devVarsDir))
 
 	// KV namespaces
 	const db = getDatabase()

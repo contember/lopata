@@ -21,6 +21,8 @@ export interface ExecutorConfig {
 	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
 	 *  overrides (which the re-parse silently dropped). */
 	_wranglerConfig?: WranglerConfig
+	/** @internal Base URL of main's Artifacts git endpoint, for the DO env's Artifacts binding. */
+	_artifactsBaseUrl?: string
 	/** @internal Disposal of the PRIOR executor for this same id, still in flight
 	 *  (its Docker container is being `docker rm`'d). A container DO awaits this
 	 *  before its first command so a fresh `docker run` for the same name doesn't
@@ -69,5 +71,5 @@ export interface DOExecutorFactory {
 	create(config: ExecutorConfig): DOExecutor
 	/** Tell the factory where user code lives + the already-parsed env-overridden
 	 *  config (only used by worker-thread DO executors). */
-	configure?(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig): void
+	configure?(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, artifactsBaseUrl?: string): void
 }

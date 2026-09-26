@@ -21,6 +21,8 @@ interface WorkerConfig {
 	 *  the DO env honors `--env` overrides; absent (e.g. standalone test factory)
 	 *  we fall back to re-loading from `configPath`. */
 	wranglerConfig?: import('../config').WranglerConfig
+	/** Main's Artifacts git endpoint, for the DO env's Artifacts binding. */
+	artifactsBaseUrl?: string
 	dataDir: string
 	namespaceName: string
 	idStr: string
@@ -82,7 +84,15 @@ async function initWorker(workerConfig: WorkerConfig) {
 		remoteClose: (wsId, code, reason, wasClean) => ({ type: 'env-ws-close-out', wsId, code, reason, wasClean }),
 	})
 
-	const { db, env } = buildWorkerEnv(config, workerConfig.dataDir, baseDir, envRpc, workerConfig.namespaceName, envWsBridge)
+	const { db, env } = buildWorkerEnv(
+		config,
+		workerConfig.dataDir,
+		baseDir,
+		envRpc,
+		workerConfig.namespaceName,
+		envWsBridge,
+		workerConfig.artifactsBaseUrl,
+	)
 
 	// Publish env to `globalEnv` so top-level `import { env } from
 	// 'cloudflare:workers'` in the user module sees this DO worker's env (not

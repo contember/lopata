@@ -188,6 +188,7 @@ export class WorkerExecutor implements DOExecutor {
 							// Main's parsed, env-overridden config — the DO worker uses this
 							// instead of re-loading from configPath WITHOUT the --env overrides.
 							wranglerConfig: this._config._wranglerConfig,
+							artifactsBaseUrl: this._config._artifactsBaseUrl,
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
 							idStr: config.id.toString(),
@@ -582,16 +583,18 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 	private _modulePath?: string
 	private _configPath?: string
 	private _wranglerConfig?: WranglerConfig
+	private _artifactsBaseUrl?: string
 
 	/**
 	 * Set the module + config paths and the parsed env-overridden config for all
 	 * executors created by this factory. Called by the generation manager after
 	 * loading config.
 	 */
-	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig): void {
+	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, artifactsBaseUrl?: string): void {
 		this._modulePath = modulePath
 		this._configPath = configPath
 		this._wranglerConfig = wranglerConfig
+		this._artifactsBaseUrl = artifactsBaseUrl
 	}
 
 	create(config: ExecutorConfig): DOExecutor {
@@ -601,6 +604,7 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 			_modulePath: this._modulePath ?? '',
 			_configPath: this._configPath ?? '',
 			_wranglerConfig: this._wranglerConfig,
+			_artifactsBaseUrl: this._artifactsBaseUrl,
 		})
 	}
 }

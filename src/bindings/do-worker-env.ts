@@ -8,11 +8,11 @@
  */
 
 import { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
-import { parseDevVars } from '../env'
+import { resolveVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
 import type { BindingTarget, ParentSpanContext, SerializedResponse, WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
@@ -20,12 +20,15 @@ import { RpcClient } from '../worker-thread/rpc-shared'
 import { tagCloneable } from '../worker-thread/rpc-shared'
 import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
 import { AiBinding } from './ai'
+import { AiSearchNamespaceBinding } from './ai-search'
 import { SqliteAnalyticsEngine } from './analytics-engine'
+import { ArtifactsBinding } from './artifacts'
 import { BrowserBinding } from './browser'
 import { openD1Database } from './d1'
 import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { EmailMessage } from './email'
+import { FlagshipBinding } from './flagship'
 import { HyperdriveBinding } from './hyperdrive'
 import { ImagesBinding } from './images'
 import { SqliteKVNamespace } from './kv'
@@ -34,7 +37,9 @@ import { SqliteQueueProducer } from './queue'
 import { FileR2Bucket } from './r2'
 import { makeBindingProxy } from './rpc-stub'
 import { StaticAssets } from './static-assets'
+import { VpcNetworkBinding } from './vpc-network'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import { WorkerLoaderBinding } from './worker-loader'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -149,6 +154,7 @@ export function buildWorkerEnv(
 	rpc: RpcClient,
 	_hostNamespaceName: string,
 	envWsBridge: WsGuestBridge<DOMainMessage>,
+	artifactsBaseUrl?: string,
 ): { db: Database; env: Record<string, unknown> } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -166,25 +172,9 @@ export function buildWorkerEnv(
 	const threadGlobals = globalThis as { __lopata_db?: Database }
 	threadGlobals.__lopata_db = db
 
-	const env: Record<string, unknown> = {}
-
-	// Environment variables
-	if (config.vars) {
-		for (const [key, value] of Object.entries(config.vars)) {
-			env[key] = value
-		}
-	}
-
-	// `.dev.vars` / `.env` — on real CF a DO's env equals the worker's env, which
-	// includes these secrets. Without this `this.env.MY_SECRET` is undefined.
-	const devVarsPath = join(baseDir, '.dev.vars')
-	const envPath = join(baseDir, '.env')
-	const filePath = existsSync(devVarsPath) ? devVarsPath : existsSync(envPath) ? envPath : null
-	if (filePath) {
-		for (const [key, value] of Object.entries(parseDevVars(readFileSync(filePath, 'utf-8')))) {
-			env[key] = value
-		}
-	}
+	// On real CF a DO's env equals the worker's env: same vars, `.dev.vars` secrets
+	// and process.env overrides, resolved by the same function main uses.
+	const env: Record<string, unknown> = resolveVars(config, baseDir)
 
 	// KV namespaces
 	for (const kv of config.kv_namespaces ?? []) {
@@ -262,6 +252,28 @@ export function buildWorkerEnv(
 	}
 	for (const ae of config.analytics_engine_datasets ?? []) {
 		env[ae.binding] = new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding)
+	}
+	for (const vpc of config.vpc_networks ?? []) {
+		const networkId = vpc.network_id ?? vpc.tunnel_id
+		if (!networkId) {
+			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
+		}
+		env[vpc.binding] = new VpcNetworkBinding({ networkId, bindingName: vpc.binding })
+	}
+	for (const ns of config.ai_search_namespaces ?? []) {
+		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
+		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
+		env[ns.binding] = new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken)
+	}
+	for (const artifacts of config.artifacts ?? []) {
+		const remoteBase = (artifactsBaseUrl ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
+		env[artifacts.binding] = new ArtifactsBinding(db, artifacts.namespace, join(dataDir, 'artifacts'), remoteBase)
+	}
+	for (const loader of config.worker_loaders ?? []) {
+		env[loader.binding] = new WorkerLoaderBinding(join(dataDir, 'worker-loader'))
+	}
+	if (config.flagship) {
+		env[config.flagship.binding] = new FlagshipBinding(db, config.flagship.app_id)
 	}
 	if (config.version_metadata) {
 		env[config.version_metadata.binding] = { id: 'local-dev', tag: '', timestamp: new Date().toISOString() }
