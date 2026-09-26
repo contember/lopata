@@ -8,7 +8,7 @@ import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
-import { splitStatements } from './sql-split'
+import { mayHaveMultipleStatements, splitStatements } from './sql-split'
 
 // --- SQL Storage Cursor ---
 
@@ -151,63 +151,81 @@ export class SqlStorage {
 				const db = this._getDb()
 				// workerd accepts several semicolon-separated statements and returns the
 				// cursor of the last one. bun:sqlite's prepare() compiles only the first
-				// statement and silently drops the rest, so run the leading ones here.
-				const statements = splitStatements(query)
-				const last = statements.pop() ?? query
-				// Bindings belong to the last statement. Each leading statement is compiled
-				// only after the previous one ran, since it may depend on its DDL.
-				for (const sql of statements) {
-					const leading = db.prepare(sql)
-					try {
-						if (leading.paramsCount > 0) {
-							throw new Error('When executing multiple SQL statements in a single call, only the last statement can have parameters.')
+				// statement and silently drops the rest, so the leading ones run here.
+				// A single statement skips the splitter and goes to SQLite verbatim.
+				const statements = mayHaveMultipleStatements(query) ? splitStatements(query) : []
+				if (statements.length <= 1) return this._execOne(db, statements[0] ?? query, bindings)
+
+				// On Cloudflare the implicit transaction around the event rolls back a
+				// failed exec(); a savepoint gives the same all-or-nothing outcome here.
+				db.run('SAVEPOINT lopata_sql_exec')
+				try {
+					const last = statements.pop()!
+					// Bindings belong to the last statement. Each leading statement is
+					// compiled only after the previous one ran, since it may depend on its DDL.
+					for (const sql of statements) {
+						const leading = db.prepare(sql)
+						try {
+							if (leading.paramsCount > 0) {
+								throw new Error('When executing multiple SQL statements in a single call, only the last statement can have parameters.')
+							}
+							leading.run()
+						} finally {
+							leading.finalize()
 						}
-						leading.run()
-					} finally {
-						leading.finalize()
 					}
-				}
-				const stmt = db.prepare(last)
-
-				// Determine if this is a query that returns rows. Plain
-				// SELECT/WITH/PRAGMA do, and so does any INSERT/UPDATE/DELETE that
-				// carries a RETURNING clause — workerd's DO SQLite surfaces those rows,
-				// so we must too (running such a write via stmt.run() would silently
-				// drop the echoed rows). The `\bRETURNING\b` test is a heuristic: a
-				// RETURNING substring inside a string literal is a false positive, but a
-				// harmless one — stmt.all() still executes the statement, and rowsWritten
-				// is gated on it being a write (below), so a misdetected read reports 0.
-				const trimmed = last.trim().toUpperCase()
-				const yieldsRows = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
-				const hasReturning = /\bRETURNING\b/.test(trimmed)
-
-				if (yieldsRows || hasReturning) {
-					const rows = stmt.all(...bindings) as Record<string, unknown>[]
-					const columnNames = (stmt.columnNames as string[]) ?? []
-					const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
-					// A RETURNING write still mutates rows: report changes() as written.
-					// A real RETURNING clause only exists on INSERT/UPDATE/DELETE — which may
-					// be CTE-wrapped (`WITH … DELETE … RETURNING`, which starts with WITH) —
-					// so we can't gate on the leading keyword. SELECT/PRAGMA can never modify
-					// rows, so attribute changes() to any RETURNING statement that isn't one
-					// of those plain reads.
-					const isPlainRead = trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA')
-					const rowsWritten = hasReturning && !isPlainRead
-						? (db.query('SELECT changes() as c').get() as { c: number }).c
-						: 0
-					// rowsRead is an approximation. workerd derives it from libSQL's
-					// LIBSQL_STMTSTATUS_ROWS_READ counter — rows physically scanned from
-					// tables/indexes (its billing metric), which is neither the returned-row
-					// count nor 0 for a RETURNING write. Stock bun:sqlite exposes no such
-					// counter, so we report the returned-row count as the closest stand-in.
-					return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, rowsWritten)
-				} else {
-					stmt.run(...bindings)
-					const changes = db.query('SELECT changes() as c').get() as { c: number }
-					return new SqlStorageCursor([], [], [], 0, changes.c)
+					const cursor = this._execOne(db, last, bindings)
+					db.run('RELEASE lopata_sql_exec')
+					return cursor
+				} catch (err) {
+					db.run('ROLLBACK TO lopata_sql_exec')
+					db.run('RELEASE lopata_sql_exec')
+					throw err
 				}
 			},
 		)
+	}
+
+	private _execOne(db: Database, query: string, bindings: SQLQueryBindings[]): SqlStorageCursor {
+		const stmt = db.prepare(query)
+
+		// Determine if this is a query that returns rows. Plain
+		// SELECT/WITH/PRAGMA do, and so does any INSERT/UPDATE/DELETE that
+		// carries a RETURNING clause — workerd's DO SQLite surfaces those rows,
+		// so we must too (running such a write via stmt.run() would silently
+		// drop the echoed rows). The `\bRETURNING\b` test is a heuristic: a
+		// RETURNING substring inside a string literal is a false positive, but a
+		// harmless one — stmt.all() still executes the statement, and rowsWritten
+		// is gated on it being a write (below), so a misdetected read reports 0.
+		const trimmed = query.trim().toUpperCase()
+		const yieldsRows = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
+		const hasReturning = /\bRETURNING\b/.test(trimmed)
+
+		if (yieldsRows || hasReturning) {
+			const rows = stmt.all(...bindings) as Record<string, unknown>[]
+			const columnNames = (stmt.columnNames as string[]) ?? []
+			const rawRows = rows.map((row) => columnNames.map((col) => row[col]))
+			// A RETURNING write still mutates rows: report changes() as written.
+			// A real RETURNING clause only exists on INSERT/UPDATE/DELETE — which may
+			// be CTE-wrapped (`WITH … DELETE … RETURNING`, which starts with WITH) —
+			// so we can't gate on the leading keyword. SELECT/PRAGMA can never modify
+			// rows, so attribute changes() to any RETURNING statement that isn't one
+			// of those plain reads.
+			const isPlainRead = trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA')
+			const rowsWritten = hasReturning && !isPlainRead
+				? (db.query('SELECT changes() as c').get() as { c: number }).c
+				: 0
+			// rowsRead is an approximation. workerd derives it from libSQL's
+			// LIBSQL_STMTSTATUS_ROWS_READ counter — rows physically scanned from
+			// tables/indexes (its billing metric), which is neither the returned-row
+			// count nor 0 for a RETURNING write. Stock bun:sqlite exposes no such
+			// counter, so we report the returned-row count as the closest stand-in.
+			return new SqlStorageCursor(rows, rawRows, columnNames, rows.length, rowsWritten)
+		} else {
+			stmt.run(...bindings)
+			const changes = db.query('SELECT changes() as c').get() as { c: number }
+			return new SqlStorageCursor([], [], [], 0, changes.c)
+		}
 	}
 
 	get databaseSize(): number {

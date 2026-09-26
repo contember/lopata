@@ -302,8 +302,31 @@ describe('SqlStorage.exec', () => {
 		expect(cursor.toArray()).toEqual([{ name: 'alice' }])
 	})
 
-	test('a parameter in a leading statement throws', () => {
-		expect(() => sql.exec("INSERT INTO t (name) VALUES (?); INSERT INTO t (name) VALUES ('bob')", 'alice')).toThrow(/only the last statement/)
+	test('a parameter in a leading statement throws and rolls back earlier statements', () => {
+		sql.exec("INSERT INTO t (name) VALUES ('keep')")
+		expect(() => sql.exec('DELETE FROM t; INSERT INTO t (name) VALUES (?); SELECT 1', 'alice')).toThrow(/only the last statement/)
+		expect(sql.exec('SELECT name FROM t').toArray()).toEqual([{ name: 'keep' }])
+	})
+
+	test('a failing last statement rolls back the leading ones', () => {
+		expect(() => sql.exec('CREATE TABLE extra (x); INSERT INTO missing VALUES (1)')).toThrow()
+		expect(sql.exec("SELECT name FROM sqlite_master WHERE name = 'extra'").toArray()).toEqual([])
+	})
+
+	test('single statements with a ; inside a quoted name are untouched', () => {
+		expect(sql.exec('SELECT 1 AS `a;b`').toArray()).toEqual([{ 'a;b': 1 }])
+		expect(sql.exec('SELECT 2 AS [c;d]').toArray()).toEqual([{ 'c;d': 2 }])
+	})
+
+	test('a trigger with CASE … END in its body is created', () => {
+		sql.exec(`
+			CREATE TABLE flags (v INTEGER);
+			CREATE TRIGGER t_flag AFTER INSERT ON t BEGIN
+				INSERT INTO flags VALUES (CASE WHEN NEW.name = 'x' THEN 1 ELSE 0 END);
+			END;
+			INSERT INTO t (name) VALUES ('alice');
+		`)
+		expect(sql.exec('SELECT v FROM flags').toArray()).toEqual([{ v: 0 }])
 	})
 
 	test('a trigger body with semicolons stays one statement', () => {
