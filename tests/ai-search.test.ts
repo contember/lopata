@@ -48,8 +48,7 @@ describe('AiSearchNamespaceBinding', () => {
 
 	test('delete calls DELETE on the correct URL', async () => {
 		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
-		const result = await binding.delete('inst-1')
-		expect(result).toBe(true)
+		await binding.delete('inst-1')
 		expect(calls[0]!.method).toBe('DELETE')
 		expect(calls[0]!.url).toContain('/ai-search/instances/inst-1')
 	})
@@ -88,6 +87,29 @@ describe('AiSearchNamespaceBinding', () => {
 		expect(await binding.get('inst-1').chatCompletions({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
 		expect(await binding.search({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
 		expect(await binding.chatCompletions({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
+	})
+
+	test('a 200 envelope with success: false rejects', async () => {
+		globalThis.fetch = (async () =>
+			new Response(JSON.stringify({ success: false, errors: [{ code: 7001, message: 'bad query' }], result: null }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})) as unknown as typeof fetch
+		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
+		await expect(binding.get('inst-1').search({ messages: [{ role: 'user', content: 'hi' }] })).rejects.toThrow(/bad query/)
+		const row = db.query('SELECT status FROM ai_search_requests').get() as { status: string }
+		expect(row.status).toBe('error')
+	})
+
+	test('list keeps the pagination info', async () => {
+		const resultInfo = { count: 1, page: 1, per_page: 20, total_count: 1 }
+		globalThis.fetch = (async () =>
+			new Response(JSON.stringify({ success: true, errors: [], result: [{ id: 'inst-1' }], result_info: resultInfo }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})) as unknown as typeof fetch
+		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
+		expect(await binding.list()).toEqual({ result: [{ id: 'inst-1' }], result_info: resultInfo })
 	})
 
 	test('instance.info fetches the instance lazily', async () => {
