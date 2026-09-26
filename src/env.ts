@@ -105,13 +105,34 @@ export function resolveVars(config: WranglerConfig, devVarsDir?: string): Record
 		}
 	}
 
-	// process.env wins last, but only over names the worker already declares — a worker's env is
+	// process.env wins last, but only over names the worker already declares. A worker's env is
 	// its own config surface, so an undeclared host variable must never become a binding.
+	// Values Bun itself loaded from dotenv files are not host variables: letting them win would
+	// make `.env` beat `.dev.vars`, while wrangler ignores `.env` whenever `.dev.vars` exists.
+	const autoloaded = bunAutoloadedDotenv(process.cwd())
 	for (const key of Object.keys(vars)) {
 		const fromProcess = process.env[key]
-		if (fromProcess !== undefined) vars[key] = fromProcess
+		if (fromProcess !== undefined && fromProcess !== autoloaded[key]) vars[key] = fromProcess
 	}
 	return vars
+}
+
+/**
+ * The values Bun loads into process.env from dotenv files in `cwd` at startup: `.env`, then
+ * `.env.<NODE_ENV>` (default `development`), then `.env.local` (skipped when NODE_ENV is
+ * `test`). A variable set in the shell keeps its own value, so a process.env entry that equals
+ * the file's value came from the file. A shell export that happens to equal it is treated the
+ * same way; the result then differs only when `.dev.vars` sets that name too.
+ */
+function bunAutoloadedDotenv(cwd: string): Record<string, string> {
+	const nodeEnv = process.env.NODE_ENV || 'development'
+	const files = ['.env', `.env.${nodeEnv}`, ...(nodeEnv === 'test' ? [] : ['.env.local'])]
+	const values: Record<string, string> = {}
+	for (const file of files) {
+		const filePath = path.join(cwd, file)
+		if (existsSync(filePath)) Object.assign(values, parseDevVars(readFileSync(filePath, 'utf-8')))
+	}
+	return values
 }
 
 export function buildEnv(
