@@ -1,6 +1,7 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { splitStatements } from './sql-split'
 
 interface D1Meta {
 	duration: number
@@ -38,101 +39,6 @@ function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritt
 		size_after: page_count * page_size,
 		changed_db: changes > 0,
 	}
-}
-
-/**
- * Split SQL text into individual statements, respecting string literals
- * (single-quoted, double-quoted), line comments (--), and block comments.
- */
-function splitStatements(sql: string): string[] {
-	const statements: string[] = []
-	let current = ''
-	let i = 0
-	const len = sql.length
-
-	while (i < len) {
-		const ch = sql[i]!
-
-		// Single-quoted string literal
-		if (ch === "'") {
-			current += ch
-			i++
-			while (i < len) {
-				const c = sql[i]!
-				current += c
-				i++
-				if (c === "'" && i < len && sql[i] === "'") {
-					// escaped quote ''
-					current += sql[i]!
-					i++
-				} else if (c === "'") {
-					break
-				}
-			}
-			continue
-		}
-
-		// Double-quoted identifier
-		if (ch === '"') {
-			current += ch
-			i++
-			while (i < len) {
-				const c = sql[i]!
-				current += c
-				i++
-				if (c === '"' && i < len && sql[i] === '"') {
-					current += sql[i]!
-					i++
-				} else if (c === '"') {
-					break
-				}
-			}
-			continue
-		}
-
-		// Line comment --
-		if (ch === '-' && i + 1 < len && sql[i + 1] === '-') {
-			i += 2
-			while (i < len && sql[i] !== '\n') {
-				i++
-			}
-			if (i < len) i++ // skip \n
-			current += ' '
-			continue
-		}
-
-		// Block comment /* ... */
-		if (ch === '/' && i + 1 < len && sql[i + 1] === '*') {
-			i += 2
-			while (i + 1 < len && !(sql[i] === '*' && sql[i + 1] === '/')) {
-				i++
-			}
-			if (i + 1 < len) i += 2 // skip */
-			current += ' '
-			continue
-		}
-
-		// Statement separator
-		if (ch === ';') {
-			const trimmed = current.trim()
-			if (trimmed.length > 0) {
-				statements.push(trimmed)
-			}
-			current = ''
-			i++
-			continue
-		}
-
-		current += ch
-		i++
-	}
-
-	const trimmed = current.trim()
-	if (trimmed.length > 0) {
-		statements.push(trimmed)
-	}
-
-	return statements
 }
 
 /** Convert bind parameters: boolean→int, undefined→error, ArrayBuffer→Uint8Array */

@@ -285,6 +285,38 @@ describe('SqlStorage.exec', () => {
 		expect(cursor.toArray()).toEqual([{ name: 'the RETURNING soldier' }])
 		expect(cursor.rowsWritten).toBe(0)
 	})
+
+	test('runs every statement of a multi-statement query and returns the last cursor', () => {
+		const cursor = sql.exec(`
+			CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY);
+			CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+			INSERT INTO meta (key, value) VALUES ('v', 'a;b');
+			SELECT value FROM meta;
+		`)
+		expect(cursor.toArray()).toEqual([{ value: 'a;b' }])
+		expect(sql.exec('SELECT count(*) AS n FROM messages').one()).toEqual({ n: 0 })
+	})
+
+	test('bindings apply to the last statement of a multi-statement query', () => {
+		const cursor = sql.exec("INSERT INTO t (name) VALUES ('alice'); SELECT name FROM t WHERE name = ?", 'alice')
+		expect(cursor.toArray()).toEqual([{ name: 'alice' }])
+	})
+
+	test('a parameter in a leading statement throws', () => {
+		expect(() => sql.exec("INSERT INTO t (name) VALUES (?); INSERT INTO t (name) VALUES ('bob')", 'alice')).toThrow(/only the last statement/)
+	})
+
+	test('a trigger body with semicolons stays one statement', () => {
+		sql.exec(`
+			CREATE TABLE log (msg TEXT);
+			CREATE TRIGGER t_ins AFTER INSERT ON t BEGIN
+				INSERT INTO log (msg) VALUES (NEW.name);
+				INSERT INTO log (msg) VALUES ('done');
+			END;
+			INSERT INTO t (name) VALUES ('alice');
+		`)
+		expect(sql.exec('SELECT msg FROM log').toArray()).toEqual([{ msg: 'alice' }, { msg: 'done' }])
+	})
 })
 
 describe('DurableObjectState', () => {

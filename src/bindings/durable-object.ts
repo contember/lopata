@@ -8,6 +8,7 @@ import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
+import { splitStatements } from './sql-split'
 
 // --- SQL Storage Cursor ---
 
@@ -148,7 +149,25 @@ export class SqlStorage {
 			},
 			() => {
 				const db = this._getDb()
-				const stmt = db.prepare(query)
+				// workerd accepts several semicolon-separated statements and returns the
+				// cursor of the last one. bun:sqlite's prepare() compiles only the first
+				// statement and silently drops the rest, so run the leading ones here.
+				const statements = splitStatements(query)
+				const last = statements.pop() ?? query
+				// Bindings belong to the last statement. Each leading statement is compiled
+				// only after the previous one ran, since it may depend on its DDL.
+				for (const sql of statements) {
+					const leading = db.prepare(sql)
+					try {
+						if (leading.paramsCount > 0) {
+							throw new Error('When executing multiple SQL statements in a single call, only the last statement can have parameters.')
+						}
+						leading.run()
+					} finally {
+						leading.finalize()
+					}
+				}
+				const stmt = db.prepare(last)
 
 				// Determine if this is a query that returns rows. Plain
 				// SELECT/WITH/PRAGMA do, and so does any INSERT/UPDATE/DELETE that
@@ -158,7 +177,7 @@ export class SqlStorage {
 				// RETURNING substring inside a string literal is a false positive, but a
 				// harmless one — stmt.all() still executes the statement, and rowsWritten
 				// is gated on it being a write (below), so a misdetected read reports 0.
-				const trimmed = query.trim().toUpperCase()
+				const trimmed = last.trim().toUpperCase()
 				const yieldsRows = trimmed.startsWith('SELECT') || trimmed.startsWith('WITH') || trimmed.startsWith('PRAGMA')
 				const hasReturning = /\bRETURNING\b/.test(trimmed)
 
