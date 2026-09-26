@@ -398,7 +398,8 @@ export function buildEnv(
 		env[ns.binding] = instrumentBinding(new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken), {
 			type: 'ai_search',
 			name: ns.binding,
-			methods: ['create', 'get', 'list', 'delete', 'search', 'chatCompletions'],
+			// get() is synchronous and makes no request, so it stays unwrapped
+			methods: ['create', 'list', 'delete', 'search', 'chatCompletions'],
 		})
 	}
 

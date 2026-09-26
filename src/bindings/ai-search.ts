@@ -20,6 +20,10 @@ function truncate(value: unknown): string {
 	return str.length > MAX_LOG_SIZE ? str.slice(0, MAX_LOG_SIZE) + '…' : str
 }
 
+function isEnvelope(json: unknown): json is { success: boolean; result: unknown } {
+	return typeof json === 'object' && json !== null && 'success' in json && 'result' in json
+}
+
 interface CreateInstanceOptions {
 	id: string
 	type?: string
@@ -54,6 +58,10 @@ export class AiSearchInstance {
 	async chatCompletions(options: SearchOptions): Promise<unknown> {
 		return this.binding._proxyInstance('chatCompletions', this.id, options)
 	}
+
+	async info(): Promise<unknown> {
+		return this.binding._instanceInfo(this.id)
+	}
 }
 
 export class AiSearchNamespaceBinding {
@@ -79,15 +87,16 @@ export class AiSearchNamespaceBinding {
 	}
 
 	async create(opts: CreateInstanceOptions): Promise<AiSearchInstance> {
-		const body = await this.proxy('POST', '/ai-search/instances', opts, 'create')
-		const result = (body as { result?: Record<string, unknown> }).result ?? {}
-		return new AiSearchInstance(this, opts.id, result)
+		const result = await this.proxy('POST', '/ai-search/instances', opts, 'create')
+		return new AiSearchInstance(this, opts.id, (result as Record<string, unknown> | null) ?? {})
 	}
 
-	async get(id: string): Promise<AiSearchInstance> {
-		const body = await this.proxy('GET', `/ai-search/instances/${encodeURIComponent(id)}`, undefined, 'get')
-		const result = (body as { result?: Record<string, unknown> }).result ?? {}
-		return new AiSearchInstance(this, id, result)
+	/**
+	 * Synchronous, like workers-types' `AiSearchNamespace.get()`: no request is made,
+	 * so a missing instance surfaces on the first call made through the handle.
+	 */
+	get(id: string): AiSearchInstance {
+		return new AiSearchInstance(this, id)
 	}
 
 	async list(opts?: Record<string, string>): Promise<unknown> {
@@ -111,6 +120,11 @@ export class AiSearchNamespaceBinding {
 			options,
 			'chatCompletions',
 		)
+	}
+
+	/** @internal — called by AiSearchInstance */
+	async _instanceInfo(instanceId: string): Promise<unknown> {
+		return this.proxy('GET', `/ai-search/instances/${encodeURIComponent(instanceId)}`, undefined, 'instance.info')
 	}
 
 	/** @internal — called by AiSearchInstance */
@@ -161,7 +175,9 @@ export class AiSearchNamespaceBinding {
 			if (ct.includes('application/json')) {
 				const json = await response.json()
 				outputSummary = truncate(json)
-				return json
+				// The binding resolves to the payload itself, not the REST envelope
+				// (`{ success, errors, messages, result }`) the API wraps it in.
+				return isEnvelope(json) ? json.result : json
 			}
 			const text = await response.text()
 			outputSummary = truncate(text)

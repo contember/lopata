@@ -61,12 +61,41 @@ describe('AiSearchNamespaceBinding', () => {
 		expect(calls[0]!.method).toBe('POST')
 	})
 
+	test('get is synchronous and makes no request', () => {
+		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
+		const inst = binding.get('inst-1')
+		expect(inst).toBeInstanceOf(AiSearchInstance)
+		expect(inst.id).toBe('inst-1')
+		expect(calls).toHaveLength(0)
+	})
+
 	test('instance.search hits instance-level endpoint', async () => {
 		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
-		const inst = await binding.get('inst-1')
-		calls.length = 0
-		await inst.search({ messages: [{ role: 'user', content: 'hi' }] })
+		await binding.get('inst-1').search({ messages: [{ role: 'user', content: 'hi' }] })
+		expect(calls).toHaveLength(1)
 		expect(calls[0]!.url).toContain('/ai-search/instances/inst-1/search')
+	})
+
+	test('search results are unwrapped from the REST envelope', async () => {
+		const payload = { search_query: 'hi', chunks: [{ id: 'c1', text: 'hello' }] }
+		globalThis.fetch = (async () =>
+			new Response(JSON.stringify({ success: true, errors: [], messages: [], result: payload }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			})) as unknown as typeof fetch
+		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
+		expect(await binding.get('inst-1').search({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
+		expect(await binding.get('inst-1').chatCompletions({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
+		expect(await binding.search({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
+		expect(await binding.chatCompletions({ messages: [{ role: 'user', content: 'hi' }] })).toEqual(payload)
+	})
+
+	test('instance.info fetches the instance lazily', async () => {
+		const binding = new AiSearchNamespaceBinding(db, 'my-ns', 'acc', 'tok')
+		const info = await binding.get('inst-1').info()
+		expect(info).toEqual({ id: 'inst-1', echo: null })
+		expect(calls[0]!.method).toBe('GET')
+		expect(calls[0]!.url).toBe('https://api.cloudflare.com/client/v4/accounts/acc/ai-search/instances/inst-1')
 	})
 
 	test('requests are logged to ai_search_requests table', async () => {
