@@ -2,6 +2,14 @@ import type { Database } from 'bun:sqlite'
 import type { WranglerConfig } from '../config'
 import type { ContainerConfig } from './container'
 import type { DurableObjectBase, DurableObjectIdImpl, DurableObjectLimits } from './durable-object'
+import type { BrowserConfig } from './stateless-env'
+
+/** Settings main gives the worker thread's env, passed to DO workers so their env matches. */
+export interface DOWorkerRuntimeOptions {
+	/** Base URL of main's Artifacts git endpoint. */
+	artifactsBaseUrl?: string
+	browserConfig?: BrowserConfig
+}
 
 export interface ExecutorConfig {
 	id: DurableObjectIdImpl
@@ -21,6 +29,8 @@ export interface ExecutorConfig {
 	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
 	 *  overrides (which the re-parse silently dropped). */
 	_wranglerConfig?: WranglerConfig
+	/** @internal Runtime settings the worker env gets too, so the DO env matches it. */
+	_runtime?: DOWorkerRuntimeOptions
 	/** @internal Disposal of the PRIOR executor for this same id, still in flight
 	 *  (its Docker container is being `docker rm`'d). A container DO awaits this
 	 *  before its first command so a fresh `docker run` for the same name doesn't
@@ -69,5 +79,5 @@ export interface DOExecutorFactory {
 	create(config: ExecutorConfig): DOExecutor
 	/** Tell the factory where user code lives + the already-parsed env-overridden
 	 *  config (only used by worker-thread DO executors). */
-	configure?(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig): void
+	configure?(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, runtime?: DOWorkerRuntimeOptions): void
 }

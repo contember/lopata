@@ -11,7 +11,7 @@
 
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DOMainMessage } from '../src/bindings/do-executor-worker'
@@ -21,6 +21,7 @@ import type { WranglerConfig } from '../src/config'
 import { runMigrations } from '../src/db'
 import type { ParentSpanContext, RpcCallReply, RpcFetchReply, SerializedResponse } from '../src/worker-thread/protocol'
 import { RpcClient } from '../src/worker-thread/rpc-shared'
+import { buildThreadEnv } from '../src/worker-thread/thread-env'
 import { WsGuestBridge } from '../src/worker-thread/ws-bridge-shared'
 
 function makeEnvWsBridge(post: (msg: DOMainMessage) => void = () => {}): WsGuestBridge<DOMainMessage> {
@@ -338,5 +339,60 @@ describe('buildWorkerEnv — RPC call passthrough', () => {
 		rpc.handle(reply)
 		expect(await promise).toBe('hello alice')
 		expect(calls).toEqual([{ method: 'greet', args: ['alice'] }])
+	})
+})
+
+describe('buildWorkerEnv: parity with the worker env', () => {
+	let tempDir: string
+	let dataDir: string
+	const touched: string[] = []
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), 'do-worker-env-'))
+		dataDir = join(tempDir, '.lopata')
+		mkdirSync(dataDir, { recursive: true })
+	})
+
+	afterEach(() => {
+		for (const key of touched.splice(0)) delete process.env[key]
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	const config: WranglerConfig = {
+		name: 'test',
+		main: 'index.ts',
+		vars: { AI_GATEWAY_ID: 'prod-gateway', UNTOUCHED: 'from-config' },
+		ai_search_namespaces: [{ binding: 'AI_SEARCH', namespace: 'default' }],
+		vpc_networks: [{ binding: 'VPC', network_id: 'net-1' }],
+		artifacts: [{ binding: 'ARTIFACTS', namespace: 'default' }],
+		worker_loaders: [{ binding: 'LOADER' }],
+		flagship: { binding: 'FLAGS', app_id: 'app-1' },
+		kv_namespaces: [{ binding: 'KV', id: 'kv-1' }],
+		r2_buckets: [{ binding: 'BUCKET', bucket_name: 'bucket-1' }],
+		d1_databases: [{ binding: 'DB', database_name: 'db-1', database_id: 'db-1' }],
+		browser: { binding: 'BROWSER' },
+		ai: { binding: 'AI' },
+	} as WranglerConfig
+
+	test('DO env has the same bindings and vars as the worker-thread env', () => {
+		writeFileSync(join(tempDir, '.dev.vars'), 'SECRET=from-dev-vars')
+		touched.push('AI_GATEWAY_ID')
+		process.env.AI_GATEWAY_ID = 'dev-gateway'
+
+		const { env: doEnv } = buildWorkerEnv(config, dataDir, tempDir, makeMockRpc().rpc, 'HostDO', makeEnvWsBridge())
+		const { env: workerEnv } = buildThreadEnv({
+			config,
+			baseDir: tempDir,
+			dataDir,
+			rpc: makeMockRpc().rpc as never,
+			envWsBridge: makeEnvWsBridge() as never,
+		})
+
+		expect(Object.keys(doEnv).sort()).toEqual(Object.keys(workerEnv).sort())
+		for (const key of ['AI_GATEWAY_ID', 'UNTOUCHED', 'SECRET']) {
+			expect(doEnv[key]).toBe(workerEnv[key])
+		}
+		expect(doEnv.AI_GATEWAY_ID).toBe('dev-gateway')
+		expect(typeof (doEnv.AI_SEARCH as { get: unknown }).get).toBe('function')
 	})
 })

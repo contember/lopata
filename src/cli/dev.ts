@@ -29,7 +29,7 @@ import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket } from '../bindings/websocket-pair'
-import { autoLoadConfig, findConfigPath, hasScript, loadConfig } from '../config'
+import { findConfigPath, hasScript, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase, getDataDir } from '../db'
 import { FileWatcher } from '../file-watcher'
@@ -85,6 +85,9 @@ export async function run(ctx: CliContext, args: string[]) {
 
 	// Try to load lopata.config.ts for multi-worker mode
 	const lopataConfig = await loadLopataConfig(baseDir)
+	if (lopataConfig && ctx.configPath) {
+		console.warn('[lopata] -c/--config is ignored: lopata.config.ts defines the workers')
+	}
 
 	let manager: GenerationManager
 	let routeDispatcher: RouteDispatcher | undefined
@@ -282,7 +285,11 @@ export async function run(ctx: CliContext, args: string[]) {
 		}
 	} else {
 		// ─── Single-worker mode ────────────────────────────────────────
-		const config = await autoLoadConfig(baseDir, envFlag)
+		// Like wrangler, `-c` picks the config file and its directory becomes the
+		// worker's base: `main`, `assets.directory` and `.dev.vars` resolve against it.
+		const configPath = ctx.configPath ?? findConfigPath(baseDir)
+		const workerBaseDir = path.dirname(configPath)
+		const config = await loadConfig(configPath, envFlag)
 		console.log(`[lopata] Loaded config: ${config.name}${envFlag ? ` (env: ${envFlag})` : ''}`)
 		setDashboardConfig(config)
 
@@ -291,12 +298,12 @@ export async function run(ctx: CliContext, args: string[]) {
 		// reference the worker by name (self-bindings) resolve to its own
 		// thread executor instead of an empty `workerModule`.
 		registry = new WorkerRegistry()
-		manager = new GenerationManager(config, baseDir, {
+		manager = new GenerationManager(config, workerBaseDir, {
 			workerName: config.name,
 			workerRegistry: registry,
 			isMain: true,
 			executorFactory,
-			configPath: findConfigPath(baseDir),
+			configPath,
 			baseUrls,
 		})
 		registry.register(config.name, manager, true)
@@ -314,8 +321,8 @@ export async function run(ctx: CliContext, args: string[]) {
 		// An assets-only worker has no graph: its files are read from disk per
 		// request, so edits are picked up with no reload at all.
 		if (hasScript(config)) {
-			const entry = path.resolve(baseDir, config.main)
-			const watcher = new ImportGraphWatcher(entry, baseDir, () => {
+			const entry = path.resolve(workerBaseDir, config.main)
+			const watcher = new ImportGraphWatcher(entry, workerBaseDir, () => {
 				manager.reload().then(gen => {
 					watcher.rescan()
 					console.log(`[lopata] Reloaded → generation ${gen.id} (watching ${watcher.size} files)`)

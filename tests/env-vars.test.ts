@@ -176,6 +176,39 @@ describe('buildEnv - process.env', () => {
 		expect(env.HOME_GROWN_HOST_VAR).toBeUndefined()
 	})
 
+	test('a value Bun autoloaded from .env does not beat .dev.vars', () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
+		writeFileSync(join(tmpDir, '.dev.vars'), 'API_KEY=dev-secret')
+		writeFileSync(join(tmpDir, '.env'), 'API_KEY=from-dotenv')
+		// What Bun does at startup when .env sits in the working directory
+		setEnv('API_KEY', 'from-dotenv')
+		const cwd = process.cwd()
+		process.chdir(tmpDir)
+		try {
+			const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
+			expect(env.API_KEY).toBe('dev-secret')
+		} finally {
+			process.chdir(cwd)
+			rmSync(tmpDir, { recursive: true })
+		}
+	})
+
+	test('a shell value still beats .dev.vars when .env has a different one', () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-'))
+		writeFileSync(join(tmpDir, '.dev.vars'), 'API_KEY=dev-secret')
+		writeFileSync(join(tmpDir, '.env'), 'API_KEY=from-dotenv')
+		setEnv('API_KEY', 'from-shell')
+		const cwd = process.cwd()
+		process.chdir(tmpDir)
+		try {
+			const { env } = buildEnv({ name: 'test', main: 'index.ts' }, tmpDir)
+			expect(env.API_KEY).toBe('from-shell')
+		} finally {
+			process.chdir(cwd)
+			rmSync(tmpDir, { recursive: true })
+		}
+	})
+
 	test('an empty process.env value still overrides', () => {
 		setEnv('API_HOST', '')
 

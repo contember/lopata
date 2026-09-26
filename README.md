@@ -176,6 +176,10 @@ Variables are loaded in this order (later overrides earlier):
 4. `.dev.vars.<environment>` for env-specific overrides
 5. `process.env`, but **only for names one of the above already declares**
 
+Bun loads `.env`, `.env.<NODE_ENV>` and `.env.local` into `process.env` on its own. Those
+values don't count as step 5, so `.env` never beats `.dev.vars`; only a variable exported in
+the shell (or set by the container) does.
+
 The last step lets a secret manager or a container's environment supply the value without
 writing it to disk — declare the name with a placeholder in `[vars]` and export the real one:
 
