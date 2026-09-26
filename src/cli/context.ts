@@ -6,6 +6,8 @@ import { autoLoadConfig, loadConfig } from '../config'
 
 export interface CliContext {
 	envName: string | undefined
+	/** Absolute path from `-c/--config`, when given. */
+	configPath: string | undefined
 	config: () => Promise<WranglerConfig>
 	db: () => Database
 	dataDir: () => string
@@ -87,12 +89,15 @@ export function createContext(configPath: string | undefined, envName: string | 
 	let _config: WranglerConfig | null = null
 	let _db: Database | null = null
 
+	const resolvedConfigPath = configPath ? resolve(baseDir, configPath) : undefined
+
 	return {
 		envName,
+		configPath: resolvedConfigPath,
 		config: async () => {
 			if (_config) return _config
-			_config = configPath
-				? await loadConfig(resolve(baseDir, configPath), envName)
+			_config = resolvedConfigPath
+				? await loadConfig(resolvedConfigPath, envName)
 				: await autoLoadConfig(baseDir, envName)
 			return _config
 		},
