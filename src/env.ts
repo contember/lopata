@@ -1,32 +1,19 @@
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
-import { AiBinding } from './bindings/ai'
-import { AiSearchNamespaceBinding } from './bindings/ai-search'
-import { SqliteAnalyticsEngine } from './bindings/analytics-engine'
-import { ArtifactsBinding } from './bindings/artifacts'
-import { BrowserBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
 import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
 import { DockerManager } from './bindings/container-docker'
-import { openD1Database } from './bindings/d1'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { SendEmailBinding } from './bindings/email'
-import { FlagshipBinding } from './bindings/flagship'
-import { HyperdriveBinding } from './bindings/hyperdrive'
-import { ImagesBinding } from './bindings/images'
-import { SqliteKVNamespace } from './bindings/kv'
-import { MediaBinding } from './bindings/media'
 import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
-import { FileR2Bucket } from './bindings/r2'
 import { createServiceBinding } from './bindings/service-binding'
-import { StaticAssets } from './bindings/static-assets'
-import { VpcNetworkBinding } from './bindings/vpc-network'
-import { WorkerLoaderBinding } from './bindings/worker-loader'
+import { addStatelessBindings, createStaticAssets } from './bindings/stateless-env'
+import type { StaticAssets } from './bindings/static-assets'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
-import { instrumentBinding, instrumentD1, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
+import { instrumentBinding, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
 import type { ResolvedTarget, WorkerRegistry } from './worker-registry'
 
 /**
@@ -184,25 +171,6 @@ export function buildEnv(
 		}
 	}
 
-	for (const kv of config.kv_namespaces ?? []) {
-		console.log(`[lopata] KV namespace: ${kv.binding}`)
-		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
-			type: 'kv',
-			name: kv.binding,
-			methods: ['get', 'getWithMetadata', 'put', 'delete', 'list'],
-		})
-	}
-
-	// R2 buckets
-	for (const r2 of config.r2_buckets ?? []) {
-		console.log(`[lopata] R2 bucket: ${r2.binding} (${r2.bucket_name})`)
-		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, getDataDir()), {
-			type: 'r2',
-			name: r2.binding,
-			methods: ['get', 'put', 'delete', 'list', 'head', 'createMultipartUpload'],
-		})
-	}
-
 	// Durable Objects
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
 		console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
@@ -230,12 +198,6 @@ export function buildEnv(
 			className: wf.class_name,
 			binding,
 		})
-	}
-
-	// D1 databases
-	for (const d1 of config.d1_databases ?? []) {
-		console.log(`[lopata] D1 database: ${d1.binding} (${d1.database_name})`)
-		env[d1.binding] = instrumentD1(openD1Database(getDataDir(), d1.database_name), d1.binding)
 	}
 
 	// Queue producers
@@ -275,59 +237,12 @@ export function buildEnv(
 		})
 	}
 
-	// Images binding
-	if (config.images) {
-		console.log(`[lopata] Images binding: ${config.images.binding}`)
-		env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
-			type: 'images',
-			name: config.images.binding,
-			methods: ['info'],
-		})
-	}
-
-	// Media binding
-	if (config.media) {
-		console.log(`[lopata] Media binding: ${config.media.binding}`)
-		env[config.media.binding] = instrumentBinding(new MediaBinding(), {
-			type: 'media',
-			name: config.media.binding,
-			methods: [],
-		})
-	}
-
 	// Send email bindings
 	for (const email of config.send_email ?? []) {
 		console.log(`[lopata] Send email binding: ${email.name}`)
 		env[email.name] = instrumentBinding(
 			new SendEmailBinding(db, email.name, email.destination_address, email.allowed_destination_addresses),
 			{ type: 'email', name: email.name, methods: ['send'] },
-		)
-	}
-
-	// Hyperdrive
-	for (const hd of config.hyperdrive ?? []) {
-		const connStr = hd.localConnectionString ?? ''
-		console.log(`[lopata] Hyperdrive: ${hd.binding}`)
-		env[hd.binding] = new HyperdriveBinding(connStr)
-	}
-
-	// Workers AI
-	if (config.ai) {
-		const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID) as string | undefined
-		const apiToken = (env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN) as string | undefined
-		console.log(`[lopata] AI binding: ${config.ai.binding}`)
-		env[config.ai.binding] = instrumentBinding(
-			new AiBinding(db, accountId, apiToken),
-			{ type: 'ai', name: config.ai.binding, methods: ['run', 'models'] },
-		)
-	}
-
-	// Analytics Engine datasets
-	for (const ae of config.analytics_engine_datasets ?? []) {
-		console.log(`[lopata] Analytics Engine: ${ae.binding} (dataset: ${ae.dataset ?? ae.binding})`)
-		env[ae.binding] = instrumentBinding(
-			new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding),
-			{ type: 'analytics_engine', name: ae.binding, methods: ['writeDataPoint'] },
 		)
 	}
 
@@ -371,107 +286,22 @@ export function buildEnv(
 		}
 	}
 
-	// Static assets
-	if (config.assets) {
-		const assetsDir = devVarsDir ? path.resolve(devVarsDir, config.assets.directory) : path.resolve(config.assets.directory)
-		const assets = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
-		registry.staticAssets = assets
-		if (config.assets.binding) {
-			console.log(`[lopata] Static assets: ${config.assets.binding} -> ${config.assets.directory}`)
-			env[config.assets.binding] = instrumentBinding(assets, {
-				type: 'assets',
-				name: config.assets.binding,
-				methods: ['fetch'],
-			})
-		} else {
-			console.log(`[lopata] Static assets: ${config.assets.directory} (auto-serve)`)
-		}
+	// Static assets: main keeps the instance to auto-serve them even without a binding
+	registry.staticAssets = createStaticAssets(config, devVarsDir ?? process.cwd())
+	if (config.assets && !config.assets.binding) {
+		console.log(`[lopata] Static assets: ${config.assets.directory} (auto-serve)`)
 	}
 
-	// Browser Rendering binding
-	if (config.browser) {
-		console.log(`[lopata] Browser binding: ${config.browser.binding}`)
-		env[config.browser.binding] = instrumentBinding(
-			new BrowserBinding(browserConfig ?? {}),
-			{ type: 'browser', name: config.browser.binding, methods: ['launch', 'connect', 'sessions'] },
-		)
-	}
-
-	// VPC Networks — pass-through fetcher (network_id = Mesh, tunnel_id = tunnel)
-	for (const vpc of config.vpc_networks ?? []) {
-		const networkId = vpc.network_id ?? vpc.tunnel_id
-		if (!networkId) {
-			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
-		}
-		console.log(`[lopata] VPC Network: ${vpc.binding} (${vpc.tunnel_id ? 'tunnel' : 'network'}: ${networkId})`)
-		env[vpc.binding] = instrumentBinding(new VpcNetworkBinding({ networkId, bindingName: vpc.binding }), {
-			type: 'vpc_network',
-			name: vpc.binding,
-			methods: ['fetch'],
-		})
-	}
-
-	// AI Search namespaces — proxy to the CF AI Search REST API
-	for (const ns of config.ai_search_namespaces ?? []) {
-		const accountId = (env.CLOUDFLARE_ACCOUNT_ID ?? process.env.CLOUDFLARE_ACCOUNT_ID) as string | undefined
-		const apiToken = (env.CLOUDFLARE_API_TOKEN ?? process.env.CLOUDFLARE_API_TOKEN) as string | undefined
-		console.log(`[lopata] AI Search namespace: ${ns.binding} (namespace: ${ns.namespace})`)
-		env[ns.binding] = instrumentBinding(new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken), {
-			type: 'ai_search',
-			name: ns.binding,
-			// get() is synchronous and makes no request, so it stays unwrapped
-			methods: ['create', 'list', 'delete', 'search', 'chatCompletions'],
-		})
-	}
-
-	// Artifacts — control plane (SQLite + bare git repos); the git-over-HTTP endpoint
-	// is served by the dev server at /__artifacts/git/* (see cli/dev.ts).
-	for (const artifacts of config.artifacts ?? []) {
-		const remoteBase = (baseUrls?.artifacts ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
-		console.log(`[lopata] Artifacts binding: ${artifacts.binding} (namespace: ${artifacts.namespace})`)
-		env[artifacts.binding] = instrumentBinding(
-			new ArtifactsBinding(db, artifacts.namespace, path.join(getDataDir(), 'artifacts'), remoteBase),
-			{ type: 'artifacts', name: artifacts.binding, methods: ['create', 'get', 'list', 'import', 'delete'] },
-		)
-	}
-
-	// Worker Loader — dynamic Workers (each its own Bun worker thread). Not wrapped in
-	// instrumentBinding: load()/get() return live WorkerStub handles *synchronously*, and
-	// the async span wrapper would turn them into Promises, breaking the
-	// `loader.get(id).getEntrypoint().fetch()` chaining the Cloudflare API requires.
-	for (const loader of config.worker_loaders ?? []) {
-		console.log(`[lopata] Worker Loader: ${loader.binding}`)
-		env[loader.binding] = new WorkerLoaderBinding(path.join(getDataDir(), 'worker-loader'))
-	}
-
-	// Flagship — SQLite-backed feature flags
-	if (config.flagship) {
-		console.log(`[lopata] Flagship binding: ${config.flagship.binding} (app: ${config.flagship.app_id})`)
-		env[config.flagship.binding] = instrumentBinding(new FlagshipBinding(db, config.flagship.app_id), {
-			type: 'flagship',
-			name: config.flagship.binding,
-			methods: [
-				'getBooleanValue',
-				'getStringValue',
-				'getNumberValue',
-				'getObjectValue',
-				'getBooleanValueDetails',
-				'getStringValueDetails',
-				'getNumberValueDetails',
-				'getObjectValueDetails',
-			],
-		})
-	}
-
-	// Version metadata binding
-	if (config.version_metadata) {
-		const binding = config.version_metadata.binding
-		env[binding] = {
-			id: 'local-dev',
-			tag: '',
-			timestamp: new Date().toISOString(),
-		}
-	}
+	addStatelessBindings(env, {
+		config,
+		db,
+		dataDir: getDataDir(),
+		baseDir: devVarsDir ?? process.cwd(),
+		browserConfig,
+		artifactsBaseUrl: baseUrls?.artifacts,
+		staticAssets: registry.staticAssets ?? undefined,
+		log: (message) => console.log(`[lopata] ${message}`),
+	})
 
 	return { env, registry }
 }

@@ -22,7 +22,7 @@ import { RpcHostChannel } from '../worker-thread/rpc-shared'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
-import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
+import type { DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
 import { DurableObjectIdImpl } from './durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from './websocket-pair'
 
@@ -188,7 +188,7 @@ export class WorkerExecutor implements DOExecutor {
 							// Main's parsed, env-overridden config — the DO worker uses this
 							// instead of re-loading from configPath WITHOUT the --env overrides.
 							wranglerConfig: this._config._wranglerConfig,
-							artifactsBaseUrl: this._config._artifactsBaseUrl,
+							runtime: this._config._runtime,
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
 							idStr: config.id.toString(),
@@ -583,18 +583,18 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 	private _modulePath?: string
 	private _configPath?: string
 	private _wranglerConfig?: WranglerConfig
-	private _artifactsBaseUrl?: string
+	private _runtime?: DOWorkerRuntimeOptions
 
 	/**
 	 * Set the module + config paths and the parsed env-overridden config for all
 	 * executors created by this factory. Called by the generation manager after
 	 * loading config.
 	 */
-	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, artifactsBaseUrl?: string): void {
+	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, runtime?: DOWorkerRuntimeOptions): void {
 		this._modulePath = modulePath
 		this._configPath = configPath
 		this._wranglerConfig = wranglerConfig
-		this._artifactsBaseUrl = artifactsBaseUrl
+		this._runtime = runtime
 	}
 
 	create(config: ExecutorConfig): DOExecutor {
@@ -604,7 +604,7 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 			_modulePath: this._modulePath ?? '',
 			_configPath: this._configPath ?? '',
 			_wranglerConfig: this._wranglerConfig,
-			_artifactsBaseUrl: this._artifactsBaseUrl,
+			_runtime: this._runtime,
 		})
 	}
 }

@@ -21,8 +21,8 @@ interface WorkerConfig {
 	 *  the DO env honors `--env` overrides; absent (e.g. standalone test factory)
 	 *  we fall back to re-loading from `configPath`. */
 	wranglerConfig?: import('../config').WranglerConfig
-	/** Main's Artifacts git endpoint, for the DO env's Artifacts binding. */
-	artifactsBaseUrl?: string
+	/** Runtime settings the worker env gets too (Artifacts URL, browser config). */
+	runtime?: import('./do-executor').DOWorkerRuntimeOptions
 	dataDir: string
 	namespaceName: string
 	idStr: string
@@ -91,7 +91,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 		envRpc,
 		workerConfig.namespaceName,
 		envWsBridge,
-		workerConfig.artifactsBaseUrl,
+		workerConfig.runtime,
 	)
 
 	// Publish env to `globalEnv` so top-level `import { env } from

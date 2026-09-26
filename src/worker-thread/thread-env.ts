@@ -9,33 +9,18 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
-import { AiBinding } from '../bindings/ai'
-import { AiSearchNamespaceBinding } from '../bindings/ai-search'
-import { SqliteAnalyticsEngine } from '../bindings/analytics-engine'
-import { ArtifactsBinding } from '../bindings/artifacts'
-import { BrowserBinding } from '../bindings/browser'
-import { openD1Database } from '../bindings/d1'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
-import { FlagshipBinding } from '../bindings/flagship'
-import { HyperdriveBinding } from '../bindings/hyperdrive'
-import { ImagesBinding } from '../bindings/images'
-import { SqliteKVNamespace } from '../bindings/kv'
-import { MediaBinding } from '../bindings/media'
-import { FileR2Bucket } from '../bindings/r2'
 import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
-import { StaticAssets } from '../bindings/static-assets'
-import { VpcNetworkBinding } from '../bindings/vpc-network'
+import { addStatelessBindings, type BrowserConfig } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
-import { WorkerLoaderBinding } from '../bindings/worker-loader'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { resolveVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
-import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import type { BindingTarget, WorkerMessage } from './protocol'
 import type { RpcClient } from './rpc-client'
 import { tagCloneable } from './rpc-shared'
@@ -51,7 +36,7 @@ export interface ThreadEnvOptions {
 	rpc: RpcClient
 	/** Guest-side bridge for WebSockets returned by env-binding fetches. */
 	envWsBridge: WsGuestBridge<WorkerMessage>
-	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	browserConfig?: BrowserConfig
 	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
 	artifactsBaseUrl?: string
 }
@@ -80,26 +65,6 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 	threadGlobals.__lopata_db = db
 
 	const env: Record<string, unknown> = resolveVars(config, baseDir)
-
-	for (const kv of config.kv_namespaces ?? []) {
-		env[kv.binding] = instrumentBinding(new SqliteKVNamespace(db, kv.id), {
-			type: 'kv',
-			name: kv.binding,
-			methods: ['get', 'getWithMetadata', 'put', 'delete', 'list'],
-		})
-	}
-
-	for (const r2 of config.r2_buckets ?? []) {
-		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, dataDir), {
-			type: 'r2',
-			name: r2.binding,
-			methods: ['get', 'put', 'delete', 'list', 'head', 'createMultipartUpload'],
-		})
-	}
-
-	for (const d1 of config.d1_databases ?? []) {
-		env[d1.binding] = instrumentD1(openD1Database(dataDir, d1.database_name), d1.binding)
-	}
 
 	for (const producer of config.queues?.producers ?? []) {
 		env[producer.binding] = makeQueueProducerProxy(producer.binding, rpc, envWsBridge)
@@ -137,128 +102,7 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 		workflows.push({ bindingName: wf.binding, className: wf.class_name, binding })
 	}
 
-	if (config.assets?.binding) {
-		const assetsDir = path.resolve(baseDir, config.assets.directory)
-		env[config.assets.binding] = instrumentBinding(
-			new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling),
-			{ type: 'assets', name: config.assets.binding, methods: ['fetch'] },
-		)
-	}
-
-	if (config.images) {
-		env[config.images.binding] = instrumentBinding(new ImagesBinding(), {
-			type: 'images',
-			name: config.images.binding,
-			methods: ['info'],
-		})
-	}
-
-	if (config.media) {
-		env[config.media.binding] = instrumentBinding(new MediaBinding(), {
-			type: 'media',
-			name: config.media.binding,
-			methods: [],
-		})
-	}
-
-	for (const hd of config.hyperdrive ?? []) {
-		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
-	}
-
-	if (config.browser) {
-		env[config.browser.binding] = instrumentBinding(new BrowserBinding(browserConfig ?? {}), {
-			type: 'browser',
-			name: config.browser.binding,
-			methods: ['launch', 'connect', 'sessions'],
-		})
-	}
-
-	if (config.ai) {
-		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
-		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
-		env[config.ai.binding] = instrumentBinding(new AiBinding(db, accountId, apiToken), {
-			type: 'ai',
-			name: config.ai.binding,
-			methods: ['run', 'models'],
-		})
-	}
-
-	for (const ae of config.analytics_engine_datasets ?? []) {
-		env[ae.binding] = instrumentBinding(new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding), {
-			type: 'analytics_engine',
-			name: ae.binding,
-			methods: ['writeDataPoint'],
-		})
-	}
-
-	// VPC Networks — pass-through fetcher (network_id = Mesh, tunnel_id = tunnel)
-	for (const vpc of config.vpc_networks ?? []) {
-		const networkId = vpc.network_id ?? vpc.tunnel_id
-		if (!networkId) {
-			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
-		}
-		env[vpc.binding] = instrumentBinding(new VpcNetworkBinding({ networkId, bindingName: vpc.binding }), {
-			type: 'vpc_network',
-			name: vpc.binding,
-			methods: ['fetch'],
-		})
-	}
-
-	// AI Search namespaces — proxy to the CF AI Search REST API
-	for (const ns of config.ai_search_namespaces ?? []) {
-		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
-		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
-		env[ns.binding] = instrumentBinding(new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken), {
-			type: 'ai_search',
-			name: ns.binding,
-			// get() is synchronous and makes no request, so it stays unwrapped
-			methods: ['create', 'list', 'delete', 'search', 'chatCompletions'],
-		})
-	}
-
-	// Artifacts — control plane (SQLite + bare git repos under dataDir/artifacts);
-	// the git-over-HTTP endpoint is served by main's Bun.serve at /__artifacts/git/*.
-	for (const artifacts of config.artifacts ?? []) {
-		const remoteBase = (artifactsBaseUrl ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
-		env[artifacts.binding] = instrumentBinding(
-			new ArtifactsBinding(db, artifacts.namespace, path.join(dataDir, 'artifacts'), remoteBase),
-			{ type: 'artifacts', name: artifacts.binding, methods: ['create', 'get', 'list', 'import', 'delete'] },
-		)
-	}
-
-	// Worker Loader — dynamic Workers, each its own nested Bun worker thread. Not wrapped
-	// in instrumentBinding: load()/get() return live WorkerStub handles synchronously, and
-	// the async span wrapper would turn them into Promises (breaking the
-	// `loader.get(id).getEntrypoint().fetch()` chaining the Cloudflare API requires).
-	for (const loader of config.worker_loaders ?? []) {
-		env[loader.binding] = new WorkerLoaderBinding(path.join(dataDir, 'worker-loader'))
-	}
-
-	// Flagship — SQLite-backed feature flags
-	if (config.flagship) {
-		env[config.flagship.binding] = instrumentBinding(new FlagshipBinding(db, config.flagship.app_id), {
-			type: 'flagship',
-			name: config.flagship.binding,
-			methods: [
-				'getBooleanValue',
-				'getStringValue',
-				'getNumberValue',
-				'getObjectValue',
-				'getBooleanValueDetails',
-				'getStringValueDetails',
-				'getNumberValueDetails',
-				'getObjectValueDetails',
-			],
-		})
-	}
-
-	if (config.version_metadata) {
-		env[config.version_metadata.binding] = {
-			id: 'local-dev',
-			tag: '',
-			timestamp: new Date().toISOString(),
-		}
-	}
+	addStatelessBindings(env, { config, db, dataDir, baseDir, browserConfig, artifactsBaseUrl })
 
 	return { env, db, workflows }
 }

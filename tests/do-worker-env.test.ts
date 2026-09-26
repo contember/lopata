@@ -342,7 +342,7 @@ describe('buildWorkerEnv — RPC call passthrough', () => {
 	})
 })
 
-describe('buildWorkerEnv — parity with the worker env', () => {
+describe('buildWorkerEnv: parity with the worker env', () => {
 	let tempDir: string
 	let dataDir: string
 	const touched: string[] = []
@@ -367,6 +367,11 @@ describe('buildWorkerEnv — parity with the worker env', () => {
 		artifacts: [{ binding: 'ARTIFACTS', namespace: 'default' }],
 		worker_loaders: [{ binding: 'LOADER' }],
 		flagship: { binding: 'FLAGS', app_id: 'app-1' },
+		kv_namespaces: [{ binding: 'KV', id: 'kv-1' }],
+		r2_buckets: [{ binding: 'BUCKET', bucket_name: 'bucket-1' }],
+		d1_databases: [{ binding: 'DB', database_name: 'db-1', database_id: 'db-1' }],
+		browser: { binding: 'BROWSER' },
+		ai: { binding: 'AI' },
 	} as WranglerConfig
 
 	test('DO env has the same bindings and vars as the worker-thread env', () => {

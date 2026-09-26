@@ -9,7 +9,7 @@
 
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { resolveVars } from '../env'
@@ -19,27 +19,14 @@ import type { BindingTarget, ParentSpanContext, SerializedResponse, WorkflowCont
 import { RpcClient } from '../worker-thread/rpc-shared'
 import { tagCloneable } from '../worker-thread/rpc-shared'
 import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
-import { AiBinding } from './ai'
-import { AiSearchNamespaceBinding } from './ai-search'
-import { SqliteAnalyticsEngine } from './analytics-engine'
-import { ArtifactsBinding } from './artifacts'
-import { BrowserBinding } from './browser'
-import { openD1Database } from './d1'
+import type { DOWorkerRuntimeOptions } from './do-executor'
 import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { EmailMessage } from './email'
-import { FlagshipBinding } from './flagship'
-import { HyperdriveBinding } from './hyperdrive'
-import { ImagesBinding } from './images'
-import { SqliteKVNamespace } from './kv'
-import { MediaBinding } from './media'
 import { SqliteQueueProducer } from './queue'
-import { FileR2Bucket } from './r2'
 import { makeBindingProxy } from './rpc-stub'
-import { StaticAssets } from './static-assets'
-import { VpcNetworkBinding } from './vpc-network'
+import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
-import { WorkerLoaderBinding } from './worker-loader'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -154,7 +141,7 @@ export function buildWorkerEnv(
 	rpc: RpcClient,
 	_hostNamespaceName: string,
 	envWsBridge: WsGuestBridge<DOMainMessage>,
-	artifactsBaseUrl?: string,
+	runtime: DOWorkerRuntimeOptions = {},
 ): { db: Database; env: Record<string, unknown> } {
 	// Open own DB connection (WAL mode for safe concurrency)
 	const dbPath = join(dataDir, 'data.sqlite')
@@ -176,16 +163,6 @@ export function buildWorkerEnv(
 	// and process.env overrides, resolved by the same function main uses.
 	const env: Record<string, unknown> = resolveVars(config, baseDir)
 
-	// KV namespaces
-	for (const kv of config.kv_namespaces ?? []) {
-		env[kv.binding] = new SqliteKVNamespace(db, kv.id)
-	}
-
-	// R2 buckets
-	for (const r2 of config.r2_buckets ?? []) {
-		env[r2.binding] = new FileR2Bucket(db, r2.bucket_name, dataDir)
-	}
-
 	// Durable Objects — every DO binding (including the host class) routes via
 	// main's namespace over env-RPC. The stub ships `{ instanceId, instanceName }`
 	// in `BindingTarget`; main's `_resolveBinding` reconstructs the
@@ -205,11 +182,6 @@ export function buildWorkerEnv(
 		env[bindingName] = makeDoEnvNamespaceProxy(bindingName, rpc, envWsBridge)
 	}
 
-	// D1 databases
-	for (const d1 of config.d1_databases ?? []) {
-		env[d1.binding] = openD1Database(dataDir, d1.database_name)
-	}
-
 	// Queue producers
 	for (const producer of config.queues?.producers ?? []) {
 		env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0)
@@ -227,57 +199,7 @@ export function buildWorkerEnv(
 		env[wf.binding] = makeWorkflowEnvProxy(wf.binding, rpc, envWsBridge)
 	}
 
-	// Stateless bindings missing until now — on real CF a DO's env equals the
-	// worker's env, so these must be present here too (mirrors thread-env.ts).
-	if (config.assets?.binding) {
-		const assetsDir = resolve(baseDir, config.assets.directory)
-		env[config.assets.binding] = new StaticAssets(assetsDir, config.assets.html_handling, config.assets.not_found_handling)
-	}
-	if (config.images) {
-		env[config.images.binding] = new ImagesBinding()
-	}
-	if (config.media) {
-		env[config.media.binding] = new MediaBinding()
-	}
-	for (const hd of config.hyperdrive ?? []) {
-		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
-	}
-	if (config.browser) {
-		env[config.browser.binding] = new BrowserBinding({})
-	}
-	if (config.ai) {
-		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
-		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
-		env[config.ai.binding] = new AiBinding(db, accountId, apiToken)
-	}
-	for (const ae of config.analytics_engine_datasets ?? []) {
-		env[ae.binding] = new SqliteAnalyticsEngine(db, ae.dataset ?? ae.binding)
-	}
-	for (const vpc of config.vpc_networks ?? []) {
-		const networkId = vpc.network_id ?? vpc.tunnel_id
-		if (!networkId) {
-			throw new Error(`VPC Network "${vpc.binding}" requires either network_id or tunnel_id`)
-		}
-		env[vpc.binding] = new VpcNetworkBinding({ networkId, bindingName: vpc.binding })
-	}
-	for (const ns of config.ai_search_namespaces ?? []) {
-		const accountId = typeof env.CLOUDFLARE_ACCOUNT_ID === 'string' ? env.CLOUDFLARE_ACCOUNT_ID : process.env.CLOUDFLARE_ACCOUNT_ID
-		const apiToken = typeof env.CLOUDFLARE_API_TOKEN === 'string' ? env.CLOUDFLARE_API_TOKEN : process.env.CLOUDFLARE_API_TOKEN
-		env[ns.binding] = new AiSearchNamespaceBinding(db, ns.namespace, accountId, apiToken)
-	}
-	for (const artifacts of config.artifacts ?? []) {
-		const remoteBase = (artifactsBaseUrl ?? 'http://localhost:8787/__artifacts/git').replace(/\/$/, '')
-		env[artifacts.binding] = new ArtifactsBinding(db, artifacts.namespace, join(dataDir, 'artifacts'), remoteBase)
-	}
-	for (const loader of config.worker_loaders ?? []) {
-		env[loader.binding] = new WorkerLoaderBinding(join(dataDir, 'worker-loader'))
-	}
-	if (config.flagship) {
-		env[config.flagship.binding] = new FlagshipBinding(db, config.flagship.app_id)
-	}
-	if (config.version_metadata) {
-		env[config.version_metadata.binding] = { id: 'local-dev', tag: '', timestamp: new Date().toISOString() }
-	}
+	addStatelessBindings(env, { config, db, dataDir, baseDir, browserConfig: runtime.browserConfig, artifactsBaseUrl: runtime.artifactsBaseUrl })
 
 	return { db, env }
 }
