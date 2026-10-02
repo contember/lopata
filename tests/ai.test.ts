@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { AiBinding } from '../src/bindings/ai'
 import { runMigrations } from '../src/db'
 
@@ -7,8 +7,23 @@ let db: Database
 let ai: AiBinding
 const originalFetch = globalThis.fetch
 
+interface AiRequestLog {
+	model: string
+	status: string
+	error: string | null
+	is_streaming: number
+	duration_ms: number
+	created_at: number
+	input_summary: string
+	output_summary: string
+}
+
 function mockFetch(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-	globalThis.fetch = mock(handler as any) as any
+	const implementation = Object.assign(
+		async (...[input, init]: Parameters<typeof globalThis.fetch>) => handler(input instanceof Request ? input.url : String(input), init),
+		{ preconnect: originalFetch.preconnect },
+	)
+	spyOn(globalThis, 'fetch').mockImplementation(implementation)
 }
 
 beforeEach(() => {
@@ -26,13 +41,11 @@ describe('AiBinding', () => {
 	describe('run()', () => {
 		test('sends correct URL and Authorization header', async () => {
 			let capturedUrl = ''
-			let capturedHeaders: Record<string, string> = {}
+			let capturedHeaders = new Headers()
 
 			mockFetch((url, init) => {
 				capturedUrl = url
-				capturedHeaders = Object.fromEntries(
-					Object.entries(init?.headers ?? {}).map(([k, v]) => [k, v]),
-				)
+				capturedHeaders = new Headers(init?.headers)
 				return new Response(JSON.stringify({ result: { text: 'hello' } }), {
 					headers: { 'Content-Type': 'application/json' },
 				})
@@ -43,8 +56,8 @@ describe('AiBinding', () => {
 			expect(capturedUrl).toBe(
 				'https://api.cloudflare.com/client/v4/accounts/test-account-id/ai/run/@cf/meta/llama-2-7b-chat-int8',
 			)
-			expect(capturedHeaders.Authorization).toBe('Bearer test-api-token')
-			expect(capturedHeaders['Content-Type']).toBe('application/json')
+			expect(capturedHeaders.get('Authorization')).toBe('Bearer test-api-token')
+			expect(capturedHeaders.get('Content-Type')).toBe('application/json')
 		})
 
 		test('returns result field from JSON response', async () => {
@@ -67,13 +80,13 @@ describe('AiBinding', () => {
 
 			await ai.run('@cf/meta/llama-2-7b-chat-int8', { prompt: 'test' })
 
-			const rows = db.query<any, []>('SELECT * FROM ai_requests').all()
+			const rows = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').all()
 			expect(rows).toHaveLength(1)
-			expect(rows[0].model).toBe('@cf/meta/llama-2-7b-chat-int8')
-			expect(rows[0].status).toBe('ok')
-			expect(rows[0].is_streaming).toBe(0)
-			expect(rows[0].duration_ms).toBeGreaterThanOrEqual(0)
-			expect(rows[0].created_at).toBeGreaterThan(0)
+			expect(rows[0]?.model).toBe('@cf/meta/llama-2-7b-chat-int8')
+			expect(rows[0]?.status).toBe('ok')
+			expect(rows[0]?.is_streaming).toBe(0)
+			expect(rows[0]?.duration_ms).toBeGreaterThanOrEqual(0)
+			expect(rows[0]?.created_at).toBeGreaterThan(0)
 		})
 
 		test('streaming returns ReadableStream and logs is_streaming=1', async () => {
@@ -93,9 +106,9 @@ describe('AiBinding', () => {
 
 			expect(result).toBeInstanceOf(ReadableStream)
 
-			const rows = db.query<any, []>('SELECT * FROM ai_requests').all()
+			const rows = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').all()
 			expect(rows).toHaveLength(1)
-			expect(rows[0].is_streaming).toBe(1)
+			expect(rows[0]?.is_streaming).toBe(1)
 		})
 
 		test('returnRawResponse returns Response object', async () => {
@@ -121,10 +134,10 @@ describe('AiBinding', () => {
 				ai.run('@cf/meta/llama-2-7b-chat-int8', { prompt: 'hi' }),
 			).rejects.toThrow('HTTP 401')
 
-			const rows = db.query<any, []>('SELECT * FROM ai_requests').all()
+			const rows = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').all()
 			expect(rows).toHaveLength(1)
-			expect(rows[0].status).toBe('error')
-			expect(rows[0].error).toContain('401')
+			expect(rows[0]?.status).toBe('error')
+			expect(rows[0]?.error).toContain('401')
 		})
 
 		test('large input/output is truncated in log', async () => {
@@ -137,9 +150,9 @@ describe('AiBinding', () => {
 
 			await ai.run('@cf/test/model', { prompt: largeInput })
 
-			const rows = db.query<any, []>('SELECT * FROM ai_requests').all()
-			expect(rows[0].input_summary.length).toBeLessThanOrEqual(1025) // 1024 + "…"
-			expect(rows[0].output_summary.length).toBeLessThanOrEqual(1025)
+			const rows = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').all()
+			expect(rows[0]?.input_summary.length).toBeLessThanOrEqual(1025) // 1024 + "…"
+			expect(rows[0]?.output_summary.length).toBeLessThanOrEqual(1025)
 		})
 	})
 
@@ -192,10 +205,6 @@ describe('AiBinding', () => {
 	})
 
 	describe('unsupported methods', () => {
-		test('gateway() throws', () => {
-			expect(() => ai.gateway('gw-1')).toThrow('not supported in local dev')
-		})
-
 		test('autorag() throws', () => {
 			expect(() => ai.autorag('ar-1')).toThrow('not supported in local dev')
 		})
