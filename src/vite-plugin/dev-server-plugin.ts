@@ -7,6 +7,7 @@ import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypo
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
+import { configureCloudflareCrypto } from '../setup-globals.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
@@ -411,11 +412,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			getDatabase = dbMod.getDatabase
 
 			// 1. Load wrangler config
-			if (options.configPath) {
-				config = await configMod.loadConfig(resolve(projectRoot, options.configPath))
-			} else {
-				config = await configMod.autoLoadConfig(projectRoot)
-			}
+			const loadedConfig = options.configPath
+				? await configMod.loadConfig(resolve(projectRoot, options.configPath))
+				: await configMod.autoLoadConfig(projectRoot)
+			config = loadedConfig
+			configureCloudflareCrypto(loadedConfig.compatibility_flags)
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// The Vite plugin drives a worker built by Vite, so the main worker must have

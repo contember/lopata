@@ -1,6 +1,7 @@
 import { SqliteCacheStorage } from './bindings/cache'
 import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-streams'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
+import { configureModernCrypto } from './bindings/crypto-modern'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
@@ -8,6 +9,11 @@ import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
 
 let initialized = false
+
+export function configureCloudflareCrypto(compatibilityFlags: readonly string[] = []): void {
+	patchGlobalCrypto()
+	configureModernCrypto(compatibilityFlags.includes('webcrypto_modern_algorithms'))
+}
 
 /**
  * Sets up global Cloudflare-compatible APIs:

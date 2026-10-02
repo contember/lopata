@@ -7,6 +7,7 @@ import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { configureCloudflareCrypto } from '../setup-globals'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
@@ -160,6 +161,7 @@ function dispatchServiceWorkerFetch(
 }
 
 async function initRuntime(init: WorkerInitConfig) {
+	configureCloudflareCrypto(init.config.compatibility_flags)
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	const plugin = await import('../plugin')

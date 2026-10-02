@@ -76,6 +76,7 @@
 		"wrangler": "^4.67.0"
 	},
 	"dependencies": {
+		"@noble/post-quantum": "^0.7.1",
 		"smol-toml": "^1.6.0"
 	}
 }

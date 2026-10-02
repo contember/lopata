@@ -69,6 +69,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
+	const { configureCloudflareCrypto } = await import('../setup-globals')
+	configureCloudflareCrypto(config.compatibility_flags)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))

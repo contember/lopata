@@ -12,6 +12,7 @@
  * access behave identically to the parent.
  */
 
+import { configureCloudflareCrypto } from '../setup-globals'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 
 declare var self: Worker
@@ -21,6 +22,7 @@ export interface LoaderInitMessage {
 	mainModulePath: string
 	env: unknown
 	globalOutbound: 'allow' | 'block'
+	compatibilityFlags?: string[]
 }
 
 export type LoaderCommand =
@@ -68,6 +70,7 @@ self.onmessage = async (event: MessageEvent<MainToWorker>) => {
 self.postMessage({ type: 'need-init' } satisfies WorkerToMain)
 
 async function init(data: LoaderInitMessage): Promise<void> {
+	configureCloudflareCrypto(data.compatibilityFlags)
 	loaderEnv = data.env ?? {}
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {

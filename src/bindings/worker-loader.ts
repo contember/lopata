@@ -104,6 +104,7 @@ export class WorkerStub {
 					mainModulePath: mainPath,
 					env: sanitizeEnv(code.env),
 					globalOutbound: code.globalOutbound === null ? 'block' : 'allow',
+					compatibilityFlags: code.compatibilityFlags,
 				}
 				worker.postMessage({ type: 'init', data: init } satisfies MainToWorker)
 				return
