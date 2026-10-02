@@ -57,6 +57,7 @@ export const env = new Proxy({}, {
   },
 });
 export class WorkerEntrypoint {
+  get [Symbol.for("lopata.WorkerEntrypoint")]() { return true; }
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;
@@ -71,6 +72,12 @@ export class RpcTarget {
 export function waitUntil(promise) {
   // Shim for build — at runtime, the real cloudflare:workers module provides this.
 }
+export const cache = {
+  purge(options) {
+    if (!globalThis.__lopata_workerCacheApi) throw new Error("Workers Cache runtime is not initialized");
+    return globalThis.__lopata_workerCacheApi.purge(options);
+  }
+};
 `
 			}
 

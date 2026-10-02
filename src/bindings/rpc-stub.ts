@@ -104,6 +104,14 @@ export function makeBindingProxy(
 
 // Cache to avoid wrapping the same target twice (handles `return this`)
 const stubCache = new WeakMap<object, object>()
+export interface RpcExecutionScope {
+	run<T>(callback: () => T): T
+}
+const scopedStubCaches = new WeakMap<RpcExecutionScope, WeakMap<object, object>>()
+
+function withinScope<T>(scope: RpcExecutionScope | undefined, callback: () => T): T {
+	return scope ? scope.run(callback) : callback()
+}
 
 /**
  * Wrap an RpcTarget instance in a Proxy that mimics CF stub behavior:
@@ -113,8 +121,13 @@ const stubCache = new WeakMap<object, object>()
  * - Symbol.dispose / Symbol.asyncDispose → undefined (spec-defined no-op for `using`)
  * - dup() → new stub wrapping same target
  */
-export function createRpcStub(target: object): object {
-	const cached = stubCache.get(target)
+export function createRpcStub(target: object, scope?: RpcExecutionScope): object {
+	let cache = scope ? scopedStubCaches.get(scope) : stubCache
+	if (!cache) {
+		cache = new WeakMap()
+		if (scope) scopedStubCaches.set(scope, cache)
+	}
+	const cached = cache.get(target)
 	if (cached) return cached
 
 	const stub = new Proxy({} as Record<string, unknown>, {
@@ -131,19 +144,19 @@ export function createRpcStub(target: object): object {
 			if (prop === 'dup') {
 				return () => {
 					// Create a fresh stub (bypass cache)
-					const dup = createRpcStubUncached(target)
+					const dup = createRpcStubUncached(target, scope)
 					return dup
 				}
 			}
 
-			const member = (target as Record<string, unknown>)[prop]
+			const member: unknown = withinScope(scope, () => Reflect.get(target, prop))
 
 			// If it's a function, return an rpcCallable with thenable for property access
 			if (typeof member === 'function') {
 				const rpcCallable = (...args: unknown[]) => {
 					warnInvalidRpcArgs(args, prop)
-					const result = (member as Function).call(target, ...args)
-					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop))
+					const result = withinScope(scope, () => Reflect.apply(member, target, args))
+					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop, scope))
 				}
 
 				// Thenable for `await stub.method` (returns the wrapped function itself)
@@ -151,7 +164,7 @@ export function createRpcStub(target: object): object {
 					onFulfilled?: ((value: unknown) => unknown) | null,
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
-					const wrapped = createRpcFunctionStub(member as Function, target)
+					const wrapped = createRpcFunctionStub(member, target, scope)
 					return Promise.resolve(wrapped).then(onFulfilled, onRejected)
 				}
 
@@ -167,7 +180,7 @@ export function createRpcStub(target: object): object {
 				onFulfilled?: ((value: unknown) => unknown) | null,
 				onRejected?: ((reason: unknown) => unknown) | null,
 			) => {
-				const wrapped = wrapRpcReturnValue(member, prop)
+				const wrapped = wrapRpcReturnValue(member, prop, scope)
 				return Promise.resolve(wrapped).then(onFulfilled, onRejected)
 			}
 
@@ -175,33 +188,33 @@ export function createRpcStub(target: object): object {
 		},
 	})
 
-	stubCache.set(target, stub)
+	cache.set(target, stub)
 	return stub
 }
 
 /** Create a stub without caching (used by dup()) */
-function createRpcStubUncached(target: object): object {
+function createRpcStubUncached(target: object, scope?: RpcExecutionScope): object {
 	return new Proxy({} as Record<string, unknown>, {
 		get(_obj, prop: string | symbol) {
 			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
 			if (typeof prop === 'symbol') return undefined
 			if (typeof prop === 'string' && prop.startsWith('_')) return undefined
-			if (prop === 'dup') return () => createRpcStubUncached(target)
+			if (prop === 'dup') return () => createRpcStubUncached(target, scope)
 
-			const member = (target as Record<string, unknown>)[prop]
+			const member: unknown = withinScope(scope, () => Reflect.get(target, prop))
 
 			if (typeof member === 'function') {
 				const rpcCallable = (...args: unknown[]) => {
 					warnInvalidRpcArgs(args, prop as string)
-					const result = (member as Function).call(target, ...args)
-					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop as string))
+					const result = withinScope(scope, () => Reflect.apply(member, target, args))
+					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop, scope))
 				}
 				rpcCallable.then = (
 					onFulfilled?: ((value: unknown) => unknown) | null,
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
-					const wrapped = createRpcFunctionStub(member as Function, target)
+					const wrapped = createRpcFunctionStub(member, target, scope)
 					return Promise.resolve(wrapped).then(onFulfilled, onRejected)
 				}
 				return rpcCallable
@@ -214,7 +227,7 @@ function createRpcStubUncached(target: object): object {
 				onFulfilled?: ((value: unknown) => unknown) | null,
 				onRejected?: ((reason: unknown) => unknown) | null,
 			) => {
-				const wrapped = wrapRpcReturnValue(member, prop as string)
+				const wrapped = wrapRpcReturnValue(member, prop, scope)
 				return Promise.resolve(wrapped).then(onFulfilled, onRejected)
 			}
 			return rpcCallable
@@ -225,11 +238,11 @@ function createRpcStubUncached(target: object): object {
 /**
  * Wrap a function in a callable stub with validation + Symbol.dispose + dup().
  */
-export function createRpcFunctionStub(fn: Function, thisArg?: object): Function {
+export function createRpcFunctionStub(fn: Function, thisArg?: object, scope?: RpcExecutionScope): Function {
 	const stub = (...args: unknown[]) => {
 		warnInvalidRpcArgs(args, fn.name || '<anonymous>')
-		const result = fn.call(thisArg, ...args)
-		return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, fn.name || '<anonymous>'))
+		const result = withinScope(scope, () => Reflect.apply(fn, thisArg, args))
+		return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, fn.name || '<anonymous>', scope))
 	}
 
 	Object.defineProperty(stub, Symbol.dispose, {
@@ -245,7 +258,7 @@ export function createRpcFunctionStub(fn: Function, thisArg?: object): Function 
 	})
 
 	Object.defineProperty(stub, 'dup', {
-		value: () => createRpcFunctionStub(fn, thisArg),
+		value: () => createRpcFunctionStub(fn, thisArg, scope),
 		writable: false,
 		configurable: true,
 	})
@@ -326,15 +339,15 @@ export function createRpcPromise(promise: Promise<unknown>): Promise<unknown> {
  * - Function → createRpcFunctionStub()
  * - Otherwise → warn if invalid + pass through
  */
-export function wrapRpcReturnValue(value: unknown, context: string): unknown {
+export function wrapRpcReturnValue(value: unknown, context: string, scope?: RpcExecutionScope): unknown {
 	if (value === null || value === undefined) return value
 
 	if (isRpcTarget(value)) {
-		return createRpcStub(value as object)
+		if (typeof value === 'object') return createRpcStub(value, scope)
 	}
 
 	if (typeof value === 'function') {
-		return createRpcFunctionStub(value as Function)
+		return createRpcFunctionStub(value, undefined, scope)
 	}
 
 	// Not an RpcTarget or function — validate and pass through

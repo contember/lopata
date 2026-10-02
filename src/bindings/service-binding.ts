@@ -14,6 +14,7 @@ import { getActiveContext, runWithContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
 import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { assetsOnlyRejection } from './static-assets'
+import { getWorkerDispatcher, workerRequest } from './worker-cache'
 
 type WorkerModule = Record<string, unknown>
 
@@ -137,20 +138,19 @@ export class ServiceBinding {
 				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through the thread executor`,
 			)
 		}
-		const execCtx = ctx ?? new ExecutionContext(this._props)
+		const execCtx = ctx ?? getWorkerDispatcher(resolved.workerModule)?.context(this._entrypoint, this._props) ?? new ExecutionContext(this._props)
 		return resolveEntrypointTarget(resolved.workerModule, this._entrypoint, execCtx, resolved.env)
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
-		const url = input instanceof URL ? input.toString() : input
-		const request = typeof url === 'string' ? new Request(url, init) : url
+		const request = workerRequest(input, init)
 
 		// Resolve first so a missing target throws the real error instead of
 		// burning a slot in the per-request subrequest budget on every failed call.
 		const resolved = this._resolve()
 		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
-			return resolved.executor.executeFetch(request, this._props)
+			return resolved.executor.executeFetch(request, this._props, this._entrypoint, true)
 		}
 		// Assets-only target: no script to invoke — its asset layer answers, including
 		// its own html_handling / not_found_handling. A declared `entrypoint` names an
@@ -169,6 +169,8 @@ export class ServiceBinding {
 			return resolved.assets.fetch(request)
 		}
 
+		const dispatcher = getWorkerDispatcher(resolved.workerModule)
+		if (dispatcher) return dispatcher.fetch(request, this._entrypoint, this._props, true)
 		const execCtx = new ExecutionContext(this._props)
 		const target = this._getTarget(execCtx)
 		if (!target?.fetch || typeof target.fetch !== 'function') {
@@ -236,6 +238,10 @@ export class ServiceBinding {
 						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
+					if (resolved.kind === 'in-process') {
+						const dispatcher = getWorkerDispatcher(resolved.workerModule)
+						if (dispatcher) return dispatcher.rpc(self._entrypoint, prop, args, self._props)
+					}
 					const target = self._getTarget()
 					const member = target[prop]
 					if (typeof member !== 'function') {
@@ -273,6 +279,10 @@ export class ServiceBinding {
 							return wrapRpcReturnValue(result.value, prop)
 						})
 						return promise.then(onFulfilled, onRejected)
+					}
+					if (resolved.kind === 'in-process') {
+						const dispatcher = getWorkerDispatcher(resolved.workerModule)
+						if (dispatcher) return dispatcher.property(self._entrypoint, prop, self._props).then(onFulfilled, onRejected)
 					}
 					const promise = new Promise<unknown>((resolveP, rejectP) => {
 						try {

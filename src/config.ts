@@ -5,6 +5,8 @@ import type { WorkflowLimits } from './bindings/workflow'
 
 export interface WranglerConfig {
 	name: string
+	cache?: { enabled: boolean; cross_version_cache?: boolean }
+	exports?: Record<string, { type: 'worker'; cache?: { enabled: boolean } }>
 	/**
 	 * Entry module. Optional: a worker that only has `assets` is an assets-only
 	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
@@ -113,7 +115,34 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	} else {
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
-	return applyEnvOverrides(config, envName)
+	const merged = applyEnvOverrides(config, envName)
+	validateWorkerCacheConfig(merged)
+	return merged
+}
+
+export function validateWorkerCacheConfig(config: WranglerConfig): void {
+	function object(value: unknown, path: string): Record<string, unknown> {
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${path} must be an object`)
+		return Object.fromEntries(Object.entries(value))
+	}
+	function cacheBlock(value: unknown, path: string, crossVersion: boolean): void {
+		const block = object(value, path)
+		if (typeof block.enabled !== 'boolean') throw new TypeError(`${path}.enabled must be a boolean`)
+		if (block.cross_version_cache !== undefined && (!crossVersion || typeof block.cross_version_cache !== 'boolean')) {
+			throw new TypeError(`${path}.cross_version_cache is only supported as a top-level boolean`)
+		}
+		if (Object.keys(block).some(key => key !== 'enabled' && !(crossVersion && key === 'cross_version_cache'))) {
+			throw new TypeError(`${path} contains an unsupported field`)
+		}
+	}
+	if (config.cache !== undefined) cacheBlock(config.cache, 'cache', true)
+	if (config.exports !== undefined) {
+		for (const [name, value] of Object.entries(object(config.exports, 'exports'))) {
+			const entry = object(value, `exports.${name}`)
+			if (entry.type !== 'worker') throw new TypeError(`exports.${name}.type must be "worker"`)
+			if (entry.cache !== undefined) cacheBlock(entry.cache, `exports.${name}.cache`, false)
+		}
+	}
 }
 
 /**

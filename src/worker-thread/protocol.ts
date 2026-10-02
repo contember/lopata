@@ -6,6 +6,7 @@
  * terminate + respawn.
  */
 
+import type { WorkerFetchOptions } from '../bindings/worker-cache'
 import type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 export type { WorkflowInstanceStatus } from '../bindings/workflow'
@@ -21,6 +22,7 @@ export interface ParentSpanContext {
 export type TraceErrorPayload = Parameters<TraceStore['insertError']>[0]
 
 export interface SerializedRequest {
+	cf?: WorkerFetchOptions['cf']
 	url: string
 	method: string
 	headers: [string, string][]
@@ -385,7 +387,15 @@ export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	// `props` carry the service-binding context `props` from the calling worker
 	// across to the target's `ExecutionContext.props`. Absent for top-level HTTP.
-	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext; props?: Record<string, unknown> }
+	| {
+		type: 'fetch'
+		id: number
+		request: SerializedRequest
+		parent?: ParentSpanContext
+		props?: Record<string, unknown>
+		entrypoint?: string
+		trusted?: boolean
+	}
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| RpcCallReply

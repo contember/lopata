@@ -5,14 +5,10 @@ import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
+import { WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
-import {
-	constructEntrypoint,
-	type EntrypointHandlerName,
-	handlerFromInstance,
-	isClassEntrypoint,
-	resolveEntrypointHandler,
-} from '../entrypoint-handler'
+import type { WranglerConfig } from '../config'
+import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { TestClock } from './clock'
@@ -48,11 +44,13 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 	let mergedBindings = options.bindings
 	let mergedVars = options.vars
+	let workerConfig: WranglerConfig = { name: 'test-worker' }
 
 	// Load from wrangler config if specified — translate to BindingSpec
 	if (options.wrangler) {
 		const { loadConfig } = await import('../config')
 		const config = await loadConfig(resolve(options.wrangler))
+		workerConfig = config
 		const { bindings: configBindings, vars: configVars } = configToBindings(config)
 		// Merge: explicit options.bindings override wrangler-derived bindings
 		mergedBindings = { ...configBindings, ...options.bindings }
@@ -68,18 +66,15 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	// Resolve worker module
 	let workerModule: Record<string, unknown>
 	let defaultExport: unknown
-	let classBasedExport = false
 
 	if (typeof options.worker === 'string') {
 		workerModule = await import(resolve(options.worker))
 		defaultExport = workerModule.default
-		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker && 'default' in options.worker) {
 		// WorkerModule — has a `default` export (class or object) + named exports
 		const mod = options.worker as WorkerModule
 		defaultExport = mod.default
 		workerModule = { ...mod }
-		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker) {
 		// Inline handlers object — also expose extra properties (e.g. DO/Workflow classes)
 		// as top-level module exports so wireClassRefs can find them
@@ -105,6 +100,12 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	// Wire service bindings — self-referencing (always in-process for tests)
+	const dispatcher = new WorkerDispatcher(
+		workerModule,
+		env,
+		new WorkersCache(db, workerConfig.name, crypto.randomUUID(), workerConfig, () => clock?.now() ?? Date.now()),
+		props => new ExecutionContext(props),
+	)
 	for (const entry of registry.serviceBindings) {
 		const wire = entry.proxy._wire as
 			| ((resolver: () => { kind: 'in-process'; workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void)
@@ -119,18 +120,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 	// --- Handler dispatch helpers ---
 
-	function getHandler(name: EntrypointHandlerName): ((...args: unknown[]) => Promise<unknown>) | undefined {
-		if (classBasedExport) {
-			// Probe on a throwaway instance — a class field only exists once constructed —
-			// then build a fresh one per call so each invocation gets its own ctx.
-			if (!handlerFromInstance(constructEntrypoint(defaultExport, new ExecutionContext(), env), name)) return undefined
-			return (...args: unknown[]) => {
-				const instance = constructEntrypoint(defaultExport, new ExecutionContext(), env)
-				return handlerFromInstance(instance, name)!(...args) as Promise<unknown>
-			}
-		}
-		const handler = resolveEntrypointHandler(defaultExport, name, undefined, env)
-		return (handler as ((...args: unknown[]) => Promise<unknown>) | null) ?? undefined
+	function getHandler(name: EntrypointHandlerName, ctx: ExecutionContext): ((...args: unknown[]) => unknown) | null {
+		dispatcher.attachContext(ctx)
+		return runWithExecutionContext(ctx, () => resolveEntrypointHandler(defaultExport, name, ctx, env))
 	}
 
 	async function fetchHandler(input: string | Request, init?: RequestInit): Promise<Response> {
@@ -145,16 +137,15 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		const ctx = new ExecutionContext()
 		return runWithExecutionContext(ctx, () =>
 			runWithFetchMock(fetchMock, async () => {
-				const handler = resolveEntrypointHandler(defaultExport, 'fetch', ctx, env)
-				if (!handler) throw new Error('No fetch handler found')
-				const response = await handler(request, env, ctx) as Response
+				const response = await dispatcher.fetch(request, 'default', undefined, false, ctx)
 				await ctx._awaitAll()
 				return response
 			}))
 	}
 
 	async function queueHandler(queueName: string, messages: { body: unknown; contentType?: string }[]): Promise<void> {
-		const handler = getHandler('queue')
+		const ctx = new ExecutionContext()
+		const handler = getHandler('queue', ctx)
 		if (!handler) throw new Error('No queue handler found')
 
 		const builtMessages = messages.map((msg, i) => ({
@@ -173,7 +164,6 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			retryAll(_options?: { delaySeconds?: number }) {},
 		}
 
-		const ctx = new ExecutionContext()
 		await runWithExecutionContext(ctx, () =>
 			runWithFetchMock(fetchMock, async () => {
 				await handler(batch, env, ctx)
@@ -182,11 +172,11 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	async function scheduledHandler(opts?: { cron?: string; scheduledTime?: number }): Promise<void> {
-		const handler = getHandler('scheduled')
+		const ctx = new ExecutionContext()
+		const handler = getHandler('scheduled', ctx)
 		if (!handler) throw new Error('No scheduled handler found')
 
 		const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
-		const ctx = new ExecutionContext()
 		await runWithExecutionContext(ctx, () =>
 			runWithFetchMock(fetchMock, async () => {
 				await handler(controller, env, ctx)
@@ -195,7 +185,8 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	async function emailHandler(opts: { from: string; to: string; raw: Uint8Array | string }): Promise<void> {
-		const handler = getHandler('email')
+		const ctx = new ExecutionContext()
+		const handler = getHandler('email', ctx)
 		if (!handler) throw new Error('No email handler found')
 
 		const rawBytes = typeof opts.raw === 'string' ? new TextEncoder().encode(opts.raw) : opts.raw
@@ -206,7 +197,6 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		)
 
 		const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
-		const ctx = new ExecutionContext()
 		await runWithExecutionContext(ctx, () =>
 			runWithFetchMock(fetchMock, async () => {
 				await handler(message, env, ctx)

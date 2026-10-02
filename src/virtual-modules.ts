@@ -4,6 +4,7 @@ import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/dura
 import { EmailMessage } from './bindings/email'
 import type { ImageTransformOptions, OutputOptions } from './bindings/images'
 import { WebSocketPair } from './bindings/websocket-pair'
+import { cache } from './bindings/worker-cache'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
 import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
@@ -22,6 +23,9 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 				DurableObject: DurableObjectBase,
 				WorkflowEntrypoint: WorkflowEntrypointBase,
 				WorkerEntrypoint: class WorkerEntrypoint {
+					get [Symbol.for('lopata.WorkerEntrypoint')]() {
+						return true
+					}
 					protected ctx: unknown
 					protected env: unknown
 					constructor(ctx: unknown, env: unknown) {
@@ -45,6 +49,7 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 					}
 				},
 				tracing,
+				cache,
 			},
 			loader: 'object',
 		}

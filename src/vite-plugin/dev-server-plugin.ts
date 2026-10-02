@@ -3,7 +3,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
+import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
+import { ExecutionContext as CacheContext } from '../execution-context.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
@@ -71,6 +73,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
+	let workerDispatcher: WorkerDispatcher | undefined
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
 	// Generation counter — increments on each module reload for tracing
@@ -118,6 +121,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					currentGenerationId++
 					viteGenerations.set(currentGenerationId, { id: currentGenerationId, createdAt: Date.now(), state: 'active' })
 					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId)
+					workerDispatcher = new WorkerDispatcher(
+						workerModule,
+						env,
+						new WorkersCache(getDatabase(), config.name, crypto.randomUUID(), config),
+						props => new CacheContext(props),
+					)
 					setGlobalEnv(env)
 					console.log(`[lopata:vite] Worker module (re)loaded, classes wired (generation ${currentGenerationId})`)
 					// Schedule cleanup of old generation after successful reload
@@ -169,7 +178,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	 * can retry.
 	 */
 	async function handleWorkerFetch(req: IncomingMessage, res: ServerResponse, next: Function): Promise<void> {
-		const activeModule = await ensureWorkerModule()
+		await ensureWorkerModule()
 		const genId = currentGenerationId
 		genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
 
@@ -191,9 +200,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						// Resolved in here rather than up front because a class entrypoint is
 						// constructed at this point, and a throwing constructor deserves the same
 						// error page and persisted error as a throwing fetch().
-						const fetchHandler = resolveWorkerHandler(activeModule, 'fetch', ctx)
-						if (!fetchHandler) return NO_FETCH_HANDLER
-						const resp = await fetchHandler(request, env, ctx) as Response
+						if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+						const resp = await workerDispatcher.fetch(request, 'default', undefined, false, ctx)
 						;(setSpanAttribute as Function)('http.status_code', resp.status)
 
 						// Intercept React Router error boundary responses with lopata error page
@@ -210,6 +218,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						ctx._awaitAll().catch(() => {})
 						return resp
 					} catch (err) {
+						if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
 						if (isHmrRaceError(err)) {
 							currentModule = null
 							throw err
@@ -251,6 +260,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 		const ctx = new ExecutionContext()
 		const controller = createScheduledController(cronExpr, Date.now())
+		workerDispatcher?.attachContext(ctx)
 
 		return await (startSpan as Function)({
 			name: 'scheduled',
@@ -291,6 +301,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const genId = currentGenerationId
 
 		const ctx = new ExecutionContext()
+		workerDispatcher?.attachContext(ctx)
 
 		return await (startSpan as Function)({
 			name: 'email',
@@ -410,6 +421,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			matchS3Path = s3Mod.matchS3Path
 			ForwardableEmailMessage = emailMod.ForwardableEmailMessage
 			getDatabase = dbMod.getDatabase
+			globalThis.__lopata_workerCacheApi = cache
 
 			// 1. Load wrangler config
 			const loadedConfig = options.configPath
