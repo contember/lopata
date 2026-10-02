@@ -247,8 +247,8 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 		resume: async () => {
 			await control({ kind: 'resume', instanceId: id })
 		},
-		terminate: async () => {
-			await control({ kind: 'terminate', instanceId: id })
+		terminate: async (options?: { rollback?: boolean }) => {
+			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback })
 		},
 		restart: async (options?: { fromStep?: string }) => {
 			await control({ kind: 'restart', instanceId: id, fromStep: options?.fromStep })

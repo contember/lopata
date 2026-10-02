@@ -6,7 +6,9 @@
  * terminate + respawn.
  */
 
+import type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
+export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 
@@ -174,7 +176,7 @@ export type WorkflowControlOp =
 	// previous generation's worker is disposed, so an interrupted workflow is never
 	// re-executed in the new worker while the old one is still running it.
 	| { kind: 'resumeInterrupted' }
-	| { kind: 'terminate'; instanceId: string }
+	| { kind: 'terminate'; instanceId: string; rollback?: boolean }
 	| { kind: 'pause'; instanceId: string }
 	| { kind: 'resume'; instanceId: string }
 	| { kind: 'restart'; instanceId: string; fromStep?: string }
@@ -187,13 +189,6 @@ export type WorkflowControlOp =
 	// `WorkflowInstance.status()` for DO-worker proxies; also doubles as the
 	// existence check behind their `get(id)`.
 	| { kind: 'status'; instanceId: string }
-
-/** `WorkflowInstance.status()` payload (see `SqliteWorkflowInstance.status`). */
-export interface WorkflowInstanceStatus {
-	status: string
-	output?: unknown
-	error?: { name: string; message: string }
-}
 
 /** Result payload of a {@link WorkflowControlOp}. `create` reports the new id,
  *  the introspection reads report their value; mutating ops report nothing. */

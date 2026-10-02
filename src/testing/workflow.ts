@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import type { SqliteWorkflowBinding, SqliteWorkflowInstance } from '../bindings/workflow'
+import type { SqliteWorkflowBinding, SqliteWorkflowInstance, WorkflowInstanceStatus } from '../bindings/workflow'
 import {
 	clearInstanceMocks,
 	getWaitingEventTypes,
@@ -40,7 +40,7 @@ export class TestWorkflowInstance {
 	}
 
 	/** Wait until the instance reaches one of the given statuses. */
-	async waitForStatus(...statuses: string[]): Promise<{ status: string; output?: unknown; error?: { name: string; message: string } }> {
+	async waitForStatus(...statuses: string[]): Promise<WorkflowInstanceStatus> {
 		const timeout = DEFAULT_TIMEOUT
 		const targets = new Set(statuses)
 
@@ -48,7 +48,7 @@ export class TestWorkflowInstance {
 		const current = await this.instance.status()
 		if (targets.has(current.status)) return current
 
-		return new Promise<{ status: string; output?: unknown; error?: { name: string; message: string } }>((resolve, reject) => {
+		return new Promise<WorkflowInstanceStatus>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				unsub()
 				reject(timeoutError(`waitForStatus(${statuses.join(', ')})`, timeout))
@@ -174,12 +174,12 @@ export class TestWorkflowInstance {
 	}
 
 	/** Terminate the workflow. */
-	async terminate(): Promise<void> {
-		await this.instance.terminate()
+	async terminate(options?: { rollback?: boolean }): Promise<void> {
+		await this.instance.terminate(options)
 	}
 
 	/** Get the current status. */
-	async status(): Promise<{ status: string; output?: unknown; error?: { name: string; message: string } }> {
+	async status(): Promise<WorkflowInstanceStatus> {
 		return this.instance.status()
 	}
 
@@ -241,7 +241,7 @@ export class TestWorkflowInstance {
 
 export interface TestWorkflowRun {
 	instance: TestWorkflowInstance
-	result: Promise<{ status: string; output?: unknown; error?: { name: string; message: string } }>
+	result: Promise<WorkflowInstanceStatus>
 }
 
 export class TestWorkflowBinding {
