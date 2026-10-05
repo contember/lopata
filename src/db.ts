@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { migrateWorkerCache } from './bindings/worker-cache-migrations'
+import { migrateWorkflowOccurrences } from './bindings/workflow-migrations'
 import { migrateWorkflowRollbacks } from './bindings/workflow-rollback-migrations'
 
 const DATA_DIR = join(process.cwd(), '.lopata')
@@ -315,6 +316,7 @@ export function runMigrations(db: Database): void {
 	`)
 	migrateWorkerCache(db)
 	migrateWorkflowRollbacks(db)
+	migrateWorkflowOccurrences(db)
 }
 
 /** Returns the path to the .lopata data directory. */

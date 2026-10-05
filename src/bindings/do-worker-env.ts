@@ -27,6 +27,7 @@ import { SqliteQueueProducer } from './queue'
 import { makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -250,8 +251,8 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 		terminate: async (options?: { rollback?: boolean }) => {
 			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback })
 		},
-		restart: async (options?: { fromStep?: string }) => {
-			await control({ kind: 'restart', instanceId: id, fromStep: options?.fromStep })
+		restart: async (options?: WorkflowRestartOptions) => {
+			await control({ kind: 'restart', instanceId: id, from: options?.from, fromStep: options?.fromStep })
 		},
 		skipSleep: async () => {
 			await control({ kind: 'skipSleep', instanceId: id })

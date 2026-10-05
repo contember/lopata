@@ -1,6 +1,7 @@
 // ─── Shared data types ───────────────────────────────────────────────
 
 export type { GenerationInfo } from '../generation'
+import type { WorkflowLegacyRecord, WorkflowOccurrenceRecord, WorkflowStepKey } from '../bindings/workflow-store'
 import type { GenerationInfo } from '../generation'
 import type { HostCheckResult } from '../hosts-check'
 
@@ -179,6 +180,7 @@ export interface WorkflowInstance {
 }
 
 export interface WorkflowStepAttempt {
+	key: WorkflowStepKey | null
 	step_name: string
 	failed_attempts: number
 	last_error: string | null
@@ -188,7 +190,9 @@ export interface WorkflowStepAttempt {
 }
 
 export interface WorkflowDetail extends WorkflowInstance {
-	steps: { step_name: string; output: string | null; completed_at: number }[]
+	steps: { key: WorkflowStepKey | null; step_name: string; output: string | null; completed_at: number | null }[]
+	occurrences: WorkflowOccurrenceRecord[]
+	legacy: WorkflowLegacyRecord[]
 	stepAttempts: WorkflowStepAttempt[]
 	events: { id: number; event_type: string; payload: string | null; created_at: number }[]
 	activeSleep: { stepName: string; until: number } | null

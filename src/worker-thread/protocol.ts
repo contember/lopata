@@ -181,7 +181,7 @@ export type WorkflowControlOp =
 	| { kind: 'terminate'; instanceId: string; rollback?: boolean }
 	| { kind: 'pause'; instanceId: string }
 	| { kind: 'resume'; instanceId: string }
-	| { kind: 'restart'; instanceId: string; fromStep?: string }
+	| { kind: 'restart'; instanceId: string; fromStep?: string; from?: { name: string; count?: number; type?: 'do' | 'sleep' | 'waitForEvent' } }
 	| { kind: 'skipSleep'; instanceId: string }
 	| { kind: 'sendEvent'; instanceId: string; eventType: string; payload?: unknown }
 	// Introspection reads of the worker-side in-memory registries — the dashboard

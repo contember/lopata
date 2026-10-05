@@ -1,9 +1,20 @@
 import type { Database } from 'bun:sqlite'
+import { realpathSync } from 'node:fs'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveContext } from '../tracing/context'
 import { addSpanEvent, persistError, startSpan } from '../tracing/span'
 import type { WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
+import { decodeWorkflowEvent, WorkflowStore } from './workflow-store'
+import type {
+	WorkflowExecutionToken,
+	WorkflowOccurrenceRecord,
+	WorkflowOccurrenceRef,
+	WorkflowRestartOptions,
+	WorkflowStepKey,
+	WorkflowStepMethod,
+} from './workflow-store'
+export type { WorkflowCheckpoint, WorkflowExecutionToken, WorkflowRestartOptions, WorkflowStepKey } from './workflow-store'
 
 // --- Limits ---
 
@@ -82,19 +93,6 @@ export interface WorkflowStepRollbackOptions<T = unknown> {
 	rollbackConfig?: WorkflowStepConfig
 }
 
-interface StepHistory {
-	step_name: string
-	state: string
-	attempt: number
-	error: string | null
-	error_name: string | null
-	non_retryable: number
-	rollback_state: string | null
-	rollback_attempts: number
-	rollback_error: string | null
-	rollback_error_name: string | null
-}
-
 interface RollbackState {
 	phase: string
 	target_status: string
@@ -137,10 +135,13 @@ function decodeStepOutput<T>(serialized: string | null): T {
 
 // --- Event waiting registry (in-memory, per-process) ---
 
-type EventResolver = (payload: unknown) => void
-const eventWaiters = new Map<string, Map<string, EventResolver>>()
+interface EventWaiter {
+	type: string
+	wake: () => void
+}
+const eventWaiters = new Map<string, Map<number, EventWaiter>>()
 
-function getWaitersForInstance(instanceId: string): Map<string, EventResolver> {
+function getWaitersForInstance(instanceId: string): Map<number, EventWaiter> {
 	let map = eventWaiters.get(instanceId)
 	if (!map) {
 		map = new Map()
@@ -154,6 +155,20 @@ function getWaitersForInstance(instanceId: string): Map<string, EventResolver> {
 
 const abortControllers = new Map<string, AbortController>()
 const executions = new Map<string, Promise<void>>()
+const databaseIds = new WeakMap<Database, string>()
+
+function registryKey(db: Database, token: WorkflowExecutionToken): string {
+	let databaseId = databaseIds.get(db)
+	if (!databaseId) {
+		databaseId = !db.filename || db.filename === ':memory:' ? crypto.randomUUID() : realpathSync(db.filename)
+		databaseIds.set(db, databaseId)
+	}
+	return JSON.stringify([databaseId, token.incarnation, token.run])
+}
+
+function instanceRegistryKey(db: Database, id: string): string {
+	return registryKey(db, new WorkflowStore(db).currentToken(id))
+}
 // Soft reload stops the engine, not user callbacks; replay must drain still-live attempts.
 const runningForwardAttempts = new Map<string, Set<Promise<unknown>>>()
 const ROLLBACK_REQUESTED = 'workflow rollback requested'
@@ -162,7 +177,7 @@ const WORKFLOW_TERMINATED = 'workflow terminated'
 // --- Sleep skip registry (per-process) ---
 // Allows skipSleep() to resolve the active sleep/sleepUntil delay immediately
 
-const sleepResolvers = new Map<string, () => void>()
+const sleepResolvers = new Map<string, Map<number, () => void>>()
 
 // --- Notification hooks (per-process, for testing) ---
 
@@ -185,13 +200,17 @@ const sleepDisabledInstances = new Set<string>()
 const eventMocks = new Map<string, Map<string, { payload: unknown }>>()
 const eventTimeoutMocks = new Map<string, Set<string>>()
 
-export function registerStepMock(instanceId: string, stepName: string, mock: StepMock): void {
+function stepSelectorKey(name: string, selector?: WorkflowStepKey): string {
+	return JSON.stringify(selector ? [selector.type, selector.name, selector.count] : [name])
+}
+
+export function registerStepMock(instanceId: string, stepName: string, mock: StepMock, selector?: WorkflowStepKey): void {
 	let instanceMocks = stepMocks.get(instanceId)
 	if (!instanceMocks) {
 		instanceMocks = new Map()
 		stepMocks.set(instanceId, instanceMocks)
 	}
-	instanceMocks.set(stepName, { ...mock, _used: 0 })
+	instanceMocks.set(stepSelectorKey(stepName, selector), { ...mock, _used: 0 })
 }
 
 export function registerSleepDisable(instanceId: string): void {
@@ -230,21 +249,35 @@ export class WorkflowStepImpl {
 	private db: Database
 	private instanceId: string
 	private stepCount = 0
-	private knownStepNames = new Set<string>()
+	private occurrenceCounts = new Map<string, number>()
+	private startOrder = 0
+	private store: WorkflowStore
+	readonly token: WorkflowExecutionToken
+	private registryId: string
 	private limits: Required<WorkflowLimits>
 	private clock: Clock
 	private replayRollback: boolean
 	private pending = new Set<Promise<unknown>>()
 	private forwardAttempts = new Set<Promise<unknown>>()
-	private rollbacks = new Map<string, (error: Error, signal: AbortSignal) => Promise<void>>()
+	private rollbacks = new Map<number, (error: Error, signal: AbortSignal) => Promise<void>>()
 	private closed = false
 
-	constructor(abortSignal: AbortSignal, db: Database, instanceId: string, limits: Required<WorkflowLimits>, clock?: Clock) {
+	constructor(
+		abortSignal: AbortSignal,
+		db: Database,
+		instanceId: string,
+		limits: Required<WorkflowLimits>,
+		clock?: Clock,
+		token?: WorkflowExecutionToken,
+	) {
 		this.abortSignal = abortSignal
 		this.db = db
 		this.instanceId = instanceId
 		this.limits = limits
 		this.clock = clock ?? realClock
+		this.store = new WorkflowStore(db)
+		this.token = token ?? this.store.acquireExecution(instanceId, this.store.currentToken(instanceId).workflowName)
+		this.registryId = registryKey(db, this.token)
 		const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(instanceId)
 		this.replayRollback = rollback?.phase === 'running' || rollback?.phase === 'requested'
 	}
@@ -268,28 +301,37 @@ export class WorkflowStepImpl {
 		}
 	}
 
-	private checkDuplicateStepName(name: string): void {
-		if (this.knownStepNames.has(name)) {
-			throw new Error(`Duplicate step name "${name}". Step names must be unique within a workflow execution.`)
+	private allocate(name: string, method: WorkflowStepMethod, rollbackRegistered = false): WorkflowOccurrenceRecord {
+		if (this.closed || this.abortSignal.aborted) throw new Error('Workflow forward execution has ended')
+		if (method === 'do' && name.length > this.limits.maxStepNameLength) {
+			throw new Error(`Step name must be ${this.limits.maxStepNameLength} characters or fewer, got ${name.length}`)
 		}
-		this.knownStepNames.add(name)
+		const type = method === 'sleepUntil' ? 'sleep' : method
+		const identity = JSON.stringify([type, name])
+		const count = (this.occurrenceCounts.get(identity) ?? 0) + 1
+		this.occurrenceCounts.set(identity, count)
+		if (type !== 'sleep') this.checkStepLimit()
+		return this.store.openOccurrence(this.token, { key: { type, name, count }, method, startOrder: ++this.startOrder, rollbackRegistered })
 	}
 
-	private getCachedStep(name: string): { output: string | null } | null {
-		return this.db
-			.query('SELECT output FROM workflow_steps WHERE instance_id = ? AND step_name = ?')
-			.get(this.instanceId, name) as { output: string | null } | null
+	private ref(record: WorkflowOccurrenceRecord): WorkflowOccurrenceRef {
+		return { token: this.token, occurrenceId: record.id }
 	}
 
-	private cacheStep(name: string, output: unknown): void {
+	private getCachedStep(record: WorkflowOccurrenceRecord): { output: string | null } | null {
+		const checkpoint = this.store.readCheckpoint(this.ref(record))
+		return checkpoint ? { output: checkpoint.kind === 'json' ? checkpoint.serialized : null } : null
+	}
+
+	private cacheStep(record: WorkflowOccurrenceRecord, output: unknown): void {
+		const name = record.key.name
 		const serialized = JSON.stringify(output)
 		if (serialized !== undefined && serialized.length > this.limits.maxStepOutputBytes) {
 			throw new Error(`Step "${name}" output exceeds maximum size of 1 MiB`)
 		}
-		this.db
-			.query('INSERT OR REPLACE INTO workflow_steps (instance_id, step_name, output, completed_at) VALUES (?, ?, ?, ?)')
-			.run(this.instanceId, name, serialized ?? null, this.clock.now())
-		fireStepCallbacks(this.instanceId, name, output)
+		this.store.commitCheckpoint(this.ref(record), serialized === undefined ? { kind: 'undefined' } : { kind: 'json', serialized }, this.clock.now())
+		if (record.key.count === 1) fireStepCallbacks(this.registryId, name, output)
+		fireStepCallbacks(this.registryId, name, output, record.key)
 	}
 
 	do<T>(name: string, callback: (ctx: WorkflowStepContext) => Promise<T>, rollbackOptions?: WorkflowStepRollbackOptions<T>): Promise<T>
@@ -309,8 +351,14 @@ export class WorkflowStepImpl {
 		const options = typeof callbackOrConfig === 'function' && typeof callbackOrRollback !== 'function' ? callbackOrRollback : rollbackOptions
 		if (typeof callback !== 'function') return Promise.reject(new Error('Workflow step callback is required'))
 		const config = typeof callbackOrConfig === 'function' ? undefined : callbackOrConfig
-		const promise = this.executeDo(name, config, callback, options).catch(err => {
-			if (!this.abortSignal.aborted && !this.replayRollback) this.recordForwardFailure(name, workflowError(err))
+		let record: WorkflowOccurrenceRecord
+		try {
+			record = this.allocate(name, 'do', options !== undefined)
+		} catch (error) {
+			return Promise.reject(error)
+		}
+		const promise = this.executeDo(record, config, callback, options).catch(err => {
+			if (!this.abortSignal.aborted && !this.replayRollback) this.recordForwardFailure(record, workflowError(err))
 			throw err
 		})
 		this.pending.add(promise)
@@ -324,7 +372,7 @@ export class WorkflowStepImpl {
 	}
 
 	async settleForwardAttempts(): Promise<void> {
-		await this.waitForPromises(runningForwardAttempts.get(this.instanceId) ?? this.forwardAttempts, 'Forward attempts')
+		await this.waitForPromises(runningForwardAttempts.get(this.registryId) ?? this.forwardAttempts, 'Forward attempts')
 	}
 
 	private async waitForPromises(promises: Set<Promise<unknown>>, label: string): Promise<void> {
@@ -347,13 +395,13 @@ export class WorkflowStepImpl {
 
 	private startForwardAttempt<T>(callback: () => Promise<T>): Promise<T> {
 		const attempt = Promise.resolve().then(callback)
-		const attempts = runningForwardAttempts.get(this.instanceId) ?? this.forwardAttempts
+		const attempts = runningForwardAttempts.get(this.registryId) ?? this.forwardAttempts
 		this.forwardAttempts = attempts
-		runningForwardAttempts.set(this.instanceId, attempts)
+		runningForwardAttempts.set(this.registryId, attempts)
 		attempts.add(attempt)
 		const settled = () => {
 			attempts.delete(attempt)
-			if (attempts.size === 0 && runningForwardAttempts.get(this.instanceId) === attempts) runningForwardAttempts.delete(this.instanceId)
+			if (attempts.size === 0 && runningForwardAttempts.get(this.registryId) === attempts) runningForwardAttempts.delete(this.registryId)
 		}
 		attempt.then(settled, settled)
 		return attempt
@@ -382,75 +430,59 @@ export class WorkflowStepImpl {
 	}
 
 	private async executeDo<T>(
-		name: string,
+		record: WorkflowOccurrenceRecord,
 		config: WorkflowStepConfig | undefined,
 		callback: (ctx: WorkflowStepContext) => Promise<T>,
 		options?: WorkflowStepRollbackOptions<T>,
 	): Promise<T> {
-		if (name.length > this.limits.maxStepNameLength) {
-			throw new Error(`Step name must be ${this.limits.maxStepNameLength} characters or fewer, got ${name.length}`)
-		}
+		const { name, count } = record.key
 		await this.checkPaused()
 		if (this.abortSignal.aborted) throw new Error('workflow terminated')
-		this.checkStepLimit()
-		this.checkDuplicateStepName(name)
 
 		const resolvedConfig = this.resolveConfig(config)
-		const previous = this.db.query<StepHistory, [string, string]>(
-			'SELECT * FROM workflow_step_history WHERE instance_id = ? AND step_name = ?',
-		).get(this.instanceId, name)
-		if (!this.replayRollback) {
-			this.db.query(
-				'INSERT OR IGNORE INTO workflow_step_history (instance_id, step_name, rollback_registered) VALUES (?, ?, ?)',
-			).run(this.instanceId, name, options ? 1 : 0)
-		}
-		if (options && (!this.replayRollback || previous)) {
-			this.rollbacks.set(name, async (error, signal) => {
-				const history = this.db.query<StepHistory, [string, string]>(
-					'SELECT * FROM workflow_step_history WHERE instance_id = ? AND step_name = ?',
-				).get(this.instanceId, name)
-				if (!history) throw new Error(`Missing step history for "${name}"`)
-				const cached = this.getCachedStep(name)
+		const previous = record
+		if (options && record.rollbackRegistered) {
+			this.rollbacks.set(record.id, async (error, signal) => {
+				const history = this.store.readOccurrence(this.ref(record))
+				const cached = this.getCachedStep(record)
 				const output = cached ? decodeStepOutput<T>(cached.output) : undefined
-				await this.runRollback(name, history, options.rollbackConfig, signal, async () => {
-					await options.rollback({ ctx: { step: { name, count: 1 }, attempt: history.attempt, config: resolvedConfig }, error, output })
+				await this.runRollback(history, options.rollbackConfig, signal, async () => {
+					await options.rollback({ ctx: { step: { name, count }, attempt: history.attempt, config: resolvedConfig }, error, output })
 				})
 			})
 		}
 
 		// Check checkpoint
-		const cached = this.getCachedStep(name)
+		const cached = this.getCachedStep(record)
 		if (cached) {
 			console.log(`  [workflow] step: ${name} (cached)`)
-			this.db.query("UPDATE workflow_step_history SET state = 'completed' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
 			return decodeStepOutput<T>(cached.output)
 		}
 		if (previous?.state === 'failed' || this.replayRollback) {
-			throw restoredError(previous?.error ?? null, previous?.error_name ?? null, previous?.non_retryable === 1)
+			throw restoredError(previous.error?.message ?? null, previous.error?.name ?? null, previous.error?.nonRetryable)
 		}
 
 		// Check step mocks
-		const instanceMocks = stepMocks.get(this.instanceId)
-		const mock = instanceMocks?.get(name)
+		const instanceMocks = stepMocks.get(this.registryId)
+		const mock = instanceMocks?.get(stepSelectorKey(name, record.key)) ?? (count === 1 ? instanceMocks?.get(stepSelectorKey(name)) : undefined)
 		if (mock) {
 			const shouldApply = mock.times === undefined || (mock._used ?? 0) < mock.times
 			if (shouldApply) {
 				mock._used = (mock._used ?? 0) + 1
 				if (mock.type === 'result') {
 					console.log(`  [workflow] step: ${name} (mocked)`)
-					this.cacheStep(name, mock.value)
-					this.db.query("UPDATE workflow_step_history SET state = 'completed' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
+					this.cacheStep(record, mock.value)
 					return mock.value as T
 				}
 				if (mock.type === 'error') {
 					console.log(`  [workflow] step: ${name} (mocked error)`)
-					this.recordForwardFailure(name, workflowError(mock.value))
+					this.recordForwardFailure(record, workflowError(mock.value))
 					throw mock.value
 				}
 				if (mock.type === 'timeout') {
 					console.log(`  [workflow] step: ${name} (mocked timeout)`)
 					const error = new Error(`Step "${name}" timed out (mocked)`)
-					this.recordForwardFailure(name, error)
+					this.recordForwardFailure(record, error)
 					throw error
 				}
 			}
@@ -471,31 +503,23 @@ export class WorkflowStepImpl {
 			}
 
 			// Load persisted failed attempts so retries survive server restarts
-			const attemptRow = this.db
-				.query<{ failed_attempts: number; last_error: string | null; last_error_name: string | null }, [string, string]>(
-					'SELECT failed_attempts, last_error, last_error_name FROM workflow_step_attempts WHERE instance_id = ? AND step_name = ?',
-				)
-				.get(this.instanceId, name)
-			const startAttempt = attemptRow?.failed_attempts ?? 0
+			const attemptRow = this.store.readOccurrence(this.ref(record))
+			const startAttempt = attemptRow.failedAttempts
 
-			let lastError: unknown = restoredError(attemptRow?.last_error ?? null, attemptRow?.last_error_name ?? null)
+			let lastError: unknown = restoredError(attemptRow.error?.message ?? null, attemptRow.error?.name ?? null)
 			for (let attempt = startAttempt; attempt <= maxRetries; attempt++) {
 				if (this.abortSignal.aborted) throw new Error('workflow terminated')
-				const ctx: WorkflowStepContext = { step: { name, count: 1 }, attempt: attempt + 1, config: resolvedConfig }
-				this.db.query('UPDATE workflow_step_history SET attempt = ? WHERE instance_id = ? AND step_name = ?').run(attempt + 1, this.instanceId, name)
+				const ctx: WorkflowStepContext = { step: { name, count }, attempt: attempt + 1, config: resolvedConfig }
+				this.store.startAttempt(this.ref(record), attempt + 1)
 				try {
 					const result = await runWithTimeout(() => this.startForwardAttempt(() => callback(ctx)), timeoutMs, `Step "${name}"`, this.abortSignal)
 					if (this.abortSignal.aborted) throw new Error('workflow terminated')
-					this.cacheStep(name, result)
-					this.db.query("UPDATE workflow_step_history SET state = 'completed' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
-					// Clean up attempt counter on success
-					this.db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ? AND step_name = ?')
-						.run(this.instanceId, name)
+					this.cacheStep(record, result)
 					return result
 				} catch (err) {
 					if (this.abortSignal.aborted) throw err
 					if (err instanceof NonRetryableError) {
-						this.recordForwardFailure(name, err)
+						this.recordForwardFailure(record, err)
 						throw err
 					}
 					lastError = err
@@ -512,187 +536,151 @@ export class WorkflowStepImpl {
 					// Persist to errors view (ALS context is active inside startSpan)
 					const errorId = persistError(err, 'workflow.step')
 					// Persist failed attempt count, error, and link to error detail
-					this.db.query(
-						'INSERT OR REPLACE INTO workflow_step_attempts (instance_id, step_name, failed_attempts, last_error, last_error_name, last_error_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+					this.store.recordAttemptFailure(
+						this.ref(record),
+						attempt + 1,
+						{ message: errMsg, name: errName, nonRetryable: false, errorId: errorId ?? null },
+						this.clock.now(),
 					)
-						.run(this.instanceId, name, attempt + 1, errMsg, errName, errorId, this.clock.now())
 					if (attempt < maxRetries) {
 						await this.retryDelay(resolvedConfig, ctx, workflowError(err), this.abortSignal)
 					}
 				}
 			}
-			this.recordForwardFailure(name, workflowError(lastError))
+			this.recordForwardFailure(record, workflowError(lastError))
 			throw lastError
 		})
 	}
 
-	private recordForwardFailure(name: string, error: Error): void {
-		this.db.query('UPDATE workflow_step_history SET state = ?, error = ?, error_name = ?, non_retryable = ? WHERE instance_id = ? AND step_name = ?')
-			.run('failed', error.message, error.name, error instanceof NonRetryableError ? 1 : 0, this.instanceId, name)
+	private recordForwardFailure(record: WorkflowOccurrenceRecord, error: Error): void {
+		this.store.failOccurrence(this.ref(record), {
+			message: error.message,
+			name: error.name,
+			nonRetryable: error instanceof NonRetryableError,
+			errorId: null,
+		}, this.clock.now())
 	}
 
 	private async runRollback(
-		name: string,
-		history: StepHistory,
+		history: WorkflowOccurrenceRecord,
 		config: WorkflowStepConfig | undefined,
 		signal: AbortSignal,
 		callback: () => Promise<void>,
 	): Promise<void> {
+		const { name, count } = history.key
 		const resolved = this.resolveConfig(config)
 		const maxRetries = resolved.retries?.limit ?? this.limits.defaultRetryLimit
 		const timeout = parseDuration(resolved.timeout ?? this.limits.defaultStepTimeoutMs)
 		if (timeout > this.limits.maxStepDoTimeoutMs) throw new Error(`Step timeout ${timeout}ms exceeds maximum of ${this.limits.maxStepDoTimeoutMs}ms`)
-		let error = restoredError(history.rollback_error, history.rollback_error_name)
-		for (let attempt = history.rollback_attempts; attempt <= maxRetries; attempt++) {
+		let error = restoredError(history.rollbackError?.message ?? null, history.rollbackError?.name ?? null)
+		for (let attempt = history.rollbackAttempts; attempt <= maxRetries; attempt++) {
 			if (signal.aborted) throw new Error('workflow terminated')
-			this.db.query("UPDATE workflow_step_history SET rollback_state = 'running' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
+			this.store.startRollbackAttempt(this.ref(history))
 			try {
 				await runWithTimeout(callback, timeout, `Rollback "${name}"`, signal)
 				if (signal.aborted) throw new Error('workflow terminated')
-				this.db.query("UPDATE workflow_step_history SET rollback_state = 'complete' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
+				this.store.finishRollback(this.ref(history), 'complete')
 				return
 			} catch (err) {
 				if (signal.aborted) throw err
 				error = workflowError(err)
-				this.db.query(
-					'UPDATE workflow_step_history SET rollback_attempts = ?, rollback_error = ?, rollback_error_name = ? WHERE instance_id = ? AND step_name = ?',
-				)
-					.run(attempt + 1, error.message, error.name, this.instanceId, name)
+				this.store.recordRollbackFailure(this.ref(history), attempt + 1, {
+					message: error.message,
+					name: error.name,
+					nonRetryable: error instanceof NonRetryableError,
+					errorId: null,
+				})
 				if (err instanceof NonRetryableError) break
-				if (attempt < maxRetries) await this.retryDelay(resolved, { step: { name, count: 1 }, attempt: attempt + 1, config: resolved }, error, signal)
+				if (attempt < maxRetries) await this.retryDelay(resolved, { step: { name, count }, attempt: attempt + 1, config: resolved }, error, signal)
 			}
 		}
-		this.db.query("UPDATE workflow_step_history SET rollback_state = 'failed' WHERE instance_id = ? AND step_name = ?").run(this.instanceId, name)
+		this.store.finishRollback(this.ref(history), 'failed')
 		throw error
 	}
 
 	async rollback(error: Error, signal: AbortSignal): Promise<void> {
-		const eligible = this.db.query<StepHistory, [string]>(
-			'SELECT * FROM workflow_step_history WHERE instance_id = ? AND rollback_registered = 1 ORDER BY start_order DESC',
-		).all(this.instanceId)
+		const eligible = this.store.listRollbackOccurrences(this.token)
 		for (const history of eligible) {
 			if (signal.aborted) throw new Error('workflow terminated')
-			if (history.rollback_state === 'complete') continue
-			if (history.rollback_state === 'failed') throw restoredError(history.rollback_error, history.rollback_error_name)
-			const handler = this.rollbacks.get(history.step_name)
-			if (!handler) throw new Error(`Rollback handler for step "${history.step_name}" was not recovered during replay`)
+			if (history.rollbackState === 'complete') continue
+			if (history.rollbackState === 'failed') throw restoredError(history.rollbackError?.message ?? null, history.rollbackError?.name ?? null)
+			const handler = this.rollbacks.get(history.id)
+			if (!handler) throw new Error(`Rollback handler for step "${history.key.name}" was not recovered during replay`)
 			await handler(error, signal)
 		}
 	}
 
 	async sleep(name: string, duration: string | number) {
-		await this.checkPaused()
-		if (this.replayRollback) return
-		if (this.abortSignal.aborted) throw new Error('workflow terminated')
-		this.checkDuplicateStepName(`sleep:${name}`)
-
-		// Check if sleeps are disabled for this instance
-		if (sleepDisabledInstances.has(this.instanceId)) {
-			console.log(`  [workflow] sleep: ${name} (disabled)`)
-			this.cacheStep(`sleep:${name}`, { until: this.clock.now() })
-			return
+		const record = this.allocate(name, 'sleep')
+		const ms = typeof duration === 'number' ? duration : parseDuration(duration)
+		if (!record.checkpoint && record.deadline === null && ms > this.limits.maxSleepMs) {
+			throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
 		}
-
-		console.log(`  [workflow] sleep: ${name}`)
-		return startSpan({
-			name: `sleep ${name}`,
-			kind: 'internal',
-			attributes: { 'workflow.step.name': name, 'workflow.step.type': 'sleep', 'workflow.instance_id': this.instanceId },
-		}, async () => {
-			const cached = this.getCachedStep(`sleep:${name}`)
-			if (cached) {
-				const { until } = JSON.parse(cached.output!) as { until: number }
-				const remaining = Math.max(0, until - this.clock.now())
-				if (remaining > 0) {
-					await skippableDelay(remaining, this.abortSignal, this.instanceId)
-				}
-				return
-			}
-
-			const ms = typeof duration === 'number' ? duration : parseDuration(duration)
-			if (ms > this.limits.maxSleepMs) {
-				throw new Error(`Sleep duration ${ms}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
-			}
-			const until = this.clock.now() + ms
-			this.cacheStep(`sleep:${name}`, { until })
-
-			if (ms > 0) {
-				await skippableDelay(ms, this.abortSignal, this.instanceId)
-			}
-		})
+		return this.executeSleep(record, this.clock.now() + ms)
 	}
 
 	async sleepUntil(name: string, timestamp: Date | number) {
+		const record = this.allocate(name, 'sleepUntil')
+		return this.executeSleep(record, typeof timestamp === 'number' ? timestamp : timestamp.getTime())
+	}
+
+	private async executeSleep(record: WorkflowOccurrenceRecord, requestedDeadline: number): Promise<void> {
+		const delay = Math.max(0, (record.deadline ?? requestedDeadline) - this.clock.now())
+		if (!record.checkpoint && record.deadline === null && delay > this.limits.maxSleepMs) {
+			throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
+		}
+		const deadline = record.checkpoint ? record.deadline : this.store.setDeadline(this.ref(record), requestedDeadline, null)
 		await this.checkPaused()
 		if (this.replayRollback) return
 		if (this.abortSignal.aborted) throw new Error('workflow terminated')
-		this.checkDuplicateStepName(`sleepUntil:${name}`)
-
-		// Check if sleeps are disabled for this instance
-		if (sleepDisabledInstances.has(this.instanceId)) {
-			console.log(`  [workflow] sleepUntil: ${name} (disabled)`)
-			const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp
-			this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() })
-			return
-		}
-
-		const ts = typeof timestamp === 'number' ? new Date(timestamp) : timestamp
-
-		console.log(`  [workflow] sleepUntil: ${name}`)
 		return startSpan({
-			name: `sleepUntil ${name}`,
+			name: `${record.method} ${record.key.name}`,
 			kind: 'internal',
-			attributes: { 'workflow.step.name': name, 'workflow.step.type': 'sleepUntil', 'workflow.instance_id': this.instanceId },
+			attributes: { 'workflow.step.name': record.key.name, 'workflow.step.type': record.method, 'workflow.instance_id': this.instanceId },
 		}, async () => {
-			const cached = this.getCachedStep(`sleepUntil:${name}`)
-			if (cached) {
-				const remaining = Math.max(0, ts.getTime() - this.clock.now())
-				if (remaining > 0) {
-					await skippableDelay(remaining, this.abortSignal, this.instanceId)
-				}
-				return
+			if (record.checkpoint) return
+			if (deadline === null) throw new Error('Missing workflow sleep deadline')
+			const output = { until: record.method === 'sleepUntil' ? new Date(deadline).toISOString() : deadline }
+			fireStepCallbacks(this.registryId, `${record.method}:${record.key.name}`, output)
+			fireStepCallbacks(this.registryId, record.key.name, output, record.key)
+			if (!sleepDisabledInstances.has(this.registryId)) {
+				await skippableDelay(Math.max(0, deadline - this.clock.now()), this.abortSignal, this.registryId, record.id)
 			}
-
-			const delay = Math.max(0, ts.getTime() - this.clock.now())
-			if (delay > this.limits.maxSleepMs) {
-				throw new Error(`Sleep duration ${delay}ms exceeds maximum of ${this.limits.maxSleepMs}ms`)
-			}
-
-			this.cacheStep(`sleepUntil:${name}`, { until: ts.toISOString() })
-
-			if (delay > 0) {
-				await skippableDelay(delay, this.abortSignal, this.instanceId)
-			}
+			this.store.completeSleep(this.ref(record), this.clock.now())
 		})
 	}
 
 	async waitForEvent<T = unknown>(name: string, options: { type: string; timeout?: string }): Promise<{ payload: T; timestamp: Date; type: string }> {
-		await this.checkPaused()
-		if (this.abortSignal.aborted) throw new Error('workflow terminated')
-		this.checkStepLimit()
-		this.checkDuplicateStepName(`waitForEvent:${name}`)
-		if (this.replayRollback && !this.getCachedStep(`waitForEvent:${name}`)) throw new Error('workflow terminated')
-
-		// Validate event type
+		const record = this.allocate(name, 'waitForEvent')
 		if (!EVENT_TYPE_PATTERN.test(options.type)) {
 			throw new Error(`Invalid event type "${options.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`)
 		}
+		const timeoutMs = options.timeout ? parseDuration(options.timeout) : this.limits.defaultWaitForEventTimeoutMs
+		if (!record.checkpoint && timeoutMs < this.limits.minWaitForEventTimeoutMs) {
+			throw new Error(`waitForEvent timeout ${timeoutMs}ms is below minimum of ${this.limits.minWaitForEventTimeoutMs}ms`)
+		}
+		if (!record.checkpoint && timeoutMs > this.limits.maxWaitForEventTimeoutMs) {
+			throw new Error(`waitForEvent timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxWaitForEventTimeoutMs}ms`)
+		}
+		const deadline = record.checkpoint ? record.deadline : this.store.setDeadline(this.ref(record), this.clock.now() + timeoutMs, options.type)
+		await this.checkPaused()
+		if (this.abortSignal.aborted) throw new Error('workflow terminated')
+		if (record.state === 'failed') throw restoredError(record.error?.message ?? null, record.error?.name ?? null)
+		if (this.replayRollback && !record.checkpoint) throw new Error('workflow terminated')
 
 		// Check event timeout mocks
-		const timeoutMocks = eventTimeoutMocks.get(this.instanceId)
+		const timeoutMocks = eventTimeoutMocks.get(this.registryId)
 		if (timeoutMocks?.has(options.type)) {
 			console.log(`  [workflow] waitForEvent: ${name} (mocked timeout)`)
 			throw new Error(`waitForEvent timed out (mocked)`)
 		}
 
 		// Check event mocks — pre-insert into DB so existing flow picks them up
-		const instanceEventMocks = eventMocks.get(this.instanceId)
+		const instanceEventMocks = eventMocks.get(this.registryId)
 		const eventMock = instanceEventMocks?.get(options.type)
 		if (eventMock) {
 			instanceEventMocks!.delete(options.type)
-			this.db
-				.query('INSERT INTO workflow_events (instance_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)')
-				.run(this.instanceId, options.type, eventMock.payload !== undefined ? JSON.stringify(eventMock.payload) : null, this.clock.now())
+			this.store.enqueueEvent(this.token, options.type, eventMock.payload !== undefined ? JSON.stringify(eventMock.payload) : null, this.clock.now())
 		}
 
 		console.log(`  [workflow] waitForEvent: ${name} (type: ${options.type})`)
@@ -707,79 +695,80 @@ export class WorkflowStepImpl {
 			},
 		}, async () => {
 			// Check checkpoint
-			const cached = this.getCachedStep(`waitForEvent:${name}`)
+			const cached = this.store.readCheckpoint(this.ref(record))
 			if (cached) {
-				const parsed = JSON.parse(cached.output!) as { payload: T; timestamp: string; type: string }
-				return { payload: parsed.payload, timestamp: new Date(parsed.timestamp), type: parsed.type }
+				return decodeWorkflowEvent<T>(cached)
 			}
 
 			// Update status to waiting
-			this.db
-				.query("UPDATE workflow_instances SET status = 'waiting', updated_at = ? WHERE id = ?")
-				.run(this.clock.now(), this.instanceId)
-
-			// Check if event already exists in DB
-			const existing = this.db
-				.query('SELECT payload, created_at FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1')
-				.get(this.instanceId, options.type) as { payload: string | null; created_at: number } | null
-
-			if (existing) {
+			this.store.transaction(this.token, () =>
 				this.db
-					.query('DELETE FROM workflow_events WHERE instance_id = ? AND event_type = ? ORDER BY id ASC LIMIT 1')
-					.run(this.instanceId, options.type)
-				this.db
-					.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-					.run(this.clock.now(), this.instanceId)
-				const payload = (existing.payload !== null ? JSON.parse(existing.payload) : undefined) as T
-				const event = { payload, timestamp: new Date(existing.created_at), type: options.type }
-				this.cacheStep(`waitForEvent:${name}`, event)
-				return event
-			}
+					.query("UPDATE workflow_instances SET status = 'waiting', updated_at = ? WHERE id = ?")
+					.run(this.clock.now(), this.instanceId))
 
-			// Wait for event to arrive via sendEvent()
-			const timeoutMs = options.timeout ? parseDuration(options.timeout) : this.limits.defaultWaitForEventTimeoutMs
-			if (timeoutMs < this.limits.minWaitForEventTimeoutMs) {
-				throw new Error(`waitForEvent timeout ${timeoutMs}ms is below minimum of ${this.limits.minWaitForEventTimeoutMs}ms`)
-			}
-			if (timeoutMs > this.limits.maxWaitForEventTimeoutMs) {
-				throw new Error(`waitForEvent timeout ${timeoutMs}ms exceeds maximum of ${this.limits.maxWaitForEventTimeoutMs}ms`)
-			}
+			if (deadline === null) throw new Error('Missing workflow wait deadline')
 
 			const result = await new Promise<{ payload: T; timestamp: Date; type: string }>((resolve, reject) => {
-				const waiters = getWaitersForInstance(this.instanceId)
+				const waiters = getWaitersForInstance(this.registryId)
 				let timer: ReturnType<typeof setTimeout> | undefined
 				let abortHandler: (() => void) | undefined
 
 				const cleanup = () => {
-					waiters.delete(options.type)
+					waiters.delete(record.id)
 					if (timer) clearTimeout(timer)
 					if (abortHandler) this.abortSignal.removeEventListener('abort', abortHandler)
 				}
 
-				waiters.set(options.type, (payload: unknown) => {
-					cleanup()
-					resolve({ payload: payload as T, timestamp: new Date(), type: options.type })
-				})
+				const wake = () => {
+					try {
+						const checkpoint = this.store.transaction(this.token, () => {
+							const checkpoint = this.store.consumeEvent(this.ref(record), this.clock.now())
+							if (checkpoint?.kind === 'json' && checkpoint.serialized.length > this.limits.maxStepOutputBytes) {
+								throw new Error(`Step "${name}" output exceeds maximum size of 1 MiB`)
+							}
+							return checkpoint
+						})
+						if (!checkpoint) return
+						const event = decodeWorkflowEvent<T>(checkpoint)
+						cleanup()
+						resolve(event)
+					} catch (error) {
+						cleanup()
+						reject(error)
+					}
+				}
+				waiters.set(record.id, { type: options.type, wake })
 
 				timer = setTimeout(() => {
 					cleanup()
-					reject(new Error(`waitForEvent timed out after ${options.timeout ?? '24 hours'}`))
-				}, timeoutMs)
+					const error = new Error(`waitForEvent timed out after ${options.timeout ?? '24 hours'}`)
+					try {
+						this.recordForwardFailure(record, error)
+					} catch (failure) {
+						reject(failure)
+						return
+					}
+					for (const waiter of waiters.values()) waiter.wake()
+					reject(error)
+				}, Math.max(0, deadline - this.clock.now()))
 
 				abortHandler = () => {
 					cleanup()
 					reject(new Error('workflow terminated'))
 				}
 				this.abortSignal.addEventListener('abort', abortHandler)
-				fireEventWaitCallbacks(this.instanceId, options.type)
+				wake()
+				fireEventWaitCallbacks(this.registryId, options.type)
 			})
 
-			// Restore running status
-			this.db
-				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(this.clock.now(), this.instanceId)
+			const status = eventWaiters.get(this.registryId)?.size ? 'waiting' : 'running'
+			this.store.transaction(this.token, () =>
+				this.db
+					.query('UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ?')
+					.run(status, this.clock.now(), this.instanceId))
 
-			this.cacheStep(`waitForEvent:${name}`, result)
+			if (record.key.count === 1) fireStepCallbacks(this.registryId, `waitForEvent:${name}`, result)
+			fireStepCallbacks(this.registryId, name, result, record.key)
 			return result
 		})
 	}
@@ -841,10 +830,12 @@ function interruptibleDelay(ms: number, abortSignal: AbortSignal): Promise<void>
 }
 
 /** Like interruptibleDelay, but also resolves when skipSleep() is called for the instance. */
-function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string): Promise<void> {
+function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string, occurrenceId: number): Promise<void> {
 	if (ms <= 0) return Promise.resolve()
 	if (abortSignal.aborted) return Promise.reject(new Error('workflow terminated'))
 	return new Promise((resolve, reject) => {
+		const resolvers = sleepResolvers.get(instanceId) ?? new Map<number, () => void>()
+		sleepResolvers.set(instanceId, resolvers)
 		const timer = setTimeout(() => {
 			cleanup()
 			resolve()
@@ -856,9 +847,10 @@ function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string
 		const cleanup = () => {
 			clearTimeout(timer)
 			abortSignal.removeEventListener('abort', abortHandler)
-			sleepResolvers.delete(instanceId)
+			resolvers.delete(occurrenceId)
+			if (resolvers.size === 0) sleepResolvers.delete(instanceId)
 		}
-		sleepResolvers.set(instanceId, () => {
+		resolvers.set(occurrenceId, () => {
 			cleanup()
 			resolve()
 		})
@@ -871,7 +863,7 @@ function skippableDelay(ms: number, abortSignal: AbortSignal, instanceId: string
 export function getWaitingEventTypes(instanceId: string): string[] {
 	const waiters = eventWaiters.get(instanceId)
 	if (!waiters) return []
-	return Array.from(waiters.keys())
+	return [...new Set([...waiters.values()].map(waiter => waiter.type))]
 }
 
 /** Check if an instance is currently sleeping (has a registered sleep resolver). */
@@ -881,10 +873,10 @@ export function isInstanceSleeping(instanceId: string): boolean {
 
 // --- Notification hook registration (for testing) ---
 
-function fireStepCallbacks(instanceId: string, stepName: string, output: unknown): void {
+function fireStepCallbacks(instanceId: string, stepName: string, output: unknown, selector?: WorkflowStepKey): void {
 	const instanceCbs = stepCallbacks.get(instanceId)
 	if (!instanceCbs) return
-	const cbs = instanceCbs.get(stepName)
+	const cbs = instanceCbs.get(stepSelectorKey(stepName, selector))
 	if (!cbs) return
 	for (const cb of cbs) cb(output)
 }
@@ -910,21 +902,22 @@ function fireStatusCallbacks(instanceId: string, status: string): void {
 }
 
 /** Register a callback for when a step completes. Returns an unsubscribe function. */
-export function onStepComplete(instanceId: string, stepName: string, cb: (output: unknown) => void): () => void {
+export function onStepComplete(instanceId: string, stepName: string, cb: (output: unknown) => void, selector?: WorkflowStepKey): () => void {
+	const key = stepSelectorKey(stepName, selector)
 	let instanceCbs = stepCallbacks.get(instanceId)
 	if (!instanceCbs) {
 		instanceCbs = new Map()
 		stepCallbacks.set(instanceId, instanceCbs)
 	}
-	let cbs = instanceCbs.get(stepName)
+	let cbs = instanceCbs.get(key)
 	if (!cbs) {
 		cbs = new Set()
-		instanceCbs.set(stepName, cbs)
+		instanceCbs.set(key, cbs)
 	}
 	cbs.add(cb)
 	return () => {
 		cbs!.delete(cb)
-		if (cbs!.size === 0) instanceCbs!.delete(stepName)
+		if (cbs!.size === 0) instanceCbs!.delete(key)
 		if (instanceCbs!.size === 0) stepCallbacks.delete(instanceId)
 	}
 }
@@ -1037,11 +1030,30 @@ export class SqliteWorkflowInstance {
 	private db: Database
 	private instanceId: string
 	private binding: SqliteWorkflowBinding | null
+	private clock: Clock
+	private incarnation: string | undefined
+	private workflowName: string | undefined
 
 	constructor(db: Database, instanceId: string, binding: SqliteWorkflowBinding | null) {
 		this.db = db
 		this.instanceId = instanceId
 		this.binding = binding
+		this.clock = binding?._getClock() ?? realClock
+		if (db.query('SELECT id FROM workflow_instances WHERE id = ?').get(instanceId)) {
+			const token = new WorkflowStore(db).currentToken(instanceId, binding?._getWorkflowName())
+			this.incarnation = token.incarnation
+			this.workflowName = token.workflowName
+		}
+	}
+
+	private currentToken(): WorkflowExecutionToken {
+		const token = new WorkflowStore(this.db).currentToken(this.instanceId, this.workflowName)
+		if (token.incarnation !== this.incarnation) throw new Error(`Workflow instance ${this.instanceId} no longer exists`)
+		return token
+	}
+
+	_registryId(): string {
+		return registryKey(this.db, this.currentToken())
 	}
 
 	get id(): string {
@@ -1049,6 +1061,7 @@ export class SqliteWorkflowInstance {
 	}
 
 	async status(): Promise<WorkflowInstanceStatus> {
+		this.currentToken()
 		const row = this.db
 			.query('SELECT status, output, error, error_name FROM workflow_instances WHERE id = ?')
 			.get(this.instanceId) as { status: string; output: string | null; error: string | null; error_name: string | null } | null
@@ -1069,25 +1082,28 @@ export class SqliteWorkflowInstance {
 	}
 
 	async pause(): Promise<void> {
-		this.db
-			.query("UPDATE workflow_instances SET status = 'paused', updated_at = ? WHERE id = ? AND status IN ('running', 'waiting')")
-			.run(Date.now(), this.instanceId)
+		new WorkflowStore(this.db).transaction(this.currentToken(), () =>
+			this.db
+				.query("UPDATE workflow_instances SET status = 'paused', updated_at = ? WHERE id = ? AND status IN ('running', 'waiting')")
+				.run(Date.now(), this.instanceId))
 	}
 
 	async resume(): Promise<void> {
 		// If workflow was waiting for an event before pause, restore 'waiting' status
-		const waiters = eventWaiters.get(this.instanceId)
+		const waiters = eventWaiters.get(this._registryId())
 		const newStatus = (waiters && waiters.size > 0) ? 'waiting' : 'running'
-		this.db
-			.query("UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ? AND status = 'paused'")
-			.run(newStatus, Date.now(), this.instanceId)
+		new WorkflowStore(this.db).transaction(this.currentToken(), () =>
+			this.db
+				.query("UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ? AND status = 'paused'")
+				.run(newStatus, Date.now(), this.instanceId))
 	}
 
 	async terminate(options?: { rollback?: boolean }): Promise<void> {
+		const registryId = this._registryId()
 		if (options?.rollback) {
 			const row = this.db.query<{ status: string }, [string]>('SELECT status FROM workflow_instances WHERE id = ?').get(this.instanceId)
 			if (!row || ['complete', 'errored', 'terminated'].includes(row.status)) return
-			this.db.transaction(() => {
+			new WorkflowStore(this.db).transaction(this.currentToken(), () => {
 				const inserted = this.db.query(
 					"INSERT OR IGNORE INTO workflow_rollbacks (instance_id, phase, target_status) VALUES (?, 'requested', 'terminated')",
 				)
@@ -1098,27 +1114,33 @@ export class SqliteWorkflowInstance {
 					)
 						.run(Date.now(), this.instanceId)
 				}
-			})()
+			})
 			const rollback = this.db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(this.instanceId)
-			if (rollback?.phase === 'requested') abortControllers.get(this.instanceId)?.abort(ROLLBACK_REQUESTED)
-			if (!executions.has(this.instanceId)) {
+			if (rollback?.phase === 'requested') abortControllers.get(registryId)?.abort(ROLLBACK_REQUESTED)
+			if (!executions.has(registryId)) {
 				if (!this.binding) throw new Error('Cannot roll back: instance not associated with a workflow binding')
 				this.binding._executeInstance(this.instanceId)
 			}
-			await executions.get(this.instanceId)
+			await executions.get(registryId)
 			return
 		}
-		this.db
-			.query("UPDATE workflow_instances SET status = 'terminated', updated_at = ? WHERE id = ? AND status IN ('running', 'paused', 'waiting', 'queued')")
-			.run(Date.now(), this.instanceId)
+		const store = new WorkflowStore(this.db)
+		const token = store.fenceExecution(this.currentToken())
+		store.transaction(token, () =>
+			this.db
+				.query(
+					"UPDATE workflow_instances SET status = 'terminated', updated_at = ? WHERE id = ? AND status IN ('running', 'paused', 'waiting', 'queued')",
+				)
+				.run(Date.now(), this.instanceId))
 		// Abort via global registry so get()-retrieved instances also work
-		const ac = abortControllers.get(this.instanceId)
+		const ac = abortControllers.get(registryId)
 		ac?.abort(WORKFLOW_TERMINATED)
-		fireStatusCallbacks(this.instanceId, 'terminated')
+		fireStatusCallbacks(registryId, 'terminated')
 	}
 
-	async restart(options?: { fromStep?: string }): Promise<void> {
+	async restart(options?: WorkflowRestartOptions): Promise<void> {
 		if (!this.binding) throw new Error("Cannot restart: instance not associated with a workflow binding. Use the binding's get() method.")
+		const registryId = this._registryId()
 		const cls = this.binding._getClass()
 		const env = this.binding._getEnv()
 		const db = this.binding._getDb()
@@ -1131,46 +1153,34 @@ export class SqliteWorkflowInstance {
 			.get(this.instanceId) as { params: string | null; created_at: number } | null
 		if (!row) throw new Error(`Workflow instance ${this.instanceId} not found`)
 
-		// Abort existing execution
-		const existingAc = abortControllers.get(this.instanceId)
+		const store = new WorkflowStore(db)
+		const current = store.currentToken(this.instanceId, workflowName)
+		let from = options?.from
+		if (!from && options?.fromStep) {
+			const matches = store.readDetail(this.instanceId, workflowName).occurrences.filter(row =>
+				(row.method === 'do' ? row.key.name : `${row.method}:${row.key.name}`) === options.fromStep
+			)
+			if (matches.length > 1) throw new Error('Ambiguous fromStep selector; use from with name, type and count')
+			from = matches[0]?.key ?? { name: options.fromStep }
+		}
+		if (from && (!Number.isSafeInteger(from.count ?? 1) || (from.count ?? 1) < 1)) {
+			throw new Error('Restart occurrence count must be a positive integer')
+		}
+		if (
+			from && (typeof from.name !== 'string' || (from.type !== undefined && from.type !== 'do' && from.type !== 'sleep' && from.type !== 'waitForEvent'))
+		) {
+			throw new Error('Restart requires a step name and a valid step type')
+		}
+		const fromOrder = from ? store.resolveRestartTarget(current, { name: from.name, count: from.count ?? 1, type: from.type ?? 'do' }) : null
+		const control = store.fenceExecution(current)
+		const existingAc = abortControllers.get(registryId)
 		existingAc?.abort()
-		await executions.get(this.instanceId)
+		await executions.get(registryId)
+		while (runningForwardAttempts.get(registryId)?.size) await Promise.allSettled([...runningForwardAttempts.get(registryId)!])
+		store.replaceRun(control, fromOrder)
 
 		const abortController = new AbortController()
-		abortControllers.set(this.instanceId, abortController)
-
-		if (options?.fromStep) {
-			// Partial restart: find the step and delete it + all subsequent steps
-			const step = this.db
-				.query('SELECT completed_at FROM workflow_steps WHERE instance_id = ? AND step_name = ?')
-				.get(this.instanceId, options.fromStep) as { completed_at: number } | null
-			if (!step) throw new Error(`Step "${options.fromStep}" not found in workflow instance ${this.instanceId}`)
-			this.db
-				.query('DELETE FROM workflow_steps WHERE instance_id = ? AND completed_at >= ?')
-				.run(this.instanceId, step.completed_at)
-		} else {
-			// Full restart: clear all cached steps
-			this.db.query('DELETE FROM workflow_steps WHERE instance_id = ?').run(this.instanceId)
-		}
-		// Clear step attempt counters
-		this.db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ?').run(this.instanceId)
-		this.db.query('DELETE FROM workflow_rollbacks WHERE instance_id = ?').run(this.instanceId)
-		if (options?.fromStep) {
-			this.db.query(
-				'DELETE FROM workflow_step_history WHERE instance_id = ? AND step_name NOT IN (SELECT step_name FROM workflow_steps WHERE instance_id = ?)',
-			)
-				.run(this.instanceId, this.instanceId)
-			this.db.query(
-				'UPDATE workflow_step_history SET rollback_state = NULL, rollback_attempts = 0, rollback_error = NULL, rollback_error_name = NULL WHERE instance_id = ?',
-			)
-				.run(this.instanceId)
-		} else {
-			this.db.query('DELETE FROM workflow_step_history WHERE instance_id = ?').run(this.instanceId)
-		}
-
-		this.db
-			.query("UPDATE workflow_instances SET status = 'running', output = NULL, error = NULL, error_name = NULL, updated_at = ? WHERE id = ?")
-			.run(Date.now(), this.instanceId)
+		abortControllers.set(this._registryId(), abortController)
 
 		const params = row.params !== null ? JSON.parse(row.params) : {}
 		SqliteWorkflowBinding.executeWorkflow(
@@ -1188,36 +1198,24 @@ export class SqliteWorkflowInstance {
 	}
 
 	async skipSleep(): Promise<void> {
-		const resolver = sleepResolvers.get(this.instanceId)
-		if (resolver) {
-			resolver()
-		}
+		for (const resolver of sleepResolvers.get(this._registryId())?.values() ?? []) resolver()
 	}
 
 	async sendEvent(event: { type: string; payload?: unknown }): Promise<void> {
+		const registryId = this._registryId()
 		// Validate event type
 		if (!EVENT_TYPE_PATTERN.test(event.type)) {
 			throw new Error(`Invalid event type "${event.type}". Must be 1-100 characters, only letters, digits, hyphens and underscores.`)
 		}
 
-		// Validate instance state — cannot send events to finished instances
-		const row = this.db
-			.query('SELECT status FROM workflow_instances WHERE id = ?')
-			.get(this.instanceId) as { status: string } | null
-		if (row && ['complete', 'errored', 'terminated'].includes(row.status)) {
-			throw new Error(`Cannot send event to workflow instance "${this.instanceId}" with status "${row.status}"`)
-		}
-
-		// Check if there's a waiter for this event type in-memory
-		const waiters = eventWaiters.get(this.instanceId)
-		const resolver = waiters?.get(event.type)
-
-		if (resolver) {
-			resolver(event.payload)
-		} else {
-			this.db
-				.query('INSERT INTO workflow_events (instance_id, event_type, payload, created_at) VALUES (?, ?, ?, ?)')
-				.run(this.instanceId, event.type, event.payload !== undefined ? JSON.stringify(event.payload) : null, Date.now())
+		new WorkflowStore(this.db).enqueueEvent(
+			this.currentToken(),
+			event.type,
+			event.payload !== undefined ? JSON.stringify(event.payload) : null,
+			this.clock.now(),
+		)
+		for (const waiter of eventWaiters.get(registryId)?.values() ?? []) {
+			if (waiter.type === event.type) waiter.wake()
 		}
 	}
 }
@@ -1279,7 +1277,7 @@ export class SqliteWorkflowBinding {
 			"SELECT id FROM workflow_instances WHERE workflow_name = ? AND status IN ('running','queued','waiting')",
 		).all(this.workflowName) as { id: string }[]
 		for (const { id } of rows) {
-			abortControllers.get(id)?.abort()
+			abortControllers.get(instanceRegistryKey(this.db, id))?.abort()
 		}
 	}
 
@@ -1291,13 +1289,8 @@ export class SqliteWorkflowBinding {
 			.query("SELECT id FROM workflow_instances WHERE workflow_name = ? AND status IN ('complete', 'errored') AND updated_at < ?")
 			.all(this.workflowName, cutoff) as { id: string }[]
 		for (const { id } of expiredIds) {
-			this.db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ?').run(id)
-			this.db.query('DELETE FROM workflow_step_history WHERE instance_id = ?').run(id)
-			this.db.query('DELETE FROM workflow_rollbacks WHERE instance_id = ?').run(id)
+			new WorkflowStore(this.db).removeOwnedState(id, this.workflowName)
 		}
-		this.db
-			.query("DELETE FROM workflow_instances WHERE workflow_name = ? AND status IN ('complete', 'errored') AND updated_at < ?")
-			.run(this.workflowName, cutoff)
 	}
 
 	private countRunning(): number {
@@ -1330,12 +1323,12 @@ export class SqliteWorkflowBinding {
 
 		this.db
 			.query(
-				'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+				'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at, incarnation, persistence_version) VALUES (?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))), 1)',
 			)
 			.run(id, this.workflowName, this.className, JSON.stringify(params), initialStatus, now, now)
 
 		const abortController = new AbortController()
-		abortControllers.set(id, abortController)
+		abortControllers.set(instanceRegistryKey(this.db, id), abortController)
 		const handle = new SqliteWorkflowInstance(this.db, id, this)
 
 		if (!isQueued) {
@@ -1378,12 +1371,12 @@ export class SqliteWorkflowBinding {
 
 		this.db
 			.query(
-				'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+				'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at, incarnation, persistence_version) VALUES (?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))), 1)',
 			)
 			.run(id, this.workflowName, this.className, JSON.stringify(params), 'queued', now, now)
 
 		const abortController = new AbortController()
-		abortControllers.set(id, abortController)
+		abortControllers.set(instanceRegistryKey(this.db, id), abortController)
 
 		return new SqliteWorkflowInstance(this.db, id, this)
 	}
@@ -1391,6 +1384,10 @@ export class SqliteWorkflowBinding {
 	/** Start execution of a prepared (queued) workflow instance. */
 	_executeInstance(id: string): void {
 		if (!this._class) throw new Error('Workflow class not wired yet')
+		const store = new WorkflowStore(this.db)
+		const token = store.currentToken(id, this.workflowName)
+		const registryId = instanceRegistryKey(this.db, id)
+		if (executions.has(registryId)) return
 
 		const row = this.db
 			.query('SELECT params, created_at FROM workflow_instances WHERE id = ?')
@@ -1399,14 +1396,15 @@ export class SqliteWorkflowBinding {
 
 		const params = row.params !== null ? JSON.parse(row.params) : {}
 
-		this.db
-			.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-			.run(this.clock.now(), id)
+		store.transaction(token, () =>
+			this.db
+				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+				.run(this.clock.now(), id))
 
-		let ac = abortControllers.get(id)
+		let ac = abortControllers.get(registryId)
 		if (!ac || ac.signal.aborted) {
 			ac = new AbortController()
-			abortControllers.set(id, ac)
+			abortControllers.set(registryId, ac)
 		}
 
 		console.log(`[workflow] started ${id}`)
@@ -1426,10 +1424,7 @@ export class SqliteWorkflowBinding {
 	}
 
 	async get(id: string): Promise<SqliteWorkflowInstance> {
-		const row = this.db
-			.query('SELECT id FROM workflow_instances WHERE id = ?')
-			.get(id) as { id: string } | null
-		if (!row) throw new Error(`Workflow instance ${id} not found`)
+		new WorkflowStore(this.db).currentToken(id, this.workflowName)
 		return new SqliteWorkflowInstance(this.db, id, this)
 	}
 
@@ -1477,7 +1472,7 @@ export class SqliteWorkflowBinding {
 				return { kind: 'ok' }
 			}
 			case 'restart': {
-				await (await this.get(op.instanceId)).restart(op.fromStep ? { fromStep: op.fromStep } : undefined)
+				await (await this.get(op.instanceId)).restart({ from: op.from, fromStep: op.fromStep })
 				return { kind: 'ok' }
 			}
 			case 'skipSleep': {
@@ -1489,9 +1484,9 @@ export class SqliteWorkflowBinding {
 				return { kind: 'ok' }
 			}
 			case 'isSleeping':
-				return { kind: 'isSleeping', value: isInstanceSleeping(op.instanceId) }
+				return { kind: 'isSleeping', value: isInstanceSleeping((await this.get(op.instanceId))._registryId()) }
 			case 'waitingEventTypes':
-				return { kind: 'waitingEventTypes', value: getWaitingEventTypes(op.instanceId) }
+				return { kind: 'waitingEventTypes', value: getWaitingEventTypes((await this.get(op.instanceId))._registryId()) }
 		}
 	}
 
@@ -1504,15 +1499,18 @@ export class SqliteWorkflowBinding {
 			.all(this.workflowName) as { id: string; params: string | null; created_at: number }[]
 
 		for (const row of rows) {
-			if (executions.has(row.id)) continue
+			const registryId = instanceRegistryKey(this.db, row.id)
+			if (executions.has(registryId)) continue
 			const abortController = new AbortController()
-			abortControllers.set(row.id, abortController)
+			abortControllers.set(registryId, abortController)
 			const params = row.params !== null ? JSON.parse(row.params) : {}
 			console.log(`[workflow] resuming interrupted instance ${row.id}`)
 			// Reset to running before re-executing (waiting status needs to restart from last checkpoint)
-			this.db
-				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(this.clock.now(), row.id)
+			const store = new WorkflowStore(this.db)
+			store.transaction(store.currentToken(row.id, this.workflowName), () =>
+				this.db
+					.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+					.run(this.clock.now(), row.id))
 			SqliteWorkflowBinding.executeWorkflow(
 				this.db,
 				row.id,
@@ -1539,12 +1537,14 @@ export class SqliteWorkflowBinding {
 				.get(this.workflowName) as { id: string; params: string | null; created_at: number } | null
 			if (!queued) break
 
-			this.db
-				.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
-				.run(this.clock.now(), queued.id)
+			const store = new WorkflowStore(this.db)
+			store.transaction(store.currentToken(queued.id, this.workflowName), () =>
+				this.db
+					.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?")
+					.run(this.clock.now(), queued.id))
 
 			const abortController = new AbortController()
-			abortControllers.set(queued.id, abortController)
+			abortControllers.set(instanceRegistryKey(this.db, queued.id), abortController)
 			const params = queued.params !== null ? JSON.parse(queued.params) : {}
 			console.log(`[workflow] starting queued instance ${queued.id}`)
 			SqliteWorkflowBinding.executeWorkflow(
@@ -1574,6 +1574,9 @@ export class SqliteWorkflowBinding {
 		createdAt?: number,
 		clock?: Clock,
 	): void {
+		const store = new WorkflowStore(db)
+		const initialToken = store.currentToken(id, workflowName)
+		const registryId = registryKey(db, initialToken)
 		const resolvedLimits = limits ?? WORKFLOW_DEFAULTS
 		const resolvedClock = clock ?? realClock
 		let activeController = abortController
@@ -1587,10 +1590,13 @@ export class SqliteWorkflowBinding {
 				"SELECT id, params, created_at FROM workflow_instances WHERE workflow_name = ? AND status = 'queued' ORDER BY created_at ASC LIMIT 1",
 			).get(workflowName)
 			if (!queued) return
-			db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), queued.id)
+			store.transaction(
+				store.currentToken(queued.id, workflowName),
+				() => db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), queued.id),
+			)
 			const params = queued.params !== null ? JSON.parse(queued.params) : {}
 			const controller = new AbortController()
-			abortControllers.set(queued.id, controller)
+			abortControllers.set(instanceRegistryKey(db, queued.id), controller)
 			SqliteWorkflowBinding.executeWorkflow(
 				db,
 				queued.id,
@@ -1607,23 +1613,26 @@ export class SqliteWorkflowBinding {
 		const execution = (async () => {
 			await Promise.resolve()
 			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) {
-				if (abortControllers.get(id) === abortController) abortControllers.delete(id)
+				if (abortControllers.get(registryId) === abortController) abortControllers.delete(registryId)
 				if (abortController.signal.reason === WORKFLOW_TERMINATED) startQueued()
 				return
 			}
+			while (runningForwardAttempts.get(registryId)?.size) await Promise.allSettled([...runningForwardAttempts.get(registryId)!])
+			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) return
+			const token = store.transaction(initialToken, () => store.acquireExecution(id, initialToken.workflowName))
 			let workflowTraceId: string | undefined
 			let step: WorkflowStepImpl | undefined
 			const initialRollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
 			if (initialRollback?.phase === 'requested' && activeController.signal.aborted) {
 				activeController = new AbortController()
-				abortControllers.set(id, activeController)
+				abortControllers.set(registryId, activeController)
 			}
 			// Rollback termination drains forward steps; reload and default termination abort them.
 			const forwardController = new AbortController()
 			const onControlAbort = () => {
 				if (activeController.signal.reason === ROLLBACK_REQUESTED) {
 					activeController = new AbortController()
-					abortControllers.set(id, activeController)
+					abortControllers.set(registryId, activeController)
 					activeController.signal.addEventListener('abort', onControlAbort, { once: true })
 				} else {
 					forwardController.abort()
@@ -1633,8 +1642,10 @@ export class SqliteWorkflowBinding {
 			const finishRollback = async (error: Error, state: RollbackState): Promise<void> => {
 				if (!step) throw new Error('Workflow step handlers could not be recovered')
 				if (activeController.signal.aborted) return
-				db.query("UPDATE workflow_rollbacks SET phase = 'running' WHERE instance_id = ?").run(id)
-				db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), id)
+				store.transaction(token, () => {
+					db.query("UPDATE workflow_rollbacks SET phase = 'running' WHERE instance_id = ?").run(id)
+					db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), id)
+				})
 				let failure: Error | undefined
 				try {
 					await step.rollback(error, activeController.signal)
@@ -1643,15 +1654,15 @@ export class SqliteWorkflowBinding {
 					failure = workflowError(err)
 				}
 				if (activeController.signal.aborted) return
-				db.transaction(() => {
+				store.transaction(token, () => {
 					db.query('UPDATE workflow_rollbacks SET phase = ?, error = ?, error_name = ? WHERE instance_id = ?')
 						.run(failure ? 'failed' : 'complete', failure?.message ?? null, failure?.name ?? null, id)
 					db.query('UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ?').run(state.target_status, resolvedClock.now(), id)
-				})()
-				fireStatusCallbacks(id, state.target_status)
+				})
+				fireStatusCallbacks(registryId, state.target_status)
 			}
 			try {
-				step = new WorkflowStepImpl(forwardController.signal, db, id, resolvedLimits, resolvedClock)
+				step = new WorkflowStepImpl(forwardController.signal, db, id, resolvedLimits, resolvedClock, token)
 				const instance = new workflowClass({ waitUntil: () => {} }, env)
 				const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
 				const result = await startSpan({
@@ -1675,15 +1686,15 @@ export class SqliteWorkflowBinding {
 					await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
 					return
 				}
-				db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
-					.run(JSON.stringify(result), resolvedClock.now(), id)
-				// Clean up step attempts on successful completion
-				db.query('DELETE FROM workflow_step_attempts WHERE instance_id = ?').run(id)
+				store.transaction(token, () =>
+					db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
+						.run(JSON.stringify(result), resolvedClock.now(), id))
 				console.log(`[workflow] completed ${id}:`, result)
-				fireStatusCallbacks(id, 'complete')
+				fireStatusCallbacks(registryId, 'complete')
 			} catch (err) {
 				await step?.settlePending()
 				if (activeController.signal.aborted) return
+				store.assertCurrent(token)
 				const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
 				if (rollback?.phase === 'running' || rollback?.phase === 'requested') {
 					const original = db.query<{ error: string | null; error_name: string | null }, [string]>(
@@ -1693,19 +1704,27 @@ export class SqliteWorkflowBinding {
 					await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
 					return
 				}
-				const errorName = err instanceof Error ? (err.name || err.constructor.name || 'Error') : 'Error'
-				const message = err instanceof Error ? err.message : String(err)
-
-				const eligible = db.query<{ count: number }, [string]>(
-					'SELECT COUNT(*) AS count FROM workflow_step_history WHERE instance_id = ? AND rollback_registered = 1',
-				).get(id)
-				if (step && eligible && eligible.count > 0) {
-					db.transaction(() => {
+				let failure = workflowError(err)
+				let eligible: WorkflowOccurrenceRecord[] = []
+				try {
+					eligible = step ? store.listRollbackOccurrences(step.token) : []
+				} catch (storageError) {
+					const storageFailure = workflowError(storageError)
+					failure = new AggregateError(
+						[failure, storageFailure],
+						`Workflow "${id}" cannot recover compensation safely. Original failure: ${failure.name}: ${failure.message}. Storage failure: ${storageFailure.name}: ${storageFailure.message}`,
+					)
+					failure.name = 'WorkflowRecoveryError'
+				}
+				const errorName = failure.name || 'Error'
+				const message = failure.message
+				if (step && eligible.length > 0) {
+					store.transaction(token, () => {
 						db.query("UPDATE workflow_instances SET status = 'running', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
 							.run(message, errorName, resolvedClock.now(), id)
 						db.query("INSERT INTO workflow_rollbacks (instance_id, phase, target_status, original_non_retryable) VALUES (?, 'running', 'errored', ?)")
 							.run(id, err instanceof NonRetryableError ? 1 : 0)
-					})()
+					})
 					persistError(err, 'workflow', workflowName, workflowTraceId)
 					await step.settleForwardAttempts()
 					await finishRollback(workflowError(err), {
@@ -1717,24 +1736,28 @@ export class SqliteWorkflowBinding {
 					})
 					return
 				}
-				db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
-					.run(message, errorName, resolvedClock.now(), id)
-				console.error(`[workflow] failed ${id}:`, err)
-				persistError(err, 'workflow', workflowName, workflowTraceId)
-				fireStatusCallbacks(id, 'errored')
+				store.transaction(
+					token,
+					() =>
+						db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
+							.run(message, errorName, resolvedClock.now(), id),
+				)
+				console.error(`[workflow] failed ${id}:`, failure)
+				persistError(failure, 'workflow', workflowName, workflowTraceId)
+				fireStatusCallbacks(registryId, 'errored')
 			} finally {
 				activeController.signal.removeEventListener('abort', onControlAbort)
 				forwardController.abort()
-				if (abortControllers.get(id) === activeController) {
-					eventWaiters.delete(id)
-					abortControllers.delete(id)
+				if (abortControllers.get(registryId) === activeController) {
+					eventWaiters.delete(registryId)
+					abortControllers.delete(registryId)
 				}
 				if (!activeController.signal.aborted || activeController.signal.reason === WORKFLOW_TERMINATED) startQueued()
 			}
 		})()
-		executions.set(id, execution)
+		executions.set(registryId, execution)
 		execution.finally(() => {
-			if (executions.get(id) === execution) executions.delete(id)
+			if (executions.get(registryId) === execution) executions.delete(registryId)
 		}).catch(err => console.error(`[workflow] execution interrupted ${id}:`, err))
 	}
 }

@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { NonRetryableError, parseDuration, SqliteWorkflowBinding, SqliteWorkflowInstance, WorkflowEntrypointBase } from '../src/bindings/workflow'
 import type { WorkflowStepConfig } from '../src/bindings/workflow'
+import { WorkflowStore } from '../src/bindings/workflow-store'
 import { runMigrations } from '../src/db'
 
 class TestWorkflow extends WorkflowEntrypointBase {
@@ -683,17 +684,17 @@ describe('step retry config', () => {
 })
 
 describe('step checkpointing', () => {
-	test('step results are cached in workflow_steps table', async () => {
+	test('step results are persisted by occurrence', async () => {
 		const binding = new SqliteWorkflowBinding(db, 'cache-wf', 'TestWorkflow')
 		binding._setClass(TestWorkflow, { TEST: true })
 		const instance = await binding.create({ params: { value: 'cached' } })
 		await new Promise((r) => setTimeout(r, 200))
 
-		const rows = db.query('SELECT * FROM workflow_steps WHERE instance_id = ?').all(instance.id) as { step_name: string; output: string }[]
+		const rows = new WorkflowStore(db).readDetail(instance.id, 'cache-wf').occurrences
 		expect(rows.length).toBeGreaterThan(0)
-		const processStep = rows.find((r) => r.step_name === 'process')
+		const processStep = rows.find((r) => r.key.name === 'process')
 		expect(processStep).not.toBeUndefined()
-		expect(JSON.parse(processStep!.output)).toEqual({ input: 'cached', processed: true })
+		expect(processStep?.checkpoint).toEqual({ kind: 'json', serialized: JSON.stringify({ input: 'cached', processed: true }) })
 	})
 
 	test('sleep steps are checkpointed', async () => {
@@ -702,9 +703,10 @@ describe('step checkpointing', () => {
 		const instance = await binding.create({ params: { value: 'test' } })
 		await new Promise((r) => setTimeout(r, 200))
 
-		const rows = db.query('SELECT * FROM workflow_steps WHERE instance_id = ?').all(instance.id) as { step_name: string; output: string }[]
-		const sleepStep = rows.find((r) => r.step_name === 'sleep:pause')
+		const rows = new WorkflowStore(db).readDetail(instance.id, 'sleep-cache').occurrences
+		const sleepStep = rows.find((r) => r.key.type === 'sleep' && r.key.name === 'pause')
 		expect(sleepStep).not.toBeUndefined()
+		expect(sleepStep?.state).toBe('completed')
 	})
 
 	test('restart clears cached steps', async () => {
@@ -732,7 +734,7 @@ describe('step checkpointing', () => {
 		expect(s2.output).not.toBe(firstOutput)
 
 		// Verify steps were cleared
-		const stepsAfterRestart = db.query('SELECT * FROM workflow_steps WHERE instance_id = ?').all(instance.id)
+		const stepsAfterRestart = new WorkflowStore(db).readDetail(instance.id, 'restart-cache').occurrences
 		expect(stepsAfterRestart.length).toBe(1) // Only the new step
 	})
 
@@ -935,12 +937,10 @@ describe('parseDuration', () => {
 })
 
 describe('duplicate step names', () => {
-	test('throws on duplicate step name', async () => {
+	test('repeated step names produce distinct results', async () => {
 		class DuplicateStepWorkflow extends WorkflowEntrypointBase {
 			override async run(_event: unknown, step: { do: <T>(name: string, cb: () => Promise<T>) => Promise<T> }): Promise<unknown> {
-				await step.do('same-name', async () => 'first')
-				await step.do('same-name', async () => 'second')
-				return 'done'
+				return [await step.do('same-name', async () => 'first'), await step.do('same-name', async () => 'second')]
 			}
 		}
 		const binding = new SqliteWorkflowBinding(db, 'dup-step', 'DuplicateStepWorkflow')
@@ -949,8 +949,8 @@ describe('duplicate step names', () => {
 		await new Promise((r) => setTimeout(r, 200))
 
 		const s = await instance.status()
-		expect(s.status).toBe('errored')
-		expect(s.error!.message).toContain('Duplicate step name')
+		expect(s.status).toBe('complete')
+		expect(s.output).toEqual(['first', 'second'])
 	})
 })
 
@@ -967,6 +967,7 @@ describe('resumeInterrupted', () => {
 		db.query(
 			'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
 		).run('stuck-1', 'resume-wf', 'SimpleWorkflow', JSON.stringify({ value: 'resumed' }), 'running', now, now)
+		runMigrations(db)
 
 		const binding = new SqliteWorkflowBinding(db, 'resume-wf', 'SimpleWorkflow')
 		binding._setClass(SimpleWorkflow, {})
@@ -998,6 +999,7 @@ describe('resumeInterrupted with failing constructor', () => {
 		db.query(
 			'INSERT INTO workflow_instances (id, workflow_name, class_name, params, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
 		).run('crash-loop-1', 'bad-ctor-wf', 'BadConstructorWorkflow', JSON.stringify({}), 'running', now, now)
+		runMigrations(db)
 
 		const binding = new SqliteWorkflowBinding(db, 'bad-ctor-wf', 'BadConstructorWorkflow')
 		binding._setClass(BadConstructorWorkflow, {})
@@ -1194,8 +1196,8 @@ describe('step name length validation', () => {
 	})
 })
 
-describe('waitForEvent duplicate step name', () => {
-	test('throws on duplicate waitForEvent name', async () => {
+describe('waitForEvent repeated step name', () => {
+	test('waits independently for repeated names', async () => {
 		class DupWaitWorkflow extends WorkflowEntrypointBase {
 			override async run(
 				_event: unknown,
@@ -1215,8 +1217,8 @@ describe('waitForEvent duplicate step name', () => {
 		await new Promise((r) => setTimeout(r, 300))
 
 		const s = await instance.status()
-		expect(s.status).toBe('errored')
-		expect(s.error!.message).toContain('Duplicate step name')
+		expect(s.status).toBe('complete')
+		expect(s.output).toBe('done')
 	})
 })
 
