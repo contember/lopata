@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HyperdriveBinding } from '../src/bindings/hyperdrive'
 import { addStatelessBindings } from '../src/bindings/stateless-env'
@@ -63,7 +64,7 @@ describe('Hyperdrive local override', () => {
 	})
 
 	test.each([undefined, '', 'mysql://u:p@override.example/db'])('main, worker and DO agree with override %s', async override => {
-		const tempDir = mkdtempSync('/tmp/opencode/lopata-hyperdrive-')
+		const tempDir = mkdtempSync(join(tmpdir(), 'lopata-hyperdrive-'))
 		const env = { ...process.env }
 		for (const name of ['PRIMARY', 'SECONDARY', 'MISSING']) delete env[`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_${name}`]
 		if (override !== undefined) env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_PRIMARY = override
