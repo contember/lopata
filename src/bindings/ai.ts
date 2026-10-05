@@ -32,6 +32,7 @@ interface GatewayOptions extends UniversalGatewayOptions {
 
 interface AiRunOptions {
 	returnRawResponse?: boolean
+	rejectIfBusy?: boolean
 	gateway?: GatewayOptions
 	signal?: AbortSignal
 }
@@ -212,6 +213,7 @@ function parseRunOptions(value: unknown): AiRunOptions {
 	const gateway = value.gateway === undefined ? undefined : parseGatewayOptions(value.gateway)
 	return {
 		returnRawResponse: optionalBoolean(value.returnRawResponse, 'returnRawResponse'),
+		rejectIfBusy: optionalBoolean(value.rejectIfBusy, 'rejectIfBusy'),
 		gateway: gateway === undefined ? undefined : { ...gateway, id: identifier(gateway.id, 'gateway.id') },
 		signal: parseSignal(value.signal),
 	}
@@ -352,6 +354,48 @@ function truncate(value: unknown): string {
 	return str.length > MAX_LOG_SIZE ? str.slice(0, MAX_LOG_SIZE) + '…' : str
 }
 
+interface AiRequestBody {
+	body: string | ReadableStream
+	contentType: string
+	logInput: unknown
+}
+
+function prepareRunBody(model: string, inputs: Record<string, unknown>, options: AiRunOptions): AiRequestBody {
+	const streamKeys = Object.entries(inputs).filter(([, value]) =>
+		value instanceof ReadableStream || value instanceof FormData
+		|| (isRecord(value) && (value.body instanceof ReadableStream || value.body instanceof FormData))
+	).map(([key]) => key)
+	if (streamKeys.length > 1) throw new TypeError('Multiple ReadableStreams are not supported')
+	if (streamKeys.length > 0) {
+		if (options.gateway) throw new TypeError('AI Gateway does not support ReadableStreams yet')
+		if (!model.startsWith('@')) throw new TypeError('Multipart inputs are only supported for native Workers AI models')
+		if (options.rejectIfBusy !== undefined) throw new TypeError('rejectIfBusy is not supported with multipart inputs in local dev')
+		if (Object.keys(inputs).length !== 1 || !('multipart' in inputs)) {
+			throw new TypeError('Only a standalone multipart input is supported in local dev')
+		}
+		const multipart = inputs.multipart
+		if (!isRecord(multipart) || !(multipart.body instanceof ReadableStream)) throw new TypeError('multipart.body must be a ReadableStream')
+		if (Object.keys(multipart).some(key => key !== 'body' && key !== 'contentType')) throw new TypeError('Unsupported multipart input fields')
+		const contentType = stringField(multipart.contentType, 'multipart.contentType')
+		if (!contentType.trim()) throw new TypeError('Content-Type is required with ReadableStream inputs')
+		return { body: multipart.body, contentType, logInput: { multipart: { contentType, body: '<stream>' } } }
+	}
+	let jsonInputs = inputs
+	if (options.rejectIfBusy !== undefined) {
+		if (!model.startsWith('@')) throw new TypeError('rejectIfBusy is only supported for native Workers AI models in local dev')
+		if (inputs.options !== undefined && !isRecord(inputs.options)) throw new TypeError('AI input options must be an object when using rejectIfBusy')
+		if (inputs.options?.rejectIfBusy !== undefined && inputs.options.rejectIfBusy !== options.rejectIfBusy) {
+			throw new TypeError('Conflicting rejectIfBusy in AI input options')
+		}
+		jsonInputs = { ...inputs, options: { ...inputs.options, rejectIfBusy: options.rejectIfBusy } }
+	}
+	return {
+		body: JSON.stringify(model.startsWith('@') ? jsonInputs : { model, input: jsonInputs }),
+		contentType: 'application/json',
+		logInput: jsonInputs,
+	}
+}
+
 export class AiBinding {
 	private readonly db: Database
 	private readonly accountId?: string
@@ -379,9 +423,11 @@ export class AiBinding {
 		const parsedOptions = parseRunOptions(options)
 		identifier(model, 'model')
 		if (!isRecord(inputs)) throw new TypeError('AI inputs must be an object')
+		const requestBody = prepareRunBody(model, inputs, parsedOptions)
 		const isStreaming = inputs.stream === true
-		return logRequest(this.db, model, inputs, isStreaming, async () => {
+		return logRequest(this.db, model, requestBody.logInput, isStreaming, async () => {
 			const headers = gatewayHeaders(parsedOptions.gateway)
+			headers.set('Content-Type', requestBody.contentType)
 			headers.set('Authorization', `Bearer ${apiToken}`)
 			if (parsedOptions.gateway) headers.set('cf-aig-gateway-id', parsedOptions.gateway.id)
 			// Third-party models use the unified REST envelope, not the legacy Workers AI model-in-path endpoint.
@@ -393,7 +439,7 @@ export class AiBinding {
 			const response = await fetch(url, {
 				method: 'POST',
 				headers,
-				body: JSON.stringify(thirdParty ? { model, input: inputs } : inputs),
+				body: requestBody.body,
 				signal: parsedOptions.signal,
 			})
 			this.aiGatewayLogId = response.headers.get('cf-aig-log-id')

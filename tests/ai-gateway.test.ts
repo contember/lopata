@@ -44,6 +44,28 @@ afterEach(() => {
 })
 
 describe('AI run gateway routing', () => {
+	test.each([
+		{ model: '@cf/test/model', gateway: undefined },
+		{ model: '@cf/test/model', gateway: { id: 'default' } },
+		{ model: 'openai/model', gateway: undefined },
+		{ model: 'openai/model', gateway: { id: 'default' } },
+	])('preserves JSON-valued multipart fields for %p', async ({ model, gateway }) => {
+		for (const multipart of [false, null, 'json-value', {}, ['json-value'], { body: 'json-body', contentType: 'text/plain' }]) {
+			const inputs = { prompt: 'hi', multipart }
+			const fetch = mockFetch((url, init) => {
+				expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/test-account/ai/run${model.startsWith('@') ? '/' + model : ''}`)
+				expect(init?.body).toBe(JSON.stringify(model.startsWith('@') ? inputs : { model, input: inputs }))
+				const headers = new Headers(init?.headers)
+				expect(headers.get('Content-Type')).toBe('application/json')
+				expect(headers.get('cf-aig-gateway-id')).toBe(gateway?.id ?? null)
+				return jsonResponse({ result: 'preserved' }, { headers: { 'cf-aig-log-id': 'json-multipart-log' } })
+			})
+			expect(await ai.run(model, inputs, { gateway })).toBe('preserved')
+			expect(fetch).toHaveBeenCalled()
+			expect(ai.aiGatewayLogId).toBe('json-multipart-log')
+		}
+	})
+
 	test('routes through default gateway using REST headers without changing the model inputs', async () => {
 		const inputs = { messages: [{ role: 'user', content: 'Hello' }] }
 		mockFetch((url, init) => {

@@ -38,6 +38,171 @@ afterEach(() => {
 })
 
 describe('AiBinding', () => {
+	describe('native transport', () => {
+		test.each([true, false, undefined])('serializes rejectIfBusy=%p without losing model inputs', async rejectIfBusy => {
+			const inputs = { prompt: 'hi', seed: 42, options: { unrelated: 'keep' } }
+			mockFetch((_url, init) => {
+				expect(init?.body).toBe(JSON.stringify({
+					...inputs,
+					options: rejectIfBusy === undefined ? inputs.options : { ...inputs.options, rejectIfBusy },
+				}))
+				return Response.json({ result: 'ok' })
+			})
+			await ai.run('@cf/test/model', inputs, { rejectIfBusy })
+			expect(inputs).toEqual({ prompt: 'hi', seed: 42, options: { unrelated: 'keep' } })
+		})
+
+		test('absent busy option adds no options and top-level model fields remain intact', async () => {
+			mockFetch((_url, init) => {
+				expect(init?.body).toBe('{"prompt":"hi","rejectIfBusy":"model-field"}')
+				return Response.json({ result: 'ok' })
+			})
+			await ai.run('@cf/test/model', { prompt: 'hi', rejectIfBusy: 'model-field' })
+		})
+
+		test('rejects ambiguous busy options rather than overwriting input values', async () => {
+			const fetch = spyOn(globalThis, 'fetch')
+			await expect(ai.run('@cf/test/model', { options: 'keep' }, { rejectIfBusy: true })).rejects.toThrow('must be an object')
+			await expect(ai.run('@cf/test/model', { options: { rejectIfBusy: false } }, { rejectIfBusy: true })).rejects.toThrow('Conflicting')
+			await expect(ai.run('openai/model', {}, { rejectIfBusy: false })).rejects.toThrow('native Workers AI')
+			expect(fetch).not.toHaveBeenCalled()
+		})
+
+		test('forwards delayed binary multipart unchanged without buffering or logging its bytes', async () => {
+			const contentType = 'multipart/form-data; boundary="ai-binary-boundary"'
+			const first = new TextEncoder().encode(
+				'--ai-binary-boundary\r\nContent-Disposition: form-data; name="input_image_0"; filename="image.bin"\r\n\r\n',
+			)
+			const last = new Uint8Array([0, 255, 128, ...new TextEncoder().encode('secret-image\r\n--ai-binary-boundary--\r\n')])
+			const release = Promise.withResolvers<void>()
+			let completed = false
+			let chunk = 0
+			const body = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					if (chunk++ === 0) controller.enqueue(first)
+					else {
+						await release.promise
+						controller.enqueue(last)
+						controller.close()
+						completed = true
+					}
+				},
+			})
+			mockFetch(async (url, init) => {
+				expect(url).toEndWith('/ai/run/@cf/black-forest-labs/flux-2-dev')
+				expect(new Headers(init?.headers).get('Content-Type')).toBe(contentType)
+				if (!(init?.body instanceof ReadableStream)) throw new Error('Expected upload stream')
+				const reader = init.body.getReader()
+				expect((await reader.read()).value).toEqual(first)
+				expect(completed).toBe(false)
+				release.resolve()
+				expect((await reader.read()).value).toEqual(last)
+				expect((await reader.read()).done).toBe(true)
+				return Response.json({ result: 'ok' })
+			})
+			await ai.run('@cf/black-forest-labs/flux-2-dev', { multipart: { body, contentType } })
+			const log = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').get()
+			expect(JSON.parse(log?.input_summary ?? '')).toEqual({ multipart: { contentType, body: '<stream>' } })
+			expect(JSON.stringify(log)).not.toContain('secret-image')
+			expect(JSON.stringify(log)).not.toContain('test-api-token')
+		})
+
+		test('multipart upload cancellation and AbortSignal reach the transport', async () => {
+			const cancelled = Promise.withResolvers<unknown>()
+			const body = new ReadableStream({ cancel: cancelled.resolve })
+			const controller = new AbortController()
+			mockFetch(async (_url, init) => {
+				expect(init?.signal).toBe(controller.signal)
+				if (!(init?.body instanceof ReadableStream)) throw new Error('Expected upload stream')
+				await init.body.cancel('transport stopped')
+				controller.abort()
+				throw controller.signal.reason
+			})
+			await expect(ai.run('@cf/test/model', { multipart: { body, contentType: 'multipart/form-data; boundary=x' } }, { signal: controller.signal }))
+				.rejects.toThrow('aborted')
+			expect(await cancelled.promise).toBe('transport stopped')
+			expect(db.query<AiRequestLog, []>('SELECT * FROM ai_requests').get()?.status).toBe('error')
+		})
+
+		test('rejects unsupported stream combinations before reading or sending', async () => {
+			const fetch = spyOn(globalThis, 'fetch')
+			let pulls = 0
+			const body = new ReadableStream({
+				pull() {
+					pulls++
+				},
+			}, { highWaterMark: 0 })
+			const multipart = { body, contentType: 'multipart/form-data; boundary=x' }
+			await expect(ai.run('@cf/test/model', { multipart }, { gateway: { id: 'default' } })).rejects.toThrow('Gateway')
+			await expect(ai.run('openai/model', { multipart })).rejects.toThrow('native Workers AI')
+			for (const rejectIfBusy of [true, false]) {
+				await expect(ai.run('@cf/test/model', { multipart }, { rejectIfBusy })).rejects.toThrow('rejectIfBusy')
+			}
+			await expect(ai.run('@cf/test/model', { multipart, prompt: 'would be lost' })).rejects.toThrow('standalone multipart')
+			await expect(ai.run('@cf/test/model', { multipart, another: multipart })).rejects.toThrow('Multiple ReadableStreams')
+			await expect(ai.run('@cf/test/model', { audio: multipart })).rejects.toThrow('standalone multipart')
+			await expect(ai.run('@cf/test/model', { multipart: body })).rejects.toThrow('multipart.body must be a ReadableStream')
+			await expect(ai.run('@cf/test/model', { multipart: false, audio: multipart })).rejects.toThrow('standalone multipart')
+			await expect(ai.run('@cf/test/model', { multipart: { body } })).rejects.toThrow('contentType')
+			await expect(ai.run('@cf/test/model', { multipart: { body, contentType: '' } })).rejects.toThrow('Content-Type')
+			await expect(ai.run('@cf/test/model', { multipart: { body: new FormData(), contentType: multipart.contentType } })).rejects.toThrow(
+				'ReadableStream',
+			)
+			await expect(ai.run('@cf/test/model', { multipart: { ...multipart, ignored: true } })).rejects.toThrow('Unsupported multipart')
+			expect(fetch).not.toHaveBeenCalled()
+			expect(pulls).toBe(0)
+		})
+
+		test('returns the first response chunk before completion and propagates cancellation without log draining', async () => {
+			const cancelled = Promise.withResolvers<unknown>()
+			let pulls = 0
+			const response = new Response(
+				new ReadableStream({
+					pull(controller) {
+						pulls++
+						controller.enqueue(new Uint8Array([1, 2, 255]))
+					},
+					cancel: cancelled.resolve,
+				}, { highWaterMark: 0 }),
+				{ headers: { 'Content-Type': 'image/png', 'cf-aig-log-id': 'image-log' } },
+			)
+			mockFetch(() => response)
+			const result = await ai.run('@cf/test/model', { multipart: { body: new ReadableStream(), contentType: 'multipart/form-data; boundary=x' } })
+			expect(response.bodyUsed).toBe(false)
+			expect(pulls).toBe(0)
+			if (!(result instanceof ReadableStream)) throw new Error('Expected stream')
+			const reader = result.getReader()
+			expect((await reader.read()).value).toEqual(new Uint8Array([1, 2, 255]))
+			await reader.cancel('consumer stopped')
+			expect(await cancelled.promise).toBe('consumer stopped')
+			expect(ai.aiGatewayLogId).toBe('image-log')
+		})
+
+		test('capacity failures preserve HTTP 429 and internal code 3040 in errors and logs', async () => {
+			mockFetch(() =>
+				Response.json({ errors: [{ code: 3040, message: 'Capacity temporarily exceeded, please try again.' }] }, {
+					status: 429,
+					headers: { 'cf-aig-log-id': 'busy-log' },
+				})
+			)
+			await expect(ai.run('@cf/test/model', {}, { rejectIfBusy: true })).rejects.toThrow('HTTP 429: {"errors":[{"code":3040')
+			const log = db.query<AiRequestLog, []>('SELECT * FROM ai_requests').get()
+			expect(log?.error).toContain('3040')
+			expect(log?.status).toBe('error')
+			expect(ai.aiGatewayLogId).toBe('busy-log')
+		})
+
+		test('raw capacity responses remain unread', async () => {
+			const response = Response.json({ errors: [{ code: 3040 }] }, { status: 429, headers: { 'Retry-After': '2' } })
+			mockFetch(() => response)
+			const result = await ai.run('@cf/test/model', {}, { rejectIfBusy: true, returnRawResponse: true })
+			expect(result).toBe(response)
+			expect(response.bodyUsed).toBe(false)
+			expect(response.headers.get('Retry-After')).toBe('2')
+			expect(await response.json()).toEqual({ errors: [{ code: 3040 }] })
+		})
+	})
+
 	describe('run()', () => {
 		test('sends correct URL and Authorization header', async () => {
 			let capturedUrl = ''
