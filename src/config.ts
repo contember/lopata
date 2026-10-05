@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseTOML } from 'smol-toml'
 import type { WorkflowLimits } from './bindings/workflow'
+import { parseCompatibility } from './compatibility'
 
 export interface WorkerExportDeclaration {
 	type: 'worker'
@@ -142,6 +143,9 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
 	const merged = applyEnvOverrides(config, envName)
+	const compatibility = parseCompatibility({ date: merged.compatibility_date, flags: merged.compatibility_flags })
+	if (compatibility.date !== undefined) merged.compatibility_date = compatibility.date
+	if (compatibility.flags !== undefined) merged.compatibility_flags = [...compatibility.flags]
 	validateWorkerCacheConfig(merged)
 	return merged
 }
