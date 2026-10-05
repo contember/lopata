@@ -1,10 +1,10 @@
 # Workers compatibility follow-up backlog
 
-Planning snapshot: October 5, 2026. **Only PR #31 implementation is approved. All follow-up PRs below are proposals, not implemented work or authorization to change architecture.** Priorities favor startup failures, incorrect results, and lost durable state before product breadth.
+Planning snapshot: October 5, 2026. **Implementation of the full backlog and publication of separate PRs are approved. Concrete architecture and persistence designs still require approval before implementation.** Track execution, PRs, and open decisions in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md). Priorities favor startup failures, incorrect results, and lost durable state before product breadth.
 
 ## Scope and evidence
 
-- [PR #31](https://github.com/contember/lopata/pull/31) covers Workflow saga rollbacks, entrypoint Workers Cache, AI Gateway/third-party routing, and the shipped modern Web Crypto subset. The approved additions, shared `exports` parser coexistence and Workers Cache `invalidate()`, are complete and verified locally, not yet pushed. See [current verification](CLOUDFLARE-COMPATIBILITY.md#current-verification) for the source commits, final gates and review results. All follow-up implementations remain proposals requiring approval.
+- [PR #31](https://github.com/contember/lopata/pull/31) covers Workflow saga rollbacks, entrypoint Workers Cache, AI Gateway/third-party routing, and the shipped modern Web Crypto subset. The approved additions, shared `exports` parser coexistence and Workers Cache `invalidate()`, are complete, locally verified, and pushed. See [current verification](CLOUDFLARE-COMPATIBILITY.md#current-verification) for the source commits, final gates and review results. Follow-up execution is tracked separately.
 - [CLOUDFLARE-COMPATIBILITY.md](CLOUDFLARE-COMPATIBILITY.md) records the selected backports and accepted limitations. Keep the callback-settlement policy, post-quantum key branding/clone limitation, and local cache boundaries attached to their support claims.
 - The [annual review](reports/Roční%20přehled%20Workers%20API.md) covers October 5, 2025–October 5, 2026. Its findings describe head [`8b82801`](https://github.com/contember/lopata/tree/8b82801ac83d4880d64a0cfa948698347ea84f1a), compared with [`99ae836`](https://github.com/contember/lopata/compare/99ae836125d56f34d97a007563f7cb4ac21866b5...8b82801ac83d4880d64a0cfa948698347ea84f1a). Recheck the current owner before opening each implementation PR.
 - Detailed evidence: [bindings](research_notes/Roční%20přehled%20Workers%20API/bindings.md), [runtime](research_notes/Roční%20přehled%20Workers%20API/runtime.md), and [configuration/coverage](research_notes/Roční%20přehled%20Workers%20API/config-and-coverage.md). The [official snapshot](https://github.com/cloudflare/cloudflare-docs/tree/03f58703df62daa18049b7e0043bb6e25c659670/src/content) pins the announcement/flag inventory. Current reference pages define contracts; modification dates alone do not prove introduction dates.
@@ -13,7 +13,7 @@ Planning snapshot: October 5, 2026. **Only PR #31 implementation is approved. Al
 
 **Completion rule:** parsing a field, exporting a method, returning a first-run value, or installing an SDK does not establish support. Each PR must verify its observable contract through the applicable config, env, worker-thread, module, transport, and persistence paths. Record tested Bun/SDK versions, compatibility dates/flags, backend, and remaining limits. A mocked proxy check establishes transport fidelity, not hosted execution. Update compatibility claims only to the tested subset.
 
-Paths below are indicative owner territories, not permission to edit those files now. Shared owners such as `src/config.ts`, `src/env.ts`, `src/db.ts`, and `src/vite-plugin/modules-plugin.ts` need coordinated changes across PRs.
+Paths below are indicative owner territories; each implementation wave assigns exclusive write ownership. Shared owners such as `src/config.ts`, `src/env.ts`, `src/db.ts`, and `src/vite-plugin/modules-plugin.ts` need coordinated changes across PRs.
 
 ## Approved PR #31 completion boundary
 
@@ -211,8 +211,8 @@ Media core chains, KV's 30-second cacheTtl acceptance, iterable Response bodies,
 
 ## Suggested delivery order and review evidence
 
-1. **Completed locally:** approved #31 parser coexistence ([`2f1d444`](https://github.com/contember/lopata/commit/2f1d444)) and cache invalidation ([`87b84e6`](https://github.com/contember/lopata/commit/87b84e6)). All final gates passed; see [current verification](CLOUDFLARE-COMPATIBILITY.md#current-verification). These additions have not yet been pushed. The remaining sequence is proposed, not implementation approval.
-2. Seek approval for F01–F06 owner-level work and F04's persistence design; resolve the Queue timestamp first. F04 can be designed while independent result/config fixes proceed.
+1. **Completed and pushed:** approved #31 parser coexistence ([`2f1d444`](https://github.com/contember/lopata/commit/2f1d444)) and cache invalidation ([`87b84e6`](https://github.com/contember/lopata/commit/87b84e6)). All final gates passed; see [current verification](CLOUDFLARE-COMPATIBILITY.md#current-verification).
+2. Execute the approved owner-level waves in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md). Obtain approval for F04's persistence design while independent result/config fixes proceed. The Queue timestamp contract is resolved in that execution record; retention and HTTP scope remain open.
 3. Establish F09's selected compatibility behavior before landing gated F03/F08/F12 semantics. Land F07b's basic Workflow declaration/loopback seam, then F11 config policy wiring; neither requires F04 checkpoint redesign. Coordinate their shared owners with F04, while F10 follows the relevant approved persistence designs.
 4. Deliver F13/F15 independently. Approve the larger F14/F16/F17/F18 designs before implementation. Select F19 products by an actual consuming application; retain F20 as discovery scope.
 

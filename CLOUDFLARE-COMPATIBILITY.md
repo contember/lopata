@@ -163,7 +163,7 @@ Local completion checks on October 5, 2026 cover [`2f1d444` — mixed export dec
 | `bun run test`                                                                                                                                                                                                          | 1,905 passed, 0 failed, 2 pre-existing skips; 1,907 tests across 104 files and 4,357 assertions. |
 | `git diff --check`                                                                                                                                                                                                      | Passed.                                                                                          |
 
-Independent source reviews reported no findings. Documentation review resolved the F07b/F04 dependency distinction with no remaining findings. These are local verification results, not a new CI run or live Cloudflare parity claim. The approved additions are complete locally and have not yet been pushed; follow-up implementations remain proposals requiring approval.
+Independent source reviews reported no findings. Documentation review resolved the F07b/F04 dependency distinction with no remaining findings. These are local verification results, not a new CI run or live Cloudflare parity claim. The additions have been pushed to PR #31. Follow-up implementation is approved and tracked in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md), with concrete architecture decisions still approval-gated.
 
 ## Historical verification
 
