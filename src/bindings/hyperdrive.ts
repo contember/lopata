@@ -1,6 +1,6 @@
 /**
  * Local implementation of the Cloudflare Hyperdrive binding.
- * Parses a PostgreSQL connection string and exposes readonly properties.
+ * Parses a PostgreSQL or MySQL connection string and exposes readonly properties.
  * connect() creates a raw TCP socket via Bun.connect().
  */
 
@@ -35,7 +35,7 @@ export class HyperdriveBinding {
 
 	get port(): number {
 		if (!this._url) return 5432
-		return this._url.port ? parseInt(this._url.port, 10) : 5432
+		return this._url.port ? parseInt(this._url.port, 10) : this._url.protocol === 'mysql:' ? 3306 : 5432
 	}
 
 	get user(): string {
