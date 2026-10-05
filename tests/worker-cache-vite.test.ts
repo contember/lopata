@@ -76,4 +76,17 @@ describe('Vite Workers Cache execution-context accounting', () => {
 		expect(response.headers.get('cf-cache-status')).toBe('MISS')
 		await response.text()
 	})
+
+	test('Vite imported and context invalidate retain validators and the cached body', async () => {
+		expect(await (await get('/validated')).text()).toBe('validated')
+		for (const path of ['/invalidate', '/invalidate-ctx']) {
+			expect(await (await get(path)).json()).toEqual({ success: true, errors: [] })
+			const revalidated = await get('/validated')
+			expect(revalidated.headers.get('cf-cache-status')).toBe('REVALIDATED')
+			expect(await revalidated.text()).toBe('validated')
+			const hit = await get('/validated')
+			expect(hit.headers.get('cf-cache-status')).toBe('HIT')
+			expect(await hit.text()).toBe('validated')
+		}
+	})
 })

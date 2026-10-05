@@ -6,6 +6,12 @@ export class Backend extends WorkerEntrypoint {
 	declare ctx: CacheExecutionContext
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
+		if (url.pathname === '/validated') {
+			const headers = { 'cache-control': 'max-age=60', etag: '"stable"', 'cache-tag': 'Backend' }
+			return request.headers.get('if-none-match') === '"stable"'
+				? new Response(null, { status: 304, headers })
+				: new Response(`validated:${++calls}`, { headers })
+		}
 		if (url.pathname === '/stream') {
 			return new Response(
 				new ReadableStream<Uint8Array>({
@@ -26,6 +32,9 @@ export class Backend extends WorkerEntrypoint {
 	}
 	async invalidate() {
 		return cache.purge({ tags: ['BACKEND'] })
+	}
+	async softInvalidate() {
+		return cache.invalidate({ tags: ['BACKEND'] })
 	}
 }
 
@@ -49,6 +58,7 @@ export default {
 			return new Response(await Reflect.apply(get, receipts, ['queue-cache']))
 		}
 		if (url.pathname === '/purge-default') return Response.json(await ctx.cache.purge({ purgeEverything: true }))
+		if (url.pathname === '/invalidate-default') return Response.json(await ctx.cache.invalidate({ purgeEverything: true }))
 		if (url.pathname === '/service') {
 			const svc = env.SELF
 			if (!svc || typeof svc !== 'object') throw new Error('Missing service binding')
@@ -57,6 +67,7 @@ export default {
 			return Reflect.apply(fetchService, svc, ['http://internal/data'])
 		}
 		if (!backend || typeof backend !== 'function') throw new Error('Missing loopback')
+		if (url.pathname === '/invalidate') return Response.json(await backend.softInvalidate())
 		if (url.pathname === '/purge') {
 			const invalidate = backend.invalidate
 			return Response.json(await invalidate())

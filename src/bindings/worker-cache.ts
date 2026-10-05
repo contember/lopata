@@ -15,6 +15,7 @@ export interface PurgeResult {
 
 export interface WorkerCacheApi {
 	purge(options: unknown): Promise<PurgeResult>
+	invalidate(options: unknown): Promise<PurgeResult>
 }
 
 declare global {
@@ -40,10 +41,18 @@ export const cache: WorkerCacheApi = {
 		if (!ctx) throw new Error('cache.purge() requires an active Worker execution context')
 		return ctx.cache.purge(options)
 	},
+	invalidate(options) {
+		const ctx = getActiveExecutionContext()
+		if (!ctx) throw new Error('cache.invalidate() requires an active Worker execution context')
+		return ctx.cache.invalidate(options)
+	},
 }
 
 export const unavailableWorkerCache: WorkerCacheApi = {
 	async purge() {
+		throw new Error('Workers Cache is not attached to this execution context')
+	},
+	async invalidate() {
 		throw new Error('Workers Cache is not attached to this execution context')
 	},
 }
@@ -252,7 +261,10 @@ export class WorkersCache {
 	}
 
 	api(entrypoint: string): WorkerCacheApi {
-		return { purge: options => this.purge(entrypoint, options) }
+		return {
+			purge: options => this.mutateEntries(entrypoint, options, 'purge'),
+			invalidate: options => this.mutateEntries(entrypoint, options, 'invalidate'),
+		}
 	}
 
 	private epoch(entrypoint: string): number {
@@ -260,7 +272,7 @@ export class WorkersCache {
 			.get(this.worker, entrypoint)?.epoch ?? 0
 	}
 
-	private async purge(entrypoint: string, options: unknown): Promise<PurgeResult> {
+	private async mutateEntries(entrypoint: string, options: unknown, operation: 'purge' | 'invalidate'): Promise<PurgeResult> {
 		const invalid = (message: string): PurgeResult => ({ success: false, errors: [{ code: 1000, message }] })
 		if (!record(options)) return invalid('Purge options must be an object')
 		if (Object.keys(options).some(key => !['purgeEverything', 'tags', 'pathPrefixes'].includes(key))) return invalid('Unknown purge option')
@@ -278,6 +290,8 @@ export class WorkersCache {
 		if (!purgeEverything && tags === undefined && pathPrefixes === undefined) return invalid('Specify tags, pathPrefixes or purgeEverything')
 		const requestedTags = stringList(tags) ? tags.map(tag => tag.toLowerCase()) : []
 		const prefixes = stringList(pathPrefixes) ? pathPrefixes.map(prefix => prefix.startsWith('/') ? prefix : `/${prefix}`) : []
+		// TTL zero preserves the original age origin, including the existing SWR and SIE windows.
+		const mutation = operation === 'purge' ? 'DELETE FROM worker_cache_entries' : 'UPDATE worker_cache_entries SET ttl = 0'
 		this.db.transaction(() => {
 			this.db.run(
 				`INSERT INTO worker_cache_epochs (worker, entrypoint, epoch) VALUES (?, ?, 1)
@@ -285,7 +299,7 @@ export class WorkersCache {
 				[this.worker, entrypoint],
 			)
 			if (purgeEverything) {
-				this.db.run('DELETE FROM worker_cache_entries WHERE worker = ? AND entrypoint = ?', [this.worker, entrypoint])
+				this.db.run(`${mutation} WHERE worker = ? AND entrypoint = ?`, [this.worker, entrypoint])
 				return
 			}
 			const entries = this.db.query<{ cache_key: string; path: string; tags: string }, [string, string]>(
@@ -293,7 +307,7 @@ export class WorkersCache {
 			).all(this.worker, entrypoint)
 			for (const entry of entries) {
 				if (prefixes.some(prefix => entry.path.startsWith(prefix)) || parseList(entry.tags).some(tag => requestedTags.includes(tag))) {
-					this.db.run('DELETE FROM worker_cache_entries WHERE worker = ? AND entrypoint = ? AND cache_key = ?', [this.worker, entrypoint, entry.cache_key])
+					this.db.run(`${mutation} WHERE worker = ? AND entrypoint = ? AND cache_key = ?`, [this.worker, entrypoint, entry.cache_key])
 				}
 			}
 		})()
