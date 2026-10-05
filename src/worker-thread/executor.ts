@@ -11,7 +11,7 @@ import { dirname, resolve } from 'node:path'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
-import { getDataDir } from '../db'
+import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
 import { getTraceStore } from '../tracing/store'
 import type {
@@ -121,6 +121,8 @@ export class WorkerThreadExecutor {
 	private _topRequestStreams = new OutboundStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
+		// Establish WAL and schema in main before fresh worker connections can race to initialize them.
+		getDatabase()
 		this._initConfig = options
 		this._mainEnv = options.mainEnv
 		this._ready = new Promise<WorkerReadyInfo>((res, rej) => {
