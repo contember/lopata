@@ -1,7 +1,8 @@
 import type { Subprocess } from 'bun'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 for (const crossVersion of [false, true]) {
 	describe(`Workers Cache thread dispatch (cross-version ${crossVersion})`, () => {
@@ -9,7 +10,7 @@ for (const crossVersion of [false, true]) {
 		let dir: string
 		let base: string
 		beforeAll(async () => {
-			dir = mkdtempSync('/tmp/opencode/worker-cache-')
+			dir = mkdtempSync(join(tmpdir(), 'worker-cache-'))
 			process = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/worker-cache-runner.ts')], {
 				cwd: dir,
 				env: { ...Bun.env, CROSS_VERSION: String(crossVersion) },

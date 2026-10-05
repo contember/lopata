@@ -1,7 +1,8 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { WorkerExecutorFactory } from '../src/bindings/do-executor-worker'
 import { DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
 import { SqliteWorkflowBinding } from '../src/bindings/workflow'
@@ -28,7 +29,7 @@ async function until(predicate: () => Promise<boolean>): Promise<void> {
 test('worker reload recovers saga handlers without repeating persisted forward or rollback effects', async () => {
 	// The executor's data directory is resolved from cwd at import time.
 	if (process.env.LOPATA_ROLLBACK_THREAD_CHILD !== '1') {
-		directory = mkdtempSync('/tmp/opencode/workflow-thread-rollbacks-')
+		directory = mkdtempSync(join(tmpdir(), 'workflow-thread-rollbacks-'))
 		const child = Bun.spawn(['bun', 'test', import.meta.path], {
 			cwd: directory,
 			env: { ...process.env, LOPATA_ROLLBACK_THREAD_CHILD: '1' },

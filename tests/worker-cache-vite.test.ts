@@ -1,14 +1,15 @@
 import type { Subprocess } from 'bun'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 describe('Vite Workers Cache execution-context accounting', () => {
 	let process: Subprocess
 	let dir: string
 	let base: string
 	beforeAll(async () => {
-		dir = mkdtempSync('/tmp/opencode/worker-cache-vite-')
+		dir = mkdtempSync(join(tmpdir(), 'worker-cache-vite-'))
 		process = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/worker-cache-vite-runner.ts')], {
 			cwd: dir,
 			stdout: 'pipe',

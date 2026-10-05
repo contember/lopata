@@ -1,14 +1,15 @@
 import type { Subprocess } from 'bun'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 describe('class constructor cache context in worker-thread events', () => {
 	let proc: Subprocess
 	let dir: string
 	let base: string
 	beforeAll(async () => {
-		dir = mkdtempSync('/tmp/opencode/worker-cache-constructor-')
+		dir = mkdtempSync(join(tmpdir(), 'worker-cache-constructor-'))
 		proc = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/worker-cache-runner.ts')], {
 			cwd: dir,
 			env: { ...Bun.env, CONSTRUCTOR_WORKER: 'true' },

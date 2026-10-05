@@ -1,10 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { CacheExecutionContext } from '../src/bindings/worker-cache'
 import { loadConfig } from '../src/config'
 import { createTestEnv } from '../src/testing'
 
-const dir = mkdtempSync('/tmp/opencode/worker-cache-config-')
+const dir = mkdtempSync(join(tmpdir(), 'worker-cache-config-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 describe('Workers Cache configuration boundary', () => {

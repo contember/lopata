@@ -1,10 +1,11 @@
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { WorkerLoaderBinding } from '../src/bindings/worker-loader'
 
 test('normal workers and DO workers configure module-level crypto independently from their own flags', async () => {
-	const directory = mkdtempSync('/tmp/opencode/lopata-modern-crypto-isolation-')
+	const directory = mkdtempSync(join(tmpdir(), 'lopata-modern-crypto-isolation-'))
 	const child = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/crypto-modern-isolation-runner.ts')], {
 		cwd: directory,
 		stdout: 'pipe',
@@ -30,7 +31,7 @@ test('normal workers and DO workers configure module-level crypto independently 
 }, 30000)
 
 test('dynamic worker flags configure crypto before module imports and remain isolate-local', async () => {
-	const directory = mkdtempSync('/tmp/opencode/lopata-modern-crypto-')
+	const directory = mkdtempSync(join(tmpdir(), 'lopata-modern-crypto-'))
 	const loader = new WorkerLoaderBinding(join(directory, 'workers'))
 	const source = `
 		const enabled = typeof crypto.subtle.encapsulateBits === 'function'

@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { WorkflowInstanceStatus, WorkflowLimits, WorkflowStepImpl } from '../src/bindings/workflow'
 import { NonRetryableError, SqliteWorkflowBinding, WorkflowEntrypointBase } from '../src/bindings/workflow'
@@ -561,7 +562,7 @@ describe('Workflow saga rollback', () => {
 
 	test('reopens SQLite during rollback, skips completed compensation and failed forward bodies, and resumes attempts', async () => {
 		db.close()
-		const directory = mkdtempSync('/tmp/opencode/workflow-rollbacks-')
+		const directory = mkdtempSync(join(tmpdir(), 'workflow-rollbacks-'))
 		directories.push(directory)
 		const path = join(directory, 'state.sqlite')
 		db = new Database(path)
@@ -624,7 +625,7 @@ describe('Workflow saga rollback', () => {
 		'SQLite recovery preserves original %s NonRetryableError identity in handlers',
 		async errorName => {
 			db.close()
-			const directory = mkdtempSync('/tmp/opencode/workflow-failure-identity-')
+			const directory = mkdtempSync(join(tmpdir(), 'workflow-failure-identity-'))
 			directories.push(directory)
 			const path = join(directory, 'state.sqlite')
 			db = new Database(path)
