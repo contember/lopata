@@ -4,12 +4,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 test('Images response preserves passthrough bytes and headers when Sharp is unavailable', async () => {
-	// Resolve the standalone binding outside the repository so Sharp is genuinely unavailable.
+	// Isolate resolution from repository dependencies and disable Bun's automatic package installation.
 	const directory = mkdtempSync(join(tmpdir(), 'images-response-fallback-'))
 	try {
 		await Bun.write(join(directory, 'images.ts'), Bun.file(resolve(import.meta.dir, '../src/bindings/images.ts')))
 		const child = Bun.spawn([
 			process.execPath,
+			'--no-install',
 			'--eval',
 			`
 import assert from 'node:assert/strict'
