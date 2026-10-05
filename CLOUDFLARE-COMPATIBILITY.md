@@ -70,6 +70,8 @@ Enable the new API in the Worker's Wrangler configuration:
 
 The opt-in API adds post-quantum key generation, import/export, ML-DSA signing and verification, and ML-KEM encapsulation and decapsulation. The key helpers produce native symmetric keys for use with existing Web Crypto operations. The flag also enables `crypto.subtle.getPublicKey()` and static `SubtleCrypto.supports()`.
 
+The compatibility flag gates these APIs even on Bun 1.4.2, which provides native modern crypto. Without the flag, post-quantum operations remain unavailable. Enabling the flag uses the same adapter on both Bun 1.3.14 and 1.4.2.
+
 Existing classical algorithms continue to use Bun's native implementations. The post-quantum primitives use `@noble/post-quantum`; private key material is held separately from the public `CryptoKey` metadata.
 
 **Post-quantum key limitation:** Bun 1.3.14 cannot create native ML-KEM/ML-DSA `CryptoKey` objects. The adapter's key objects work with the patched crypto methods but do not carry Bun's native key brand. Native `CryptoKey` prototype getters reject them, and `structuredClone()` produces an empty object rather than a usable key. Do not send these key objects through worker messages or other structured-clone paths. This limitation was explicitly accepted for this backport. Classical keys and symmetric keys produced by the encapsulation helpers remain native.
@@ -127,6 +129,8 @@ Final checks on October 2, 2026:
 | `git diff --check`              | Passed.                                                                               |
 
 The two skips are pre-existing `tests/ws-hmr-e2e.test.ts` cases for preserving WebSockets across reloads. The active reload test for closing connections with code 1012 passed. Concurrent cold SQLite startup was also verified with 10 consecutive passes of the normal-worker/Durable-Object crypto isolation test after installing the busy timeout before WAL initialization.
+
+CI compatibility verification on October 5, 2026 used Bun 1.4.2, matching the GitHub Actions runner. After switching fixture directories to `node:os`'s `tmpdir()` and gating Bun's native modern crypto, `bun run test` passed with 1,885 passes, 0 failures, 2 skips and 4,162 assertions. Lint, formatting and typecheck also passed. The flag-toggle regression was verified on Bun 1.3.14 as well.
 
 Focused tests cover AI Gateway request forwarding and errors; Workflow rollback ordering, recovery, termination and persistence; cache HTTP semantics, isolation, purge, entrypoint dispatch, RPC contexts and background work; and modern crypto primitives, key formats and compatibility-flag wiring across normal workers, Durable Objects, dynamic workers and Vite.
 

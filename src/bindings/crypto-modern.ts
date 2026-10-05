@@ -593,9 +593,87 @@ let adapter: ModernCryptoAdapter | undefined
 let installed = false
 const originalDescriptors = new Map<string, PropertyDescriptor | undefined>()
 let originalSupports: PropertyDescriptor | undefined
+let nativeRestricted = false
+
+function restrictNativeModernCrypto(): void {
+	if (nativeRestricted) return
+	nativeRestricted = true
+	const subtle = crypto.subtle
+	const hasNativeModernCrypto = 'encapsulateBits' in subtle
+	for (const name of ['encapsulateBits', 'decapsulateBits', 'encapsulateKey', 'decapsulateKey', 'getPublicKey']) {
+		Reflect.deleteProperty(subtle, name)
+		Reflect.deleteProperty(SubtleCrypto.prototype, name)
+	}
+	Reflect.deleteProperty(SubtleCrypto, 'supports')
+	if (!hasNativeModernCrypto) return
+
+	const generateKey = subtle.generateKey.bind(subtle)
+	const importKey = subtle.importKey.bind(subtle)
+	const exportKey = subtle.exportKey.bind(subtle)
+	const sign = subtle.sign.bind(subtle)
+	const verify = subtle.verify.bind(subtle)
+	const wrapKey = subtle.wrapKey.bind(subtle)
+	const unwrapKey = subtle.unwrapKey.bind(subtle)
+	const methods = {
+		async generateKey(algorithm: GenerateAlgorithm, extractable: boolean, usages: KeyUsage[]) {
+			rejectUnsupportedModernAlgorithm(algorithm)
+			return generateKey(algorithm, extractable, usages)
+		},
+		async importKey(
+			format: ModernKeyFormat,
+			data: BufferSource | ModernJsonWebKey,
+			algorithm: ImportAlgorithm,
+			extractable: boolean,
+			usages: KeyUsage[],
+		) {
+			rejectUnsupportedModernAlgorithm(algorithm)
+			if (!isNativeFormat(format)) cryptoError('NotSupportedError', 'Unsupported key format')
+			if (format === 'jwk') {
+				if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) throw new TypeError('JWK must be an object')
+				return importKey(format, data, algorithm, extractable, usages)
+			}
+			return importKey(format, copyBuffer(data), algorithm, extractable, usages)
+		},
+		async exportKey(format: ModernKeyFormat, key: CryptoKey) {
+			rejectUnsupportedModernAlgorithm(key.algorithm)
+			if (!isNativeFormat(format)) cryptoError('NotSupportedError', 'Unsupported key format')
+			return format === 'jwk' ? exportKey('jwk', key) : exportKey(format, key)
+		},
+		async sign(algorithm: SignAlgorithm, key: CryptoKey, data: BufferSource) {
+			rejectUnsupportedModernAlgorithm(algorithm)
+			return sign(algorithm, key, data)
+		},
+		async verify(algorithm: SignAlgorithm, key: CryptoKey, signature: BufferSource, data: BufferSource) {
+			rejectUnsupportedModernAlgorithm(algorithm)
+			return verify(algorithm, key, signature, data)
+		},
+		async wrapKey(format: ModernKeyFormat, key: CryptoKey, wrappingKey: CryptoKey, algorithm: AlgorithmIdentifier) {
+			rejectUnsupportedModernAlgorithm(key.algorithm)
+			if (!isNativeFormat(format)) cryptoError('NotSupportedError', 'Unsupported key format')
+			return wrapKey(format, key, wrappingKey, algorithm)
+		},
+		async unwrapKey(
+			format: ModernKeyFormat,
+			data: BufferSource,
+			key: CryptoKey,
+			algorithm: AlgorithmIdentifier,
+			unwrappedAlgorithm: ImportAlgorithm,
+			extractable: boolean,
+			usages: KeyUsage[],
+		) {
+			rejectUnsupportedModernAlgorithm(unwrappedAlgorithm)
+			if (!isNativeFormat(format)) cryptoError('NotSupportedError', 'Unsupported key format')
+			return unwrapKey(format, data, key, algorithm, unwrappedAlgorithm, extractable, usages)
+		},
+	}
+	for (const [name, method] of Object.entries(methods)) {
+		Object.defineProperty(subtle, name, { value: method, configurable: true, writable: true })
+	}
+}
 
 /** Configure the current isolate before importing user code. No process-wide flags are read. */
 export function configureModernCrypto(enabled: boolean): ModernSubtleCrypto | undefined {
+	restrictNativeModernCrypto()
 	if (enabled && !adapter) {
 		const subtle = crypto.subtle
 		const native: NativeSubtleCrypto = {
