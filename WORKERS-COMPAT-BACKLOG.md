@@ -2,6 +2,8 @@
 
 Planning snapshot: October 5, 2026. **Implementation of the full backlog and publication of separate PRs are approved. Concrete architecture and persistence designs still require approval before implementation.** Track execution, PRs, and open decisions in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md). Priorities favor startup failures, incorrect results, and lost durable state before product breadth.
 
+**Scope update:** the user explicitly excluded new Free/Paid plan selection and plan-derived limit enforcement. Preserve existing local limits and defaults; do not add automatic retention. References to hosted plan limits below remain research context, not implementation requirements. Explicit configuration support and schedules still require their own concrete contracts.
+
 ## Scope and evidence
 
 - [PR #31](https://github.com/contember/lopata/pull/31) covers Workflow saga rollbacks, entrypoint Workers Cache, AI Gateway/third-party routing, and the shipped modern Web Crypto subset. The approved additions, shared `exports` parser coexistence and Workers Cache `invalidate()`, are complete, locally verified, and pushed. See [current verification](CLOUDFLARE-COMPATIBILITY.md#current-verification) for the source commits, final gates and review results. Follow-up execution is tracked separately.
