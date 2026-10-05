@@ -307,7 +307,9 @@ export class WorkersCache {
 		invoke: (request: Request) => Promise<Response>,
 		trusted = false,
 	): Promise<Response> {
-		const enabled = this.config.exports?.[entrypoint]?.cache?.enabled ?? this.config.cache?.enabled ?? false
+		const declaration = this.config.exports?.[entrypoint]
+		const exportCache = declaration?.type === 'worker' ? declaration.cache : undefined
+		const enabled = exportCache?.enabled ?? this.config.cache?.enabled ?? false
 		const props = canonicalCacheProps(ctx.props)
 		if (!enabled) return invoke(request)
 		if (props === undefined || !['GET', 'HEAD'].includes(request.method) || request.headers.has('upgrade') || request.body) {

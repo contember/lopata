@@ -3,10 +3,36 @@ import { join } from 'node:path'
 import { parse as parseTOML } from 'smol-toml'
 import type { WorkflowLimits } from './bindings/workflow'
 
+export interface WorkerExportDeclaration {
+	type: 'worker'
+	cache?: { enabled: boolean }
+}
+
+export type DurableObjectExportDeclaration =
+	& { type: 'durable-object' }
+	& (
+		| { state?: 'created'; storage: 'sqlite' | 'legacy-kv'; container?: string }
+		| { state: 'deleted' }
+		| { state: 'renamed'; renamed_to: string }
+		| { state: 'transferred'; transferred_to: string }
+		| { state: 'expecting-transfer'; storage: 'sqlite' | 'legacy-kv'; transfer_from: string; container?: string }
+	)
+
+export interface WorkflowExportDeclaration {
+	type: 'workflow'
+	name: string
+	limits?: { steps?: number }
+	schedules?: string | string[]
+	default_retention?: { success_retention?: string | number; error_retention?: string | number }
+}
+
+// Non-Worker declarations are preserved here; their lifecycle is not implemented by the cache runtime.
+export type ExportDeclaration = WorkerExportDeclaration | DurableObjectExportDeclaration | WorkflowExportDeclaration
+
 export interface WranglerConfig {
 	name: string
 	cache?: { enabled: boolean; cross_version_cache?: boolean }
-	exports?: Record<string, { type: 'worker'; cache?: { enabled: boolean } }>
+	exports?: Record<string, ExportDeclaration>
 	/**
 	 * Entry module. Optional: a worker that only has `assets` is an assets-only
 	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
@@ -139,8 +165,13 @@ export function validateWorkerCacheConfig(config: WranglerConfig): void {
 	if (config.exports !== undefined) {
 		for (const [name, value] of Object.entries(object(config.exports, 'exports'))) {
 			const entry = object(value, `exports.${name}`)
-			if (entry.type !== 'worker') throw new TypeError(`exports.${name}.type must be "worker"`)
-			if (entry.cache !== undefined) cacheBlock(entry.cache, `exports.${name}.cache`, false)
+			if (entry.type === 'worker') {
+				if (entry.cache !== undefined) cacheBlock(entry.cache, `exports.${name}.cache`, false)
+			} else if (entry.type === 'durable-object' || entry.type === 'workflow') {
+				if (entry.cache !== undefined) throw new TypeError(`exports.${name}.cache is only supported on worker exports`)
+			} else {
+				throw new TypeError(`exports.${name}.type must be "worker", "durable-object", or "workflow"`)
+			}
 		}
 	}
 }
