@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SqliteWorkflowBinding, WorkflowEntrypointBase } from '../src/bindings/workflow'
 import type { WorkflowStepImpl } from '../src/bindings/workflow'
@@ -193,7 +194,7 @@ test('unmapped terminal legacy restart rejects before fencing; explicit full res
 })
 
 test('fresh processes recover isolated attempts and skip committed forward and rollback effects', async () => {
-	const directory = mkdtempSync('/tmp/opencode/workflow-occurrences-')
+	const directory = mkdtempSync(join(tmpdir(), 'workflow-occurrences-'))
 	const path = join(directory, 'data.sqlite')
 	try {
 		for (const phase of ['forward', 'rollback', 'finish']) {
