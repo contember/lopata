@@ -28,9 +28,50 @@ Final integrated wave verification on Bun 1.4.2: **1,964 passed, two pre-existin
 
 CI originally filtered PR targets to `main`. The user approved all-PR triggers; that change was pushed to all four heads. The first #35 run then exposed four CI-only failures in the new Images fallback and Hyperdrive environment tests; investigation is active. Local success is not a claim that these PRs are CI-green.
 
+The portability failures are fixed and pushed: Images subprocesses disable auto-install, and Hyperdrive fixtures use the platform temporary directory. Independent reviews were clean; coordinator regression checks passed 22 tests. Subsequent CI passed for #32 and #35 ([#35 run](https://github.com/contember/lopata/actions/runs/37335566982)). #33 and #34 passed those new tests but failed the existing crypto isolation test on SQLite startup locking in `buildThreadEnv`; read-only root-cause investigation is active.
+
+SQLite diagnosis: directly constructed normal executors can concurrently enable WAL on a fresh shared database before main initializes it. `busy_timeout` does not prevent the immediate journal-mode upgrade conflict. A synchronized two-worker probe reproduced the failure; preinitialization eliminated it in the same probe. The assigned fix initializes through existing `getDatabase()` in the executor constructor before spawning, with a deterministic initialization-order regression. Ownership is limited to `executor.ts` and new startup tests/fixtures; Workflow and tracing agents do not edit that file in this wave.
+
+The startup fix is pushed separately as [PR #37](https://github.com/contember/lopata/pull/37), commit `fbc6f00`, above #36. Independent review clean; isolated coordinator typecheck/lint/format/full suite passed: 1,988 passed, two existing skips, zero failures, 4,943 assertions across 111 files on Bun 1.4.2. Earlier PR heads do not yet contain this fix. Executor ownership has now passed to the tracing worker adapter, which must preserve the initialization ordering.
+
+CI passed for [#36](https://github.com/contember/lopata/actions/runs/37337048092) and [#37](https://github.com/contember/lopata/actions/runs/37338053980).
+
 F13a's private-versus-public transport boundary remains explicit: workerd's private binding protocol can carry additional stream inputs/options in query parameters. This first local REST implementation rejects multipart extra fields/options, Gateway/third-party multipart, direct FormData, other wrapper names, and third-party busy options. Gateway's stream prohibition is upstream behavior; other exclusions are local limitations pending an evidenced public REST transport contract.
 
 ## Remaining tracks
+
+### Active second wave
+
+- F09a.1: pure five-rule compatibility selector and configuration boundary validation pushed as [PR #36](https://github.com/contember/lopata/pull/36), commit `fe34187`. Independent review clean; 57 focused tests passed. Coordinator isolated-worktree typecheck/lint/format/full suite passed on Bun 1.4.2: 1,987 passed, two existing skips, zero failures, 4,942 assertions across 110 files. Runtime propagation follows in a separate unit.
+- F05: captured public tracing primitives plus runtime adapters must publish atomically: the no-invocation gate otherwise regresses existing user spans. Worker-thread and main/Queue/loopback/Vite/test adapters have disjoint owners; DO and Workflow handoffs remain pending. Primitive review found closed-invocation internal-span creation and unbounded start-time cache issues; both are assigned for correction before re-review.
+
+  The ordinary worker adapter is implemented and undergoing independent re-review. Its unchanged `phase4-child` assertion passes; both primitive findings have fixes and regressions. The DO adapter now has an exclusive owner for DO entry/executor/protocol/state files. Main/Queue/loopback/Vite/test adapters remain active. Workflow tracing waits for its occurrence-migration owner handoff. No tracing changes are published yet.
+
+  Ordinary worker re-review is clean (64 focused tests); coordinator verification passed 50 tests. Main/Queue/loopback/Vite/testing implementation is complete and under independent review; coordinator checks passed 28 tests and 109 assertions, including existing execution-context and Vite cache accounting regressions. Direct fallback service dispatch and returned-capability lifetime remain integration work, not completed support claims.
+
+  Direct service fallback adapters are implemented and under review. The user approved local RPC session lifetime/disposal for existing same-realm returned functions/targets; the session primitive has a separate owner before sequential dispatcher/service integration. Cross-thread capability transport remains F16. Main-adapter review found response metadata loss: the user approved native-branded response decoration and a clone override, with status-zero responses passed through. Explicit native prototype access can bypass decorated metadata; this accepted limitation must remain documented.
+
+  Service fallback review is clean (118 tests); response metadata re-review is clean (14 tests), and coordinator combined checks passed 29 tests. DO static review is clean; coordinator lifecycle/streaming checks passed 32 tests. Source typecheck passed after the Bun/Undici clone typing correction. Local RPC session review found four P2 ownership defects: immediate disposal races with deferred property wrapping, partial aggregate wrapping leaks leases, aggregate disposal invokes unrelated data disposers, and null-prototype records bypass capability wrapping. Fixes and regression tests are assigned; adapter integration retains the frozen API.
+
+  Workflow Stage 1 now forwards canonical targeted restart through the real DO proxy. The identity/migration unit is complete and undergoing independent review and coordinator focused verification before its separate commit. Its tracing adapter has not been added yet.
+
+  Coordinator Workflow Stage 1 regression run passed **140 tests, 420 assertions across eight files** on Bun 1.4.2, including occurrence migration/recovery, saga rollbacks, real thread reload and DO/dashboard targeted restart. Independent review remains pending; this is not yet isolated full-suite verification or publication.
+
+  Independent Workflow review found three reproduced P2 defects: recovery consumes events arriving after the saved wait deadline; corrupt compensated checkpoints can throw again during rollback enumeration and leave the instance running; test-hook disposal performs a storage lookup that fails after configured retention removes an instance. All three are assigned to the migration owner for fixes and regression tests before re-review. The prior passing suite does not resolve these findings.
+
+  Those three Workflow fixes passed coordinator verification (61 tests, 255 assertions) and re-review, which identified a further clock mismatch: event arrival uses wall time while the deadline uses the injected clock. The owner is fixing that boundary before publication.
+
+  Local RPC primitive re-review is clean, including accessor serialization and cross-session capability forwarding. Dispatcher forwarding now has three real integration regressions (target, function, aggregate); its combined focused suite passed 64 tests. DO session caller revocation and late initial-result fencing fixes are undergoing re-review. Programmatic direct-service fallback without a caller has no automatic shutdown hook; supported CLI/Vite/test paths use executor/dispatcher owners instead. Workflow tracing remains a separate handoff after the identity commit.
+
+  Dispatcher forwarding re-review is clean and reproduces the original failing call successfully. Both DO session revocation findings are resolved by static re-review. Coordinator combined RPC/session/dispatcher/service/DO verification passed **101 tests, 387 assertions across five files** on Bun 1.4.2. These focused results do not replace the final isolated full-suite check.
+
+  Workflow Stage 1 final re-review is clean: all four recovery/cleanup/clock findings are resolved (64 focused tests). The coordinator committed the isolated identity unit as `854a248` on `feat/workflow-occurrence-identity`. Full typecheck/lint/format/test verification is running in a detached worktree before publication. Tracing remains uncommitted and is not included in that check.
+
+  Workflow identity is now published as [PR #38](https://github.com/contember/lopata/pull/38), above #37. Isolated checks at `854a248` passed: typecheck, lint, formatting and **2,022 tests, two pre-existing skips, zero failures, 5,083 assertions across 113 files** on Bun 1.4.2. Workflow tracing implementation is active in a separate uncommitted slice.
+- F04 stage 1: typed occurrence identity, additive migration, restart/dashboard/test-helper consumers and fresh-process replay. Stream persistence and cooperative deletion follow sequentially.
+- First-wave CI portability fixes are active in the original Images and Hyperdrive owners. These files do not overlap the second-wave territories.
+
+The coordinator confirmed the three-unit Workflow decomposition in the design. Implementers own disjoint files; all commits, independent reviews, full-tree verification and PR publication remain coordinated centrally.
 
 ### Workflow decisions
 
@@ -62,6 +103,9 @@ The user approved the F04 persistence foundation (typed occurrences, additive le
 | F20 Discovery                       | Produce versioned application-path evidence and explicit disposition per candidate; do not equate discovery completion with implementation.                                                   |
 
 ## Research and contract decisions
+
+- Native probes on Bun 1.4.2 and 1.3.14 exercised raw APIs, Lopata plugin setup and `WorkerThreadExecutor`: SQL imports return paths rather than source, synchronous generator bodies stringify instead of iterating, and enhanced Error cloning differs from Workers. Bun 1.4.2 encoder/decoder stream writes did not wait for readable-side demand; the same probe blocked correctly on 1.3.14. Narrow Performance mark/measure/observer and BOM/decoder checks passed. These findings keep F09c/F06d open; they are not complete conformance claims. Probe evidence was retained locally under `/tmp/opencode/lopata-native-probes-Bq7aJP/`.
+- The documented iterable-body flag is `fetch_iterable_type_support` (default February 19, 2026), not `fetch_iterable_body`; consult the current official compatibility metadata before implementing it.
 
 - [Released Queue implementation](https://github.com/cloudflare/workerd/blob/v1.20261005.1/src/workerd/api/queue.h) resolves JS timestamp disagreement: optional `kj::Date`, with the upstream zero sentinel mapped to `undefined`.
 - [Released Email definitions](https://github.com/cloudflare/workerd/blob/v1.20261005.1/types/defines/email.d.ts) return `EmailSendResult` for both raw and structured overloads. Service result IDs identify captured messages; they are not MIME `Message-ID` headers.
