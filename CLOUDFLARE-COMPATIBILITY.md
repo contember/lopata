@@ -4,6 +4,8 @@ Review window: April 2–October 2, 2026. Starting point: `origin/main` at `99ae
 
 The review covered the Cloudflare Workers blog archive, both 2026 Agents Week recaps, and the runtime documentation linked from the announcements. Blog announcements describe the motivation; the linked API documentation defines the implementation contracts.
 
+**Current scope (October 5, 2026):** [PR #31](https://github.com/contember/lopata/pull/31) retains the four backports below, with approved additions for shared `exports` parser coexistence and Workers Cache soft invalidation. These additions are complete and verified locally, not yet pushed; see [current verification](#current-verification). The [follow-up backlog](WORKERS-COMPAT-BACKLOG.md) defines the completion boundary and proposed later work. The [annual review](reports/Roční%20přehled%20Workers%20API.md) covers October 5, 2025–October 5, 2026 and describes snapshot head [`8b82801`](https://github.com/contember/lopata/tree/8b82801ac83d4880d64a0cfa948698347ea84f1a), not the current implementation or its verification status.
+
 ## Backports selected for this update
 
 | Announcement                                                                                                                                                               | Date                | Local implementation                                                                                         |
@@ -54,7 +56,39 @@ Enable entrypoint response caching in Wrangler configuration. Named exports can 
 
 Response headers control freshness and stale-while-revalidate behavior. Cache identity includes the Worker, entrypoint, version and `ctx.props`, while ignoring the request hostname. Responses persist in SQLite. Reloads start cold unless `cache.cross_version_cache` is enabled.
 
-Use `ctx.cache.purge()` or import `{ cache }` from `cloudflare:workers` to purge the active entrypoint by `tags`, `pathPrefixes` or `purgeEverything`. Purging includes all props and version partitions of that entrypoint. The separate `caches` API retains its existing behavior.
+#### Purge and soft invalidation
+
+Soft invalidation is implemented and locally verified within the following contract and accepted limitations.
+
+Both operations are available through the execution context or the active-context import:
+
+```ts
+import { cache } from 'cloudflare:workers'
+
+await ctx.cache.purge({ tags: ['articles'] })
+await cache.purge({ pathPrefixes: ['/articles/'] })
+await ctx.cache.invalidate({ tags: ['articles'] })
+await cache.invalidate({ purgeEverything: true })
+```
+
+Both accept the same selectors and return a promise of `{ success: true, errors: [] }` on success, or `{ success: false, errors: [{ code: 1000, message }] }` for invalid options:
+
+- `tags`: 1–1,000 printable ASCII tags, each at most 1,024 characters; matching is case-insensitive.
+- `pathPrefixes`: a nonempty list of paths without a scheme, host, query or fragment. A missing leading slash is added; matching uses pathname prefixes.
+- `purgeEverything: true`: selects every entry and cannot be combined with the other selectors.
+- Tags and path prefixes may be combined; an entry matching either selector is selected. At least one selector is required; unknown options are rejected.
+
+Operations target the active Worker's entrypoint, including all of its props and version partitions. Other Workers and entrypoints are excluded. Imported `cache` requires an active Worker execution context. The separate `caches` API retains its existing behavior.
+
+`purge()` deletes matching entries. The next eligible request misses and invokes the Worker. `invalidate()` instead sets the stored TTL to zero using the existing SQLite schema. It preserves the response body, validators, headers and age origin; invalidation does not reset `Age` or rewrite the stored `Cache-Control` header.
+
+On the next eligible request, an invalidated entry is stale. Revalidation can send its retained `ETag` or `Last-Modified` validator to the Worker. A `304 Not Modified` reuses the stored body and updates freshness from the revalidation response; subsequent requests can hit that refreshed entry while it remains fresh. A cacheable replacement response can likewise serve subsequent hits. Existing stale-while-revalidate (SWR) and stale-if-error (SIE) windows still apply: SWR may serve the stale body while revalidation runs, and SIE may permit stale fallback on an error.
+
+**Accepted local semantics:** after TTL is set to zero, SWR/SIE windows are measured from the original age origin, not restarted at invalidation. An already old entry can therefore be outside either window immediately after invalidation. Live Cloudflare parity for this TTL-zero, preserved-age and stale-window combination has not been verified. Neither operation emulates global propagation.
+
+#### Shared export declarations
+
+The locally verified parser accepts concrete `worker`, `durable-object` and `workflow` declarations together, with or without Worker cache configuration. Worker cache validation still applies. Accepting these declarations does not implement declarative Durable Object lifecycle, Workflow lifecycle or their binding/loopback wiring. That work remains in [F07 — Declarative exports and complete loopback wiring](WORKERS-COMPAT-BACKLOG.md#f07--declarative-exports-and-complete-loopback-wiring-design-gated-pr-series).
 
 **Local cache limits:** stale-while-revalidate deduplication applies within one dispatcher. Unknown-length and multipart range responses buffer the representation with a 30-second timeout and a 512 MiB limit; the exact timeout and size boundaries were not exercised. Cloudflare purge rate limits are not emulated.
 
@@ -92,7 +126,7 @@ These features had local implementations at the starting revision. This is an in
 
 ## Remaining runtime gaps
 
-The implementation scope remains the four backports above. Access identity simulation and active-span lookup were identified during the final inventory check and deferred to follow-up work. The scope also excludes these additional projects:
+The implementation scope remains the four backports above plus the approved parser-coexistence and cache-invalidation additions. The [follow-up backlog](WORKERS-COMPAT-BACKLOG.md) tracks the broader annual findings. Access identity simulation and active-span lookup were identified during the original final inventory check and deferred to follow-up work. The scope also excludes these additional projects:
 
 - [Durable Object Facets](https://blog.cloudflare.com/durable-object-facets-dynamic-workers/): dynamic Durable Object classes and independently managed facet storage need a separate implementation.
 - [Inbound TCP and gRPC](https://blog.cloudflare.com/grpc-workers/): the private-beta `connect(socket)` handler, Spectrum ingress and gRPC translation need their own transport design.
@@ -110,14 +144,32 @@ Access policy enforcement, hosted Issues grouping and automations, managed AI mo
 - [Workers Cache configuration](https://developers.cloudflare.com/workers/cache/configuration/)
 - [Workers Cache keys](https://developers.cloudflare.com/workers/cache/cache-keys/)
 - [Workers Cache purge](https://developers.cloudflare.com/workers/cache/purge/)
+- [Workers Cache invalidation announcement](https://developers.cloudflare.com/changelog/post/2026-09-29-workers-cache-invalidate/)
 - [Workers AI bindings](https://developers.cloudflare.com/workers-ai/configuration/bindings/)
 - [AI Gateway Workers bindings](https://developers.cloudflare.com/ai-gateway/usage/worker-binding-methods/)
 - [Workers Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)
 - [Modern Web Crypto draft](https://wicg.github.io/webcrypto-modern-algos/)
 
-## Verification
+## Current verification
 
-Final checks on October 2, 2026:
+Local completion checks on October 5, 2026 cover [`2f1d444` — mixed export declarations](https://github.com/contember/lopata/commit/2f1d444) and [`87b84e6` — Workers Cache soft invalidation](https://github.com/contember/lopata/commit/87b84e6). Runtime: Bun 1.4.2 (`744846f84`). Each Bun command below ran under `cpu-lease run -n 2 --`. The full suite ran after all source changes; its fixture source restored itself.
+
+| Command                                                                                                                                                                                                                 | Result                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `bun run typecheck`                                                                                                                                                                                                     | Passed.                                                                                          |
+| `bun run lint`                                                                                                                                                                                                          | Passed; 409 files checked.                                                                       |
+| `bun run format:check`                                                                                                                                                                                                  | Passed.                                                                                          |
+| `bun test tests/worker-cache-config.test.ts tests/worker-cache-invalidate.test.ts tests/worker-cache.test.ts tests/worker-cache-regressions.test.ts tests/worker-cache-runtime.test.ts tests/worker-cache-vite.test.ts` | 79 passed, 0 failed; 422 assertions across 6 files.                                              |
+| `bun run test`                                                                                                                                                                                                          | 1,905 passed, 0 failed, 2 pre-existing skips; 1,907 tests across 104 files and 4,357 assertions. |
+| `git diff --check`                                                                                                                                                                                                      | Passed.                                                                                          |
+
+Independent source reviews reported no findings. Documentation review resolved the F07b/F04 dependency distinction with no remaining findings. These are local verification results, not a new CI run or live Cloudflare parity claim. The approved additions are complete locally and have not yet been pushed; follow-up implementations remain proposals requiring approval.
+
+## Historical verification
+
+These results predate the approved parser-coexistence and soft-invalidation additions. They do not verify those additions; their completion checks are recorded separately above.
+
+Historical final checks on October 2, 2026:
 
 | Command                         | Result                                                                                |
 | ------------------------------- | ------------------------------------------------------------------------------------- |
@@ -130,8 +182,8 @@ Final checks on October 2, 2026:
 
 The two skips are pre-existing `tests/ws-hmr-e2e.test.ts` cases for preserving WebSockets across reloads. The active reload test for closing connections with code 1012 passed. Concurrent cold SQLite startup was also verified with 10 consecutive passes of the normal-worker/Durable-Object crypto isolation test after installing the busy timeout before WAL initialization.
 
-CI compatibility verification on October 5, 2026 used Bun 1.4.2, matching the GitHub Actions runner. After switching fixture directories to `node:os`'s `tmpdir()` and gating Bun's native modern crypto, `bun run test` passed with 1,885 passes, 0 failures, 2 skips and 4,162 assertions. Lint, formatting and typecheck also passed. The flag-toggle regression was verified on Bun 1.3.14 as well.
+Historical CI compatibility verification on October 5, 2026 used Bun 1.4.2, matching the GitHub Actions runner. After switching fixture directories to `node:os`'s `tmpdir()` and gating Bun's native modern crypto, `bun run test` passed with 1,885 passes, 0 failures, 2 skips and 4,162 assertions. Lint, formatting and typecheck also passed. The flag-toggle regression was verified on Bun 1.3.14 as well.
 
-Focused tests cover AI Gateway request forwarding and errors; Workflow rollback ordering, recovery, termination and persistence; cache HTTP semantics, isolation, purge, entrypoint dispatch, RPC contexts and background work; and modern crypto primitives, key formats and compatibility-flag wiring across normal workers, Durable Objects, dynamic workers and Vite.
+Those historical focused tests covered AI Gateway request forwarding and errors; Workflow rollback ordering, recovery, termination and persistence; cache HTTP semantics, isolation, purge, entrypoint dispatch, RPC contexts and background work; and modern crypto primitives, key formats and compatibility-flag wiring across normal workers, Durable Objects, dynamic workers and Vite.
 
 Live Cloudflare inference and authentication were not exercised. Global cache propagation requires Cloudflare infrastructure and was not verified locally. The accepted callback-settlement, post-quantum key and cache limitations are recorded above.
