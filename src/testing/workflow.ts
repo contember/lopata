@@ -234,6 +234,10 @@ export class TestWorkflowInstance {
 	async terminate(options?: { rollback?: boolean }): Promise<void> {
 		await this.instance.terminate(options)
 	}
+	async delete(): Promise<void> {
+		await this.instance.delete()
+		this.dispose()
+	}
 
 	/** Get the current status. */
 	async status(): Promise<WorkflowInstanceStatus> {
@@ -342,6 +346,13 @@ export class TestWorkflowBinding {
 		const testInstance = new TestWorkflowInstance(this.binding, instance, this.db)
 		this.instances.push(testInstance)
 		return testInstance
+	}
+
+	async deleteBatch(instanceIds: string[]) {
+		const result = await this.binding.deleteBatch(instanceIds)
+		const deleted = new Set(result.deleted.map(entry => entry.id))
+		for (const instance of this.instances) if (deleted.has(instance.id)) instance.dispose()
+		return result
 	}
 
 	/** Run a workflow with auto-sleep-skip. Returns a result promise that resolves on completion. */

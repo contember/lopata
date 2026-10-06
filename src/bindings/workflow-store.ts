@@ -1,5 +1,7 @@
 import type { Database, SQLQueryBindings } from 'bun:sqlite'
 
+export class WorkflowInstanceNotFoundError extends Error {}
+
 export type WorkflowStepType = 'do' | 'sleep' | 'waitForEvent'
 export type WorkflowStepMethod = WorkflowStepType | 'sleepUntil'
 export interface WorkflowStepKey {
@@ -215,7 +217,9 @@ export class WorkflowStore {
 
 	currentToken(instanceId: string, workflowName?: string): WorkflowExecutionToken {
 		const row = this.db.query<InstanceRow, [string]>('SELECT * FROM workflow_instances WHERE id = ?').get(instanceId)
-		if (!row || (workflowName !== undefined && row.workflow_name !== workflowName)) throw new Error(`Workflow instance ${instanceId} not found`)
+		if (!row || (workflowName !== undefined && row.workflow_name !== workflowName)) {
+			throw new WorkflowInstanceNotFoundError(`Workflow instance ${instanceId} not found`)
+		}
 		if (
 			typeof row.incarnation !== 'string' || !row.incarnation || !Number.isSafeInteger(row.run) || row.run < 1
 			|| !Number.isSafeInteger(row.execution_epoch) || row.execution_epoch < 0 || typeof row.workflow_name !== 'string'
@@ -688,6 +692,12 @@ export class WorkflowStore {
 			this.removeUnreferencedStreams(token.incarnation)
 			this.removeLegacy(instanceId)
 			this.db.query('DELETE FROM workflow_instances WHERE id = ?').run(instanceId)
+		})
+	}
+	deleteInstance(token: WorkflowExecutionToken): void {
+		this.transaction(token, () => {
+			this.fenceExecution(token)
+			this.removeOwnedState(token.instanceId, token.workflowName)
 		})
 	}
 }
