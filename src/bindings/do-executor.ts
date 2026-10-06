@@ -12,6 +12,21 @@ export interface DOWorkerRuntimeOptions {
 	browserConfig?: BrowserConfig
 }
 
+export interface DOAbortPolicy {
+	readonly reason: string
+	readonly retryAlarm: boolean
+}
+
+export interface DOAlarmAborted {
+	type: 'aborted'
+	policy: DOAbortPolicy
+}
+
+export interface DOAlarmMutationOwnership {
+	previousRevision: number
+	attemptId?: number
+}
+
 export interface ExecutorConfig {
 	id: DurableObjectIdImpl
 	db: Database
@@ -21,7 +36,7 @@ export interface ExecutorConfig {
 	dataDir?: string
 	limits?: DurableObjectLimits
 	containerConfig?: ContainerConfig
-	onAlarmSet?: (time: number | null) => void
+	onAlarmSet?: (time: number | null, revision: number, ownership: DOAlarmMutationOwnership) => void
 	/** @internal Worker-thread DO executors re-import the user module + config
 	 *  inside their Bun Worker; the factory injects these paths. */
 	_modulePath?: string
@@ -52,7 +67,11 @@ export interface DOExecutor {
 	executeRpcGet(prop: string): Promise<unknown>
 
 	/** Execute the alarm handler */
-	executeAlarm(retryCount: number): Promise<void>
+	executeAlarm(retryCount: number, attemptId?: number): Promise<void | DOAlarmAborted>
+
+	/** Abort replacement waits for thread close or actual in-process handler settlement. */
+	whenStopped?(): Promise<void>
+	getAbortPolicy?(): DOAbortPolicy | undefined
 
 	/** Whether the instance has in-flight requests */
 	isActive(): boolean

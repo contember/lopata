@@ -11,6 +11,7 @@
  * executor/entry implementation logic stays in the bindings layer.
  */
 
+import type { DOAbortPolicy, DOAlarmMutationOwnership } from '../bindings/do-executor'
 import type {
 	ParentSpanContext,
 	RpcCallRequest,
@@ -60,7 +61,7 @@ export type DOCommand =
 	}
 	| { type: 'rpc-call'; method: string; args: unknown[] }
 	| { type: 'rpc-get'; prop: string }
-	| { type: 'alarm'; retryCount: number }
+	| { type: 'alarm'; retryCount: number; attemptId?: number }
 	// Stop the DO's Docker container (rm -f + stop timers) before main terminates
 	// the worker thread. terminate() kills the activity/health timers but leaves
 	// the Docker process running; only an explicit cleanup stops it.
@@ -202,7 +203,8 @@ export type DOMainMessage =
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }
-	| { type: 'alarm-set'; time: number | null }
+	| { type: 'alarm-set'; time: number | null; revision: number; ownership: DOAlarmMutationOwnership }
+	| { type: 'do-abort'; policy: DOAbortPolicy }
 	| DoStateSignal
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }

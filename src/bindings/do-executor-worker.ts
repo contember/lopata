@@ -26,7 +26,7 @@ import { RpcHostChannel } from '../worker-thread/rpc-shared'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
-import type { DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
+import type { DOAbortPolicy, DOAlarmAborted, DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
 import { DurableObjectIdImpl } from './durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from './websocket-pair'
 
@@ -89,6 +89,9 @@ export class WorkerExecutor implements DOExecutor {
 	/** Mirrors of the DO worker's `state` lifecycle, fed by `do-state` signals. */
 	private _blocked = false
 	private _aborted = false
+	private _abortPolicy?: DOAbortPolicy
+	private _closed = Promise.resolve()
+	private _workerClosed = true
 	/**
 	 * `wsId`s of every open WebSocket this DO's fetch handler returned — both
 	 * hibernation (`state.acceptWebSocket`) and plain (`new WebSocketPair`) ones.
@@ -162,6 +165,13 @@ export class WorkerExecutor implements DOExecutor {
 
 		const config = this._config
 		const worker = new Worker(WORKER_ENTRY_PATH)
+		this._workerClosed = false
+		this._closed = new Promise<void>(resolve => {
+			worker.addEventListener('close', () => {
+				this._workerClosed = true
+				resolve()
+			}, { once: true })
+		})
 
 		this._ready = new Promise<void>((resolve, reject) => {
 			this._readyResolve = resolve
@@ -250,7 +260,14 @@ export class WorkerExecutor implements DOExecutor {
 
 				case 'alarm-set':
 					// Forward alarm set/delete to namespace via callback
-					config.onAlarmSet?.(msg.time)
+					config.onAlarmSet?.(msg.time, msg.revision, msg.ownership)
+					break
+				case 'do-abort':
+					if (!config.containerConfig && !this._abortPolicy) {
+						this._abortPolicy = msg.policy
+						this._aborted = true
+						this._teardown(new Error(msg.policy.reason))
+					}
 					break
 
 				case 'do-state':
@@ -517,14 +534,21 @@ export class WorkerExecutor implements DOExecutor {
 		return result.value
 	}
 
-	async executeAlarm(retryCount: number): Promise<void> {
-		const result = await this._sendCommand({
-			type: 'alarm',
-			retryCount,
-		})
-		if (result.type === 'error') {
-			throw deserializeError(result.error)
+	async executeAlarm(retryCount: number, attemptId?: number): Promise<void | DOAlarmAborted> {
+		try {
+			await this._sendCommand({ type: 'alarm', retryCount, attemptId })
+		} catch (error) {
+			if (!this._abortPolicy) throw error
+			return { type: 'aborted', policy: this._abortPolicy }
 		}
+	}
+
+	whenStopped(): Promise<void> {
+		return this._closed
+	}
+
+	getAbortPolicy(): DOAbortPolicy | undefined {
+		return this._abortPolicy
 	}
 
 	isActive(): boolean {
@@ -533,7 +557,8 @@ export class WorkerExecutor implements DOExecutor {
 		// otherwise look idle and get evicted mid-stream — dispose() error()s
 		// the body the caller is still reading. Mirrors the top-level
 		// generation drain's openStreamCount() guard.
-		return this._inFlightCount > 0 || this._activeInvocations.size > 0 || this._fetchStreams.activeCount() > 0
+		return (this._abortPolicy !== undefined && !this._workerClosed) || this._inFlightCount > 0 || this._activeInvocations.size > 0
+			|| this._fetchStreams.activeCount() > 0
 			|| this._fetchRequestStreams.activeCount() > 0
 	}
 
@@ -580,6 +605,7 @@ export class WorkerExecutor implements DOExecutor {
 			} catch {}
 		}
 		this._teardown(new Error('Worker terminated'))
+		await this._closed
 	}
 
 	/**
@@ -593,6 +619,11 @@ export class WorkerExecutor implements DOExecutor {
 		if (this._disposed) return
 		this._disposed = true
 		this._traceTerminationReason = error.message
+		// Release worker-owned SQLite locks before main writes termination traces.
+		if (this._worker) {
+			this._worker.terminate()
+			this._worker = null
+		}
 		for (const spanId of this._openTraceSpans) {
 			try {
 				this._traceWriter.endSpan(spanId, Date.now(), 'error', error.message)
@@ -600,10 +631,6 @@ export class WorkerExecutor implements DOExecutor {
 		}
 		this._openTraceSpans.clear()
 		this._activeInvocations.clear()
-		if (this._worker) {
-			this._worker.terminate()
-			this._worker = null
-		}
 		this._readyReject?.(error)
 		for (const [, pending] of this._pending) {
 			pending.reject(error)

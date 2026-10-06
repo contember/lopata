@@ -24,6 +24,111 @@ function member(target: unknown, key: string | symbol): Function {
 	return value
 }
 
+test('call tracking preserves synchronous results, throws and promise identity', async () => {
+	let active = 0
+	let externalResults = 0
+	const session = createRpcSession({
+		run: callback => callback(),
+		retain: () => () => {},
+		trackCall() {
+			active++
+			return () => {
+				active--
+			}
+		},
+		awaitResult(pending) {
+			externalResults++
+			return pending
+		},
+	})
+	expect(session.run(() => 42)).toBe(42)
+	expect(active).toBe(0)
+	expect(() =>
+		session.run(() => {
+			throw new Error('sync failure')
+		})
+	).toThrow('sync failure')
+	expect(active).toBe(0)
+	const gate = Promise.withResolvers<void>()
+	expect(session.run(() => gate.promise)).toBe(gate.promise)
+	expect(active).toBe(1)
+	session.close()
+	expect(active).toBe(1)
+	gate.reject(new Error('late failure'))
+	await expect(gate.promise).rejects.toThrow('late failure')
+	expect(active).toBe(0)
+	expect(externalResults).toBe(0)
+})
+
+for (const abortedSide of ['origin', 'receiver']) {
+	test(`forwarded descendants reject on ${abortedSide} abort without releasing actual calls`, async () => {
+		const context = new AsyncLocalStorage<string>()
+		function owner(name: string) {
+			let calls = 0
+			let holds = 0
+			const abort = Promise.withResolvers<never>()
+			const session = createRpcSession({
+				run: callback => context.run(name, callback),
+				retain() {
+					holds++
+					return () => {
+						holds--
+					}
+				},
+				trackCall() {
+					calls++
+					return () => {
+						calls--
+					}
+				},
+				awaitResult: pending => Promise.race([pending, abort.promise]),
+			})
+			return { session, abort, calls: () => calls, holds: () => holds }
+		}
+		const origin = owner('origin')
+		const receiver = owner('receiver')
+		const gate = Promise.withResolvers<void>()
+		const contexts: (string | undefined)[] = []
+		const original = createRpcFunctionStub(
+			() => ({
+				[RPC_TARGET_BRAND]: true,
+				async hold() {
+					contexts.push(context.getStore())
+					await gate.promise
+					contexts.push(context.getStore())
+					return 42
+				},
+			}),
+			undefined,
+			origin.session,
+		)
+		const forwarded = wrapRpcReturnValue(original, 'forward', receiver.session)
+		if (typeof forwarded !== 'function') throw new Error('Missing forwarded function')
+		const descendant: unknown = await forwarded()
+		origin.session.finish()
+		receiver.session.finish()
+		member(forwarded, Symbol.dispose)()
+		const pending = Promise.resolve(member(descendant, 'hold')()).then(value => value, (error: unknown) => error)
+		expect(origin.calls()).toBeGreaterThan(0)
+		expect(receiver.calls()).toBeGreaterThan(0)
+		const aborted = abortedSide === 'origin' ? origin : receiver
+		const error = new Error(`${abortedSide} aborted`)
+		aborted.session.close()
+		aborted.abort.reject(error)
+		expect(await pending).toBe(error)
+		expect(origin.calls()).toBeGreaterThan(0)
+		expect(receiver.calls()).toBeGreaterThan(0)
+		member(descendant, Symbol.dispose)()
+		gate.resolve()
+		await Bun.sleep(0)
+		expect(origin.calls()).toBe(0)
+		expect(receiver.calls()).toBe(0)
+		expect(origin.holds()).toBe(0)
+		expect(receiver.holds()).toBe(0)
+		expect(contexts).toEqual(['origin', 'origin'])
+	})
+}
+
 test('initial share, synchronous run and independent idempotent leases', () => {
 	const { session, holds } = setup()
 	expect(holds()).toBe(1)

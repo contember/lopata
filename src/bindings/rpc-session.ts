@@ -16,6 +16,9 @@ export interface RpcSessionOptions {
 	run<T>(callback: () => T): T
 	retain(): () => void
 	isClosed?(): boolean
+	/** Release only when the actual call settles, even after session closure. */
+	trackCall?(): () => void
+	awaitResult?<T>(pending: Promise<T>): Promise<T>
 }
 
 /** The initial share bridges handler return and acquisition of returned capabilities. */
@@ -43,8 +46,14 @@ export function createRpcSession(options: RpcSessionOptions): RpcSession {
 
 	function run<T>(callback: () => T): T {
 		checkOpen()
+		const releaseCall = options.trackCall?.()
 		calls++
 		let pending = false
+		function settle(): void {
+			calls--
+			releaseCall?.()
+			drain()
+		}
 		try {
 			const result = options.run(callback)
 			if (result !== null && (typeof result === 'object' || typeof result === 'function') && 'then' in result && typeof result.then === 'function') {
@@ -57,13 +66,9 @@ export function createRpcSession(options: RpcSessionOptions): RpcSession {
 		}
 	}
 
-	function settle(): void {
-		calls--
-		drain()
-	}
-
 	return {
 		run,
+		awaitResult: options.awaitResult,
 		retain() {
 			checkOpen()
 			references++
