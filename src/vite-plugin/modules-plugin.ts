@@ -1,6 +1,12 @@
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Plugin } from 'vite'
+import type { Tracing } from '../tracing/span'
+
+declare global {
+	var __lopata_tracing: Tracing | undefined
+	var __lopata_waitUntil: ((promise: Promise<unknown>) => void) | undefined
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -70,8 +76,19 @@ export class RpcTarget {
   }
 }
 export function waitUntil(promise) {
-  // Shim for build — at runtime, the real cloudflare:workers module provides this.
+  if (!globalThis.__lopata_waitUntil) throw new Error("Worker runtime is not initialized");
+  return globalThis.__lopata_waitUntil(promise);
 }
+function nativeTracing() {
+  if (!globalThis.__lopata_tracing) throw new Error("Tracing runtime is not initialized");
+  return globalThis.__lopata_tracing;
+}
+export const tracing = {
+  enterSpan(name, callback, ...args) { return nativeTracing().enterSpan(name, callback, ...args); },
+  startActiveSpan(name, callback, ...args) { return nativeTracing().startActiveSpan(name, callback, ...args); },
+  startSpan(name) { return nativeTracing().startSpan(name); },
+  getActiveSpan() { return nativeTracing().getActiveSpan(); }
+};
 export const cache = {
   purge(options) {
     if (!globalThis.__lopata_workerCacheApi) throw new Error("Workers Cache runtime is not initialized");

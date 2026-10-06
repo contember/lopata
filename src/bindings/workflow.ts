@@ -1,9 +1,11 @@
 import type { Database } from 'bun:sqlite'
 import { realpathSync } from 'node:fs'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveContext } from '../tracing/context'
-import { addSpanEvent, persistError, startSpan } from '../tracing/span'
+import { createInvocationTrace, getActiveInvocation, type InvocationTrace, type TraceCompletion } from '../tracing/invocation'
+import { addSpanEvent, persistError, setSpanAttribute, startSpan } from '../tracing/span'
 import type { WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
 import { decodeWorkflowEvent, WorkflowStore } from './workflow-store'
 import type {
@@ -781,11 +783,15 @@ async function runWithTimeout<T>(
 	signal: AbortSignal,
 ): Promise<T> {
 	if (signal.aborted) throw new Error('workflow terminated')
+	const release = getActiveInvocation()?.retain('handler')
+	const actual = Promise.resolve().then(callback)
+	// A raced callback may outlive the engine; retries make its rejection a liveness event, not the root outcome.
+	actual.then(() => release?.(), () => release?.())
 	let timer: ReturnType<typeof setTimeout> | undefined
 	let onAbort: (() => void) | undefined
 	try {
 		return await Promise.race([
-			Promise.resolve().then(callback),
+			actual,
 			new Promise<never>((_, reject) => {
 				if (timeoutMs !== undefined) timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
 				onAbort = () => reject(new Error('workflow terminated'))
@@ -1011,12 +1017,13 @@ export function wireWorkflowClass(
 }
 
 export class WorkflowEntrypointBase {
-	ctx: { env: unknown; waitUntil(p: Promise<unknown>): void }
+	ctx: Pick<ExecutionContext, 'waitUntil' | 'tracing'> & { env: unknown }
 	env: unknown
 
 	constructor(ctx: unknown, env: unknown) {
 		this.env = env
-		this.ctx = { env, waitUntil: () => {} }
+		const executionContext = ctx instanceof ExecutionContext ? ctx : new ExecutionContext()
+		this.ctx = { env, waitUntil: executionContext.waitUntil.bind(executionContext), tracing: executionContext.tracing }
 	}
 
 	async run(_event: unknown, _step: unknown): Promise<unknown> {
@@ -1194,6 +1201,7 @@ export class SqliteWorkflowInstance {
 			limits,
 			row.created_at,
 			this.binding._getClock(),
+			this.binding,
 		)
 	}
 
@@ -1223,6 +1231,8 @@ export class SqliteWorkflowInstance {
 // --- Binding ---
 
 export class SqliteWorkflowBinding {
+	private readonly traceInvocations = new Set<InvocationTrace>()
+	private traceTerminationReason: string | undefined
 	private db: Database
 	private workflowName: string
 	private className: string
@@ -1269,6 +1279,21 @@ export class SqliteWorkflowBinding {
 	}
 	_getClock() {
 		return this.clock
+	}
+
+	terminateTracing(reason: string): void {
+		this.traceTerminationReason = reason
+		for (const invocation of this.traceInvocations) invocation.terminate(reason)
+		this.traceInvocations.clear()
+	}
+
+	private trackTracing(invocation: InvocationTrace): void {
+		if (this.traceTerminationReason !== undefined) {
+			invocation.terminate(this.traceTerminationReason)
+			return
+		}
+		this.traceInvocations.add(invocation)
+		void invocation.completed.then(() => this.traceInvocations.delete(invocation))
 	}
 
 	/** Abort all running/queued/waiting instances for this workflow */
@@ -1344,6 +1369,7 @@ export class SqliteWorkflowBinding {
 				this.limits,
 				now,
 				this.clock,
+				this,
 			)
 		} else {
 			console.log(`[workflow] queued ${id} (concurrency limit: ${this.limits.maxConcurrentInstances})`)
@@ -1408,7 +1434,19 @@ export class SqliteWorkflowBinding {
 		}
 
 		console.log(`[workflow] started ${id}`)
-		SqliteWorkflowBinding.executeWorkflow(this.db, id, this._class, this._env, params, ac, this.workflowName, this.limits, row.created_at, this.clock)
+		SqliteWorkflowBinding.executeWorkflow(
+			this.db,
+			id,
+			this._class,
+			this._env,
+			params,
+			ac,
+			this.workflowName,
+			this.limits,
+			row.created_at,
+			this.clock,
+			this,
+		)
 	}
 
 	async createBatch(batch: { id?: string; params?: unknown }[]): Promise<SqliteWorkflowInstance[]> {
@@ -1522,6 +1560,7 @@ export class SqliteWorkflowBinding {
 				this.limits,
 				row.created_at,
 				this.clock,
+				this,
 			)
 		}
 	}
@@ -1558,6 +1597,7 @@ export class SqliteWorkflowBinding {
 				this.limits,
 				queued.created_at,
 				this.clock,
+				this,
 			)
 		}
 	}
@@ -1573,6 +1613,7 @@ export class SqliteWorkflowBinding {
 		limits?: Required<WorkflowLimits>,
 		createdAt?: number,
 		clock?: Clock,
+		traceOwner?: SqliteWorkflowBinding,
 	): void {
 		const store = new WorkflowStore(db)
 		const initialToken = store.currentToken(id, workflowName)
@@ -1608,6 +1649,7 @@ export class SqliteWorkflowBinding {
 				resolvedLimits,
 				queued.created_at,
 				resolvedClock,
+				traceOwner,
 			)
 		}
 		const execution = (async () => {
@@ -1620,139 +1662,166 @@ export class SqliteWorkflowBinding {
 			while (runningForwardAttempts.get(registryId)?.size) await Promise.allSettled([...runningForwardAttempts.get(registryId)!])
 			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) return
 			const token = store.transaction(initialToken, () => store.acquireExecution(id, initialToken.workflowName))
-			let workflowTraceId: string | undefined
-			let step: WorkflowStepImpl | undefined
-			const initialRollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
-			if (initialRollback?.phase === 'requested' && activeController.signal.aborted) {
-				activeController = new AbortController()
-				abortControllers.set(registryId, activeController)
-			}
-			// Rollback termination drains forward steps; reload and default termination abort them.
-			const forwardController = new AbortController()
-			const onControlAbort = () => {
-				if (activeController.signal.reason === ROLLBACK_REQUESTED) {
-					activeController = new AbortController()
-					abortControllers.set(registryId, activeController)
-					activeController.signal.addEventListener('abort', onControlAbort, { once: true })
-				} else {
-					forwardController.abort()
-				}
-			}
-			activeController.signal.addEventListener('abort', onControlAbort, { once: true })
-			const finishRollback = async (error: Error, state: RollbackState): Promise<void> => {
-				if (!step) throw new Error('Workflow step handlers could not be recovered')
-				if (activeController.signal.aborted) return
-				store.transaction(token, () => {
-					db.query("UPDATE workflow_rollbacks SET phase = 'running' WHERE instance_id = ?").run(id)
-					db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), id)
-				})
-				let failure: Error | undefined
-				try {
-					await step.rollback(error, activeController.signal)
-				} catch (err) {
-					if (activeController.signal.aborted) return
-					failure = workflowError(err)
-				}
-				if (activeController.signal.aborted) return
-				store.transaction(token, () => {
-					db.query('UPDATE workflow_rollbacks SET phase = ?, error = ?, error_name = ? WHERE instance_id = ?')
-						.run(failure ? 'failed' : 'complete', failure?.message ?? null, failure?.name ?? null, id)
-					db.query('UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ?').run(state.target_status, resolvedClock.now(), id)
-				})
-				fireStatusCallbacks(registryId, state.target_status)
-			}
+			const invocation = createInvocationTrace({
+				name: `workflow ${workflowName ?? 'run'}`,
+				kind: 'server',
+				attributes: { 'workflow.name': workflowName ?? 'unknown', 'workflow.instance_id': id },
+				workerName: workflowName,
+				newTrace: true,
+			})
+			traceOwner?.trackTracing(invocation)
+			let completion: TraceCompletion = { kind: 'complete' }
 			try {
-				step = new WorkflowStepImpl(forwardController.signal, db, id, resolvedLimits, resolvedClock, token)
-				const instance = new workflowClass({ waitUntil: () => {} }, env)
-				const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
-				const result = await startSpan({
-					name: `workflow ${workflowName ?? 'run'}`,
-					kind: 'server',
-					attributes: { 'workflow.name': workflowName ?? 'unknown', 'workflow.instance_id': id },
-					workerName: workflowName,
-					newTrace: true,
-				}, () => {
-					workflowTraceId = getActiveContext()?.traceId
-					return runWithTimeout(() => instance.run(event, step), undefined, 'Workflow', activeController.signal)
+				await invocation.run(() => {
+					const ctx = new ExecutionContext()
+					return runWithExecutionContext(ctx, async () => {
+						const workflowTraceId = getActiveContext()?.traceId
+						let step: WorkflowStepImpl | undefined
+						const initialRollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
+						if (initialRollback?.target_status === 'terminated') completion = { kind: 'cancelled', reason: WORKFLOW_TERMINATED }
+						if (initialRollback?.phase === 'requested' && activeController.signal.aborted) {
+							activeController = new AbortController()
+							abortControllers.set(registryId, activeController)
+						}
+						// Rollback termination drains forward steps; reload and default termination abort them.
+						const forwardController = new AbortController()
+						const onControlAbort = () => {
+							if (completion.kind !== 'error') {
+								completion = {
+									kind: 'cancelled',
+									reason: activeController.signal.reason === WORKFLOW_TERMINATED || activeController.signal.reason === ROLLBACK_REQUESTED
+										? WORKFLOW_TERMINATED
+										: 'Workflow interrupted',
+								}
+							}
+							if (activeController.signal.reason === ROLLBACK_REQUESTED) {
+								activeController = new AbortController()
+								abortControllers.set(registryId, activeController)
+								activeController.signal.addEventListener('abort', onControlAbort, { once: true })
+							} else {
+								forwardController.abort()
+							}
+						}
+						activeController.signal.addEventListener('abort', onControlAbort, { once: true })
+						const finishRollback = async (error: Error, state: RollbackState): Promise<void> => {
+							if (state.target_status === 'errored') completion = { kind: 'error', error }
+							if (!step) throw new Error('Workflow step handlers could not be recovered')
+							if (activeController.signal.aborted) return
+							store.transaction(token, () => {
+								db.query("UPDATE workflow_rollbacks SET phase = 'running' WHERE instance_id = ?").run(id)
+								db.query("UPDATE workflow_instances SET status = 'running', updated_at = ? WHERE id = ?").run(resolvedClock.now(), id)
+							})
+							let failure: Error | undefined
+							try {
+								await step.rollback(error, activeController.signal)
+							} catch (err) {
+								if (activeController.signal.aborted) return
+								failure = workflowError(err)
+								addSpanEvent('exception', 'error', failure.message, { 'exception.type': failure.name, 'exception.stacktrace': failure.stack })
+								if (completion.kind !== 'error') completion = { kind: 'error', error: failure }
+							}
+							if (activeController.signal.aborted) return
+							setSpanAttribute('workflow.rollback.outcome', failure ? 'failed' : 'complete')
+							store.transaction(token, () => {
+								db.query('UPDATE workflow_rollbacks SET phase = ?, error = ?, error_name = ? WHERE instance_id = ?')
+									.run(failure ? 'failed' : 'complete', failure?.message ?? null, failure?.name ?? null, id)
+								db.query('UPDATE workflow_instances SET status = ?, updated_at = ? WHERE id = ?').run(state.target_status, resolvedClock.now(), id)
+							})
+							fireStatusCallbacks(registryId, state.target_status)
+						}
+						try {
+							step = new WorkflowStepImpl(forwardController.signal, db, id, resolvedLimits, resolvedClock, token)
+							const instance = new workflowClass(ctx, env)
+							const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
+							const result = await runWithTimeout(() => instance.run(event, step), undefined, 'Workflow', activeController.signal)
+							await step.settlePending()
+							if (activeController.signal.aborted) return
+							const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
+							if (rollback?.phase === 'running' || rollback?.phase === 'requested') {
+								const original = db.query<{ error: string | null; error_name: string | null }, [string]>(
+									'SELECT error, error_name FROM workflow_instances WHERE id = ?',
+								).get(id)
+								await step.settleForwardAttempts()
+								await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
+								return
+							}
+							store.transaction(token, () =>
+								db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
+									.run(JSON.stringify(result), resolvedClock.now(), id))
+							console.log(`[workflow] completed ${id}:`, result)
+							fireStatusCallbacks(registryId, 'complete')
+						} catch (err) {
+							if (completion.kind !== 'cancelled') completion = { kind: 'error', error: err }
+							await step?.settlePending()
+							if (activeController.signal.aborted) return
+							store.assertCurrent(token)
+							const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
+							if (rollback?.phase === 'running' || rollback?.phase === 'requested') {
+								const original = db.query<{ error: string | null; error_name: string | null }, [string]>(
+									'SELECT error, error_name FROM workflow_instances WHERE id = ?',
+								).get(id)
+								await step?.settleForwardAttempts()
+								await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
+								return
+							}
+							let failure = workflowError(err)
+							let eligible: WorkflowOccurrenceRecord[] = []
+							try {
+								eligible = step ? store.listRollbackOccurrences(step.token) : []
+							} catch (storageError) {
+								const storageFailure = workflowError(storageError)
+								failure = new AggregateError(
+									[failure, storageFailure],
+									`Workflow "${id}" cannot recover compensation safely. Original failure: ${failure.name}: ${failure.message}. Storage failure: ${storageFailure.name}: ${storageFailure.message}`,
+								)
+								failure.name = 'WorkflowRecoveryError'
+							}
+							const errorName = failure.name || 'Error'
+							const message = failure.message
+							completion = { kind: 'error', error: failure }
+							if (step && eligible.length > 0) {
+								store.transaction(token, () => {
+									db.query("UPDATE workflow_instances SET status = 'running', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
+										.run(message, errorName, resolvedClock.now(), id)
+									db.query("INSERT INTO workflow_rollbacks (instance_id, phase, target_status, original_non_retryable) VALUES (?, 'running', 'errored', ?)")
+										.run(id, err instanceof NonRetryableError ? 1 : 0)
+								})
+								persistError(err, 'workflow', workflowName, workflowTraceId)
+								await step.settleForwardAttempts()
+								await finishRollback(workflowError(err), {
+									phase: 'running',
+									target_status: 'errored',
+									original_non_retryable: err instanceof NonRetryableError ? 1 : 0,
+									error: null,
+									error_name: null,
+								})
+								return
+							}
+							store.transaction(
+								token,
+								() =>
+									db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
+										.run(message, errorName, resolvedClock.now(), id),
+							)
+							console.error(`[workflow] failed ${id}:`, failure)
+							persistError(failure, 'workflow', workflowName, workflowTraceId)
+							fireStatusCallbacks(registryId, 'errored')
+						} finally {
+							activeController.signal.removeEventListener('abort', onControlAbort)
+							forwardController.abort()
+							if (abortControllers.get(registryId) === activeController) {
+								eventWaiters.delete(registryId)
+								abortControllers.delete(registryId)
+							}
+							if (!activeController.signal.aborted || activeController.signal.reason === WORKFLOW_TERMINATED) startQueued()
+						}
+					})
 				})
-				await step.settlePending()
-				if (activeController.signal.aborted) return
-				const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
-				if (rollback?.phase === 'running' || rollback?.phase === 'requested') {
-					const original = db.query<{ error: string | null; error_name: string | null }, [string]>(
-						'SELECT error, error_name FROM workflow_instances WHERE id = ?',
-					).get(id)
-					await step.settleForwardAttempts()
-					await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
-					return
-				}
-				store.transaction(token, () =>
-					db.query("UPDATE workflow_instances SET status = 'complete', output = ?, updated_at = ? WHERE id = ?")
-						.run(JSON.stringify(result), resolvedClock.now(), id))
-				console.log(`[workflow] completed ${id}:`, result)
-				fireStatusCallbacks(registryId, 'complete')
-			} catch (err) {
-				await step?.settlePending()
-				if (activeController.signal.aborted) return
-				store.assertCurrent(token)
-				const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
-				if (rollback?.phase === 'running' || rollback?.phase === 'requested') {
-					const original = db.query<{ error: string | null; error_name: string | null }, [string]>(
-						'SELECT error, error_name FROM workflow_instances WHERE id = ?',
-					).get(id)
-					await step?.settleForwardAttempts()
-					await finishRollback(restoredError(original?.error ?? null, original?.error_name ?? null, rollback.original_non_retryable === 1), rollback)
-					return
-				}
-				let failure = workflowError(err)
-				let eligible: WorkflowOccurrenceRecord[] = []
-				try {
-					eligible = step ? store.listRollbackOccurrences(step.token) : []
-				} catch (storageError) {
-					const storageFailure = workflowError(storageError)
-					failure = new AggregateError(
-						[failure, storageFailure],
-						`Workflow "${id}" cannot recover compensation safely. Original failure: ${failure.name}: ${failure.message}. Storage failure: ${storageFailure.name}: ${storageFailure.message}`,
-					)
-					failure.name = 'WorkflowRecoveryError'
-				}
-				const errorName = failure.name || 'Error'
-				const message = failure.message
-				if (step && eligible.length > 0) {
-					store.transaction(token, () => {
-						db.query("UPDATE workflow_instances SET status = 'running', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
-							.run(message, errorName, resolvedClock.now(), id)
-						db.query("INSERT INTO workflow_rollbacks (instance_id, phase, target_status, original_non_retryable) VALUES (?, 'running', 'errored', ?)")
-							.run(id, err instanceof NonRetryableError ? 1 : 0)
-					})
-					persistError(err, 'workflow', workflowName, workflowTraceId)
-					await step.settleForwardAttempts()
-					await finishRollback(workflowError(err), {
-						phase: 'running',
-						target_status: 'errored',
-						original_non_retryable: err instanceof NonRetryableError ? 1 : 0,
-						error: null,
-						error_name: null,
-					})
-					return
-				}
-				store.transaction(
-					token,
-					() =>
-						db.query("UPDATE workflow_instances SET status = 'errored', error = ?, error_name = ?, updated_at = ? WHERE id = ?")
-							.run(message, errorName, resolvedClock.now(), id),
-				)
-				console.error(`[workflow] failed ${id}:`, failure)
-				persistError(failure, 'workflow', workflowName, workflowTraceId)
-				fireStatusCallbacks(registryId, 'errored')
+			} catch (error) {
+				completion = { kind: 'error', error }
+				throw error
 			} finally {
-				activeController.signal.removeEventListener('abort', onControlAbort)
-				forwardController.abort()
-				if (abortControllers.get(registryId) === activeController) {
-					eventWaiters.delete(registryId)
-					abortControllers.delete(registryId)
-				}
-				if (!activeController.signal.aborted || activeController.signal.reason === WORKFLOW_TERMINATED) startQueued()
+				invocation.finishHandler(completion)
 			}
 		})()
 		executions.set(registryId, execution)

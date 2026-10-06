@@ -7,6 +7,8 @@
 
 import { dirname, resolve } from 'node:path'
 import type { WranglerConfig } from '../config'
+import { getActiveContext } from '../tracing/context'
+import { getTraceWriter, type TraceWriter } from '../tracing/store'
 import type {
 	DOCommand,
 	DOMainMessage,
@@ -14,6 +16,7 @@ import type {
 	DoReqStreamEnd,
 	DoReqStreamError,
 	DOResult,
+	DOTraceMessage,
 	DOWorkerMessage,
 } from '../worker-thread/do-protocol'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
@@ -59,6 +62,10 @@ interface PendingCommand {
 
 const WORKER_ENTRY_PATH = resolve(dirname(new URL(import.meta.url).pathname), 'do-worker-entry.ts')
 
+function isTraceMessage(message: DOMainMessage): message is DOTraceMessage {
+	return message.type.startsWith('trace-')
+}
+
 export class WorkerExecutor implements DOExecutor {
 	private _config: ExecutorConfig
 	private _worker: Worker | null = null
@@ -68,6 +75,10 @@ export class WorkerExecutor implements DOExecutor {
 	private _pending = new Map<number, PendingCommand>()
 	private _nextId = 1
 	private _disposed = false
+	private readonly _traceWriter: TraceWriter
+	private _openTraceSpans = new Set<string>()
+	private _traceTerminationReason: string | undefined
+	private _activeInvocations = new Set<number>()
 	/** Swallowed copy of `_priorDisposal`, created lazily on the first command.
 	 *  Shared so CONCURRENT first commands all await the prior container's
 	 *  teardown — a boolean gate would let the second racer skip straight to
@@ -136,6 +147,7 @@ export class WorkerExecutor implements DOExecutor {
 
 	constructor(config: ExecutorConfig) {
 		this._config = config
+		this._traceWriter = getActiveContext()?.writer ?? getTraceWriter()
 	}
 
 	private _ensureWorker(): Worker {
@@ -169,15 +181,25 @@ export class WorkerExecutor implements DOExecutor {
 		})
 
 		worker.onmessage = (event: MessageEvent<DOMainMessage>) => {
+			const msg = event.data
+			if (isTraceMessage(msg)) {
+				this._applyTrace(msg)
+				return
+			}
 			// Drop late messages after dispose/onerror — the shared RPC dispatchers
 			// would otherwise commit side effects (KV write, R2 put, queue send)
 			// from a dying generation before their reply gets filtered by
 			// `hooks.isAlive()`. Mirrors `WorkerThreadExecutor._handleMessage`.
 			if (this._disposed) return
-			const msg = event.data
 			if (this._rpcChannel.handle(msg)) return
 
 			switch (msg.type) {
+				case 'do-invocation-start':
+					this._activeInvocations.add(msg.id)
+					break
+				case 'do-invocation-end':
+					this._activeInvocations.delete(msg.id)
+					break
 				case 'need-init':
 					// Worker is alive, send configuration
 					worker.postMessage({
@@ -308,6 +330,8 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	private async _sendCommand(command: DOCommand, afterPost?: () => void): Promise<DOResult> {
+		const active = getActiveContext()
+		const parent = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 		const worker = this._ensureWorker()
 		// Wait for the prior executor's container teardown (docker rm) before any
 		// command — a container DO's first fetch triggers `docker run` for the
@@ -340,7 +364,7 @@ export class WorkerExecutor implements DOExecutor {
 				},
 			})
 			try {
-				worker.postMessage({ type: 'command', id, command } satisfies DOWorkerMessage)
+				worker.postMessage({ type: 'command', id, command, parent } satisfies DOWorkerMessage)
 				// Runs only AFTER the command is posted, which is after `await this._ready`
 				// — so the DO worker's full message handler is installed (it's set right
 				// before the worker posts `ready`). Starting the request-body pump here
@@ -502,7 +526,8 @@ export class WorkerExecutor implements DOExecutor {
 		// otherwise look idle and get evicted mid-stream — dispose() error()s
 		// the body the caller is still reading. Mirrors the top-level
 		// generation drain's openStreamCount() guard.
-		return this._inFlightCount > 0 || this._fetchStreams.activeCount() > 0 || this._fetchRequestStreams.activeCount() > 0
+		return this._inFlightCount > 0 || this._activeInvocations.size > 0 || this._fetchStreams.activeCount() > 0
+			|| this._fetchRequestStreams.activeCount() > 0
 	}
 
 	isBlocked(): boolean {
@@ -558,7 +583,16 @@ export class WorkerExecutor implements DOExecutor {
 	 * Idempotent. Counterpart of `WorkerThreadExecutor._failAll`.
 	 */
 	private _teardown(error: Error): void {
+		if (this._disposed) return
 		this._disposed = true
+		this._traceTerminationReason = error.message
+		for (const spanId of this._openTraceSpans) {
+			try {
+				this._traceWriter.endSpan(spanId, Date.now(), 'error', error.message)
+			} catch {}
+		}
+		this._openTraceSpans.clear()
+		this._activeInvocations.clear()
 		if (this._worker) {
 			this._worker.terminate()
 			this._worker = null
@@ -574,6 +608,40 @@ export class WorkerExecutor implements DOExecutor {
 		this._rpcChannel.disposeAll(error)
 		this._fetchStreams.disposeAll(error)
 		this._fetchRequestStreams.disposeAll()
+	}
+
+	private _applyTrace(message: DOTraceMessage): void {
+		try {
+			const store = this._traceWriter
+			if (this._traceTerminationReason !== undefined && message.type !== 'trace-span-insert') return
+			switch (message.type) {
+				case 'trace-span-insert':
+					store.insertSpan(message.span)
+					if (this._traceTerminationReason !== undefined) {
+						store.endSpan(message.span.spanId, Date.now(), 'error', this._traceTerminationReason)
+					} else this._openTraceSpans.add(message.span.spanId)
+					break
+				case 'trace-span-end':
+					if (this._openTraceSpans.delete(message.spanId)) {
+						store.endSpan(message.spanId, message.endTime, message.status, message.statusMessage ?? undefined)
+					}
+					break
+				case 'trace-span-status':
+					store.setSpanStatus(message.spanId, message.status, message.statusMessage)
+					break
+				case 'trace-span-attrs':
+					store.updateAttributes(message.spanId, message.attrs)
+					break
+				case 'trace-span-event':
+					store.addEvent(message.event)
+					break
+				case 'trace-error':
+					store.insertError(message.error)
+					break
+			}
+		} catch (error) {
+			console.error('[lopata] trace store write failed (ignored):', error)
+		}
 	}
 }
 

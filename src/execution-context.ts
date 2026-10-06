@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { type CacheExecutionContext, unavailableWorkerCache } from './bindings/worker-cache'
+import { getActiveInvocation, type TraceCompletion } from './tracing/invocation'
 import { tracing } from './tracing/span'
 
 const storage = new AsyncLocalStorage<CacheExecutionContext>()
@@ -25,6 +26,7 @@ export class ExecutionContext {
 	cache = unavailableWorkerCache
 	exports: Record<string, unknown> = {}
 	private _promises: Promise<unknown>[] = []
+	private readonly invocation = getActiveInvocation()
 	readonly props: Record<string, unknown>
 	/** Cloudflare-compatible custom span API: `ctx.tracing.enterSpan(...)`. */
 	readonly tracing = tracing
@@ -34,7 +36,13 @@ export class ExecutionContext {
 	}
 
 	waitUntil(promise: Promise<unknown>): void {
-		this._promises.push(logIfRejected(promise))
+		const release = this.invocation?.retain('wait-until')
+		let completion: TraceCompletion = { kind: 'complete' }
+		const observed = Promise.resolve(promise).catch(error => {
+			completion = { kind: 'error', error }
+			throw error
+		})
+		this._promises.push(logIfRejected(observed).finally(() => release?.(completion)))
 	}
 
 	passThroughOnException(): void {

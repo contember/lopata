@@ -13,6 +13,8 @@
  * envelope messages until the body completes or errors.
  */
 
+import { getActiveContext, runWithContext } from '../tracing/context'
+import type { TraceCompletion } from '../tracing/invocation'
 import type { SerializedError } from './protocol'
 import { serializeError } from './protocol'
 
@@ -34,6 +36,7 @@ import { serializeError } from './protocol'
 export const STREAM_BACKPRESSURE_WINDOW = 8
 
 interface OutboundStreamState {
+	cancellation?: Promise<TraceCompletion>
 	reader: { cancel(reason?: unknown): Promise<unknown> }
 	/** Remaining permits to post a chunk. `Infinity` = no backpressure (eager,
 	 *  the default for channels that don't opt in). */
@@ -72,7 +75,7 @@ export class OutboundStreamRegistry {
 	 */
 	async acquireCredit(streamId: number): Promise<boolean> {
 		const s = this._streams.get(streamId)
-		if (!s) return false
+		if (!s || s.cancellation) return false
 		if (s.credits > 0) {
 			s.credits--
 			return true
@@ -81,7 +84,7 @@ export class OutboundStreamRegistry {
 			s.waiter = resolve
 		})
 		const after = this._streams.get(streamId)
-		if (!after) return false // cancelled/disposed while parked
+		if (!after || after.cancellation) return false
 		if (after.credits > 0) after.credits--
 		return true
 	}
@@ -89,7 +92,7 @@ export class OutboundStreamRegistry {
 	/** Receiver granted `n` more permits — replenish and wake a parked pump. */
 	grantCredit(streamId: number, n = 1): void {
 		const s = this._streams.get(streamId)
-		if (!s) return
+		if (!s || s.cancellation) return
 		s.credits += n
 		const w = s.waiter
 		if (w) {
@@ -103,10 +106,13 @@ export class OutboundStreamRegistry {
 	}
 
 	/** Receiver-side cancel arrived — stop the source pump if still running. */
-	cancel(streamId: number): void {
+	cancel(streamId: number, completion: TraceCompletion = { kind: 'cancelled' }): void {
 		const s = this._streams.get(streamId)
-		if (!s) return
-		this._streams.delete(streamId)
+		if (!s || s.cancellation) return
+		s.cancellation = Promise.resolve().then(() => s.reader.cancel()).then(
+			() => completion,
+			error => ({ kind: 'error', error }),
+		)
 		// Wake a parked pump so it exits instead of hanging on a grant that will
 		// never come.
 		const w = s.waiter
@@ -114,19 +120,16 @@ export class OutboundStreamRegistry {
 			s.waiter = null
 			w()
 		}
-		s.reader.cancel().catch(() => {})
+	}
+
+	cancellation(streamId: number): Promise<TraceCompletion> | undefined {
+		return this._streams.get(streamId)?.cancellation
 	}
 
 	disposeAll(): void {
-		for (const [, s] of this._streams) {
-			const w = s.waiter
-			if (w) {
-				s.waiter = null
-				w()
-			}
-			s.reader.cancel().catch(() => {})
+		for (const id of this._streams.keys()) {
+			this.cancel(id, { kind: 'terminated', reason: 'Stream transport disposed' })
 		}
-		this._streams.clear()
 	}
 }
 
@@ -353,9 +356,12 @@ export function pumpStream<TChunk, TEnd, TError>(
 	window?: number,
 	/** Called once the pump exits for any reason (end / error / cancel / teardown).
 	 *  Lets callers tie per-stream resource cleanup to the body's completion. */
-	onComplete?: () => void,
+	onComplete?: (completion: TraceCompletion) => void,
 ): void {
+	const context = getActiveContext()
 	void (async () => {
+		let completion: TraceCompletion = { kind: 'complete' }
+		let releaseReader: (() => void) | undefined
 		try {
 			// `getReader()` throws synchronously on a locked/disturbed body — e.g. the
 			// user did `await res.text()` then returned `res`. Doing it inside the try
@@ -365,14 +371,17 @@ export function pumpStream<TChunk, TEnd, TError>(
 			// never produces a chunk or terminator. Runs synchronously (before the
 			// first await), so registration stays synchronous as before.
 			const reader = body.getReader()
-			registry.register(streamId, reader, window ?? Number.POSITIVE_INFINITY)
+			releaseReader = () => reader.releaseLock()
+			registry.register(streamId, {
+				cancel: reason => context ? runWithContext(context, () => reader.cancel(reason)) : reader.cancel(reason),
+			}, window ?? Number.POSITIVE_INFINITY)
 			while (true) {
 				const { done, value } = await reader.read()
 				if (isAlive && !isAlive()) {
 					// Channel torn down between this read and posting — release the
 					// source so it doesn't stay locked. `finally` removes us from the
 					// registry, so `disposeAll` won't see this reader.
-					reader.cancel().catch(() => {})
+					registry.cancel(streamId, { kind: 'terminated', reason: 'Stream transport disposed' })
 					return
 				}
 				if (done) break
@@ -388,27 +397,39 @@ export function pumpStream<TChunk, TEnd, TError>(
 						// (`isAlive()` false) posting is moot. Worker-side pumps omit
 						// `isAlive` and only reach here via a receiver cancel, so they post.
 						if (!isAlive || isAlive()) post(envelopes.end(streamId))
-						reader.cancel().catch(() => {})
+						registry.cancel(streamId)
 						return
 					}
 					if (isAlive && !isAlive()) {
-						reader.cancel().catch(() => {})
+						registry.cancel(streamId, { kind: 'terminated', reason: 'Stream transport disposed' })
 						return
 					}
 					post(envelopes.chunk(streamId, value))
 				}
 			}
 			if (isAlive && !isAlive()) {
-				reader.cancel().catch(() => {})
+				registry.cancel(streamId, { kind: 'terminated', reason: 'Stream transport disposed' })
 				return
 			}
 			post(envelopes.end(streamId))
 		} catch (e) {
+			completion = { kind: 'error', error: e }
+			registry.cancel(streamId, completion)
 			if (isAlive && !isAlive()) return
-			post(envelopes.error(streamId, serializeError(e)))
+			try {
+				post(envelopes.error(streamId, serializeError(e)))
+			} catch (error) {
+				completion = { kind: 'error', error }
+			}
 		} finally {
+			const cancellation = registry.cancellation(streamId)
+			if (cancellation) {
+				const result = await cancellation
+				if (completion.kind === 'complete') completion = result
+			}
+			releaseReader?.()
 			registry.complete(streamId)
-			onComplete?.()
+			onComplete?.(completion)
 		}
 	})()
 }

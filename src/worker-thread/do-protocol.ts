@@ -12,6 +12,7 @@
  */
 
 import type {
+	ParentSpanContext,
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcGetRequest,
@@ -22,7 +23,10 @@ import type {
 	RpcStreamAck,
 	RpcStreamCancel,
 	SerializedError,
+	WorkerMessage,
 } from './protocol'
+
+export type DOTraceMessage = Extract<WorkerMessage, { type: `trace-${string}` }>
 
 /**
  * DO worker → main: the instance's lifecycle state changed. Main mirrors these
@@ -167,7 +171,7 @@ export interface DoReqStreamAck {
 
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
-	| { type: 'command'; id: number; command: DOCommand }
+	| { type: 'command'; id: number; command: DOCommand; parent?: ParentSpanContext }
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
@@ -192,6 +196,9 @@ export type DOWorkerMessage =
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
+	| DOTraceMessage
+	| { type: 'do-invocation-start'; id: number }
+	| { type: 'do-invocation-end'; id: number }
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }

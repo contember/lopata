@@ -1,14 +1,26 @@
+import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
+import { createInvocationTrace, getActiveInvocation, type InvocationTrace } from '../tracing/invocation'
 import type { DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import { type DurableObjectBase, DurableObjectStateImpl } from './durable-object'
+import { createRpcSession, type RpcSession } from './rpc-session'
+import { createRpcFunctionStub, wrapRpcReturnValue } from './rpc-stub'
+import { isWorkerResponse, trackInvocationResponse } from './worker-cache'
 
 export class InProcessExecutor implements DOExecutor {
 	private _state: DurableObjectStateImpl
 	private _instance: DurableObjectBase
 	private _containerRuntime?: import('./container').ContainerRuntime
+	private _invocations = new Set<InvocationTrace>()
+	private _rpcSessions = new Set<RpcSession>()
+	// Keep empty sets until caller completion so repeated RPCs share one completion listener.
+	private _callerSessions = new WeakMap<InvocationTrace, Set<RpcSession>>()
+	private _namespaceName: string
+	private _disposed = false
 
 	constructor(config: ExecutorConfig) {
 		const { id, db, namespaceName, cls, env, dataDir, limits, containerConfig, onAlarmSet } = config
+		this._namespaceName = namespaceName
 
 		this._state = new DurableObjectStateImpl(id, db, namespaceName, dataDir, limits)
 
@@ -24,7 +36,7 @@ export class InProcessExecutor implements DOExecutor {
 			this._state.container = new ContainerContext(this._containerRuntime)
 		}
 
-		this._instance = new cls(this._state, env)
+		this._instance = this._construct(cls, env)
 
 		// Wire container runtime to ContainerBase instance
 		if (this._containerRuntime) {
@@ -43,69 +55,168 @@ export class InProcessExecutor implements DOExecutor {
 		}
 	}
 
-	async executeFetch(request: Request): Promise<Response> {
-		await this._state._enter()
+	private _startInvocation(operation: string): InvocationTrace {
+		if (this._disposed) throw new Error('Durable Object executor has been disposed')
+		const scope = createInvocationTrace({
+			name: `do.${operation} ${this._namespaceName}`,
+			kind: 'server',
+			attributes: { 'do.namespace': this._namespaceName, 'do.id': this._state.id.toString() },
+		})
+		this._invocations.add(scope)
+		void scope.completed.then(() => this._invocations.delete(scope))
+		return scope
+	}
+
+	private _construct(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): DurableObjectBase {
+		const scope = this._startInvocation('constructor')
 		try {
-			const fetchFn = (this._instance as unknown as Record<string, unknown>).fetch
-			if (typeof fetchFn !== 'function') {
-				throw new Error('Durable Object does not implement fetch()')
-			}
-			return await (fetchFn as (req: Request) => Promise<Response>).call(this._instance, request)
-		} finally {
-			this._state._exit()
+			const instance = scope.run(() => runWithExecutionContext(new ExecutionContext(), () => new cls(this._state, env)))
+			scope.finishHandler()
+			return instance
+		} catch (error) {
+			scope.finishHandler({ kind: 'error', error })
+			scope.terminate('Durable Object construction failed')
+			throw error
 		}
+	}
+
+	private async _invoke<T>(operation: string, callback: (scope: InvocationTrace, context: ExecutionContext) => Promise<T>): Promise<T> {
+		const scope = this._startInvocation(operation)
+		try {
+			const result = await scope.run(() => {
+				const context = new ExecutionContext()
+				return runWithExecutionContext(context, () => callback(scope, context))
+			})
+			scope.finishHandler()
+			return result
+		} catch (error) {
+			scope.finishHandler({ kind: 'error', error })
+			throw error
+		}
+	}
+
+	private _invokeRpc(operation: string, member: string, callback: (session: RpcSession) => Promise<unknown>): Promise<unknown> {
+		const caller = getActiveInvocation()
+		let callerSessions = caller ? this._callerSessions.get(caller) : undefined
+		if (caller && !callerSessions) {
+			const sessions = new Set<RpcSession>()
+			const registry = this._callerSessions
+			registry.set(caller, sessions)
+			callerSessions = sessions
+			void caller.completed.then(() => {
+				for (const session of sessions) session.close()
+				sessions.clear()
+				registry.delete(caller)
+			})
+		}
+		return this._invoke(operation, async (invocation, context) => {
+			const session: RpcSession = createRpcSession({
+				run: callback => invocation.run(() => runWithExecutionContext(context, callback)),
+				retain: () => {
+					const release = invocation.retain('handler')
+					return () => {
+						this._rpcSessions.delete(session)
+						callerSessions?.delete(session)
+						release()
+					}
+				},
+				isClosed: () => invocation.closed || this._disposed || caller?.closed === true,
+			})
+			this._rpcSessions.add(session)
+			callerSessions?.add(session)
+			try {
+				return await session.run(async () => {
+					const result = await callback(session)
+					return session.run(() => wrapRpcReturnValue(result, member, session))
+				})
+			} catch (error) {
+				session.close()
+				throw error
+			} finally {
+				session.finish()
+			}
+		})
+	}
+
+	async executeFetch(request: Request): Promise<Response> {
+		return this._invoke('fetch', async scope => {
+			await this._state._enter()
+			try {
+				const fetchFn: unknown = Reflect.get(this._instance, 'fetch')
+				if (typeof fetchFn !== 'function') {
+					throw new Error('Durable Object does not implement fetch()')
+				}
+				const response: unknown = await fetchFn.call(this._instance, request)
+				if (!isWorkerResponse(response)) throw new TypeError('Durable Object fetch() must return a Response')
+				return trackInvocationResponse(response, scope, getActiveExecutionContext())
+			} finally {
+				this._state._exit()
+			}
+		})
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
-		warnInvalidRpcArgs(args, method)
-		await this._state._enter()
-		try {
-			const val = (this._instance as unknown as Record<string, unknown>)[method]
-			if (typeof val === 'function') {
-				// Return the raw result — the namespace `get()` stub wraps it once via
-				// wrapRpcReturnValue, matching the worker-thread executor (whose
-				// executeRpc also returns a raw value). Wrapping here too would
-				// double-wrap and emit warnInvalidRpcReturn twice.
-				return await (val as (...a: unknown[]) => unknown).call(this._instance, ...args)
+		return this._invokeRpc('rpc-call', method, async () => {
+			warnInvalidRpcArgs(args, method)
+			await this._state._enter()
+			try {
+				const val: unknown = Reflect.get(this._instance, method)
+				if (typeof val === 'function') {
+					return await val.call(this._instance, ...args)
+				}
+				throw new Error(`"${method}" is not a method on the Durable Object`)
+			} finally {
+				this._state._exit()
 			}
-			throw new Error(`"${method}" is not a method on the Durable Object`)
-		} finally {
-			this._state._exit()
-		}
+		})
 	}
 
 	async executeRpcGet(prop: string): Promise<unknown> {
-		await this._state._enter()
-		try {
-			const val = (this._instance as unknown as Record<string, unknown>)[prop]
-			if (typeof val === 'function') {
-				// Re-dispatching callable (mirrors WorkerExecutor.executeRpcGet); the
-				// stub wraps it once. Avoids the double function-stub wrap.
-				return (...args: unknown[]) => this.executeRpc(prop, args)
+		return this._invokeRpc('rpc-get', prop, async session => {
+			await this._state._enter()
+			try {
+				const val: unknown = Reflect.get(this._instance, prop)
+				if (typeof val === 'function') {
+					const instance = this._instance
+					return createRpcFunctionStub(
+						async (...args: unknown[]) => {
+							await this._state._enter()
+							try {
+								return await Reflect.apply(val, instance, args)
+							} finally {
+								this._state._exit()
+							}
+						},
+						undefined,
+						session,
+					)
+				}
+				return val
+			} finally {
+				this._state._exit()
 			}
-			return val
-		} finally {
-			this._state._exit()
-		}
+		})
 	}
 
 	async executeAlarm(retryCount: number): Promise<void> {
-		await this._state._enter()
-		try {
-			const alarmFn = (this._instance as unknown as Record<string, unknown>).alarm
-			if (typeof alarmFn === 'function') {
-				await alarmFn.call(this._instance, {
-					retryCount,
-					isRetry: retryCount > 0,
-				})
+		return this._invoke('alarm', async () => {
+			await this._state._enter()
+			try {
+				const alarmFn: unknown = Reflect.get(this._instance, 'alarm')
+				if (typeof alarmFn === 'function') {
+					await alarmFn.call(this._instance, {
+						retryCount,
+						isRetry: retryCount > 0,
+					})
+				}
+			} finally {
+				this._state._exit()
 			}
-		} finally {
-			this._state._exit()
-		}
+		})
 	}
 
 	isActive(): boolean {
-		return this._state._hasActiveRequests()
+		return this._state._hasActiveRequests() || this._invocations.size > 0
 	}
 
 	isBlocked(): boolean {
@@ -121,11 +232,16 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	reloadClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): void {
-		this._instance = new cls(this._state, env)
+		this._instance = this._construct(cls, env)
 		this._state._setInstanceResolver(() => this._instance)
 	}
 
 	async dispose(): Promise<void> {
+		this._disposed = true
+		for (const scope of this._invocations) scope.terminate('Durable Object executor disposed')
+		this._invocations.clear()
+		for (const session of this._rpcSessions) session.close()
+		this._rpcSessions.clear()
 		// Close all accepted WebSockets so clients can reconnect to new instance
 		for (const ws of this._state.getWebSockets()) {
 			try {
@@ -135,6 +251,10 @@ export class InProcessExecutor implements DOExecutor {
 		if (this._containerRuntime) {
 			await this._containerRuntime.cleanup()
 		}
+	}
+
+	isDisposed(): boolean {
+		return this._disposed
 	}
 
 	/** @internal Get the raw DO instance (for testing/dashboard) */

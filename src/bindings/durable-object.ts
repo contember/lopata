@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
+import { getActiveInvocation } from '../tracing/invocation'
 import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
@@ -640,7 +641,21 @@ export class DurableObjectStateImpl {
 		this._concurrencyGate = new Promise<void>(r => {
 			resolve = r
 		})
-		return callback().finally(() => {
+		const release = getActiveInvocation()?.retain('handler')
+		let pending: Promise<T>
+		try {
+			pending = callback()
+		} catch (error) {
+			release?.({ kind: 'error', error })
+			throw error
+		}
+		return pending.then(value => {
+			release?.()
+			return value
+		}, error => {
+			release?.({ kind: 'error', error })
+			throw error
+		}).finally(() => {
 			this._concurrencyGate = null
 			resolve!()
 		})
@@ -704,8 +719,18 @@ export class DurableObjectStateImpl {
 		return this._instanceResolver?.() ?? null
 	}
 
-	waitUntil(_promise: Promise<unknown>) {
-		// no-op in dev
+	waitUntil(promise: Promise<unknown>): void {
+		const release = getActiveInvocation()?.retain('wait-until')
+		void Promise.resolve(promise).then(
+			() => release?.(),
+			error => {
+				try {
+					console.error('[lopata] waitUntil promise rejected:', error)
+				} finally {
+					release?.({ kind: 'error', error })
+				}
+			},
+		)
 	}
 
 	// --- WebSocket Hibernation API ---

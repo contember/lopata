@@ -1,9 +1,12 @@
 import type { Database } from 'bun:sqlite'
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { WranglerConfig } from '../config'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
+import { createInvocationTrace, getActiveInvocation, type InvocationTrace, type TraceCompletion } from '../tracing/invocation'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
+import { createRpcSession, type RpcSession } from './rpc-session'
 import { createRpcFunctionStub, makeBindingProxy, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
 import { clientCacheResponse, initialCacheAge } from './worker-cache-http'
 import { migrateWorkerCache } from './worker-cache-migrations'
@@ -589,8 +592,85 @@ export function getWorkerDispatcher(module: object): WorkerDispatcher | undefine
 	return dispatchers.get(module)
 }
 
+type CloneableResponse = Pick<Response, 'url' | 'redirected' | 'type' | 'clone'>
+
+function preserveResponseMetadata<T extends CloneableResponse>(response: T, original: CloneableResponse): T {
+	const clone = response.clone
+	// Native prototype getters/clone bypass these own properties; public constructors cannot restore their internal metadata.
+	Object.defineProperties(response, {
+		url: { value: original.url, configurable: true, enumerable: true },
+		redirected: { value: original.redirected, configurable: true, enumerable: true },
+		type: { value: original.type, configurable: true, enumerable: true },
+		clone: {
+			configurable: true,
+			writable: true,
+			value: function(this: CloneableResponse): ReturnType<Response['clone']> {
+				return preserveResponseMetadata(clone.call(this), this)
+			},
+		},
+	})
+	return response
+}
+
+export function trackInvocationResponse(response: Response, invocation: InvocationTrace, context?: CacheExecutionContext): Response {
+	if (!response.body || response.status === 0 || response.status === 101) return response
+	const release = invocation.retain('response-body')
+	const run = <T>(callback: () => T): T => invocation.run(() => context ? runWithExecutionContext(context, callback) : callback())
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+	const body = response.body
+	let cancelling = false
+	const stream = new ReadableStream<Uint8Array>({
+		pull(controller) {
+			return run(async () => {
+				try {
+					reader ??= body.getReader()
+					const result = await reader.read()
+					if (cancelling) return
+					if (result.done) {
+						controller.close()
+						reader.releaseLock()
+						release()
+					} else controller.enqueue(result.value)
+				} catch (error) {
+					if (cancelling) return
+					controller.error(error)
+					reader?.releaseLock()
+					release({ kind: 'error', error })
+				}
+			})
+		},
+		cancel(reason) {
+			cancelling = true
+			return run(async () => {
+				try {
+					if (reader) await reader.cancel(reason)
+					else await body.cancel(reason)
+					release({ kind: 'cancelled', reason: String(reason ?? 'Response cancelled') })
+				} catch (error) {
+					release({ kind: 'error', error })
+					throw error
+				} finally {
+					reader?.releaseLock()
+				}
+			})
+		},
+	}, { highWaterMark: 0 })
+	try {
+		return preserveResponseMetadata(
+			new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers }),
+			response,
+		)
+	} catch (error) {
+		release({ kind: 'error', error })
+		throw error
+	}
+}
+
 export class WorkerDispatcher {
 	private attachedContexts = new WeakSet<CacheExecutionContext>()
+	private invocations = new Set<InvocationTrace>()
+	private rpcSessions = new Set<RpcSession>()
+	private rpcSessionOwners = new WeakMap<InvocationTrace, Set<RpcSession>>()
 	constructor(
 		private module: Record<string, unknown>,
 		private env: Record<string, unknown>,
@@ -599,6 +679,17 @@ export class WorkerDispatcher {
 		private legacyFetch?: (request: Request, ctx: CacheExecutionContext) => Promise<Response>,
 	) {
 		dispatchers.set(module, this)
+	}
+
+	terminateInvocations(reason: string): void {
+		for (const invocation of this.invocations) invocation.terminate(reason)
+		for (const session of this.rpcSessions) session.close()
+	}
+
+	private trackInvocation(invocation: InvocationTrace): InvocationTrace {
+		this.invocations.add(invocation)
+		void invocation.completed.then(() => this.invocations.delete(invocation))
+		return invocation
 	}
 
 	context(entrypoint = 'default', props?: Record<string, unknown>): CacheExecutionContext {
@@ -612,7 +703,7 @@ export class WorkerDispatcher {
 			const waitUntil = ctx.waitUntil.bind(ctx)
 			ctx.waitUntil = promise => {
 				waitUntil(promise)
-				parent.waitUntil(promise)
+				parent.waitUntil(Promise.resolve(promise).catch(() => {}))
 			}
 		}
 		this.attachedContexts.add(ctx)
@@ -628,6 +719,21 @@ export class WorkerDispatcher {
 		trusted = false,
 		context?: CacheExecutionContext,
 	): Promise<Response> {
+		if (!context) {
+			const invocation = this.trackInvocation(createInvocationTrace({ name: `${request.method} ${new URL(request.url).pathname}`, kind: 'server' }))
+			return invocation.run(async () => {
+				try {
+					const ctx = this.context(entrypoint, props)
+					const response = trackInvocationResponse(await this.fetch(request, entrypoint, props, trusted, ctx), invocation, ctx)
+					invocation.root.setAttribute('http.status_code', response.status)
+					invocation.finishHandler(response.status >= 500 ? { kind: 'error', error: new Error(`HTTP ${response.status}`) } : undefined)
+					return response
+				} catch (error) {
+					invocation.finishHandler({ kind: 'error', error })
+					throw error
+				}
+			})
+		}
 		const ctx = context ? this.attachContext(context, entrypoint) : this.context(entrypoint, props)
 		return runWithExecutionContext(ctx, () =>
 			this.storage.fetch(request, entrypoint, ctx, async input => {
@@ -661,33 +767,113 @@ export class WorkerDispatcher {
 		return exports
 	}
 
-	async rpc(entrypoint: string | undefined, method: string, args: unknown[], props?: Record<string, unknown>): Promise<unknown> {
+	async rpc(
+		entrypoint: string | undefined,
+		method: string,
+		args: unknown[],
+		props?: Record<string, unknown>,
+		context?: CacheExecutionContext,
+	): Promise<unknown> {
 		const name = entrypoint ?? 'default'
-		const ctx = this.context(name, props)
-		return runWithExecutionContext(ctx, async () => {
-			const value = this.module[name]
-			const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
-			if (!record(target) || typeof target[method] !== 'function') throw new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
-			return wrapRpcReturnValue(await Reflect.apply(target[method], target, args), method, this.scope(ctx))
-		})
+		return this.invokeRpc(
+			name,
+			method,
+			async (ctx, scope) => {
+				const value = this.module[name]
+				const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
+				if (!record(target) || typeof target[method] !== 'function') throw new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
+				return wrapRpcReturnValue(await Reflect.apply(target[method], target, args), method, scope)
+			},
+			props,
+			context,
+		)
 	}
 
-	async property(entrypoint: string | undefined, property: string, props?: Record<string, unknown>): Promise<unknown> {
+	async property(
+		entrypoint: string | undefined,
+		property: string,
+		props?: Record<string, unknown>,
+		context?: CacheExecutionContext,
+	): Promise<unknown> {
 		const name = entrypoint ?? 'default'
-		const ctx = this.context(name, props)
-		return runWithExecutionContext(ctx, () => {
-			const value = this.module[name]
-			const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
-			if (!record(target)) throw new Error('Invalid WorkerEntrypoint instance')
-			const member = target[property]
-			if (typeof member === 'function') {
-				return createRpcFunctionStub(member, target, this.scope(ctx))
+		return this.invokeRpc(
+			name,
+			property,
+			async (ctx, scope) => {
+				const value = this.module[name]
+				const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
+				if (!record(target)) throw new Error('Invalid WorkerEntrypoint instance')
+				const member = target[property]
+				if (typeof member === 'function') {
+					return createRpcFunctionStub(member, target, scope)
+				}
+				return wrapRpcReturnValue(await member, property, scope)
+			},
+			props,
+			context,
+		)
+	}
+
+	private rpcSession(ctx: CacheExecutionContext, invocation?: InvocationTrace, caller?: InvocationTrace): RpcSession {
+		const owners = new Set([invocation, caller].filter(owner => owner !== undefined))
+		const session = createRpcSession({
+			run: callback =>
+				invocation
+					? invocation.run(() => runWithExecutionContext(ctx, callback))
+					: runWithExecutionContext(ctx, callback),
+			retain: () => {
+				const release = invocation?.retain('handler')
+				return () => {
+					this.rpcSessions.delete(session)
+					for (const owner of owners) this.rpcSessionOwners.get(owner)?.delete(session)
+					release?.()
+				}
+			},
+			isClosed: () => invocation?.closed === true || caller?.closed === true,
+		})
+		this.rpcSessions.add(session)
+		for (const owner of owners) {
+			let sessions = this.rpcSessionOwners.get(owner)
+			if (!sessions) {
+				sessions = new Set<RpcSession>()
+				this.rpcSessionOwners.set(owner, sessions)
+				const ownedSessions = sessions
+				void owner.completed.then(() => {
+					for (const owned of ownedSessions) owned.close()
+					ownedSessions.clear()
+				})
 			}
-			return wrapRpcReturnValue(member, property, this.scope(ctx))
-		})
+			sessions.add(session)
+		}
+		return session
 	}
 
-	private scope(ctx: CacheExecutionContext): RpcExecutionScope {
-		return { run: callback => runWithExecutionContext(ctx, callback) }
+	private async invokeRpc(
+		name: string,
+		method: string,
+		callback: (ctx: CacheExecutionContext, scope: RpcExecutionScope) => Promise<unknown>,
+		props?: Record<string, unknown>,
+		context?: CacheExecutionContext,
+	): Promise<unknown> {
+		const caller = context ? undefined : getActiveInvocation()
+		const invocation = context ? getActiveInvocation() : this.trackInvocation(createInvocationTrace({ name: `rpc ${name}.${method}`, kind: 'server' }))
+		const run = async () => {
+			let session: RpcSession | undefined
+			let completion: TraceCompletion = { kind: 'complete' }
+			try {
+				const ctx = context ? this.attachContext(context, name) : this.context(name, props)
+				session = this.rpcSession(ctx, invocation, caller)
+				const scope = session
+				return await scope.run(() => callback(ctx, scope))
+			} catch (error) {
+				completion = { kind: 'error', error }
+				session?.close()
+				throw error
+			} finally {
+				session?.finish()
+				if (!context) invocation?.finishHandler(completion)
+			}
+		}
+		return invocation ? invocation.run(run) : run()
 	}
 }

@@ -6,6 +6,8 @@
 
 import { unavailableWorkerCache } from '../bindings/worker-cache'
 import { logIfRejected } from '../execution-context'
+import { getActiveInvocation, type TraceCompletion } from '../tracing/invocation'
+import { tracing } from '../tracing/span'
 import type { WorkerMessage } from './protocol'
 
 // Worker-thread-global wait-until id sequence. Ids never cross thread
@@ -29,6 +31,8 @@ export function trackBackgroundWork(post: (msg: WorkerMessage) => void, promise:
 }
 
 export class WorkerExecutionContext {
+	readonly tracing = tracing
+	private readonly invocation = getActiveInvocation()
 	cache = unavailableWorkerCache
 	exports: Record<string, unknown> = {}
 	/** `ctx.props` — carries the calling worker's service-binding `props` for
@@ -43,9 +47,24 @@ export class WorkerExecutionContext {
 
 	waitUntil(promise: Promise<unknown>): void {
 		const id = nextWaitUntilId++
-		this._post({ type: 'wait-until-add', id })
-		logIfRejected(promise).finally(() => {
-			this._post({ type: 'wait-until-settle', id })
+		const release = this.invocation?.retain('wait-until')
+		let completion: TraceCompletion = { kind: 'complete' }
+		try {
+			this._post({ type: 'wait-until-add', id })
+		} catch (error) {
+			release?.({ kind: 'error', error })
+			throw error
+		}
+		const observed = Promise.resolve(promise).catch(error => {
+			completion = { kind: 'error', error }
+			throw error
+		})
+		logIfRejected(observed).finally(() => {
+			try {
+				this._post({ type: 'wait-until-settle', id })
+			} finally {
+				release?.(completion)
+			}
 		})
 	}
 

@@ -1,15 +1,18 @@
 import { randomUUIDv7 } from 'bun'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
+import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
-import { ExecutionContext as CacheContext } from '../execution-context.ts'
+import { ExecutionContext as CacheContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
 import { configureCloudflareCrypto } from '../setup-globals.ts'
+import { createInvocationTrace, type InvocationTrace, type TraceCompletion } from '../tracing/invocation.ts'
+import type { SpanOptions } from '../tracing/span.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
@@ -47,8 +50,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	// Lazy-loaded runtime functions
 	let wireClassRefs: Function
 	let setGlobalEnv: Function
-	let ExecutionContext: new() => any
-	let runWithExecutionContext: <T>(ctx: any, fn: () => T) => T
+	let ExecutionContext: typeof CacheContext
 
 	// Tracing functions (lazy-loaded)
 	let startSpan: Function
@@ -74,6 +76,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
 	let workerDispatcher: WorkerDispatcher | undefined
+	const workerDispatchers = new Set<WeakRef<WorkerDispatcher>>()
+	const invocations = new Set<InvocationTrace>()
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
 	// Generation counter — increments on each module reload for tracing
@@ -127,6 +131,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						new WorkersCache(getDatabase(), config.name, crypto.randomUUID(), config),
 						props => new CacheContext(props),
 					)
+					for (const reference of workerDispatchers) {
+						if (!reference.deref()) workerDispatchers.delete(reference)
+					}
+					workerDispatchers.add(new WeakRef(workerDispatcher))
 					setGlobalEnv(env)
 					console.log(`[lopata:vite] Worker module (re)loaded, classes wired (generation ${currentGenerationId})`)
 					// Schedule cleanup of old generation after successful reload
@@ -180,34 +188,31 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	async function handleWorkerFetch(req: IncomingMessage, res: ServerResponse, next: Function): Promise<void> {
 		await ensureWorkerModule()
 		const genId = currentGenerationId
-		genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
-
-		try {
-			const request = nodeReqToRequest(req)
-			const parsedUrl = new URL(request.url)
-
-			// Capture caller stack before entering the worker (for async stack stitching)
+		const request = nodeReqToRequest(req)
+		const invocation = createWorkerInvocation({
+			name: `${request.method} ${new URL(request.url).pathname}`,
+			kind: 'server',
+			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
+		})
+		return invocation.run(async () => {
 			const callerStack = new Error()
-
 			const ctx = new ExecutionContext()
-			const response = await (startSpan as Function)({
-				name: `${request.method} ${parsedUrl.pathname}`,
-				kind: 'server',
-				attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
-			}, () =>
-				runWithExecutionContext(ctx, async () => {
+			try {
+				const response = await runWithExecutionContext(ctx, async () => {
 					try {
 						// Resolved in here rather than up front because a class entrypoint is
 						// constructed at this point, and a throwing constructor deserves the same
 						// error page and persisted error as a throwing fetch().
 						if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
 						const resp = await workerDispatcher.fetch(request, 'default', undefined, false, ctx)
-						;(setSpanAttribute as Function)('http.status_code', resp.status)
+						invocation.root.setAttribute('http.status_code', resp.status)
 
 						// Intercept React Router error boundary responses with lopata error page
 						const routeError = (globalThis as any).__lopata_routeError
 						delete (globalThis as any).__lopata_routeError
 						if (routeError) {
+							invocation.root.recordException(routeError)
+							if (resp.body) ctx.waitUntil(resp.body.cancel(routeError))
 							if (routeError instanceof Error) {
 								stitchAsyncStack(routeError, callerStack)
 							}
@@ -215,7 +220,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							return (renderErrorPage as Function)(routeError, request, env, config)
 						}
 
-						ctx._awaitAll().catch(() => {})
 						return resp
 					} catch (err) {
 						if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
@@ -227,22 +231,60 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							stitchAsyncStack(err, callerStack)
 						}
 						console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+						invocation.root.recordException(err instanceof Error ? err : String(err))
 						return (renderErrorPage as Function)(err, request, env, config)
 					}
-				})) as Response | typeof NO_FETCH_HANDLER
-
-			if (response === NO_FETCH_HANDLER) {
-				console.error('[lopata:vite] Worker module default export has no fetch() method')
-				next()
-				return
+				}).finally(() => {
+					const release = invocation.retain('wait-until')
+					void ctx._awaitAll().finally(release)
+				})
+				if (response === NO_FETCH_HANDLER) {
+					console.error('[lopata:vite] Worker module default export has no fetch() method')
+					next()
+					return
+				}
+				const writing = runWithExecutionContext(ctx, () => writeResponse(response, res, invocation))
+				invocation.finishHandler(response.status >= 500 ? { kind: 'error', error: new Error(`HTTP ${response.status}`) } : undefined)
+				await writing
+			} catch (error) {
+				invocation.finishHandler({ kind: 'error', error })
+				throw error
+			} finally {
+				invocation.finishHandler()
 			}
+		})
+	}
 
-			writeResponse(response, res).catch(() => {})
-		} finally {
+	function createWorkerInvocation(options: SpanOptions): InvocationTrace {
+		const invocation = createInvocationTrace(options)
+		const genId = currentGenerationId
+		invocations.add(invocation)
+		genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
+		void invocation.completed.then(() => {
+			invocations.delete(invocation)
 			const count = genActiveRequests.get(genId) ?? 1
 			if (count <= 1) genActiveRequests.delete(genId)
 			else genActiveRequests.set(genId, count - 1)
-		}
+		})
+		return invocation
+	}
+
+	async function runWorkerEvent(options: SpanOptions, callback: (ctx: CacheContext) => Promise<Response>): Promise<Response> {
+		const invocation = createWorkerInvocation(options)
+		return invocation.run(async () => {
+			const ctx = new ExecutionContext()
+			try {
+				workerDispatcher?.attachContext(ctx)
+				return await runWithExecutionContext(ctx, () => callback(ctx))
+			} catch (error) {
+				invocation.finishHandler({ kind: 'error', error })
+				throw error
+			} finally {
+				const release = invocation.retain('wait-until')
+				void ctx._awaitAll().finally(release)
+				invocation.finishHandler()
+			}
+		})
 	}
 
 	/**
@@ -258,34 +300,30 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const activeModule = await ensureWorkerModule()
 		const genId = currentGenerationId
 
-		const ctx = new ExecutionContext()
 		const controller = createScheduledController(cronExpr, Date.now())
-		workerDispatcher?.attachContext(ctx)
 
-		return await (startSpan as Function)({
+		return await runWorkerEvent({
 			name: 'scheduled',
 			kind: 'server',
 			attributes: { cron: cronExpr, 'lopata.generation_id': genId },
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				// Resolved inside the span: constructing a class entrypoint runs user code,
-				// which belongs in the trace and in persistError like the handler body itself.
-				const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
-				if (!handler) {
-					return new Response('No scheduled handler defined', { status: 404 })
-				}
-				try {
-					await handler(controller, env, ctx)
-					// waitUntil work outlives the trigger, as it does on a real cron tick — the
-					// dev server stays up, so let it settle instead of blocking the response.
-					ctx._awaitAll().catch(() => {})
-					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
-					persistError(err, 'scheduled', config.name)
-					throw err
-				}
-			}))
+		}, async ctx => {
+			// Resolved inside the span: constructing a class entrypoint runs user code,
+			// which belongs in the trace and in persistError like the handler body itself.
+			const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
+			if (!handler) {
+				return new Response('No scheduled handler defined', { status: 404 })
+			}
+			try {
+				await handler(controller, env, ctx)
+				// waitUntil work outlives the trigger, as it does on a real cron tick — the
+				// dev server stays up, so let it settle instead of blocking the response.
+				return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
+			} catch (err) {
+				console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+				persistError(err, 'scheduled', config.name)
+				throw err
+			}
+		})
 	}
 
 	/**
@@ -300,38 +338,33 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const activeModule = await ensureWorkerModule()
 		const genId = currentGenerationId
 
-		const ctx = new ExecutionContext()
-		workerDispatcher?.attachContext(ctx)
-
-		return await (startSpan as Function)({
+		return await runWorkerEvent({
 			name: 'email',
 			kind: 'server',
 			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': genId },
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				// Persist before dispatch, as Generation.callEmail does: a message the worker
-				// has no handler for still belongs in the dashboard's list, and setReject() /
-				// forward() resolve themselves from this row by id.
-				const db = getDatabase()
-				const messageId = randomUUIDv7()
-				db.run(
-					"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
-					[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
-				)
-				const handler = resolveWorkerHandler(activeModule, 'email', ctx)
-				if (!handler) {
-					return new Response('No email handler defined', { status: 404 })
-				}
-				try {
-					await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
-					ctx._awaitAll().catch(() => {})
-					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata:vite] email handler error:\n' + (err instanceof Error ? err.stack : String(err)))
-					persistError(err, 'email', config.name)
-					throw err
-				}
-			}))
+		}, async ctx => {
+			// Persist before dispatch, as Generation.callEmail does: a message the worker
+			// has no handler for still belongs in the dashboard's list, and setReject() /
+			// forward() resolve themselves from this row by id.
+			const db = getDatabase()
+			const messageId = randomUUIDv7()
+			db.run(
+				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+				[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
+			)
+			const handler = resolveWorkerHandler(activeModule, 'email', ctx)
+			if (!handler) {
+				return new Response('No email handler defined', { status: 404 })
+			}
+			try {
+				await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
+				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
+			} catch (err) {
+				console.error('[lopata:vite] email handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+				persistError(err, 'email', config.name)
+				throw err
+			}
+		})
 	}
 
 	/**
@@ -381,6 +414,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 		async configureServer(viteServer: ViteDevServer) {
 			server = viteServer
+			server.httpServer?.once('close', () => {
+				for (const invocation of invocations) invocation.terminate('Vite server closed')
+				for (const reference of workerDispatchers) reference.deref()?.terminateInvocations('Vite server closed')
+			})
 			const projectRoot = server.config.root
 
 			// Deeper stacks in dev mode
@@ -408,7 +445,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
 			ExecutionContext = ecMod.ExecutionContext
-			runWithExecutionContext = ecMod.runWithExecutionContext
 			startSpan = spanMod.startSpan
 			setSpanAttribute = spanMod.setSpanAttribute
 			persistError = spanMod.persistError
@@ -422,6 +458,12 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			ForwardableEmailMessage = emailMod.ForwardableEmailMessage
 			getDatabase = dbMod.getDatabase
 			globalThis.__lopata_workerCacheApi = cache
+			globalThis.__lopata_tracing = spanMod.tracing
+			globalThis.__lopata_waitUntil = promise => {
+				const ctx = getActiveExecutionContext()
+				if (!ctx) throw new Error('waitUntil() requires an active Worker execution context')
+				ctx.waitUntil(promise)
+			}
 
 			// 1. Load wrangler config
 			const loadedConfig = options.configPath
@@ -446,6 +488,9 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const built = envMod.buildEnv(config, projectRoot)
 			env = built.env
 			registry = built.registry
+			server.httpServer?.once('close', () => {
+				for (const entry of built.registry.workflows) entry.binding.terminateTracing('Vite server closed')
+			})
 
 			// Set globalEnv immediately so that top-level module code
 			// (e.g. `import { env } from "cloudflare:workers"`) sees bindings
@@ -999,16 +1044,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				return
 			}
 
-			const activeModule = await ensureWorkerModule()
-			const handler = activeModule.default as Record<string, unknown>
-			if (!handler || typeof handler.fetch !== 'function') {
-				socket.destroy()
-				return
-			}
-
-			const ctx = new ExecutionContext()
-			const response = await runWithExecutionContext(ctx, async () => {
-				return (handler.fetch as Function).call(handler, request, env, ctx) as Response
+			await ensureWorkerModule()
+			const response = await runWorkerEvent({
+				name: `WS ${parsedUrl.pathname}`,
+				kind: 'server',
+				attributes: { 'http.url': request.url, 'lopata.websocket': true, 'lopata.generation_id': currentGenerationId },
+			}, async ctx => {
+				if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+				return workerDispatcher.fetch(request, 'default', undefined, false, ctx)
 			})
 
 			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket
@@ -1175,25 +1218,54 @@ export function buildNodeHeaders(response: Response): Record<string, string | st
 	return headerRecord
 }
 
-async function writeResponse(response: Response, res: ServerResponse): Promise<void> {
-	res.writeHead(response.status, buildNodeHeaders(response))
-
-	if (!response.body) {
-		res.end()
-		return
-	}
-
-	const reader = response.body.getReader()
-	try {
-		while (true) {
-			const { done, value } = await reader.read()
-			if (done) break
-			res.write(value)
+async function writeResponse(response: Response, res: ServerResponse, invocation?: InvocationTrace): Promise<void> {
+	const release = invocation?.retain('response-body')
+	const context = getActiveExecutionContext()
+	const terminal = Promise.withResolvers<TraceCompletion>()
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+	let cancellation: Promise<void> | undefined
+	const cancel = (reason: unknown): Promise<void> => {
+		const callback = async () => {
+			if (reader) await reader.cancel(reason)
+			else await response.body?.cancel(reason)
 		}
-	} catch {
-		// Upstream stream error (e.g. ECONNRESET) — just end the response
+		const run = () => context ? runWithExecutionContext(context, callback) : callback()
+		return invocation ? invocation.run(run) : run()
+	}
+	const onFinish = () => terminal.resolve({ kind: 'complete' })
+	const onClose = () => {
+		if (res.writableFinished) return
+		cancellation ??= cancel('HTTP client disconnected')
+		void cancellation.catch(() => {})
+		terminal.resolve({ kind: 'cancelled', reason: 'HTTP client disconnected' })
+	}
+	res.once('finish', onFinish)
+	res.once('close', onClose)
+	try {
+		if (res.writableFinished) onFinish()
+		else if (res.destroyed) onClose()
+		else {
+			reader = response.body?.getReader()
+			res.writeHead(response.status, buildNodeHeaders(response))
+			while (reader && !res.destroyed) {
+				const { done, value } = await reader.read()
+				if (done || res.destroyed) break
+				res.write(value)
+			}
+			if (!res.destroyed) res.end()
+		}
+		const result = await terminal.promise
+		await cancellation
+		release?.(result)
+	} catch (error) {
+		try {
+			await (cancellation ?? cancel(error))
+		} catch {}
+		release?.({ kind: 'error', error })
+		res.destroy()
 	} finally {
-		reader.releaseLock()
-		res.end()
+		reader?.releaseLock()
+		res.off('finish', onFinish)
+		res.off('close', onClose)
 	}
 }

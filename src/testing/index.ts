@@ -5,12 +5,13 @@ import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
-import { WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
+import { trackInvocationResponse, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { createInvocationTrace, type InvocationTrace } from '../tracing/invocation'
 import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
 import { buildTestEnv, configToBindings } from './env-builder'
@@ -119,6 +120,26 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	setGlobalEnv(env)
 
 	// --- Handler dispatch helpers ---
+	const invocations = new Set<InvocationTrace>()
+
+	async function dispatch<T>(name: string, callback: (ctx: ExecutionContext, invocation: InvocationTrace) => Promise<T>): Promise<T> {
+		const invocation = createInvocationTrace({ name, kind: 'server' })
+		invocations.add(invocation)
+		void invocation.completed.then(() => invocations.delete(invocation))
+		return invocation.run(async () => {
+			const ctx = new ExecutionContext()
+			try {
+				const result = await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx, invocation)))
+				await ctx._awaitAll()
+				invocation.finishHandler()
+				return result
+			} catch (error) {
+				invocation.finishHandler({ kind: 'error', error })
+				await ctx._awaitAll()
+				throw error
+			}
+		})
+	}
 
 	function getHandler(name: EntrypointHandlerName, ctx: ExecutionContext): ((...args: unknown[]) => unknown) | null {
 		dispatcher.attachContext(ctx)
@@ -134,74 +155,64 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			request = init ? new Request(input, init) : input
 		}
 
-		const ctx = new ExecutionContext()
-		return runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				const response = await dispatcher.fetch(request, 'default', undefined, false, ctx)
-				await ctx._awaitAll()
-				return response
-			}))
+		return dispatch(`${request.method} ${new URL(request.url).pathname}`, async (ctx, invocation) => {
+			const response = trackInvocationResponse(await dispatcher.fetch(request, 'default', undefined, false, ctx), invocation, ctx)
+			invocation.root.setAttribute('http.status_code', response.status)
+			if (response.status >= 500) invocation.finishHandler({ kind: 'error', error: new Error(`HTTP ${response.status}`) })
+			return response
+		})
 	}
 
 	async function queueHandler(queueName: string, messages: { body: unknown; contentType?: string }[]): Promise<void> {
-		const ctx = new ExecutionContext()
-		const handler = getHandler('queue', ctx)
-		if (!handler) throw new Error('No queue handler found')
+		return dispatch(`queue ${queueName}`, async ctx => {
+			const handler = getHandler('queue', ctx)
+			if (!handler) throw new Error('No queue handler found')
 
-		const builtMessages = messages.map((msg, i) => ({
-			id: randomUUIDv7(),
-			timestamp: new Date(),
-			body: msg.body,
-			attempts: 1,
-			ack() {},
-			retry(_options?: { delaySeconds?: number }) {},
-		}))
-
-		const batch = {
-			queue: queueName,
-			messages: builtMessages,
-			ackAll() {},
-			retryAll(_options?: { delaySeconds?: number }) {},
-		}
-
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(batch, env, ctx)
-				await ctx._awaitAll()
+			const builtMessages = messages.map((msg, i) => ({
+				id: randomUUIDv7(),
+				timestamp: new Date(),
+				body: msg.body,
+				attempts: 1,
+				ack() {},
+				retry(_options?: { delaySeconds?: number }) {},
 			}))
+
+			const batch = {
+				queue: queueName,
+				messages: builtMessages,
+				ackAll() {},
+				retryAll(_options?: { delaySeconds?: number }) {},
+			}
+
+			await handler(batch, env, ctx)
+		})
 	}
 
 	async function scheduledHandler(opts?: { cron?: string; scheduledTime?: number }): Promise<void> {
-		const ctx = new ExecutionContext()
-		const handler = getHandler('scheduled', ctx)
-		if (!handler) throw new Error('No scheduled handler found')
+		return dispatch('scheduled', async ctx => {
+			const handler = getHandler('scheduled', ctx)
+			if (!handler) throw new Error('No scheduled handler found')
 
-		const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(controller, env, ctx)
-				await ctx._awaitAll()
-			}))
+			const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
+			await handler(controller, env, ctx)
+		})
 	}
 
 	async function emailHandler(opts: { from: string; to: string; raw: Uint8Array | string }): Promise<void> {
-		const ctx = new ExecutionContext()
-		const handler = getHandler('email', ctx)
-		if (!handler) throw new Error('No email handler found')
+		return dispatch('email', async ctx => {
+			const handler = getHandler('email', ctx)
+			if (!handler) throw new Error('No email handler found')
 
-		const rawBytes = typeof opts.raw === 'string' ? new TextEncoder().encode(opts.raw) : opts.raw
-		const messageId = randomUUIDv7()
-		db.run(
-			"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
-			[messageId, '_incoming', opts.from, opts.to, rawBytes, rawBytes.byteLength, Date.now()],
-		)
+			const rawBytes = typeof opts.raw === 'string' ? new TextEncoder().encode(opts.raw) : opts.raw
+			const messageId = randomUUIDv7()
+			db.run(
+				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+				[messageId, '_incoming', opts.from, opts.to, rawBytes, rawBytes.byteLength, Date.now()],
+			)
 
-		const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(message, env, ctx)
-				await ctx._awaitAll()
-			}))
+			const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
+			await handler(message, env, ctx)
+		})
 	}
 
 	// --- Test helper factories ---
@@ -237,6 +248,9 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	function dispose(): void {
+		dispatcher.terminateInvocations('Test environment disposed')
+		for (const invocation of invocations) invocation.terminate('Test environment disposed')
+		invocations.clear()
 		for (const tw of testWorkflows) tw.dispose()
 		for (const td of testDOs) td.dispose()
 		for (const entry of registry.durableObjects) {
@@ -245,6 +259,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			entry.namespace.destroy({ force: true })
 		}
 		for (const entry of registry.workflows) {
+			entry.binding.terminateTracing('Test environment disposed')
 			entry.binding.abortRunning()
 		}
 		db.close()
