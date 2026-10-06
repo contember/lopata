@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DOExecutor, DOExecutorFactory } from '../src/bindings/do-executor'
+import { InProcessExecutor } from '../src/bindings/do-executor-inprocess'
 import {
 	DurableObjectBase,
 	DurableObjectIdImpl,
@@ -16,6 +17,8 @@ import {
 	SyncKV,
 	WebSocketRequestResponsePair,
 } from '../src/bindings/durable-object'
+import { resolveCompatibility } from '../src/compatibility'
+import { runWithCompatibility } from '../src/compatibility-context'
 import { runMigrations } from '../src/db'
 
 /** Minimal mock WebSocket for testing state.acceptWebSocket() and friends */
@@ -55,6 +58,187 @@ describe('DurableObjectStorage', () => {
 
 	beforeEach(() => {
 		storage = new SqliteDurableObjectStorage(db, 'TestDO', 'instance1')
+	})
+
+	for (
+		const [name, selection, deletes] of [
+			['legacy', resolveCompatibility({}), false],
+			['before threshold', resolveCompatibility({ date: '2026-02-23' }), false],
+			['at threshold', resolveCompatibility({ date: '2026-02-24' }), true],
+			['explicit enable', resolveCompatibility({ date: '2026-02-23', flags: ['delete_all_deletes_alarm'] }), true],
+			['explicit preserve', resolveCompatibility({ date: '2026-02-24', flags: ['delete_all_preserves_alarm'] }), false],
+			['undated enable', resolveCompatibility({ flags: ['delete_all_deletes_alarm'] }), true],
+		] satisfies [string, ReturnType<typeof resolveCompatibility>, boolean][]
+	) {
+		test(`deleteAll alarm compatibility: ${name}`, async () => {
+			const selected = new SqliteDurableObjectStorage(db, 'TestDO', 'selected', undefined, selection)
+			const other = new SqliteDurableObjectStorage(db, 'TestDO', 'other', undefined, selection)
+			await selected.put('value', 1)
+			await selected.setAlarm(12345)
+			await other.put('value', 2)
+			await other.setAlarm(12345)
+			await runWithCompatibility(
+				resolveCompatibility({ flags: [deletes ? 'delete_all_preserves_alarm' : 'delete_all_deletes_alarm'] }),
+				() => selected.deleteAll(),
+			)
+			expect(await selected.get('value')).toBeUndefined()
+			expect(await selected.getAlarm()).toBe(deletes ? null : 12345)
+			expect(await other.get<number>('value')).toBe(2)
+			expect(await other.getAlarm()).toBe(12345)
+		})
+	}
+
+	test('deleteAll rejects transaction calls before mutation or scheduler notification', async () => {
+		const selected = new SqliteDurableObjectStorage(db, 'TestDO', 'selected', undefined, resolveCompatibility({ date: '2026-02-24' }))
+		await selected.put('value', 'original')
+		await selected.setAlarm(12345)
+		const notifications: (number | null)[] = []
+		selected._setAlarmCallback(time => notifications.push(time))
+		await selected.transaction(async txn => {
+			await expect(txn.deleteAll()).rejects.toThrow('Cannot call deleteAll() within a transaction')
+			expect(await txn.get<string>('value')).toBe('original')
+			expect(await txn.getAlarm()).toBe(12345)
+		})
+		await expect(selected.transaction(async () => {
+			await selected.put('value', 'rolled back')
+			await selected.deleteAll()
+		})).rejects.toThrow('Cannot call deleteAll() within a transaction')
+		await expect(selected.transactionSync(() => selected.deleteAll())).rejects.toThrow('Cannot call deleteAll() within a transaction')
+		expect(await selected.get<string>('value')).toBe('original')
+		expect(await selected.getAlarm()).toBe(12345)
+		expect(notifications).toEqual([])
+		await selected.deleteAll()
+		expect(await selected.getAlarm()).toBeNull()
+		expect(notifications).toEqual([null])
+	})
+
+	for (const enabled of [true, false]) {
+		test(`shared-connection deleteAll rejects independent object during suspended transaction (${enabled ? 'enabled' : 'legacy'})`, async () => {
+			const states = new Map<string, DurableObjectStateImpl>()
+			const fired: string[] = []
+			class SharedConnectionDO extends DurableObjectBase {
+				constructor(ctx: DurableObjectStateImpl, env: unknown) {
+					super(ctx, env)
+					states.set(ctx.id.toString(), ctx)
+				}
+				alarm() {
+					fired.push(this.ctx.id.toString())
+				}
+			}
+			const namespace = new DurableObjectNamespaceImpl(db, 'SharedConnectionDO', undefined, { evictionTimeoutMs: 0 })
+			namespace._setClass(SharedConnectionDO, {}, undefined, resolveCompatibility(enabled ? { date: '2026-02-24' } : {}))
+			const aId = namespace.idFromName('a')
+			const bId = namespace.idFromName('b')
+			namespace.get(aId)
+			namespace.get(bId)
+			const a = states.get(aId.toString())?.storage
+			const b = states.get(bId.toString())?.storage
+			if (!a || !b) throw new Error('Missing object storage')
+			const entered = Promise.withResolvers<void>()
+			const release = Promise.withResolvers<void>()
+			let transaction: Promise<unknown> | undefined
+			try {
+				await a.put('value', 'a')
+				await b.put('value', 'b')
+				const deadline = Date.now() + 500
+				await a.setAlarm(deadline)
+				await b.setAlarm(deadline)
+				transaction = a.transaction(async txn => {
+					await txn.put('value', 'uncommitted')
+					entered.resolve()
+					await release.promise
+					throw new Error('rollback A')
+				}).then(() => null, (error: unknown) => error)
+				await entered.promise
+				await expect(b.deleteAll()).rejects.toThrow('Cannot call deleteAll() within a transaction')
+				expect(await b.get<string>('value')).toBe('b')
+				expect(await a.getAlarm()).toBe(deadline)
+				expect(await b.getAlarm()).toBe(deadline)
+				release.resolve()
+				expect(await transaction).toBeInstanceOf(Error)
+				expect(await a.get<string>('value')).toBe('a')
+				expect(await b.get<string>('value')).toBe('b')
+				await Bun.sleep(Math.max(0, deadline - Date.now()) + 100)
+				expect(fired.sort()).toEqual([aId.toString(), bId.toString()].sort())
+			} finally {
+				release.resolve()
+				await transaction
+				namespace.destroy({ force: true })
+			}
+		})
+	}
+
+	test('deleteAll rolls back KV deletion when alarm deletion fails and does not cancel the scheduler', async () => {
+		const selected = new SqliteDurableObjectStorage(db, 'TestDO', 'selected', undefined, resolveCompatibility({ date: '2026-02-24' }))
+		await selected.put('value', 'original')
+		await selected.setAlarm(12345)
+		const notifications: (number | null)[] = []
+		selected._setAlarmCallback(time => notifications.push(time))
+		db.run(`CREATE TEMP TRIGGER fail_alarm_delete BEFORE DELETE ON do_alarms
+			BEGIN SELECT RAISE(ABORT, 'injected alarm deletion failure'); END`)
+		try {
+			await expect(selected.deleteAll()).rejects.toThrow('injected alarm deletion failure')
+			expect(await selected.get<string>('value')).toBe('original')
+			expect(await selected.getAlarm()).toBe(12345)
+			expect(notifications).toEqual([])
+		} finally {
+			db.run('DROP TRIGGER fail_alarm_delete')
+		}
+		await selected.deleteAll()
+		expect(await selected.get('value')).toBeUndefined()
+		expect(await selected.getAlarm()).toBeNull()
+		expect(notifications).toEqual([null])
+	})
+
+	test('in-process storage uses target selection and follows retained-state reload', async () => {
+		class SelectedDO extends DurableObjectBase {
+			async clear() {
+				await this.ctx.storage.deleteAll()
+			}
+		}
+		const executor = new InProcessExecutor({
+			id: new DurableObjectIdImpl('selected'),
+			db,
+			namespaceName: 'TestDO',
+			cls: SelectedDO,
+			env: {},
+			compatibility: resolveCompatibility({ date: '2026-02-23' }),
+		})
+		try {
+			await executor._rawState.storage.setAlarm(12345)
+			await executor.executeRpc('clear', [])
+			expect(await executor._rawState.storage.getAlarm()).toBe(12345)
+			executor.reloadClass(SelectedDO, {}, resolveCompatibility({ date: '2026-02-24' }))
+			await runWithCompatibility(resolveCompatibility({}), () => executor.executeRpc('clear', []))
+			expect(await executor._rawState.storage.getAlarm()).toBeNull()
+		} finally {
+			await executor.dispose()
+		}
+	})
+
+	test('constructor deleteAll notifies the scheduler', async () => {
+		class ClearingDO extends DurableObjectBase {
+			constructor(ctx: DurableObjectStateImpl, env: unknown) {
+				super(ctx, env)
+				ctx.blockConcurrencyWhile(() => ctx.storage.deleteAll())
+			}
+		}
+		const notifications: (number | null)[] = []
+		const executor = new InProcessExecutor({
+			id: new DurableObjectIdImpl('selected'),
+			db,
+			namespaceName: 'TestDO',
+			cls: ClearingDO,
+			env: {},
+			compatibility: resolveCompatibility({ date: '2026-02-24' }),
+			onAlarmSet: time => notifications.push(time),
+		})
+		try {
+			await executor._rawState._waitForReady()
+			expect(notifications).toEqual([null])
+		} finally {
+			await executor.dispose()
+		}
 	})
 
 	test('get non-existent key returns undefined', async () => {

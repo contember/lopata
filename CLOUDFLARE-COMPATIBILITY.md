@@ -94,6 +94,12 @@ The locally verified parser accepts concrete `worker`, `durable-object` and `wor
 
 **Local cache limits:** stale-while-revalidate deduplication applies within one dispatcher. Unknown-length and multipart range responses buffer the representation with a 30-second timeout and a 512 MiB limit; the exact timeout and size boundaries were not exercised. Cloudflare purge rate limits are not emulated.
 
+### Durable Object scheduled-alarm deletion
+
+`storage.deleteAll()` removes the scheduled alarm with compatibility dates from `2026-02-24`, or the explicit `delete_all_deletes_alarm` flag. The inverse `delete_all_preserves_alarm` flag preserves it. Without a date or either flag, the existing local alarm-preserving behavior remains. Selection belongs to the target object. Enabled deletion removes persisted alarm state and cancels its armed timer; it does not interrupt an already-dispatched handler or implement abort/retry suppression. Application SQL-table deletion remains a separate compatibility gap.
+
+**Accepted local shared-connection limit:** `deleteAll()` rejects before mutation whenever its SQLite connection has an open transaction. In-process objects can share that connection, so an external call to object B also rejects while object A's transaction is suspended, even though B did not start a transaction. This applies to both enabled and legacy alarm behavior. The conservative guard prevents scheduler cancellation from surviving a database rollback. It is a local limitation, not a claim that Cloudflare rejects independent objects' operations. Transactions on separate connections are not covered by this guard.
+
 ### Modern Web Crypto
 
 Enable the new API in the Worker's Wrangler configuration:

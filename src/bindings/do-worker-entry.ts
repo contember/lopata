@@ -129,7 +129,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 		throw new Error(`DO class "${workerConfig.namespaceName}" not exported from worker module`)
 	}
 
-	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
+	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir, undefined, compatibility)
+	state.storage._setAlarmCallback((time: number | null) => {
+		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
+	})
 
 	// Mirror the instance's abort/block lifecycle to main so the idle reaper
 	// evicts an aborted instance (every subsequent command throws — it must be
@@ -260,11 +263,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 			},
 		)
 	}
-
-	// Wire alarm callback
-	state.storage._setAlarmCallback((time: number | null) => {
-		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
-	})
 
 	// --- Command handler ---
 

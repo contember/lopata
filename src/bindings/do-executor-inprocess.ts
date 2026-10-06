@@ -26,7 +26,8 @@ export class InProcessExecutor implements DOExecutor {
 		const { id, db, namespaceName, cls, env, dataDir, limits, containerConfig, onAlarmSet } = config
 		this._namespaceName = namespaceName
 
-		this._state = new DurableObjectStateImpl(id, db, namespaceName, dataDir, limits)
+		this._state = new DurableObjectStateImpl(id, db, namespaceName, dataDir, limits, this.compatibility)
+		if (onAlarmSet) this._state.storage._setAlarmCallback(onAlarmSet)
 
 		// Wire container runtime if configured
 		if (containerConfig) {
@@ -52,11 +53,6 @@ export class InProcessExecutor implements DOExecutor {
 
 		// Wire instance resolver for WebSocket handler delegation
 		this._state._setInstanceResolver(() => this._instance)
-
-		// Wire alarm callback
-		if (onAlarmSet) {
-			this._state.storage._setAlarmCallback(onAlarmSet)
-		}
 	}
 
 	private _startInvocation(operation: string): InvocationTrace {
@@ -242,6 +238,7 @@ export class InProcessExecutor implements DOExecutor {
 
 	reloadClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, compatibility = this.compatibility): void {
 		this.compatibility = compatibility
+		this._state.storage._setCompatibility(compatibility)
 		this._instance = this._construct(cls, env)
 		this._state._setInstanceResolver(() => this._instance)
 	}

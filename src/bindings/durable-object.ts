@@ -371,7 +371,7 @@ export class SqliteDurableObjectStorage {
 	private _dataDir: string | null = null
 	private _kv: SyncKV | null = null
 
-	constructor(db: Database, namespace: string, id: string, dataDir?: string) {
+	constructor(db: Database, namespace: string, id: string, dataDir?: string, private compatibility = legacyCompatibility) {
 		this.db = db
 		this.namespace = namespace
 		this.id = id
@@ -468,9 +468,21 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async deleteAll(_options?: StorageOptions): Promise<void> {
-		this.db
-			.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?')
-			.run(this.namespace, this.id)
+		// Shared-connection transactions must not roll back deletion after its scheduler cancellation has escaped.
+		if (this.db.inTransaction) throw new Error('Cannot call deleteAll() within a transaction')
+		const deleteAlarm = this.compatibility.deleteAllDeletesAlarm === 'enabled'
+		this.db.transaction(() => {
+			this.db.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
+			if (deleteAlarm) {
+				this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
+			}
+		})()
+		if (deleteAlarm) this._onAlarmSet?.(null)
+	}
+
+	/** @internal Retained state follows the owning executor's hot-reloaded configuration. */
+	_setCompatibility(compatibility: CompatibilitySelection): void {
+		this.compatibility = compatibility
 	}
 
 	async list(
@@ -632,9 +644,16 @@ export class DurableObjectStateImpl {
 	private _aborted = false
 	private _abortReason: string | undefined
 
-	constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
+	constructor(
+		id: DurableObjectIdImpl,
+		db: Database,
+		namespace: string,
+		dataDir?: string,
+		limits?: DurableObjectLimits,
+		compatibility = legacyCompatibility,
+	) {
 		this.id = id
-		this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir)
+		this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir, compatibility)
 		this._limits = { ...DO_DEFAULTS, ...limits }
 	}
 
