@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { binaryProbe } from './binary-probe'
 import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoStandardDO extends DurableObject {
@@ -23,11 +24,16 @@ export class EchoStandardDO extends DurableObject {
 
 		const pair = new WebSocketPair()
 		const [client, server] = Object.values(pair)
+		if (!url.searchParams.has('binary-probe')) server.binaryType = 'arraybuffer'
 		server.accept()
 		this.connections.push(server)
 
 		server.addEventListener('message', (event: MessageEvent) => {
 			const data = event.data
+			if (url.searchParams.has('binary-probe')) {
+				void binaryProbe(server, data)
+				return
+			}
 			if (data === 'compatibility-probe') {
 				void compatibilityProbe(server)
 				return

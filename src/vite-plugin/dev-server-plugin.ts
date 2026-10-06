@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
+import { type CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair.ts'
 import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context.ts'
 import { resolveCompatibility } from '../compatibility.ts'
@@ -1112,7 +1113,8 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 }
 
 /** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
-function bridgeCfWebSocket(cfSocket: any, ws: any): void {
+function bridgeCfWebSocket(cfSocket: CFWebSocket, ws: any): void {
+	cfSocket._useRawBinaryDelivery()
 	// CF → real WS
 	cfSocket.addEventListener('message', (ev: Event) => {
 		const msgData = (ev as MessageEvent).data
@@ -1132,7 +1134,7 @@ function bridgeCfWebSocket(cfSocket: any, ws: any): void {
 	// Real WS → CF
 	ws.on('message', (data: Buffer, isBinary: boolean) => {
 		const msgData = isBinary
-			? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+			? copyWebSocketBytes(data)
 			: data.toString('utf-8')
 		const evt = { type: 'message' as const, data: msgData }
 		if (cfSocket._peer?._accepted) {

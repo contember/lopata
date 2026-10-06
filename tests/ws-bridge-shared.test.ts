@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { CFWebSocket } from '../src/bindings/websocket-pair'
+import { CFWebSocket, WebSocketPair } from '../src/bindings/websocket-pair'
+import { resolveCompatibility } from '../src/compatibility'
+import { runWithCompatibility } from '../src/compatibility-context'
 import { WsGuestBridge, WsHostBridge } from '../src/worker-thread/ws-bridge-shared'
 
 type HostMsg =
@@ -9,6 +11,101 @@ type HostMsg =
 type GuestMsg =
 	| { type: 'remote-message'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'remote-close'; wsId: string; code: number; reason: string }
+
+describe('binary application and transport boundaries', () => {
+	const modern = resolveCompatibility({ date: '2026-03-17' })
+	function host(posted: HostMsg[]) {
+		return new WsHostBridge<HostMsg>(message => posted.push(message), {
+			clientMessage: (wsId, data) => ({ type: 'client-message', wsId, data }),
+			clientClose: (wsId, code, reason, wasClean) => ({ type: 'client-close', wsId, code, reason, wasClean }),
+		})
+	}
+	function guest(posted: GuestMsg[]) {
+		return new WsGuestBridge<GuestMsg>(message => posted.push(message), {
+			remoteMessage: (wsId, data) => ({ type: 'remote-message', wsId, data }),
+			remoteClose: (wsId, code, reason) => ({ type: 'remote-close', wsId, code, reason }),
+		})
+	}
+
+	test('host registration keeps pre-registration and subsequent messages raw', () => {
+		const bridge = host([])
+		bridge.deliverRemoteMessage('binary', new Uint8Array([1]).buffer)
+		const socket = runWithCompatibility(modern, () => bridge.register('binary'))
+		const messages: unknown[] = []
+		socket.onmessage = event => messages.push(event.data)
+		socket.accept()
+		socket.binaryType = 'blob'
+		bridge.deliverRemoteMessage('binary', new Uint8Array([2]).buffer)
+		expect(messages).toHaveLength(2)
+		expect(messages.every(message => message instanceof ArrayBuffer)).toBe(true)
+	})
+
+	test('guest registration forwards early bytes raw while its application peer receives Blob', () => {
+		const posted: GuestMsg[] = []
+		const bridge = guest(posted)
+		const pair = runWithCompatibility(modern, () => new WebSocketPair())
+		pair[1].accept()
+		pair[1].send(new Uint8Array([1]))
+		const id = bridge.register(pair[0])
+		pair[0].binaryType = 'blob'
+		pair[1].send(new Uint8Array([2]))
+		expect(posted).toHaveLength(2)
+		for (const message of posted) {
+			if (message.type !== 'remote-message') throw new Error('Expected message envelope')
+			expect(message.data).toBeInstanceOf(ArrayBuffer)
+		}
+		const received: unknown[] = []
+		pair[1].onmessage = event => received.push(event.data)
+		bridge.deliverClientMessage(id, new Uint8Array([3]).buffer)
+		expect(received[0]).toBeInstanceOf(Blob)
+	})
+
+	for (const bridgeEvents of [false, true]) {
+		test(`adopted peer is raw before flushing (bridgeEvents=${bridgeEvents})`, () => {
+			const posted: HostMsg[] = []
+			const bridge = host(posted)
+			const pair = runWithCompatibility(modern, () => new WebSocketPair())
+			pair[1].accept()
+			pair[1].send(new Uint8Array([1]))
+			const received: unknown[] = []
+			pair[0].onmessage = event => received.push(event.data)
+			bridge.adoptExisting(pair[0], { bridgeEvents })
+			pair[0].accept()
+			pair[0].binaryType = 'blob'
+			pair[1].send(new Uint8Array([2]))
+			expect(received).toHaveLength(2)
+			expect(received.every(message => message instanceof ArrayBuffer)).toBe(true)
+			if (bridgeEvents) {
+				expect(posted).toHaveLength(2)
+				for (const message of posted) {
+					if (message.type !== 'client-message') throw new Error('Expected message envelope')
+					expect(message.data).toBeInstanceOf(ArrayBuffer)
+				}
+			}
+		})
+	}
+
+	test('reconstructed application peer converts pending messages at delivery; outgoing bytes stay raw', () => {
+		const posted: GuestMsg[] = []
+		const bridge = guest(posted)
+		bridge.deliverClientMessage('reconstructed', new Uint8Array([1]).buffer)
+		bridge.deliverClientMessage('reconstructed', new Uint8Array([2]).buffer)
+		const socket = runWithCompatibility(modern, () => bridge.createBridgedSocket('reconstructed'))
+		socket.binaryType = 'arraybuffer'
+		const received: unknown[] = []
+		socket.onmessage = event => {
+			received.push(event.data)
+			socket.binaryType = 'blob'
+		}
+		socket.accept()
+		expect(received[0]).toBeInstanceOf(ArrayBuffer)
+		expect(received[1]).toBeInstanceOf(Blob)
+		socket.send(new Uint8Array([3]))
+		const message = posted[0]
+		if (message?.type !== 'remote-message') throw new Error('Expected message envelope')
+		expect(message.data).toBeInstanceOf(ArrayBuffer)
+	})
+})
 
 describe('WsHostBridge', () => {
 	let posted: HostMsg[]

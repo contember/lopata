@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { CFWebSocket, WebSocketPair, type WSEventType } from '../src/bindings/websocket-pair'
+import { CFWebSocket, copyWebSocketBytes, WebSocketPair, type WSEventType } from '../src/bindings/websocket-pair'
 import { type CompatibilityInput, resolveCompatibility } from '../src/compatibility'
 import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../src/compatibility-context'
 import { installCompatibilityCrypto } from '../src/setup-globals'
@@ -7,6 +7,117 @@ import { WsGuestBridge } from '../src/worker-thread/ws-bridge-shared'
 
 const modern = resolveCompatibility({ date: '2026-03-03', flags: ['webcrypto_modern_algorithms'] })
 const oversized = '€'.repeat(41) + 'a'
+
+describe('selected WebSocket binary delivery', () => {
+	const cases: { name: string; input: CompatibilityInput; initial: string | undefined }[] = [
+		{ name: 'before threshold', input: { date: '2026-03-16' }, initial: 'arraybuffer' },
+		{ name: 'at threshold', input: { date: '2026-03-17' }, initial: 'blob' },
+		{ name: 'enable overrides date', input: { date: '2026-03-16', flags: ['websocket_standard_binary_type'] }, initial: 'blob' },
+		{ name: 'disable overrides date', input: { date: '2026-03-17', flags: ['no_websocket_standard_binary_type'] }, initial: 'arraybuffer' },
+		{ name: 'no-date enable', input: { flags: ['websocket_standard_binary_type'] }, initial: 'blob' },
+		{ name: 'no-date disable', input: { flags: ['no_websocket_standard_binary_type'] }, initial: 'arraybuffer' },
+		{ name: 'legacy local', input: {}, initial: undefined },
+	]
+	for (const { name, input, initial } of cases) {
+		test(name, async () => {
+			const pair = runWithCompatibility(resolveCompatibility(input), () => new WebSocketPair())
+			const [sender, receiver] = [pair[0], pair[1]]
+			sender.accept()
+			receiver.accept()
+			expect('binaryType' in receiver).toBe(initial !== undefined)
+			expect(receiver.binaryType).toBe(initial)
+			const received: unknown[] = []
+			receiver.onmessage = event => received.push(event.data)
+			sender.send(new Uint8Array([1, 2]))
+			expect(received[0]).toBeInstanceOf(initial === 'blob' ? Blob : ArrayBuffer)
+			for (const value of ['arraybuffer', 'blob', 'arraybuffer', 'blob']) {
+				receiver.binaryType = value
+				sender.send(new Uint8Array([3, 4]))
+				const message = received.at(-1)
+				if (initial !== undefined && value === 'blob') {
+					if (!(message instanceof Blob)) throw new Error('Expected Blob')
+					expect(message.type).toBe('')
+					expect([...new Uint8Array(await message.arrayBuffer())]).toEqual([3, 4])
+				} else {
+					if (!(message instanceof ArrayBuffer)) throw new Error('Expected ArrayBuffer')
+					expect([...new Uint8Array(message)]).toEqual([3, 4])
+				}
+				if (initial !== undefined) {
+					for (const invalid of ['', 'Blob', 'ARRAYBUFFER', 'bytes']) {
+						receiver.binaryType = invalid
+						expect(receiver.binaryType).toBe(value)
+					}
+				}
+			}
+			sender.send(new ArrayBuffer(0))
+			const empty = received.at(-1)
+			if (empty instanceof Blob) expect(empty.size).toBe(0)
+			else if (empty instanceof ArrayBuffer) expect(empty.byteLength).toBe(0)
+			else throw new Error('Expected empty binary message')
+			sender.send('text')
+			expect(received.at(-1)).toBe('text')
+		})
+	}
+
+	test('queued messages select the receiver type at delivery and share one event across callbacks', () => {
+		const pair = runWithCompatibility(resolveCompatibility({ date: '2026-03-17' }), () => new WebSocketPair())
+		pair[0].accept()
+		pair[0].send(new Uint8Array([1]))
+		pair[0].send('between binary messages')
+		pair[0].send(new Uint8Array([2]))
+		pair[1].binaryType = 'arraybuffer'
+		const listeners: MessageEvent<unknown>[] = []
+		const callbacks: MessageEvent<unknown>[] = []
+		pair[1].addEventListener('message', event => {
+			if (!(event instanceof MessageEvent)) throw new Error('Expected MessageEvent')
+			listeners.push(event)
+			pair[1].binaryType = 'blob'
+		})
+		pair[1].onmessage = event => callbacks.push(event)
+		pair[1].accept()
+		expect(callbacks).toHaveLength(3)
+		expect(callbacks[0]).toBe(listeners[0])
+		expect(callbacks[1]).toBe(listeners[1])
+		expect(callbacks[2]).toBe(listeners[2])
+		expect(callbacks[0]?.data).toBeInstanceOf(ArrayBuffer)
+		expect(callbacks[1]?.data).toBe('between binary messages')
+		expect(callbacks[2]?.data).toBeInstanceOf(Blob)
+	})
+
+	test('raw mode ignores public binaryType and applies before queued delivery', () => {
+		const pair = runWithCompatibility(resolveCompatibility({ date: '2026-03-17' }), () => new WebSocketPair())
+		pair[0].accept()
+		pair[0].send(new Uint8Array([7]))
+		pair[1]._useRawBinaryDelivery()
+		const received: unknown[] = []
+		pair[1].onmessage = event => received.push(event.data)
+		pair[1].accept()
+		pair[1].binaryType = 'arraybuffer'
+		pair[1].binaryType = 'blob'
+		pair[0].send(new Uint8Array([8]))
+		expect(pair[1].binaryType).toBe('blob')
+		expect(received.every(data => data instanceof ArrayBuffer)).toBe(true)
+		expect(received).toHaveLength(2)
+	})
+
+	test('view normalization copies only the selected bytes for Buffer, DataView and typed arrays', () => {
+		const backing = new Uint8Array([99, 1, 2, 88])
+		const views: ArrayBufferView[] = [backing.subarray(1, 3), new DataView(backing.buffer, 1, 2), Buffer.from(backing.buffer, 1, 2)]
+		for (const view of views) {
+			const copy = copyWebSocketBytes(view)
+			expect([...new Uint8Array(copy)]).toEqual([1, 2])
+			const pair = new WebSocketPair()
+			pair[0].accept()
+			pair[1].accept()
+			pair[1].onmessage = event => {
+				const data: unknown = event.data
+				if (!(data instanceof ArrayBuffer)) throw new Error('Expected ArrayBuffer')
+				expect([...new Uint8Array(data)]).toEqual([1, 2])
+			}
+			pair[0].send(view)
+		}
+	})
+})
 
 function expectReasonError(callback: () => void): void {
 	let error: unknown

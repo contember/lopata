@@ -206,6 +206,43 @@ function defineWebSocketTests(getPort: () => number) {
 	const base = () => `ws://localhost:${getPort()}`
 	const httpBase = () => `http://localhost:${getPort()}`
 
+	test('hibernation acceptance wires raw delivery before flushing queued binary messages', async () => {
+		const response = await fetch(`${httpBase()}/ws/do-hibernation/queued/queued-binary`)
+		expect(await response.json()).toEqual({ kind: 'arraybuffer', binaryType: 'blob', mime: null, bytes: [4, 5, 6] })
+	})
+
+	for (const path of ['/ws/plain', '/ws/do-standard/binary', '/ws/do-hibernation/binary']) {
+		test(`binary delivery and transport bytes: ${path}`, async () => {
+			const client = await connectWS(`${base()}${path}?binary-probe`)
+			async function report() {
+				const message = await client.waitForMessage()
+				if (typeof message !== 'string') throw new Error('Expected JSON binary report')
+				return JSON.parse(message)
+			}
+			try {
+				for (const selection of ['default', 'arraybuffer', 'blob']) {
+					if (selection !== 'default') {
+						client.send(`type:${selection}`)
+						expect(await report()).toEqual({ text: `type:${selection}`, binaryType: selection })
+					}
+					const type = selection === 'default' ? 'blob' : selection
+					const kind = path.includes('hibernation') ? 'arraybuffer' : type
+					for (const bytes of [new Uint8Array([1, 2, 3]), new Uint8Array(0)]) {
+						client.send(bytes.buffer)
+						expect(await report()).toEqual({ kind, binaryType: type, mime: kind === 'blob' ? '' : null, bytes: [...bytes] })
+						const echo = await client.waitForMessage()
+						if (!(echo instanceof ArrayBuffer)) throw new Error('Expected binary network echo')
+						expect([...new Uint8Array(echo)]).toEqual([...bytes])
+					}
+				}
+				client.send('unchanged text')
+				expect(await report()).toEqual({ text: 'unchanged text', binaryType: 'blob' })
+			} finally {
+				client.close()
+			}
+		})
+	}
+
 	for (const path of ['/ws/plain', '/ws/do-standard/compatibility', '/ws/do-hibernation/compatibility']) {
 		test(`selected close validation and callback ownership: ${path}`, async () => {
 			const clients = await Promise.all([connectWS(`${base()}${path}`), connectWS(`${base()}${path}`)])

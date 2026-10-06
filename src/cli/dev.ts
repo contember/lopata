@@ -28,7 +28,7 @@ import { handleArtifactsGitRequest } from '../bindings/artifacts-git-http'
 import { reapOrphanContainers } from '../bindings/container-cleanup'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
-import { CFWebSocket } from '../bindings/websocket-pair'
+import { CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair'
 import { findConfigPath, hasScript, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase, getDataDir } from '../db'
@@ -539,6 +539,7 @@ export async function run(ctx: CliContext, args: string[]) {
 
 				// CF WebSocket bridge
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
+				cfSocket._useRawBinaryDelivery()
 				cfSocket.addEventListener('message', (ev: Event) => {
 					const msgData = (ev as MessageEvent).data
 					ws.send(msgData)
@@ -567,7 +568,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				const cfSocket = (data as { cfSocket: CFWebSocket }).cfSocket
 				cfSocket._peer?.dispatchOrQueue({
 					type: 'message',
-					data: typeof message === 'string' ? message : message.buffer as ArrayBuffer,
+					data: typeof message === 'string' ? message : copyWebSocketBytes(message),
 				})
 			},
 			close(ws, code, reason) {

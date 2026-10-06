@@ -16,7 +16,7 @@ export default class {
 		if (request.headers.get('upgrade') === 'websocket') {
 			const pair = new WebSocketPair()
 			pair[1].accept()
-			pair[1].addEventListener('message', async () => {
+			pair[1].addEventListener('message', async event => {
 				const before = typeof crypto.subtle.encapsulateBits === 'function'
 				await new Promise(resolve => setTimeout(resolve, 20))
 				const nested = new WebSocketPair()
@@ -24,7 +24,12 @@ export default class {
 				let reasonError = null
 				try { nested[0].close(1000, '€'.repeat(42)) }
 				catch (error) { reasonError = error instanceof DOMException ? error.name : 'unexpected' }
-				pair[1].send(JSON.stringify({ before, after: typeof crypto.subtle.encapsulateBits === 'function', reasonError }))
+				const bytes = event.data instanceof Blob ? await event.data.arrayBuffer() : event.data
+				pair[1].send(JSON.stringify({
+					before, after: typeof crypto.subtle.encapsulateBits === 'function', reasonError,
+					binaryType: pair[1].binaryType, kind: event.data instanceof Blob ? 'blob' : 'arraybuffer',
+					bytes: [...new Uint8Array(bytes)]
+				}))
 				pair[1].close(1000, 'done')
 			})
 			return new Response(null, { status: 101, webSocket: pair[0] })
@@ -52,7 +57,9 @@ async function start(name: string, modern: boolean) {
 		JSON.stringify({
 			name,
 			main: './worker.ts',
-			compatibility_flags: modern ? ['webcrypto_modern_algorithms', 'websocket_close_reason_byte_limit'] : [],
+			compatibility_flags: modern
+				? ['webcrypto_modern_algorithms', 'websocket_close_reason_byte_limit', 'websocket_standard_binary_type']
+				: ['no_websocket_standard_binary_type'],
 		}),
 	)
 	const reservation = Bun.serve({ port: 0, fetch: () => new Response() })
@@ -90,7 +97,7 @@ async function socketProbe(url: string): Promise<unknown> {
 			socket.close()
 			reject(new Error('WebSocket compatibility probe timed out'))
 		}, 5000)
-		socket.onopen = () => socket.send('probe')
+		socket.onopen = () => socket.send(new Uint8Array([9, 8, 7]))
 		socket.onerror = () => {
 			clearTimeout(timeout)
 			reject(new Error('WebSocket compatibility probe failed'))
@@ -112,8 +119,8 @@ try {
 	const results = await Promise.all([fetch(on.url).then(response => response.json()), fetch(off.url).then(response => response.json())])
 	assert.deepEqual(results, [expected(true), expected(false)])
 	assert.deepEqual(await Promise.all([socketProbe(on.url), socketProbe(off.url)]), [
-		{ before: true, after: true, reasonError: 'SyntaxError' },
-		{ before: false, after: false, reasonError: null },
+		{ before: true, after: true, reasonError: 'SyntaxError', binaryType: 'blob', kind: 'blob', bytes: [9, 8, 7] },
+		{ before: false, after: false, reasonError: null, binaryType: 'arraybuffer', kind: 'arraybuffer', bytes: [9, 8, 7] },
 	])
 	await Bun.write(join(on.root, 'worker.ts'), source(2))
 	on.server.environments.ssr.moduleGraph.invalidateAll()

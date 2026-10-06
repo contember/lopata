@@ -1,3 +1,4 @@
+import { binaryProbe } from './binary-probe'
 import { compatibilityProbe } from './compatibility-probe'
 
 export { EchoHibernationDO } from './echo-do-hibernation'
@@ -21,10 +22,15 @@ export default {
 			}
 			const pair = new WebSocketPair()
 			const [client, server] = Object.values(pair)
+			if (!url.searchParams.has('binary-probe')) server.binaryType = 'arraybuffer'
 			server.accept()
 
 			server.addEventListener('message', (event: MessageEvent) => {
 				const data = event.data
+				if (url.searchParams.has('binary-probe')) {
+					void binaryProbe(server, data)
+					return
+				}
 				if (data === 'compatibility-probe') {
 					void compatibilityProbe(server)
 					return

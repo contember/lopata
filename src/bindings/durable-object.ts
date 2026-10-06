@@ -13,6 +13,7 @@ import type { ContainerConfig } from './container'
 import type { DOAbortPolicy, DOAlarmMutationOwnership, DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { mayHaveMultipleStatements, splitStatements } from './sql-split'
+import { CFWebSocket } from './websocket-pair'
 
 // --- SQL Storage Cursor ---
 
@@ -883,10 +884,7 @@ export class DurableObjectStateImpl {
 			throw new Error(`Exceeded max concurrent WebSocket connections (${this._limits.maxConcurrentWebSockets})`)
 		}
 
-		// Implicitly accept the WebSocket (in CF production, ctx.acceptWebSocket handles this)
-		if ('accept' in ws && typeof ws.accept === 'function') {
-			;(ws as any).accept()
-		}
+		if (ws instanceof CFWebSocket) ws._useRawBinaryDelivery()
 
 		const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null }
 		this._acceptedWebSockets.add(entry)
@@ -931,6 +929,7 @@ export class DurableObjectStateImpl {
 				;(obj.webSocketError as (ws: WebSocket, error: unknown) => Promise<void>).call(instance, ws, event)
 			}
 		})
+		if ('accept' in ws && typeof ws.accept === 'function') ws.accept()
 	}
 
 	getWebSockets(tag?: string): WebSocket[] {

@@ -1,10 +1,28 @@
 import { DurableObject } from 'cloudflare:workers'
+import { binaryProbe } from './binary-probe'
 import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoHibernationDO extends DurableObject {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
 		const tag = url.searchParams.get('tag')
+
+		if (url.pathname.endsWith('/queued-binary')) {
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
+			server.serializeAttachment({ binaryProbe: true })
+			const result = new Promise<Response>(resolve => {
+				client.addEventListener('message', (event: MessageEvent) => {
+					if (typeof event.data === 'string') resolve(new Response(event.data))
+				})
+			})
+			client.accept()
+			client.send(new Uint8Array([4, 5, 6]))
+			this.ctx.acceptWebSocket(server)
+			const response = await result
+			client.close()
+			return response
+		}
 
 		// Configure auto-response (HTTP)
 		if (url.pathname.endsWith('/setup-auto-response')) {
@@ -43,6 +61,7 @@ export class EchoHibernationDO extends DurableObject {
 
 		const pair = new WebSocketPair()
 		const [client, server] = Object.values(pair)
+		if (url.searchParams.has('binary-probe')) server.serializeAttachment({ binaryProbe: true })
 		const tags = tag ? [tag] : []
 		this.ctx.acceptWebSocket(server, tags)
 
@@ -50,6 +69,11 @@ export class EchoHibernationDO extends DurableObject {
 	}
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		const attachment: unknown = ws.deserializeAttachment()
+		if (attachment && typeof attachment === 'object' && 'binaryProbe' in attachment && attachment.binaryProbe === true) {
+			await binaryProbe(ws, message)
+			return
+		}
 		if (message === 'compatibility-probe') {
 			await compatibilityProbe(ws)
 			return

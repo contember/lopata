@@ -21,6 +21,10 @@ export interface WSEvent {
 /** Response with optional CF `webSocket` property — used by upgrade flows. */
 export type ResponseWithWebSocket = Response & { webSocket?: CFWebSocket }
 
+export function copyWebSocketBytes(data: ArrayBufferView): ArrayBuffer {
+	return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer
+}
+
 const CONNECTING = 0
 const OPEN = 1
 const CLOSING = 2
@@ -43,6 +47,29 @@ export class CFWebSocket extends EventTarget {
 
 	readyState: number = CONNECTING
 	private readonly compatibility = getActiveCompatibility()
+	declare binaryType?: string
+	private binaryTypeValue: 'blob' | 'arraybuffer' = this.compatibility.websocketStandardBinaryType === 'enabled' ? 'blob' : 'arraybuffer'
+	private rawBinaryDelivery = false
+
+	constructor() {
+		super()
+		if (this.compatibility.websocketStandardBinaryType !== 'legacy-local') {
+			Object.defineProperty(this, 'binaryType', {
+				configurable: true,
+				enumerable: true,
+				get: () => this.binaryTypeValue,
+				set: (value: unknown) => {
+					const type = `${value}`
+					if (type === 'blob' || type === 'arraybuffer') this.binaryTypeValue = type
+				},
+			})
+		}
+	}
+
+	/** @internal Transport and hibernation consumers must opt in before accept() flushes queued messages. */
+	_useRawBinaryDelivery(): void {
+		this.rawBinaryDelivery = true
+	}
 
 	/** @internal */ _peer: CFWebSocket | null = null
 	/** @internal */ _accepted = false
@@ -98,7 +125,7 @@ export class CFWebSocket extends EventTarget {
 		// Normalize ArrayBufferView to ArrayBuffer
 		let data: string | ArrayBuffer
 		if (ArrayBuffer.isView(message)) {
-			data = (message.buffer as ArrayBuffer).slice(message.byteOffset, message.byteOffset + message.byteLength)
+			data = copyWebSocketBytes(message)
 		} else {
 			data = message
 		}
@@ -164,7 +191,10 @@ export class CFWebSocket extends EventTarget {
 	private dispatchWSEvent(evt: WSEvent): void {
 		switch (evt.type) {
 			case 'message': {
-				const me = new MessageEvent('message', { data: evt.data })
+				const data = evt.data instanceof ArrayBuffer && !this.rawBinaryDelivery && this.binaryTypeValue === 'blob'
+					? new Blob([evt.data])
+					: evt.data
+				const me = new MessageEvent('message', { data })
 				this.dispatchEvent(me)
 				this.onmessage?.(me)
 				break
