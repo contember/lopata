@@ -386,34 +386,50 @@ test('testing helpers expose deletion and batch deletion', async () => {
 test('shared worker self-deletion, DO forwarding, stale proxy handles, and fresh-process recovery', async () => {
 	const dir = mkdtempSync(join(tmpdir(), 'workflow-deletion-'))
 	cpSync(resolve(import.meta.dir, 'fixtures/workflow-deletion-worker'), dir, { recursive: true })
-	const reservation = Bun.serve({ port: 0, fetch: () => new Response() })
+	const host = '127.0.0.1'
+	const reservation = Bun.serve({ hostname: host, port: 0, fetch: () => new Response() })
 	const port = reservation.port
 	reservation.stop(true)
-	const base = `http://127.0.0.1:${port}`
+	const base = `http://${host}:${port}`
 	function start() {
-		const processHandle = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), 'dev', '--port', String(port)], {
+		const processHandle = Bun.spawn([process.execPath, resolve(import.meta.dir, '../src/cli.ts'), 'dev', '--port', String(port), '--listen', host], {
 			cwd: dir,
+			// A conflicting default makes this exercise explicit listener selection even on IPv4-only localhost setups.
+			env: { ...process.env, HOST: '::1' },
 			stdout: 'pipe',
 			stderr: 'pipe',
 		})
 		const stdout = new Response(processHandle.stdout).text()
 		const stderr = new Response(processHandle.stderr).text()
+		let stopped: Promise<string> | undefined
+		function stop(): Promise<string> {
+			return stopped ??= (async () => {
+				if (processHandle.exitCode === null) processHandle.kill('SIGKILL')
+				await processHandle.exited
+				const [out, err] = await Promise.all([stdout, stderr])
+				return `stdout:\n${out}\nstderr:\n${err}`
+			})()
+		}
 		return {
 			async ready() {
-				await until(async () => {
-					if (processHandle.exitCode !== null) throw new Error(`Server exited: ${await stdout}\n${await stderr}`)
-					try {
-						return (await fetch(base)).ok
-					} catch {
-						return false
-					}
-				})
+				let lastProbe = 'No HTTP response'
+				try {
+					await until(async () => {
+						if (processHandle.exitCode !== null) throw new Error(`Server exited with code ${processHandle.exitCode}`)
+						try {
+							const response = await fetch(base)
+							lastProbe = `HTTP ${response.status}: ${await response.text()}`
+							return response.ok
+						} catch (error) {
+							lastProbe = String(error)
+							return false
+						}
+					})
+				} catch (cause) {
+					throw new Error(`Deletion fixture not ready at ${base}. ${lastProbe}\n${await stop()}`, { cause })
+				}
 			},
-			async stop() {
-				processHandle.kill('SIGKILL')
-				await processHandle.exited
-				await Promise.all([stdout, stderr])
-			},
+			stop,
 		}
 	}
 	async function request(path: string) {
