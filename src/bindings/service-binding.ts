@@ -8,6 +8,8 @@
  * - `.connect()` — stub for TCP socket (throws — not supported in dev)
  */
 
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
@@ -87,6 +89,7 @@ export class ServiceBinding {
 	_wire(
 		resolverOrModule: (() => ResolvedTarget) | Record<string, unknown>,
 		env?: Record<string, unknown>,
+		compatibility: CompatibilitySelection = legacyCompatibility,
 	): void {
 		if (typeof resolverOrModule === 'function' && env === undefined) {
 			// New API: resolver function
@@ -95,7 +98,7 @@ export class ServiceBinding {
 			// Legacy API: _wire(workerModule, env)
 			const workerModule = resolverOrModule as Record<string, unknown>
 			const capturedEnv = env!
-			this._resolver = () => ({ kind: 'in-process', workerModule, env: capturedEnv })
+			this._resolver = () => ({ kind: 'in-process', workerModule, env: capturedEnv, compatibility })
 		}
 	}
 
@@ -144,17 +147,18 @@ export class ServiceBinding {
 			)
 		}
 		const invocation = createInvocationTrace({ name, kind: 'server', workerName: this._serviceName })
-		return invocation.run(async () => {
-			try {
-				const ctx = new ExecutionContext(this._props)
-				const result = await runWithExecutionContext(ctx, () => callback(ctx, invocation, resolved))
-				invocation.finishHandler()
-				return result
-			} catch (error) {
-				invocation.finishHandler({ kind: 'error', error })
-				throw error
-			}
-		})
+		return runWithCompatibility(resolved.compatibility, () =>
+			invocation.run(async () => {
+				try {
+					const ctx = new ExecutionContext(this._props)
+					const result = await runWithExecutionContext(ctx, () => callback(ctx, invocation, resolved))
+					invocation.finishHandler()
+					return result
+				} catch (error) {
+					invocation.finishHandler({ kind: 'error', error })
+					throw error
+				}
+			}))
 	}
 
 	private _invokeRpcFallback(
@@ -165,7 +169,7 @@ export class ServiceBinding {
 		const caller = getActiveInvocation()
 		return this._invokeFallback(resolved, `rpc ${this._entrypoint ?? 'default'}.${method}`, async (ctx, invocation, target) => {
 			const session = createRpcSession({
-				run: callback => invocation.run(() => runWithExecutionContext(ctx, callback)),
+				run: callback => runWithCompatibility(target.compatibility, () => invocation.run(() => runWithExecutionContext(ctx, callback))),
 				retain: () => invocation.retain('handler'),
 				isClosed: () => invocation.closed || caller?.closed === true,
 			})
@@ -209,7 +213,7 @@ export class ServiceBinding {
 			return resolved.assets.fetch(request)
 		}
 
-		const dispatcher = getWorkerDispatcher(resolved.workerModule)
+		const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
 		if (dispatcher) return dispatcher.fetch(request, this._entrypoint, this._props, true)
 		return this._invokeFallback(resolved, `${request.method} ${new URL(request.url).pathname}`, async (ctx, invocation) => {
 			const target = resolveEntrypointTarget(resolved.workerModule, this._entrypoint, ctx, resolved.env)
@@ -272,7 +276,7 @@ export class ServiceBinding {
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
 					if (resolved.kind === 'in-process') {
-						const dispatcher = getWorkerDispatcher(resolved.workerModule)
+						const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
 						if (dispatcher) return dispatcher.rpc(self._entrypoint, prop, args, self._props)
 					}
 					return self._invokeRpcFallback(resolved, prop, async (target, session) => {
@@ -309,7 +313,7 @@ export class ServiceBinding {
 						return promise.then(onFulfilled, onRejected)
 					}
 					if (resolved.kind === 'in-process') {
-						const dispatcher = getWorkerDispatcher(resolved.workerModule)
+						const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
 						if (dispatcher) return dispatcher.property(self._entrypoint, prop, self._props).then(onFulfilled, onRejected)
 					}
 					const promise = self._invokeRpcFallback(resolved, prop, async (target, session) => {

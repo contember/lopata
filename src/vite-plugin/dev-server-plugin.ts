@@ -5,13 +5,14 @@ import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context.ts'
 import { resolveCompatibility } from '../compatibility.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
 import { ExecutionContext as CacheContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
-import { configureCloudflareCrypto } from '../setup-globals.ts'
+import { installCompatibilityCrypto } from '../setup-globals.ts'
 import { createInvocationTrace, type InvocationTrace, type TraceCompletion } from '../tracing/invocation.ts'
 import type { SpanOptions } from '../tracing/span.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
@@ -42,6 +43,7 @@ interface DevServerPluginOptions {
  * via link:), so dynamic imports here run through Bun's native loader.
  */
 export function devServerPlugin(options: DevServerPluginOptions): Plugin {
+	let compatibility = legacyCompatibility
 	let server: ViteDevServer
 	let config: any
 	let env: Record<string, unknown>
@@ -93,6 +95,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	 * Serialized via reloadLock to prevent concurrent wireClassRefs calls.
 	 */
 	async function ensureWorkerModule(): Promise<Record<string, unknown>> {
+		return runWithCompatibility(compatibility, loadWorkerModule)
+	}
+
+	async function loadWorkerModule(): Promise<Record<string, unknown>> {
 		const ssrEnv = server.environments[options.envName]
 		if (!ssrEnv || !('runner' in ssrEnv)) {
 			throw new Error(`SSR environment "${options.envName}" not found or has no runner`)
@@ -125,12 +131,13 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 					currentGenerationId++
 					viteGenerations.set(currentGenerationId, { id: currentGenerationId, createdAt: Date.now(), state: 'active' })
-					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId)
+					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId, compatibility)
 					workerDispatcher = new WorkerDispatcher(
 						workerModule,
 						env,
 						new WorkersCache(getDatabase(), config.name, crypto.randomUUID(), config),
 						props => new CacheContext(props),
+						compatibility,
 					)
 					for (const reference of workerDispatchers) {
 						if (!reference.deref()) workerDispatchers.delete(reference)
@@ -195,65 +202,66 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			kind: 'server',
 			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
 		})
-		return invocation.run(async () => {
-			const callerStack = new Error()
-			const ctx = new ExecutionContext()
-			try {
-				const response = await runWithExecutionContext(ctx, async () => {
-					try {
-						// Resolved in here rather than up front because a class entrypoint is
-						// constructed at this point, and a throwing constructor deserves the same
-						// error page and persisted error as a throwing fetch().
-						if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
-						const resp = await workerDispatcher.fetch(request, 'default', undefined, false, ctx)
-						invocation.root.setAttribute('http.status_code', resp.status)
+		return runWithCompatibility(compatibility, () =>
+			invocation.run(async () => {
+				const callerStack = new Error()
+				const ctx = new ExecutionContext()
+				try {
+					const response = await runWithExecutionContext(ctx, async () => {
+						try {
+							// Resolved in here rather than up front because a class entrypoint is
+							// constructed at this point, and a throwing constructor deserves the same
+							// error page and persisted error as a throwing fetch().
+							if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+							const resp = await workerDispatcher.fetch(request, 'default', undefined, false, ctx)
+							invocation.root.setAttribute('http.status_code', resp.status)
 
-						// Intercept React Router error boundary responses with lopata error page
-						const routeError = (globalThis as any).__lopata_routeError
-						delete (globalThis as any).__lopata_routeError
-						if (routeError) {
-							invocation.root.recordException(routeError)
-							if (resp.body) ctx.waitUntil(resp.body.cancel(routeError))
-							if (routeError instanceof Error) {
-								stitchAsyncStack(routeError, callerStack)
+							// Intercept React Router error boundary responses with lopata error page
+							const routeError = (globalThis as any).__lopata_routeError
+							delete (globalThis as any).__lopata_routeError
+							if (routeError) {
+								invocation.root.recordException(routeError)
+								if (resp.body) ctx.waitUntil(resp.body.cancel(routeError))
+								if (routeError instanceof Error) {
+									stitchAsyncStack(routeError, callerStack)
+								}
+								console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
+								return (renderErrorPage as Function)(routeError, request, env, config)
 							}
-							console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
-							return (renderErrorPage as Function)(routeError, request, env, config)
-						}
 
-						return resp
-					} catch (err) {
-						if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
-						if (isHmrRaceError(err)) {
-							currentModule = null
-							throw err
+							return resp
+						} catch (err) {
+							if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
+							if (isHmrRaceError(err)) {
+								currentModule = null
+								throw err
+							}
+							if (err instanceof Error) {
+								stitchAsyncStack(err, callerStack)
+							}
+							console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+							invocation.root.recordException(err instanceof Error ? err : String(err))
+							return (renderErrorPage as Function)(err, request, env, config)
 						}
-						if (err instanceof Error) {
-							stitchAsyncStack(err, callerStack)
-						}
-						console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-						invocation.root.recordException(err instanceof Error ? err : String(err))
-						return (renderErrorPage as Function)(err, request, env, config)
+					}).finally(() => {
+						const release = invocation.retain('wait-until')
+						void ctx._awaitAll().finally(release)
+					})
+					if (response === NO_FETCH_HANDLER) {
+						console.error('[lopata:vite] Worker module default export has no fetch() method')
+						next()
+						return
 					}
-				}).finally(() => {
-					const release = invocation.retain('wait-until')
-					void ctx._awaitAll().finally(release)
-				})
-				if (response === NO_FETCH_HANDLER) {
-					console.error('[lopata:vite] Worker module default export has no fetch() method')
-					next()
-					return
+					const writing = runWithExecutionContext(ctx, () => writeResponse(response, res, invocation))
+					invocation.finishHandler(response.status >= 500 ? { kind: 'error', error: new Error(`HTTP ${response.status}`) } : undefined)
+					await writing
+				} catch (error) {
+					invocation.finishHandler({ kind: 'error', error })
+					throw error
+				} finally {
+					invocation.finishHandler()
 				}
-				const writing = runWithExecutionContext(ctx, () => writeResponse(response, res, invocation))
-				invocation.finishHandler(response.status >= 500 ? { kind: 'error', error: new Error(`HTTP ${response.status}`) } : undefined)
-				await writing
-			} catch (error) {
-				invocation.finishHandler({ kind: 'error', error })
-				throw error
-			} finally {
-				invocation.finishHandler()
-			}
-		})
+			}))
 	}
 
 	function createWorkerInvocation(options: SpanOptions): InvocationTrace {
@@ -272,20 +280,21 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	async function runWorkerEvent(options: SpanOptions, callback: (ctx: CacheContext) => Promise<Response>): Promise<Response> {
 		const invocation = createWorkerInvocation(options)
-		return invocation.run(async () => {
-			const ctx = new ExecutionContext()
-			try {
-				workerDispatcher?.attachContext(ctx)
-				return await runWithExecutionContext(ctx, () => callback(ctx))
-			} catch (error) {
-				invocation.finishHandler({ kind: 'error', error })
-				throw error
-			} finally {
-				const release = invocation.retain('wait-until')
-				void ctx._awaitAll().finally(release)
-				invocation.finishHandler()
-			}
-		})
+		return runWithCompatibility(compatibility, () =>
+			invocation.run(async () => {
+				const ctx = new ExecutionContext()
+				try {
+					workerDispatcher?.attachContext(ctx)
+					return await runWithExecutionContext(ctx, () => callback(ctx))
+				} catch (error) {
+					invocation.finishHandler({ kind: 'error', error })
+					throw error
+				} finally {
+					const release = invocation.retain('wait-until')
+					void ctx._awaitAll().finally(release)
+					invocation.finishHandler()
+				}
+			}))
 	}
 
 	/**
@@ -471,7 +480,8 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				? await configMod.loadConfig(resolve(projectRoot, options.configPath))
 				: await configMod.autoLoadConfig(projectRoot)
 			config = loadedConfig
-			configureCloudflareCrypto(resolveCompatibility({ date: loadedConfig.compatibility_date, flags: loadedConfig.compatibility_flags }))
+			compatibility = resolveCompatibility({ date: loadedConfig.compatibility_date, flags: loadedConfig.compatibility_flags })
+			installCompatibilityCrypto()
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// The Vite plugin drives a worker built by Vite, so the main worker must have

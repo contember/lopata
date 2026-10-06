@@ -162,6 +162,19 @@ Keep `installCompatibilityCrypto` in `setup-globals.ts`; it consumes the factory
 
 F09a is not complete until two differently configured workers, including overlapping same-isolate test dispatch, show no crypto leakage. The pure-selector PR can land earlier but must be labelled selection-only.
 
+### Approved bounded F09a.3 scope
+
+The user approved scoped facades for same-process dispatch and transformed Vite SSR evaluation after Bun 1.4.2 probes. Compatibility uses its own native ALS singleton, independently of tracing lifetime. Dedicated threads retain F09a.2's isolate-local installer so native top-level imports keep their selected behavior.
+
+The user subsequently approved raising the supported minimum to **Bun 1.4.2**, including package metadata, documentation and CI/release verification. On Bun 1.3.14, `crypto.subtle` is a non-configurable own data property and cannot become an accessor. On Bun 1.4.2 it is inherited, so the scoped own accessor can shadow it. Older Bun versions are no longer supported; no alternate interception design or facade fallback is introduced. Both workflows pin Bun 1.4.2, and affected Vite subprocess tests use the parent executable rather than a bare `bun` resolved from PATH. Historical older-version probe results remain valid evidence for their recorded versions.
+
+- Vite transformed module evaluation, Worker fetch/scheduled/email/queue dispatch, in-process services/loopbacks, returned RPC capabilities, and configured DO/Workflow helper execution use the owning worker's selection. Dispatchers are associated with both the module and its environment.
+- Native test-module imports and Vite externalized dependencies are **not scoped at top level**. Bun native module evaluation does not inherit the importing ALS context. They see the legacy fallback when using the scoped installer; later runtime-managed dispatch is scoped. Inline modules' earlier evaluation and shared module-cache captures are not retroactively changed.
+- Legacy `SubtleCrypto.supports` has value `undefined`, but `in` and `Object.hasOwn` report the installed accessor. This reflection difference is accepted.
+- Captured facades, bound methods and modern references retain their selected behavior across calls from another scope. This is a compatibility mechanism, not a security boundary. Native prototype calls are not facade methods; native keys, usages and extractability retain their existing contracts.
+- Outside configured same-process dispatch, the selector uses the frozen no-date baseline. Node's `webcrypto` alias shares the same crypto object. Node API enforcement is not part of this unit.
+- Socket-event scope restoration remains a separate approval gate. EventTarget dispatch does not inherit listener registration scope; HTTP upgrade coverage does not establish socket-event compatibility.
+
 ### Node restriction feasibility: separate unit
 
 The pinned schema enables `nodejs_compat` by date on August 4, 2026, but Lopata currently intentionally runs applications and its own runtime on Bun. Native filesystem, networking, process APIs and Node modules can be functional where Workers exposes a stub or a different virtual resource. Do not report them as missing APIs.

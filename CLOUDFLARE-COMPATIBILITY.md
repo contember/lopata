@@ -8,6 +8,8 @@ The review covered the Cloudflare Workers blog archive, both 2026 Agents Week re
 
 ## Backports selected for this update
 
+**Current runtime requirement:** Bun 1.4.2 or later. CI and release verification are pinned to 1.4.2. The scoped crypto facade requires property behavior verified on that version; older Bun versions are no longer supported. Older-version probes and test results below remain historical evidence, not current support claims.
+
 | Announcement                                                                                                                                                               | Date                | Local implementation                                                                                         |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------ |
 | [Workflow saga rollbacks](https://blog.cloudflare.com/rollbacks-for-workflows/)                                                                                            | June 25             | Extend the existing Workflow engine with per-step compensation and durable rollback state.                   |
@@ -104,11 +106,11 @@ Enable the new API in the Worker's Wrangler configuration:
 
 The opt-in API adds post-quantum key generation, import/export, ML-DSA signing and verification, and ML-KEM encapsulation and decapsulation. The key helpers produce native symmetric keys for use with existing Web Crypto operations. The flag also enables `crypto.subtle.getPublicKey()` and static `SubtleCrypto.supports()`.
 
-The compatibility flag gates these APIs even on Bun 1.4.2, which provides native modern crypto. Without the flag, post-quantum operations remain unavailable. Enabling the flag uses the same adapter on both Bun 1.3.14 and 1.4.2.
+The compatibility flag gates these APIs even on Bun 1.4.2, which provides native modern crypto. Without the flag, post-quantum operations remain unavailable. Enabling the flag uses Lopata's adapter. The original adapter was also verified on Bun 1.3.14 before the minimum runtime was raised; that historical result does not establish scoped-facade support on older Bun.
 
 Existing classical algorithms continue to use Bun's native implementations. The post-quantum primitives use `@noble/post-quantum`; private key material is held separately from the public `CryptoKey` metadata.
 
-**Post-quantum key limitation:** Bun 1.3.14 cannot create native ML-KEM/ML-DSA `CryptoKey` objects. The adapter's key objects work with the patched crypto methods but do not carry Bun's native key brand. Native `CryptoKey` prototype getters reject them, and `structuredClone()` produces an empty object rather than a usable key. Do not send these key objects through worker messages or other structured-clone paths. This limitation was explicitly accepted for this backport. Classical keys and symmetric keys produced by the encapsulation helpers remain native.
+**Post-quantum key limitation:** The adapter's key objects work with Lopata's crypto methods but do not carry Bun's native key brand. Native `CryptoKey` prototype getters reject them, and `structuredClone()` produces an empty object rather than a usable key. Do not send these key objects through worker messages or other structured-clone paths. This limitation was explicitly accepted for the original backport, whose Bun 1.3.14 probes could not create native ML-KEM/ML-DSA `CryptoKey` objects. Classical keys and symmetric keys produced by the encapsulation helpers remain native.
 
 ## Existing local building blocks
 

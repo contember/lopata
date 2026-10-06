@@ -1,10 +1,12 @@
+import { getWorkerDispatcher } from './bindings/worker-cache'
+import { type CompatibilitySelection, resolveCompatibility } from './compatibility'
 import { hasScript } from './config'
 import type { GenerationManager } from './generation-manager'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
 
 export type ResolvedTarget =
 	| { kind: 'thread'; env: Record<string, unknown>; executor: WorkerThreadExecutor }
-	| { kind: 'in-process'; env: Record<string, unknown>; workerModule: Record<string, unknown> }
+	| { kind: 'in-process'; env: Record<string, unknown>; workerModule: Record<string, unknown>; compatibility: CompatibilitySelection }
 	/** An assets-only worker: no script, so a fetch is answered by its static assets. */
 	| { kind: 'assets'; env: Record<string, unknown>; assets: { fetch(req: Request): Promise<Response> } }
 
@@ -56,7 +58,9 @@ export class WorkerRegistry {
 		}
 		const workerModule = (gen as unknown as { workerModule?: Record<string, unknown> }).workerModule
 		if (workerModule) {
-			return { kind: 'in-process', env: gen.env, workerModule }
+			const compatibility = getWorkerDispatcher(workerModule, gen.env)?.compatibility
+				?? resolveCompatibility({ date: manager.config.compatibility_date, flags: manager.config.compatibility_flags })
+			return { kind: 'in-process', env: gen.env, workerModule, compatibility }
 		}
 		// No executor and no module is the legitimate shape of an assets-only worker —
 		// binding to one is how a Worker serves a sibling static site internally.

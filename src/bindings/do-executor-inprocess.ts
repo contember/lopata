@@ -1,3 +1,5 @@
+import type { CompatibilitySelection } from '../compatibility'
+import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { createInvocationTrace, getActiveInvocation, type InvocationTrace } from '../tracing/invocation'
@@ -17,8 +19,10 @@ export class InProcessExecutor implements DOExecutor {
 	private _callerSessions = new WeakMap<InvocationTrace, Set<RpcSession>>()
 	private _namespaceName: string
 	private _disposed = false
+	private compatibility: CompatibilitySelection
 
 	constructor(config: ExecutorConfig) {
+		this.compatibility = config.compatibility ?? legacyCompatibility
 		const { id, db, namespaceName, cls, env, dataDir, limits, containerConfig, onAlarmSet } = config
 		this._namespaceName = namespaceName
 
@@ -70,7 +74,10 @@ export class InProcessExecutor implements DOExecutor {
 	private _construct(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): DurableObjectBase {
 		const scope = this._startInvocation('constructor')
 		try {
-			const instance = scope.run(() => runWithExecutionContext(new ExecutionContext(), () => new cls(this._state, env)))
+			const instance = runWithCompatibility(
+				this.compatibility,
+				() => scope.run(() => runWithExecutionContext(new ExecutionContext(), () => new cls(this._state, env))),
+			)
 			scope.finishHandler()
 			return instance
 		} catch (error) {
@@ -83,10 +90,11 @@ export class InProcessExecutor implements DOExecutor {
 	private async _invoke<T>(operation: string, callback: (scope: InvocationTrace, context: ExecutionContext) => Promise<T>): Promise<T> {
 		const scope = this._startInvocation(operation)
 		try {
-			const result = await scope.run(() => {
-				const context = new ExecutionContext()
-				return runWithExecutionContext(context, () => callback(scope, context))
-			})
+			const result = await runWithCompatibility(this.compatibility, () =>
+				scope.run(() => {
+					const context = new ExecutionContext()
+					return runWithExecutionContext(context, () => callback(scope, context))
+				}))
 			scope.finishHandler()
 			return result
 		} catch (error) {
@@ -110,8 +118,9 @@ export class InProcessExecutor implements DOExecutor {
 			})
 		}
 		return this._invoke(operation, async (invocation, context) => {
+			const compatibility = getActiveCompatibility()
 			const session: RpcSession = createRpcSession({
-				run: callback => invocation.run(() => runWithExecutionContext(context, callback)),
+				run: callback => runWithCompatibility(compatibility, () => invocation.run(() => runWithExecutionContext(context, callback))),
 				retain: () => {
 					const release = invocation.retain('handler')
 					return () => {
@@ -231,7 +240,8 @@ export class InProcessExecutor implements DOExecutor {
 		return this._state._isAborted()
 	}
 
-	reloadClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): void {
+	reloadClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown, compatibility = this.compatibility): void {
+		this.compatibility = compatibility
 		this._instance = this._construct(cls, env)
 		this._state._setInstanceResolver(() => this._instance)
 	}

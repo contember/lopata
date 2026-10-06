@@ -233,6 +233,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		env,
 		new WorkersCache(built.db, init.workerName ?? init.config.name, crypto.randomUUID(), init.config),
 		props => new WorkerExecutionContext(post, props),
+		compatibility,
 		(request, ctx) => {
 			const handler = plugin.getServiceWorkerFetchHandler()
 			if (!handler) throw new Error('Worker module does not export a fetch handler')

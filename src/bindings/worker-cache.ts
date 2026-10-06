@@ -1,5 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import type { ReadableStreamDefaultReader } from 'node:stream/web'
+import type { CompatibilitySelection } from '../compatibility'
+import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import type { WranglerConfig } from '../config'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
@@ -586,10 +588,10 @@ export class WorkersCache {
 }
 
 export type ContextFactory = (props?: Record<string, unknown>) => CacheExecutionContext
-const dispatchers = new WeakMap<object, WorkerDispatcher>()
+const dispatchers = new WeakMap<object, WeakMap<object, WorkerDispatcher>>()
 
-export function getWorkerDispatcher(module: object): WorkerDispatcher | undefined {
-	return dispatchers.get(module)
+export function getWorkerDispatcher(module: object, env: object): WorkerDispatcher | undefined {
+	return dispatchers.get(module)?.get(env)
 }
 
 type CloneableResponse = Pick<Response, 'url' | 'redirected' | 'type' | 'clone'>
@@ -615,7 +617,9 @@ function preserveResponseMetadata<T extends CloneableResponse>(response: T, orig
 export function trackInvocationResponse(response: Response, invocation: InvocationTrace, context?: CacheExecutionContext): Response {
 	if (!response.body || response.status === 0 || response.status === 101) return response
 	const release = invocation.retain('response-body')
-	const run = <T>(callback: () => T): T => invocation.run(() => context ? runWithExecutionContext(context, callback) : callback())
+	const compatibility = getActiveCompatibility()
+	const run = <T>(callback: () => T): T =>
+		runWithCompatibility(compatibility, () => invocation.run(() => context ? runWithExecutionContext(context, callback) : callback()))
 	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 	const body = response.body
 	let cancelling = false
@@ -676,9 +680,15 @@ export class WorkerDispatcher {
 		private env: Record<string, unknown>,
 		private storage: WorkersCache,
 		private createContext: ContextFactory,
+		readonly compatibility: CompatibilitySelection = legacyCompatibility,
 		private legacyFetch?: (request: Request, ctx: CacheExecutionContext) => Promise<Response>,
 	) {
-		dispatchers.set(module, this)
+		let environments = dispatchers.get(module)
+		if (!environments) {
+			environments = new WeakMap()
+			dispatchers.set(module, environments)
+		}
+		environments.set(env, this)
 	}
 
 	terminateInvocations(reason: string): void {
@@ -718,6 +728,16 @@ export class WorkerDispatcher {
 		props?: Record<string, unknown>,
 		trusted = false,
 		context?: CacheExecutionContext,
+	): Promise<Response> {
+		return runWithCompatibility(this.compatibility, () => this.fetchInScope(request, entrypoint, props, trusted, context))
+	}
+
+	private async fetchInScope(
+		request: Request,
+		entrypoint: string,
+		props: Record<string, unknown> | undefined,
+		trusted: boolean,
+		context: CacheExecutionContext | undefined,
 	): Promise<Response> {
 		if (!context) {
 			const invocation = this.trackInvocation(createInvocationTrace({ name: `${request.method} ${new URL(request.url).pathname}`, kind: 'server' }))
@@ -818,9 +838,10 @@ export class WorkerDispatcher {
 		const owners = new Set([invocation, caller].filter(owner => owner !== undefined))
 		const session = createRpcSession({
 			run: callback =>
-				invocation
-					? invocation.run(() => runWithExecutionContext(ctx, callback))
-					: runWithExecutionContext(ctx, callback),
+				runWithCompatibility(this.compatibility, () =>
+					invocation
+						? invocation.run(() => runWithExecutionContext(ctx, callback))
+						: runWithExecutionContext(ctx, callback)),
 			retain: () => {
 				const release = invocation?.retain('handler')
 				return () => {
@@ -874,6 +895,6 @@ export class WorkerDispatcher {
 				if (!context) invocation?.finishHandler(completion)
 			}
 		}
-		return invocation ? invocation.run(run) : run()
+		return runWithCompatibility(this.compatibility, () => invocation ? invocation.run(run) : run())
 	}
 }

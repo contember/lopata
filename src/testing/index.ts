@@ -7,11 +7,15 @@ import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
 import { trackInvocationResponse, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
+import { resolveCompatibility } from '../compatibility'
+import { runWithCompatibility } from '../compatibility-context'
 import type { WranglerConfig } from '../config'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { installCompatibilityCrypto } from '../setup-globals'
 import { createInvocationTrace, type InvocationTrace } from '../tracing/invocation'
+import type { ResolvedTarget } from '../worker-registry'
 import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
 import { buildTestEnv, configToBindings } from './env-builder'
@@ -31,6 +35,7 @@ export type { TestWorkflowBinding, TestWorkflowInstance, TestWorkflowRun } from 
 export async function createTestEnv<Env = Record<string, unknown>>(options: TestEnvOptions = {}): Promise<TestEnv<Env>> {
 	// Ensure virtual modules + globals are registered (no-op if preload already ran)
 	setupTestEnv()
+	installCompatibilityCrypto()
 
 	// Resolve clock
 	let clock: TestClock | null = null
@@ -59,6 +64,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		mergedVars = { ...configVars, ...options.vars }
 	}
 
+	const compatibility = resolveCompatibility({ date: workerConfig.compatibility_date, flags: workerConfig.compatibility_flags })
 	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars, clock ?? undefined)
 
 	// Wire in-memory caches for this test env
@@ -90,13 +96,13 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	for (const entry of registry.durableObjects) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Durable Object class "${entry.className}" not exported from worker module`)
-		entry.namespace._setClass(cls as any, env)
+		entry.namespace._setClass(cls as any, env, undefined, compatibility)
 	}
 
 	for (const entry of registry.workflows) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`)
-		entry.binding._setClass(cls as any, env)
+		entry.binding._setClass(cls as any, env, compatibility)
 		entry.binding.resumeInterrupted()
 	}
 
@@ -106,13 +112,14 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		env,
 		new WorkersCache(db, workerConfig.name, crypto.randomUUID(), workerConfig, () => clock?.now() ?? Date.now()),
 		props => new ExecutionContext(props),
+		compatibility,
 	)
 	for (const entry of registry.serviceBindings) {
 		const wire = entry.proxy._wire as
-			| ((resolver: () => { kind: 'in-process'; workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void)
+			| ((resolver: () => ResolvedTarget) => void)
 			| undefined
 		if (wire) {
-			wire(() => ({ kind: 'in-process', workerModule, env }))
+			wire(() => ({ kind: 'in-process', workerModule, env, compatibility }))
 		}
 	}
 
@@ -126,19 +133,20 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		const invocation = createInvocationTrace({ name, kind: 'server' })
 		invocations.add(invocation)
 		void invocation.completed.then(() => invocations.delete(invocation))
-		return invocation.run(async () => {
-			const ctx = new ExecutionContext()
-			try {
-				const result = await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx, invocation)))
-				await ctx._awaitAll()
-				invocation.finishHandler()
-				return result
-			} catch (error) {
-				invocation.finishHandler({ kind: 'error', error })
-				await ctx._awaitAll()
-				throw error
-			}
-		})
+		return runWithCompatibility(compatibility, () =>
+			invocation.run(async () => {
+				const ctx = new ExecutionContext()
+				try {
+					const result = await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx, invocation)))
+					await ctx._awaitAll()
+					invocation.finishHandler()
+					return result
+				} catch (error) {
+					invocation.finishHandler({ kind: 'error', error })
+					await ctx._awaitAll()
+					throw error
+				}
+			}))
 	}
 
 	function getHandler(name: EntrypointHandlerName, ctx: ExecutionContext): ((...args: unknown[]) => unknown) | null {

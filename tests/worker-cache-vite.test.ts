@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { execPath } from 'node:process'
 
 describe('Vite Workers Cache execution-context accounting', () => {
 	let process: Subprocess
@@ -10,7 +11,7 @@ describe('Vite Workers Cache execution-context accounting', () => {
 	let base: string
 	beforeAll(async () => {
 		dir = mkdtempSync(join(tmpdir(), 'worker-cache-vite-'))
-		process = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/worker-cache-vite-runner.ts')], {
+		process = Bun.spawn([execPath, resolve(import.meta.dir, 'fixtures/worker-cache-vite-runner.ts')], {
 			cwd: dir,
 			stdout: 'pipe',
 			stderr: 'inherit',

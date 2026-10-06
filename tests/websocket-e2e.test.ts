@@ -60,7 +60,7 @@ async function startStandaloneServer(port: number): Promise<Subprocess> {
 }
 
 async function startViteServer(port: number): Promise<Subprocess> {
-	const proc = Bun.spawn(['bun', '--bun', VITE_BIN, 'dev', '--port', String(port)], {
+	const proc = Bun.spawn([process.execPath, '--bun', VITE_BIN, 'dev', '--port', String(port)], {
 		cwd: FIXTURE_DIR,
 		stdout: 'pipe',
 		stderr: 'pipe',

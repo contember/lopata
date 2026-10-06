@@ -1,15 +1,33 @@
 import { SqliteCacheStorage } from './bindings/cache'
 import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-streams'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
-import { configureModernCrypto } from './bindings/crypto-modern'
+import { configureModernCrypto, createCryptoFacades } from './bindings/crypto-modern'
+import { modernCryptoSupports } from './bindings/crypto-modern-supports'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
 import type { CompatibilitySelection } from './compatibility'
+import { getActiveCompatibility } from './compatibility-context'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
 
 let initialized = false
+let scopedCryptoInstalled = false
+
+export function installCompatibilityCrypto(): void {
+	if (scopedCryptoInstalled) return
+	patchGlobalCrypto()
+	const facades = createCryptoFacades()
+	Object.defineProperty(crypto, 'subtle', {
+		configurable: true,
+		get: () => getActiveCompatibility().modernCrypto ? facades.modern : facades.legacy,
+	})
+	Object.defineProperty(SubtleCrypto, 'supports', {
+		configurable: true,
+		get: () => getActiveCompatibility().modernCrypto ? modernCryptoSupports : undefined,
+	})
+	scopedCryptoInstalled = true
+}
 
 export function configureCloudflareCrypto(compatibility: CompatibilitySelection): void {
 	patchGlobalCrypto()

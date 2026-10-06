@@ -1,6 +1,7 @@
 import { ml_dsa44, ml_dsa65, ml_dsa87 } from '@noble/post-quantum/ml-dsa.js'
 import { ml_kem1024, ml_kem768 } from '@noble/post-quantum/ml-kem.js'
 import { createPublicKey, KeyObject } from 'node:crypto'
+import { cfTimingSafeEqual } from './crypto-extras'
 import { copyBuffer, cryptoError, decodeBase64Url, decodeModernDer, encodeModernDer, equalBytes } from './crypto-modern-formats'
 import { modernCryptoSupports } from './crypto-modern-supports'
 import type {
@@ -606,7 +607,15 @@ function restrictNativeModernCrypto(): void {
 	}
 	Reflect.deleteProperty(SubtleCrypto, 'supports')
 	if (!hasNativeModernCrypto) return
+	Object.defineProperties(
+		subtle,
+		Object.fromEntries(
+			Object.entries(restrictedCryptoMethods(subtle)).map(([name, value]) => [name, { value, configurable: true, writable: true }]),
+		),
+	)
+}
 
+function restrictedCryptoMethods(subtle: NativeSubtleCrypto) {
 	const generateKey = subtle.generateKey.bind(subtle)
 	const importKey = subtle.importKey.bind(subtle)
 	const exportKey = subtle.exportKey.bind(subtle)
@@ -666,8 +675,69 @@ function restrictNativeModernCrypto(): void {
 			return unwrapKey(format, data, key, algorithm, unwrappedAlgorithm, extractable, usages)
 		},
 	}
-	for (const [name, method] of Object.entries(methods)) {
-		Object.defineProperty(subtle, name, { value: method, configurable: true, writable: true })
+	return methods
+}
+
+function captureNativeCrypto(): NativeSubtleCrypto {
+	const subtle = crypto.subtle
+	return {
+		encrypt: subtle.encrypt.bind(subtle),
+		decrypt: subtle.decrypt.bind(subtle),
+		sign: subtle.sign.bind(subtle),
+		verify: subtle.verify.bind(subtle),
+		digest: subtle.digest.bind(subtle),
+		generateKey: subtle.generateKey.bind(subtle),
+		importKey: subtle.importKey.bind(subtle),
+		exportKey: subtle.exportKey.bind(subtle),
+		wrapKey: subtle.wrapKey.bind(subtle),
+		unwrapKey: subtle.unwrapKey.bind(subtle),
+		deriveBits: subtle.deriveBits.bind(subtle),
+		deriveKey: subtle.deriveKey.bind(subtle),
+	}
+}
+
+function modernCryptoMethods(modern: ModernCryptoAdapter) {
+	return {
+		generateKey: modern.generateKey.bind(modern),
+		importKey: modern.importKey.bind(modern),
+		exportKey: modern.exportKey.bind(modern),
+		sign: modern.sign.bind(modern),
+		verify: modern.verify.bind(modern),
+		wrapKey: modern.wrapKey.bind(modern),
+		unwrapKey: modern.unwrapKey.bind(modern),
+		encapsulateBits: modern.encapsulateBits.bind(modern),
+		decapsulateBits: modern.decapsulateBits.bind(modern),
+		encapsulateKey: modern.encapsulateKey.bind(modern),
+		decapsulateKey: modern.decapsulateKey.bind(modern),
+		getPublicKey: modern.getPublicKey.bind(modern),
+		encrypt: modern.encrypt.bind(modern),
+		decrypt: modern.decrypt.bind(modern),
+		deriveBits: modern.deriveBits.bind(modern),
+		deriveKey: modern.deriveKey.bind(modern),
+	}
+}
+
+export interface CryptoFacades {
+	readonly legacy: NativeSubtleCrypto & { readonly timingSafeEqual: typeof cfTimingSafeEqual }
+	readonly modern: ModernSubtleCrypto & { readonly timingSafeEqual: typeof cfTimingSafeEqual }
+}
+
+export function createCryptoFacades(): CryptoFacades {
+	const legacy = captureNativeCrypto()
+	Object.defineProperties(
+		legacy,
+		Object.fromEntries(
+			Object.entries(restrictedCryptoMethods(legacy)).map(([name, value]) => [name, { value, configurable: true, writable: true }]),
+		),
+	)
+	const modern = new ModernCryptoAdapter(legacy)
+	return {
+		legacy: { ...legacy, timingSafeEqual: cfTimingSafeEqual },
+		modern: {
+			...modernCryptoMethods(modern),
+			digest: modern.digest.bind(modern),
+			timingSafeEqual: cfTimingSafeEqual,
+		},
 	}
 }
 
@@ -675,42 +745,10 @@ function restrictNativeModernCrypto(): void {
 export function configureModernCrypto(enabled: boolean): ModernSubtleCrypto | undefined {
 	restrictNativeModernCrypto()
 	if (enabled && !adapter) {
-		const subtle = crypto.subtle
-		const native: NativeSubtleCrypto = {
-			encrypt: subtle.encrypt.bind(subtle),
-			decrypt: subtle.decrypt.bind(subtle),
-			sign: subtle.sign.bind(subtle),
-			verify: subtle.verify.bind(subtle),
-			digest: subtle.digest.bind(subtle),
-			generateKey: subtle.generateKey.bind(subtle),
-			importKey: subtle.importKey.bind(subtle),
-			exportKey: subtle.exportKey.bind(subtle),
-			wrapKey: subtle.wrapKey.bind(subtle),
-			unwrapKey: subtle.unwrapKey.bind(subtle),
-			deriveBits: subtle.deriveBits.bind(subtle),
-			deriveKey: subtle.deriveKey.bind(subtle),
-		}
-		adapter = new ModernCryptoAdapter(native)
+		adapter = new ModernCryptoAdapter(captureNativeCrypto())
 	}
 	if (enabled && !installed && adapter) {
-		const methods = {
-			generateKey: adapter.generateKey.bind(adapter),
-			importKey: adapter.importKey.bind(adapter),
-			exportKey: adapter.exportKey.bind(adapter),
-			sign: adapter.sign.bind(adapter),
-			verify: adapter.verify.bind(adapter),
-			wrapKey: adapter.wrapKey.bind(adapter),
-			unwrapKey: adapter.unwrapKey.bind(adapter),
-			encapsulateBits: adapter.encapsulateBits.bind(adapter),
-			decapsulateBits: adapter.decapsulateBits.bind(adapter),
-			encapsulateKey: adapter.encapsulateKey.bind(adapter),
-			decapsulateKey: adapter.decapsulateKey.bind(adapter),
-			getPublicKey: adapter.getPublicKey.bind(adapter),
-			encrypt: adapter.encrypt.bind(adapter),
-			decrypt: adapter.decrypt.bind(adapter),
-			deriveBits: adapter.deriveBits.bind(adapter),
-			deriveKey: adapter.deriveKey.bind(adapter),
-		}
+		const methods = modernCryptoMethods(adapter)
 		for (const [name, method] of Object.entries(methods)) {
 			originalDescriptors.set(name, Object.getOwnPropertyDescriptor(crypto.subtle, name))
 			Object.defineProperty(crypto.subtle, name, { value: method, configurable: true, writable: true })

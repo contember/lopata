@@ -83,7 +83,7 @@ describe('Class-based entrypoint E2E — vite', () => {
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn(['bun', '--bun', VITE_BIN, 'dev', '--port', String(PORT)], {
+		proc = Bun.spawn([process.execPath, '--bun', VITE_BIN, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

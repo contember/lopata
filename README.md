@@ -33,7 +33,9 @@ Lopata takes a different approach: it implements all Cloudflare bindings nativel
 
 ## Requirements
 
-- [Bun](https://bun.sh) v1.1+
+- [Bun](https://bun.sh) v1.4.2 or later
+
+CI and release verification run on Bun 1.4.2, the minimum supported version.
 
 ## Quick start
 

@@ -1,6 +1,8 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility } from '../compatibility-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveInvocation } from '../tracing/invocation'
@@ -910,6 +912,7 @@ export class DurableObjectNamespaceImpl {
 	private _factoryOverride?: DOExecutorFactory
 	private _defaultFactory?: DOExecutorFactory
 	private _generationId?: number
+	private _compatibility?: CompatibilitySelection
 	private clock: Clock
 
 	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory, clock?: Clock) {
@@ -935,11 +938,16 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** Called after worker module is loaded to wire the actual class */
-	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: Record<string, unknown>, generationId?: number) {
+	_setClass(
+		cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase,
+		env: Record<string, unknown>,
+		generationId?: number,
+		compatibility = legacyCompatibility,
+	) {
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
 				// Hot-swap: reuse state + WebSocket connections, create new instance with new code
-				executor.reloadClass(cls, env)
+				executor.reloadClass(cls, env, compatibility)
 			} else {
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
@@ -948,6 +956,7 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = cls
+		this._compatibility = compatibility
 		this._externalClassName = undefined
 		this._env = env
 		this._generationId = generationId
@@ -984,6 +993,7 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = undefined
+		this._compatibility = undefined
 		this._externalClassName = className
 		// Clear the previous generation's hint; the new generation's `'ready'` message
 		// will deliver a fresh one via `_setAlarmHandlerHint`. Without this, removing
@@ -1099,6 +1109,7 @@ export class DurableObjectNamespaceImpl {
 			.run(this.namespaceName, idStr, id.name ?? null)
 
 		const executor = this._getFactory().create({
+			compatibility: this._compatibility,
 			id,
 			db: this.db,
 			namespaceName: this.namespaceName,

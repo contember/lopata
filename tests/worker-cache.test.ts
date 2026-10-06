@@ -321,7 +321,8 @@ describe('Workers Cache', () => {
 			}
 		}
 		const module = { default: { fetch: origin }, Backend }
-		const dispatcher = new WorkerDispatcher(module, {}, storage, props => new ExecutionContext(props))
+		const env = {}
+		const dispatcher = new WorkerDispatcher(module, env, storage, props => new ExecutionContext(props))
 		const exports = dispatcher.context().exports
 		const backend = exports.Backend
 		if (typeof backend !== 'function') throw new Error('Missing loopback factory')
@@ -338,7 +339,7 @@ describe('Workers Cache', () => {
 		expect(await fetchLoop()).toBe('1:a')
 		const service = createServiceBinding('self', 'Backend', undefined, { tenant: 'a' })
 		if (typeof service._wire !== 'function' || typeof service.fetch !== 'function') throw new Error('Invalid service binding')
-		Reflect.apply(service._wire, service, [module, {}])
+		Reflect.apply(service._wire, service, [module, env])
 		const bound: unknown = await Reflect.apply(service.fetch, service, [req()])
 		if (!(bound instanceof Response)) throw new Error('Invalid service response')
 		expect(await bound.text()).toBe('1:a')

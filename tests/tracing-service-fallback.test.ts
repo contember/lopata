@@ -483,9 +483,16 @@ test('dispatcher-backed fetch, RPC and property reads get one target root each',
 			},
 		},
 	}
-	const dispatcher = new WorkerDispatcher(module, {}, new WorkersCache(db, 'backend', 'v1', { name: 'backend' }), props => new ExecutionContext(props))
+	const env = {}
+	const dispatcher = new WorkerDispatcher(
+		module,
+		env,
+		new WorkersCache(db, 'backend', 'v1', { name: 'backend' }),
+		props => new ExecutionContext(props),
+	)
 	try {
-		const target = binding(module)
+		const target = new ServiceBinding('backend')
+		target._wire(module, env)
 		await target.fetch('http://test/dispatch')
 		expect(await call(target.toProxy(), 'method')).toBe(true)
 		expect(await target.toProxy().value).toBe(true)

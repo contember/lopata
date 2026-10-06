@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { realpathSync } from 'node:fs'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
@@ -1152,10 +1153,11 @@ export function wireWorkflowClass(
 	className: string,
 	workerModule: Record<string, unknown>,
 	env: Record<string, unknown>,
+	compatibility = legacyCompatibility,
 ): void {
 	const cls = workerModule[className]
 	if (!cls) throw new Error(`Workflow class "${className}" not exported from worker module`)
-	binding._setClass(cls as new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env)
+	binding._setClass(cls as new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env, compatibility)
 	// NOTE: resumeInterrupted() is deliberately NOT called here. Resuming during
 	// worker init would re-execute running/waiting instances while the previous
 	// generation's worker (terminated only after drain) is still running them —
@@ -1394,6 +1396,7 @@ export class SqliteWorkflowBinding {
 	private className: string
 	private _class?: new(ctx: unknown, env: unknown) => WorkflowEntrypointBase
 	private _env?: unknown
+	private compatibility = legacyCompatibility
 	private counter = 0
 	private limits: Required<WorkflowLimits>
 	private clock: Clock
@@ -1413,9 +1416,10 @@ export class SqliteWorkflowBinding {
 		this.clock = clock ?? realClock
 	}
 
-	_setClass(cls: new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env: unknown) {
+	_setClass(cls: new(ctx: unknown, env: unknown) => WorkflowEntrypointBase, env: unknown, compatibility = legacyCompatibility) {
 		this._class = cls
 		this._env = env
+		this.compatibility = compatibility
 	}
 
 	_getClass() {
@@ -1847,6 +1851,7 @@ export class SqliteWorkflowBinding {
 		createdAt?: number,
 		clock?: Clock,
 		traceOwner?: SqliteWorkflowBinding,
+		compatibility = traceOwner?.compatibility ?? legacyCompatibility,
 	): void {
 		const store = new WorkflowStore(db)
 		const initialToken = store.currentToken(id, workflowName)
@@ -1883,9 +1888,10 @@ export class SqliteWorkflowBinding {
 				queued.created_at,
 				resolvedClock,
 				traceOwner,
+				compatibility,
 			)
 		}
-		const execution = (async () => {
+		const execution = runWithCompatibility(compatibility, async () => {
 			await Promise.resolve()
 			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) {
 				if (abortControllers.get(registryId) === abortController) abortControllers.delete(registryId)
@@ -2080,7 +2086,7 @@ export class SqliteWorkflowBinding {
 			} finally {
 				invocation.finishHandler(completion)
 			}
-		})()
+		})
 		executions.set(registryId, execution)
 		execution.finally(() => {
 			if (executions.get(registryId) === execution) executions.delete(registryId)

@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path'
 for (const flag of ['on', 'off']) {
 	test(`Vite activates module-level crypto from the primary worker config: flag ${flag}`, async () => {
 		const directory = mkdtempSync(join(tmpdir(), 'crypto-modern-vite-'))
-		const child = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/crypto-modern-vite-runner.ts'), flag], {
+		const child = Bun.spawn([process.execPath, resolve(import.meta.dir, 'fixtures/crypto-modern-vite-runner.ts'), flag], {
 			cwd: directory,
 			stdout: 'pipe',
 			stderr: 'pipe',

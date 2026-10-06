@@ -1,5 +1,5 @@
 const enabled = 'encapsulateBits' in crypto.subtle
-const supported = Object.hasOwn(SubtleCrypto, 'supports')
+const supported = typeof SubtleCrypto.supports === 'function'
 let pair: CryptoKeyPair | undefined
 if (enabled) {
 	const generated = await crypto.subtle.generateKey('ML-KEM-768', false, ['encapsulateBits', 'decapsulateBits'])

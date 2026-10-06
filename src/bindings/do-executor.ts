@@ -72,7 +72,7 @@ export interface DOExecutor {
 	isDisposed?(): boolean
 
 	/** Hot-swap the DO class and env without disposing (preserves WebSocket connections) */
-	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown): void
+	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown, compatibility?: CompatibilitySelection): void
 
 	/** Kill the instance */
 	dispose(): Promise<void>

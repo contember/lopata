@@ -1,19 +1,26 @@
 import { ml_dsa44, ml_dsa65, ml_dsa87 } from '@noble/post-quantum/ml-dsa.js'
 import { ml_kem1024, ml_kem768 } from '@noble/post-quantum/ml-kem.js'
-import { afterEach, describe, expect, test } from 'bun:test'
+import { describe, expect, test as bunTest } from 'bun:test'
 import { generateKeyPairSync } from 'node:crypto'
 import { patchGlobalCrypto } from '../src/bindings/crypto-extras'
-import { configureModernCrypto } from '../src/bindings/crypto-modern'
+import { createCryptoFacades } from '../src/bindings/crypto-modern'
 import type { ModernAlgorithmName, ModernKeyUsage, ModernSubtleCrypto } from '../src/bindings/crypto-modern'
 import { modernCryptoSupports } from '../src/bindings/crypto-modern-supports'
+import { resolveCompatibility } from '../src/compatibility'
+import { legacyCompatibility, runWithCompatibility } from '../src/compatibility-context'
+import { installCompatibilityCrypto } from '../src/setup-globals'
 
 patchGlobalCrypto()
-afterEach(() => configureModernCrypto(false))
+const modernApi = createCryptoFacades().modern
+installCompatibilityCrypto()
+const modernSelection = resolveCompatibility({ flags: ['webcrypto_modern_algorithms'] })
+
+function test(name: string, callback: () => Promise<void>) {
+	return bunTest(name, () => runWithCompatibility(modernSelection, callback))
+}
 
 function subtle(): ModernSubtleCrypto {
-	const result = configureModernCrypto(true)
-	if (!result) throw new Error('Modern crypto was not enabled')
-	return result
+	return modernApi
 }
 
 const kems: { name: ModernAlgorithmName; implementation: typeof ml_kem768 }[] = [
@@ -442,12 +449,14 @@ describe('modern helpers with classical crypto', () => {
 		expect(modernCryptoSupports('encapsulateKey', 'ML-KEM-768', { name: 'HMAC', hash: 'SHA-256', length: 128 })).toBe(false)
 	})
 
-	test('flag toggles are idempotent and preserve native methods and PKCS1 import', async () => {
-		configureModernCrypto(false)
-		const originalGenerate = crypto.subtle.generateKey
-		expect(Object.hasOwn(SubtleCrypto, 'supports')).toBe(false)
-		expect('encapsulateBits' in crypto.subtle).toBe(false)
-		await expect(crypto.subtle.generateKey('ML-DSA-44', true, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
+	test('scopes preserve native methods and PKCS1 import', async () => {
+		const originalGenerate = runWithCompatibility(legacyCompatibility, () => crypto.subtle.generateKey)
+		await runWithCompatibility(legacyCompatibility, async () => {
+			expect(Reflect.get(SubtleCrypto, 'supports')).toBeUndefined()
+			expect(Object.hasOwn(SubtleCrypto, 'supports')).toBe(true)
+			expect('encapsulateBits' in crypto.subtle).toBe(false)
+			await expect(crypto.subtle.generateKey('ML-DSA-44', true, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
+		})
 		subtle()
 		const patchedGenerate = crypto.subtle.generateKey
 		subtle()
@@ -462,17 +471,17 @@ describe('modern helpers with classical crypto', () => {
 		const pkcs1 = new Uint8Array(rsa.privateKey.export({ type: 'pkcs1', format: 'der' }))
 		const key = await crypto.subtle.importKey('pkcs8', pkcs1, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'])
 		await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, message)
-		configureModernCrypto(false)
-		configureModernCrypto(false)
-		expect(crypto.subtle.generateKey).toBe(originalGenerate)
-		for (const method of ['encapsulateBits', 'decapsulateBits', 'encapsulateKey', 'decapsulateKey', 'getPublicKey']) {
-			expect(method in crypto.subtle).toBe(false)
-		}
-		expect(Object.hasOwn(SubtleCrypto, 'supports')).toBe(false)
-		await expect(crypto.subtle.generateKey('ML-DSA-44', true, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
-		await expect(crypto.subtle.importKey('pkcs8', privateDer, 'ML-DSA-44', false, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
-		await expect(crypto.subtle.sign('ML-DSA-44', key, message)).rejects.toMatchObject({ name: 'NotSupportedError' })
-		await expect(crypto.subtle.verify('ML-DSA-44', key, signature, message)).rejects.toMatchObject({ name: 'NotSupportedError' })
-		await crypto.subtle.importKey('pkcs8', pkcs1, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'])
+		await runWithCompatibility(legacyCompatibility, async () => {
+			expect(crypto.subtle.generateKey).toBe(originalGenerate)
+			for (const method of ['encapsulateBits', 'decapsulateBits', 'encapsulateKey', 'decapsulateKey', 'getPublicKey']) {
+				expect(method in crypto.subtle).toBe(false)
+			}
+			expect(Reflect.get(SubtleCrypto, 'supports')).toBeUndefined()
+			await expect(crypto.subtle.generateKey('ML-DSA-44', true, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
+			await expect(crypto.subtle.importKey('pkcs8', privateDer, 'ML-DSA-44', false, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
+			await expect(crypto.subtle.sign('ML-DSA-44', key, message)).rejects.toMatchObject({ name: 'NotSupportedError' })
+			await expect(crypto.subtle.verify('ML-DSA-44', key, signature, message)).rejects.toMatchObject({ name: 'NotSupportedError' })
+			await crypto.subtle.importKey('pkcs8', pkcs1, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign'])
+		})
 	})
 })
