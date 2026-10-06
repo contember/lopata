@@ -5,14 +5,15 @@ import { configureModernCrypto } from './bindings/crypto-modern'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
+import type { CompatibilitySelection } from './compatibility'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
 
 let initialized = false
 
-export function configureCloudflareCrypto(compatibilityFlags: readonly string[] = []): void {
+export function configureCloudflareCrypto(compatibility: CompatibilitySelection): void {
 	patchGlobalCrypto()
-	configureModernCrypto(compatibilityFlags.includes('webcrypto_modern_algorithms'))
+	configureModernCrypto(compatibility.modernCrypto)
 }
 
 /**

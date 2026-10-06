@@ -6,7 +6,7 @@ import { WorkerLoaderBinding } from '../src/bindings/worker-loader'
 
 test('normal workers and DO workers configure module-level crypto independently from their own flags', async () => {
 	const directory = mkdtempSync(join(tmpdir(), 'lopata-modern-crypto-isolation-'))
-	const child = Bun.spawn(['bun', resolve(import.meta.dir, 'fixtures/crypto-modern-isolation-runner.ts')], {
+	const child = Bun.spawn([process.execPath, resolve(import.meta.dir, 'fixtures/crypto-modern-isolation-runner.ts')], {
 		cwd: directory,
 		stdout: 'pipe',
 		stderr: 'pipe',

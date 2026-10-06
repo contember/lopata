@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { DOExecutorFactory } from './bindings/do-executor'
+import { resolveCompatibility } from './compatibility'
 import type { WranglerConfig } from './config'
 import { buildEnv, wireServiceBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
@@ -111,6 +112,7 @@ export class GenerationManager {
 	}
 
 	private async _doReload(): Promise<Generation> {
+		resolveCompatibility({ date: this.config.compatibility_date, flags: this.config.compatibility_flags })
 		// Assets-only: build the env (so an `assets.binding` and any stateless
 		// bindings still exist) but spawn no worker thread. `Generation` serves such
 		// requests straight from `registry.staticAssets`.

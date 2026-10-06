@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import type { ContainerConfig } from './container'
 import type { DurableObjectBase, DurableObjectIdImpl, DurableObjectLimits } from './durable-object'
@@ -29,6 +30,8 @@ export interface ExecutorConfig {
 	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
 	 *  overrides (which the re-parse silently dropped). */
 	_wranglerConfig?: WranglerConfig
+	/** Absent only when the standalone worker must select from its config-file fallback. */
+	compatibility?: CompatibilitySelection
 	/** @internal Runtime settings the worker env gets too, so the DO env matches it. */
 	_runtime?: DOWorkerRuntimeOptions
 	/** @internal Disposal of the PRIOR executor for this same id, still in flight

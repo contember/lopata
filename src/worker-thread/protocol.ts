@@ -8,6 +8,7 @@
 
 import type { WorkerFetchOptions } from '../bindings/worker-cache'
 import type { WorkflowBatchDeleteResult, WorkflowInstanceStatus } from '../bindings/workflow'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
 export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
@@ -139,6 +140,7 @@ export function deserializeError(err: SerializedError): Error {
 }
 
 export interface WorkerInitConfig {
+	compatibility: CompatibilitySelection
 	modulePath: string
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
 	config: WranglerConfig

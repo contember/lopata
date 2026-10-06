@@ -10,6 +10,7 @@
 import { dirname, resolve } from 'node:path'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
@@ -61,6 +62,7 @@ export interface WorkerReadyInfo {
 }
 
 export class WorkerThreadExecutor {
+	private readonly _compatibility: CompatibilitySelection
 	private _worker: Worker
 	private _ready: Promise<WorkerReadyInfo>
 	private _readyResolve!: (info: WorkerReadyInfo) => void
@@ -124,6 +126,7 @@ export class WorkerThreadExecutor {
 	private _topRequestStreams = new OutboundStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
+		this._compatibility = resolveCompatibility({ date: options.config.compatibility_date, flags: options.config.compatibility_flags })
 		// Establish WAL and schema in main before fresh worker connections can race to initialize them.
 		getDatabase()
 		this._traceWriter = getTraceStore()
@@ -210,6 +213,7 @@ export class WorkerThreadExecutor {
 					type: 'init',
 					config: {
 						modulePath: this._initConfig.modulePath,
+						compatibility: this._compatibility,
 						config: this._initConfig.config,
 						baseDir: this._initConfig.baseDir,
 						// Same physical .lopata dir main + DO workers use, NOT baseDir —

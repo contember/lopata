@@ -5,6 +5,7 @@ import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
+import { resolveCompatibility } from '../compatibility.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
 import { ExecutionContext as CacheContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context.ts'
 import { FileWatcher } from '../file-watcher.ts'
@@ -470,7 +471,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				? await configMod.loadConfig(resolve(projectRoot, options.configPath))
 				: await configMod.autoLoadConfig(projectRoot)
 			config = loadedConfig
-			configureCloudflareCrypto(loadedConfig.compatibility_flags)
+			configureCloudflareCrypto(resolveCompatibility({ date: loadedConfig.compatibility_date, flags: loadedConfig.compatibility_flags }))
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// The Vite plugin drives a worker built by Vite, so the main worker must have

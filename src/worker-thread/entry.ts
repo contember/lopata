@@ -6,6 +6,7 @@ import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { type CacheExecutionContext, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
+import { resolveCompatibility } from '../compatibility'
 import { validateWorkerCacheConfig } from '../config'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
@@ -166,7 +167,8 @@ function dispatchServiceWorkerFetch(
 }
 
 async function initRuntime(init: WorkerInitConfig) {
-	configureCloudflareCrypto(init.config.compatibility_flags)
+	const compatibility = resolveCompatibility({ date: init.compatibility.date ?? undefined, flags: init.compatibility.flags })
+	configureCloudflareCrypto(compatibility)
 	validateWorkerCacheConfig(init.config)
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.

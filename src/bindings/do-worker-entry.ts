@@ -7,6 +7,7 @@
 
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { runWithParentContext } from '../tracing/context'
 import { createInvocationTrace, getActiveInvocation, type TraceCompletion } from '../tracing/invocation'
@@ -22,6 +23,7 @@ import { isWorkerResponse } from './worker-cache'
 declare var self: Worker
 
 interface WorkerConfig {
+	compatibility?: CompatibilitySelection
 	modulePath: string
 	configPath: string
 	/** Main's parsed, env-overridden config. When present it's used verbatim so
@@ -82,7 +84,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
 	const { configureCloudflareCrypto } = await import('../setup-globals')
-	configureCloudflareCrypto(config.compatibility_flags)
+	const compatibility = workerConfig.compatibility
+		? resolveCompatibility({ date: workerConfig.compatibility.date ?? undefined, flags: workerConfig.compatibility.flags })
+		: resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
+	configureCloudflareCrypto(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))

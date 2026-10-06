@@ -6,6 +6,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import { resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { getActiveContext } from '../tracing/context'
 import { getTraceWriter, type TraceWriter } from '../tracing/store'
@@ -146,7 +147,12 @@ export class WorkerExecutor implements DOExecutor {
 	private _fetchRequestStreams = new OutboundStreamRegistry()
 
 	constructor(config: ExecutorConfig) {
-		this._config = config
+		const compatibility = config._wranglerConfig
+			? resolveCompatibility({ date: config._wranglerConfig.compatibility_date, flags: config._wranglerConfig.compatibility_flags })
+			: config.compatibility
+			? resolveCompatibility({ date: config.compatibility.date ?? undefined, flags: config.compatibility.flags })
+			: undefined
+		this._config = { ...config, compatibility }
 		this._traceWriter = getActiveContext()?.writer ?? getTraceWriter()
 	}
 
@@ -210,6 +216,7 @@ export class WorkerExecutor implements DOExecutor {
 							// Main's parsed, env-overridden config — the DO worker uses this
 							// instead of re-loading from configPath WITHOUT the --env overrides.
 							wranglerConfig: this._config._wranglerConfig,
+							compatibility: this._config.compatibility,
 							runtime: this._config._runtime,
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
@@ -659,9 +666,16 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 	 * loading config.
 	 */
 	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, runtime?: DOWorkerRuntimeOptions): void {
+		let configSnapshot: WranglerConfig | undefined
+		if (wranglerConfig) {
+			const compatibility = resolveCompatibility({ date: wranglerConfig.compatibility_date, flags: wranglerConfig.compatibility_flags })
+			// A rejected reload must not change compatibility for DOs created by the active generation.
+			configSnapshot = { ...wranglerConfig }
+			if (wranglerConfig.compatibility_flags !== undefined) configSnapshot.compatibility_flags = [...compatibility.flags]
+		}
 		this._modulePath = modulePath
 		this._configPath = configPath
-		this._wranglerConfig = wranglerConfig
+		this._wranglerConfig = configSnapshot
 		this._runtime = runtime
 	}
 
