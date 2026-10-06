@@ -948,22 +948,76 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		})
 	}
 
-	async function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
+	/**
+	 * Complete the handshake, then ask the worker whether it wanted the connection.
+	 *
+	 * That order is forced. Only the worker's fetch() can say whether this is an upgrade, and any
+	 * worker that reads a session, checks a token or asks a DO first answers a turn of the event
+	 * loop later — by which point bun >= 1.4 can no longer finish the handshake: `handleUpgrade`
+	 * throws out of its own abort path and the client is left with a connection that never opens.
+	 *
+	 * So nothing may await before `handleUpgrade` below. What the client says during the wait is
+	 * held and replayed once the bridge is wired, so a client that talks immediately after `open`
+	 * loses nothing.
+	 *
+	 * The cost is that a worker which refuses now closes an open socket instead of failing the
+	 * handshake. The close carries the status it refused with.
+	 */
+	function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
+		const request = nodeReqToRequest(req)
+		const client = new Promise<any>((resolve, reject) => {
+			try {
+				wss.handleUpgrade(req, socket, head, resolve)
+			} catch (err) {
+				reject(err)
+			}
+		})
+		void bridgeWorkerWebSocket(client, req, socket, request)
+	}
+
+	async function bridgeWorkerWebSocket(client: Promise<any>, req: IncomingMessage, socket: any, request: Request) {
+		let ws: any
+		try {
+			ws = await client
+		} catch (err) {
+			console.error('[lopata:vite] Worker WebSocket handshake failed:', err)
+			socket.destroy()
+			return
+		}
+
+		// Hold what arrives before the bridge exists. Replaying through `emit` keeps the translation
+		// in one place — `bridgeCfWebSocket` — instead of a second copy here.
+		const held: Array<[Buffer, boolean]> = []
+		let closed: [number, Buffer] | null = null
+		const holdMessage = (data: Buffer, isBinary: boolean) => void held.push([data, isBinary])
+		const holdClose = (code: number, reason: Buffer) => void (closed = [code, reason])
+		ws.on('message', holdMessage)
+		ws.on('close', holdClose)
+		const release = () => {
+			ws.off('message', holdMessage)
+			ws.off('close', holdClose)
+		}
+		const refuse = (why: string) => {
+			release()
+			try {
+				ws.close(1011, why.slice(0, 123))
+			} catch {}
+		}
+
 		try {
 			const { CFWebSocket } = await import('../bindings/websocket-pair.ts')
-
-			const request = nodeReqToRequest(req)
 			const parsedUrl = new URL(request.url)
 
 			// Aux worker dispatch for WebSocket: host-based first, then route-based
 			const resolved = resolveAuxWorker(req, req.url ?? '/')
+			let response: Response & { webSocket?: InstanceType<typeof CFWebSocket> }
 			if (resolved) {
 				const gen = resolved.manager.active
 				if (!gen) {
-					socket.destroy()
+					refuse('worker not running')
 					return
 				}
-				const response = await (startSpan as Function)({
+				response = await (startSpan as Function)({
 					name: `WS ${parsedUrl.pathname}`,
 					kind: 'server',
 					attributes: {
@@ -975,42 +1029,35 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				}, async () => {
 					return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
 				}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
-				const cfSocket = response.webSocket
-				if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
-					socket.destroy()
+			} else {
+				const activeModule = await ensureWorkerModule()
+				const handler = activeModule.default as Record<string, unknown>
+				if (!handler || typeof handler.fetch !== 'function') {
+					refuse('worker has no fetch handler')
 					return
 				}
-				wss.handleUpgrade(req, socket, head, (ws: any) => {
-					bridgeCfWebSocket(cfSocket, ws)
-				})
-				return
+
+				const ctx = new ExecutionContext()
+				response = await runWithExecutionContext(ctx, async () => {
+					return (handler.fetch as Function).call(handler, request, env, ctx) as Response
+				}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
 			}
 
-			const activeModule = await ensureWorkerModule()
-			const handler = activeModule.default as Record<string, unknown>
-			if (!handler || typeof handler.fetch !== 'function') {
-				socket.destroy()
-				return
-			}
-
-			const ctx = new ExecutionContext()
-			const response = await runWithExecutionContext(ctx, async () => {
-				return (handler.fetch as Function).call(handler, request, env, ctx) as Response
-			})
-
-			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket
+			const cfSocket = response.webSocket
 			if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
-				socket.destroy()
+				refuse(`worker did not upgrade (${response.status})`)
 				return
 			}
 
-			// Complete the upgrade and bridge
-			wss.handleUpgrade(req, socket, head, (ws: any) => {
-				bridgeCfWebSocket(cfSocket, ws)
-			})
+			release()
+			bridgeCfWebSocket(cfSocket, ws)
+			for (const [data, isBinary] of held) ws.emit('message', data, isBinary)
+			if (closed) ws.emit('close', closed[0], closed[1])
 		} catch (err) {
 			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
-			socket.destroy()
+			// No `socket.destroy()` here: the handshake already handed the socket to `ws`, and
+			// cutting it now would truncate the close frame the client is owed.
+			refuse('worker error')
 		}
 	}
 }

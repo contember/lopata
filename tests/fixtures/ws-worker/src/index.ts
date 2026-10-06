@@ -48,6 +48,28 @@ export default {
 			return new Response(null, { status: 101, webSocket: client } as any)
 		}
 
+		// A worker that has to look something up before it can answer — an auth check, a DB read, an
+		// RPC to another service. The await crosses a macrotask, which the dev server has to survive.
+		if (url.pathname === '/ws/plain-async') {
+			if (request.headers.get('Upgrade') !== 'websocket') {
+				return new Response('Expected websocket', { status: 426 })
+			}
+			await new Promise(resolve => setTimeout(resolve, 10))
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
+			server.accept()
+			server.addEventListener('message', (event: MessageEvent) => {
+				server.send(`echo:${event.data}`)
+			})
+			return new Response(null, { status: 101, webSocket: client } as any)
+		}
+
+		// A worker that awaits and then refuses — the upgrade must not turn into an open socket.
+		if (url.pathname === '/ws/plain-async-reject') {
+			await new Promise(resolve => setTimeout(resolve, 10))
+			return new Response('Nope', { status: 403 })
+		}
+
 		// Plain WS with server-initiated close
 		if (url.pathname === '/ws/plain-server-close') {
 			if (request.headers.get('Upgrade') !== 'websocket') {
