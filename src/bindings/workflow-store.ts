@@ -18,7 +18,18 @@ export interface WorkflowExecutionToken {
 	run: number
 	epoch: number
 }
-export type WorkflowCheckpoint = { kind: 'undefined' } | { kind: 'json'; serialized: string }
+export type WorkflowCheckpoint = { kind: 'undefined' } | { kind: 'json'; serialized: string } | { kind: 'stream'; streamId: string }
+export interface WorkflowStreamAttempt {
+	ref: WorkflowOccurrenceRef
+	attemptToken: string
+	streamId: string
+}
+interface StreamManifest {
+	id: string
+	state: string
+	byte_count: number
+	chunk_count: number
+}
 export interface WorkflowStoredError {
 	name: string
 	message: string
@@ -75,6 +86,7 @@ interface OccurrenceRow {
 	output_kind: string | null
 	output: string | null
 	completed_at: number | null
+	stream_id: string | null
 	attempt: number
 	failed_attempts: number
 	error: string | null
@@ -157,7 +169,12 @@ function parseOccurrence(row: OccurrenceRow): WorkflowOccurrenceRecord {
 		if (value !== null && typeof value !== 'string') throw new Error('Invalid stored workflow text field')
 	}
 	let checkpoint: WorkflowCheckpoint | null = null
-	if (row.output_kind === 'undefined' && row.output === null) checkpoint = { kind: 'undefined' }
+	if (row.stream_id !== null) {
+		if (typeof row.stream_id !== 'string' || !row.stream_id || row.output_kind !== null || row.output !== null || row.type !== 'do') {
+			throw new Error('Invalid stored workflow stream checkpoint')
+		}
+		checkpoint = { kind: 'stream', streamId: row.stream_id }
+	} else if (row.output_kind === 'undefined' && row.output === null) checkpoint = { kind: 'undefined' }
 	else if (row.output_kind === 'json' && typeof row.output === 'string') {
 		JSON.parse(row.output)
 		checkpoint = { kind: 'json', serialized: row.output }
@@ -224,7 +241,9 @@ export class WorkflowStore {
 	}
 
 	acquireExecution(instanceId: string, workflowName: string): WorkflowExecutionToken {
-		return this.fenceExecution(this.currentToken(instanceId, workflowName))
+		const token = this.fenceExecution(this.currentToken(instanceId, workflowName))
+		this.cleanupAbandonedStreams(token)
+		return token
 	}
 
 	fenceExecution(token: WorkflowExecutionToken): WorkflowExecutionToken {
@@ -356,8 +375,151 @@ export class WorkflowStore {
 	readCheckpoint(ref: WorkflowOccurrenceRef): WorkflowCheckpoint | null {
 		return this.readOccurrence(ref).checkpoint
 	}
-	startAttempt(ref: WorkflowOccurrenceRef, attempt: number): void {
-		this.update(ref, 'attempt = ?', [attempt])
+	private assertAttempt(ref: WorkflowOccurrenceRef, attemptToken: string): void {
+		this.assertCurrent(ref.token)
+		const row = this.db.query<{ attempt_token: string | null; state: string }, [number, string, number]>(
+			'SELECT attempt_token, state FROM workflow_occurrences WHERE id = ? AND incarnation = ? AND run = ?',
+		).get(ref.occurrenceId, ref.token.incarnation, ref.token.run)
+		if (row?.attempt_token !== attemptToken || row.state !== 'started') throw new Error('Stale workflow stream attempt')
+	}
+	beginStream(ref: WorkflowOccurrenceRef, attemptToken: string): WorkflowStreamAttempt {
+		return this.transaction(ref.token, () => {
+			this.assertAttempt(ref, attemptToken)
+			const streamId = crypto.randomUUID()
+			this.db.query(`INSERT INTO workflow_streams (id, incarnation, run, occurrence_id, attempt_token, epoch, state)
+				VALUES (?, ?, ?, ?, ?, ?, 'writing')`).run(streamId, ref.token.incarnation, ref.token.run, ref.occurrenceId, attemptToken, ref.token.epoch)
+			return { ref, attemptToken, streamId }
+		})
+	}
+	private writingManifest(attempt: WorkflowStreamAttempt): StreamManifest {
+		this.assertAttempt(attempt.ref, attempt.attemptToken)
+		const row = this.db.query<StreamManifest, [string, string, number, number, string, number]>(
+			`SELECT id, state, byte_count, chunk_count FROM workflow_streams
+			WHERE id = ? AND incarnation = ? AND run = ? AND occurrence_id = ? AND attempt_token = ? AND epoch = ?`,
+		).get(
+			attempt.streamId,
+			attempt.ref.token.incarnation,
+			attempt.ref.token.run,
+			attempt.ref.occurrenceId,
+			attempt.attemptToken,
+			attempt.ref.token.epoch,
+		)
+		if (!row || row.state !== 'writing') throw new Error('Stale workflow stream writer')
+		return row
+	}
+	appendStreamChunk(attempt: WorkflowStreamAttempt, bytes: Uint8Array): void {
+		if (bytes.byteLength < 1 || bytes.byteLength > 65536) throw new Error('Invalid workflow stream chunk size')
+		this.transaction(attempt.ref.token, () => {
+			const manifest = this.writingManifest(attempt)
+			if (!Number.isSafeInteger(manifest.byte_count + bytes.byteLength)) throw new Error('Workflow stream byte count cannot be represented exactly')
+			this.db.query('INSERT INTO workflow_stream_chunks (stream_id, chunk_index, bytes) VALUES (?, ?, ?)')
+				.run(attempt.streamId, manifest.chunk_count, bytes)
+			this.db.query('UPDATE workflow_streams SET byte_count = byte_count + ?, chunk_count = chunk_count + 1 WHERE id = ?')
+				.run(bytes.byteLength, attempt.streamId)
+		})
+	}
+	private verifyStream(manifest: StreamManifest): void {
+		const totals = this.db.query<{ count: number; bytes: number; first: number | null; last: number | null; invalid: number }, [string]>(
+			`SELECT COUNT(*) AS count, COALESCE(SUM(length(bytes)), 0) AS bytes, MIN(chunk_index) AS first, MAX(chunk_index) AS last,
+			COALESCE(SUM(CASE WHEN typeof(chunk_index) != 'integer' OR typeof(bytes) != 'blob' OR length(bytes) NOT BETWEEN 1 AND 65536 THEN 1 ELSE 0 END), 0) AS invalid
+			FROM workflow_stream_chunks WHERE stream_id = ?`,
+		).get(manifest.id)
+		if (
+			!Number.isSafeInteger(manifest.byte_count) || !Number.isSafeInteger(manifest.chunk_count)
+			|| manifest.byte_count < 0 || manifest.chunk_count < 0 || !totals || totals.invalid !== 0
+			|| totals.count !== manifest.chunk_count || totals.bytes !== manifest.byte_count
+			|| (totals.count > 0 && (totals.first !== 0 || totals.last !== totals.count - 1))
+		) {
+			throw new Error(`Corrupt workflow stream ${manifest.id}: missing or invalid chunks`)
+		}
+	}
+	commitStream(attempt: WorkflowStreamAttempt, at: number): void {
+		this.transaction(attempt.ref.token, () => {
+			const manifest = this.writingManifest(attempt)
+			this.verifyStream(manifest)
+			this.db.query("UPDATE workflow_streams SET state = 'committed' WHERE id = ?").run(attempt.streamId)
+			this.update(
+				attempt.ref,
+				"state = 'completed', stream_id = ?, output_kind = NULL, output = NULL, completed_at = ?, attempt_token = NULL, failed_attempts = 0, error = NULL, error_name = NULL, non_retryable = 0, last_error_id = NULL",
+				[attempt.streamId, at],
+			)
+		})
+	}
+	invalidateStreamAttempt(ref: WorkflowOccurrenceRef, attemptToken: string): void {
+		// The in-memory abort fence remains authoritative if storage cannot record invalidation.
+		try {
+			this.transaction(ref.token, () => {
+				this.db.query('UPDATE workflow_occurrences SET attempt_token = NULL WHERE id = ? AND attempt_token = ?').run(ref.occurrenceId, attemptToken)
+			})
+			this.cleanupAbandonedStreams(ref.token)
+		} catch (error) {
+			console.error('[workflow] stream invalidation deferred until recovery:', error)
+		}
+	}
+	cleanupAbandonedStreams(token: WorkflowExecutionToken): void {
+		try {
+			this.transaction(token, () => {
+				const abandoned = `SELECT id FROM workflow_streams s WHERE s.incarnation = ? AND s.state = 'writing'
+				AND (s.epoch != ? OR NOT EXISTS (SELECT 1 FROM workflow_occurrences o WHERE o.id = s.occurrence_id AND o.attempt_token = s.attempt_token))`
+				this.db.query(`DELETE FROM workflow_stream_chunks WHERE stream_id IN (${abandoned})`).run(token.incarnation, token.epoch)
+				this.db.query(`DELETE FROM workflow_streams WHERE id IN (${abandoned})`).run(token.incarnation, token.epoch)
+			})
+		} catch (error) {
+			console.error('[workflow] abandoned stream cleanup deferred until storage is writable:', error)
+		}
+	}
+	cleanupTerminalStreams(workflowName: string): void {
+		const candidates = this.db.query<{ id: string }, [string]>(
+			`SELECT id FROM workflow_instances i WHERE workflow_name = ? AND status IN ('complete', 'errored', 'terminated')
+			AND EXISTS (SELECT 1 FROM workflow_streams s WHERE s.incarnation = i.incarnation AND s.state = 'writing')`,
+		).all(workflowName)
+		for (const { id } of candidates) {
+			try {
+				const token = this.db.transaction(() => {
+					const row = this.db.query<{ status: string }, [string, string]>(
+						'SELECT status FROM workflow_instances WHERE id = ? AND workflow_name = ?',
+					).get(id, workflowName)
+					if (!row || !['complete', 'errored', 'terminated'].includes(row.status)) return null
+					return this.fenceExecution(this.currentToken(id, workflowName))
+				}).immediate()
+				if (token) this.cleanupAbandonedStreams(token)
+			} catch (error) {
+				console.error('[workflow] terminal stream cleanup deferred until storage is writable:', error)
+			}
+		}
+	}
+	openStream(streamId: string): ReadableStream<Uint8Array> {
+		const manifest = this.db.query<StreamManifest, [string]>('SELECT id, state, byte_count, chunk_count FROM workflow_streams WHERE id = ?').get(
+			streamId,
+		)
+		if (!manifest || manifest.state !== 'committed') throw new Error(`Corrupt workflow stream ${streamId}: missing committed manifest`)
+		this.verifyStream(manifest)
+		let index = 0
+		let bytesRead = 0
+		return new ReadableStream<Uint8Array>({
+			pull: controller => {
+				if (index === manifest.chunk_count) {
+					if (bytesRead !== manifest.byte_count) throw new Error(`Corrupt workflow stream ${streamId}: byte count mismatch`)
+					controller.close()
+					return
+				}
+				const chunk = this.db.query<{ bytes: Uint8Array }, [string, number]>(
+					'SELECT bytes FROM workflow_stream_chunks WHERE stream_id = ? AND chunk_index = ?',
+				).get(streamId, index)
+				if (!chunk || !(chunk.bytes instanceof Uint8Array) || chunk.bytes.byteLength < 1 || chunk.bytes.byteLength > 65536) {
+					throw new Error(`Corrupt workflow stream ${streamId}: missing or invalid chunk ${index}`)
+				}
+				index++
+				bytesRead += chunk.bytes.byteLength
+				controller.enqueue(chunk.bytes)
+			},
+		}, { highWaterMark: 0 })
+	}
+	startAttempt(ref: WorkflowOccurrenceRef, attempt: number): string {
+		const token = crypto.randomUUID()
+		this.update(ref, 'attempt = ?, attempt_token = ?', [attempt, token])
+		this.cleanupAbandonedStreams(ref.token)
+		return token
 	}
 	recordAttemptFailure(ref: WorkflowOccurrenceRef, failedAttempts: number, error: WorkflowStoredError, at: number): void {
 		this.update(ref, 'failed_attempts = ?, error = ?, error_name = ?, non_retryable = ?, last_error_id = ?, updated_at = ?', [
@@ -370,9 +532,10 @@ export class WorkflowStore {
 		])
 	}
 	commitCheckpoint(ref: WorkflowOccurrenceRef, checkpoint: WorkflowCheckpoint, at: number): void {
+		if (checkpoint.kind === 'stream') throw new Error('Stream checkpoints require an atomic manifest commit')
 		this.update(
 			ref,
-			"state = 'completed', output_kind = ?, output = ?, completed_at = ?, failed_attempts = 0, error = NULL, error_name = NULL, non_retryable = 0, last_error_id = NULL",
+			"state = 'completed', output_kind = ?, output = ?, completed_at = ?, attempt_token = NULL, failed_attempts = 0, error = NULL, error_name = NULL, non_retryable = 0, last_error_id = NULL",
 			[checkpoint.kind, checkpoint.kind === 'json' ? checkpoint.serialized : null, at],
 		)
 	}
@@ -467,7 +630,7 @@ export class WorkflowStore {
 	replaceRun(token: WorkflowExecutionToken, fromOrder: number | null): WorkflowExecutionToken {
 		return this.transaction(token, () => {
 			this.db.query('DELETE FROM workflow_legacy_claims WHERE incarnation = ?').run(token.incarnation)
-			this.db.query('DELETE FROM workflow_occurrences WHERE incarnation = ? AND (start_order >= ? OR output_kind IS NULL)').run(
+			this.db.query('DELETE FROM workflow_occurrences WHERE incarnation = ? AND (start_order >= ? OR (output_kind IS NULL AND stream_id IS NULL))').run(
 				token.incarnation,
 				fromOrder ?? 0,
 			)
@@ -475,6 +638,7 @@ export class WorkflowStore {
 				`UPDATE workflow_occurrences SET run = ?, failed_attempts = 0, error = NULL, error_name = NULL, last_error_id = NULL, non_retryable = 0,
 				rollback_state = NULL, rollback_attempts = 0, rollback_error = NULL, rollback_error_name = NULL WHERE incarnation = ?`,
 			).run(token.run + 1, token.incarnation)
+			this.removeUnreferencedStreams(token.incarnation)
 			this.removeLegacy(token.instanceId)
 			this.db.query(
 				"UPDATE workflow_instances SET run = run + 1, execution_epoch = execution_epoch + 1, persistence_version = 1, status = 'running', output = NULL, error = NULL, error_name = NULL, updated_at = ? WHERE id = ?",
@@ -510,11 +674,18 @@ export class WorkflowStore {
 			this.db.query(`DELETE FROM ${table} WHERE instance_id = ?`).run(instanceId)
 		}
 	}
+	private removeUnreferencedStreams(incarnation: string): void {
+		const unreferenced = `SELECT id FROM workflow_streams s WHERE incarnation = ?
+			AND NOT EXISTS (SELECT 1 FROM workflow_occurrences o WHERE o.stream_id = s.id)`
+		this.db.query(`DELETE FROM workflow_stream_chunks WHERE stream_id IN (${unreferenced})`).run(incarnation)
+		this.db.query(`DELETE FROM workflow_streams WHERE id IN (${unreferenced})`).run(incarnation)
+	}
 	removeOwnedState(instanceId: string, workflowName: string): void {
 		const token = this.currentToken(instanceId, workflowName)
 		this.transaction(token, () => {
 			this.db.query('DELETE FROM workflow_legacy_claims WHERE incarnation = ?').run(token.incarnation)
 			this.db.query('DELETE FROM workflow_occurrences WHERE incarnation = ?').run(token.incarnation)
+			this.removeUnreferencedStreams(token.incarnation)
 			this.removeLegacy(instanceId)
 			this.db.query('DELETE FROM workflow_instances WHERE id = ?').run(instanceId)
 		})

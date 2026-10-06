@@ -54,5 +54,33 @@ export function migrateWorkflowOccurrences(db: Database): void {
 			history_order INTEGER,
 			PRIMARY KEY (incarnation, raw_key)
 		)`)
+		const occurrenceColumns = db.query<{ name: string }, []>('PRAGMA table_info(workflow_occurrences)').all()
+		for (
+			const [name, definition] of [
+				['stream_id', "TEXT CHECK (stream_id IS NULL OR (output_kind IS NULL AND output IS NULL AND type = 'do'))"],
+				['attempt_token', 'TEXT'],
+			]
+		) {
+			if (!occurrenceColumns.some(column => column.name === name)) db.run(`ALTER TABLE workflow_occurrences ADD COLUMN ${name} ${definition}`)
+		}
+		db.run('CREATE INDEX IF NOT EXISTS workflow_occurrence_stream ON workflow_occurrences (stream_id)')
+		db.run(`CREATE TABLE IF NOT EXISTS workflow_streams (
+			id TEXT PRIMARY KEY,
+			incarnation TEXT NOT NULL,
+			run INTEGER NOT NULL,
+			occurrence_id INTEGER NOT NULL,
+			attempt_token TEXT NOT NULL,
+			epoch INTEGER NOT NULL,
+			state TEXT NOT NULL CHECK (state IN ('writing', 'committed')),
+			byte_count INTEGER NOT NULL DEFAULT 0 CHECK (byte_count >= 0),
+			chunk_count INTEGER NOT NULL DEFAULT 0 CHECK (chunk_count >= 0)
+		)`)
+		db.run('CREATE INDEX IF NOT EXISTS workflow_stream_owner ON workflow_streams (incarnation)')
+		db.run(`CREATE TABLE IF NOT EXISTS workflow_stream_chunks (
+			stream_id TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+			bytes BLOB NOT NULL CHECK (typeof(bytes) = 'blob' AND length(bytes) BETWEEN 1 AND 65536),
+			PRIMARY KEY (stream_id, chunk_index)
+		)`)
 	}).immediate()
 }

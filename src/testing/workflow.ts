@@ -23,11 +23,19 @@ function timeoutError(what: string, ms: number): Error {
 	return new Error(`${what} timed out after ${ms}ms`)
 }
 
-function stepOutput(row: WorkflowOccurrenceRecord): { output: unknown } | null {
+function stepOutput(row: WorkflowOccurrenceRecord, store: WorkflowStore): { output: unknown } | null {
 	if (row.key.type === 'sleep' && row.deadline !== null) {
 		return { output: { until: row.method === 'sleepUntil' ? new Date(row.deadline).toISOString() : row.deadline } }
 	}
-	return row.checkpoint ? { output: row.checkpoint.kind === 'json' ? JSON.parse(row.checkpoint.serialized) : undefined } : null
+	if (!row.checkpoint) return null
+	switch (row.checkpoint.kind) {
+		case 'json':
+			return { output: JSON.parse(row.checkpoint.serialized) }
+		case 'stream':
+			return { output: store.openStream(row.checkpoint.streamId) }
+		case 'undefined':
+			return { output: undefined }
+	}
 }
 
 export class TestWorkflowInstance {
@@ -175,14 +183,15 @@ export class TestWorkflowInstance {
 
 	/** Get all completed steps as a Map<name, output>. */
 	async steps(): Promise<Map<string, unknown>> {
-		const { occurrences, legacy } = new WorkflowStore(this.db).readDetail(this.id, this.binding._getWorkflowName())
+		const store = new WorkflowStore(this.db)
+		const { occurrences, legacy } = store.readDetail(this.id, this.binding._getWorkflowName())
 		const result = new Map<string, unknown>()
 		const seen = new Set<string>()
 		for (const row of occurrences) {
 			const name = legacyStepName(row.method, row.key.name)
 			if (seen.has(name)) continue
 			seen.add(name)
-			const cached = stepOutput(row)
+			const cached = stepOutput(row, store)
 			if (cached && !result.has(name)) result.set(name, cached.output)
 		}
 		for (const row of legacy) {
@@ -199,13 +208,14 @@ export class TestWorkflowInstance {
 	}
 
 	private findStep(name: string, selector?: Omit<WorkflowStepKey, 'name'>) {
-		const { occurrences, legacy } = new WorkflowStore(this.db).readDetail(this.id, this.binding._getWorkflowName())
+		const store = new WorkflowStore(this.db)
+		const { occurrences, legacy } = store.readDetail(this.id, this.binding._getWorkflowName())
 		const row = occurrences.find(row =>
 			selector
 				? row.key.name === name && row.key.type === selector.type && row.key.count === selector.count
 				: legacyStepName(row.method, row.key.name) === name
 		)
-		if (row) return stepOutput(row)
+		if (row) return stepOutput(row, store)
 		const unresolved = selector ? undefined : legacy.find(row => row.step_name === name && row.completed_at !== null)
 		return unresolved ? { output: unresolved.output === null ? undefined : JSON.parse(unresolved.output) } : null
 	}
