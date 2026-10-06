@@ -103,7 +103,11 @@ F13a's private-versus-public transport boundary remains explicit: workerd's priv
 
   Published `8d96e85`, [PR #46](https://github.com/contember/lopata/pull/46), stacked on #45. The selected 123-byte UTF-8 rule validates before ready-state early returns; runtime listeners and callback properties restore socket-owner scope. Independent review is clean (14 tests, 130 assertions). Final full suite directly invoked on absolute Bun 1.4.2 under `cpu-lease`: **2,340 passed, 2 existing skips, 0 failed; 6,509 assertions across 132 files**. Typecheck, lint, formatting and whitespace checks passed. CI is pending.
 
-  Next: propose F08b binary delivery boundaries. Binary types, half-open/automatic close and network limits remain follow-ups. Socket tracing, durable hibernation and native top-level imports remain deferred. Node enforcement, Workflow subscriptions and definition identity remain separately gated.
+  [PR #46 CI passed](https://github.com/contember/lopata/actions/runs/37484412847). The user approved F08b: selected enabled/disabled sockets expose switchable `binaryType` with Blob/ArrayBuffer defaults, respectively; only `legacy-local` preserves property absence. Transport and hibernation endpoints use raw delivery before acceptance, with conversion only at application dispatch and correct byte-view slicing at CLI ingress.
+
+  Published `ff8764c`, [PR #47](https://github.com/contember/lopata/pull/47), stacked on #46. Independent review is clean (106 passing tests). Final full suite directly invoked on absolute Bun 1.4.2 under `cpu-lease`: **2,363 passed, 2 existing skips, 0 failed; 6,804 assertions across 132 files**. Typecheck, lint, formatting and whitespace checks passed. CI is pending. Selected sockets use an own accessor; the separate instance/prototype placement flag remains unsupported.
+
+  Next: establish F08c close-handshake transport feasibility and propose its boundaries. Half-open/automatic close and network limits remain follow-ups. Socket tracing, durable hibernation and native top-level imports remain deferred. Node enforcement, Workflow subscriptions and definition identity remain separately gated.
 - F04 stage 1: typed occurrence identity, additive migration, restart/dashboard/test-helper consumers and fresh-process replay. Stream persistence and cooperative deletion follow sequentially.
 - First-wave CI portability fixes are active in the original Images and Hyperdrive owners. These files do not overlap the second-wave territories.
 
