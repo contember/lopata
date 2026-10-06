@@ -173,7 +173,7 @@ The user subsequently approved raising the supported minimum to **Bun 1.4.2**, i
 - Legacy `SubtleCrypto.supports` has value `undefined`, but `in` and `Object.hasOwn` report the installed accessor. This reflection difference is accepted.
 - Captured facades, bound methods and modern references retain their selected behavior across calls from another scope. This is a compatibility mechanism, not a security boundary. Native prototype calls are not facade methods; native keys, usages and extractability retain their existing contracts.
 - Outside configured same-process dispatch, the selector uses the frozen no-date baseline. Node's `webcrypto` alias shares the same crypto object. Node API enforcement is not part of this unit.
-- Socket-event scope restoration remains a separate approval gate. EventTarget dispatch does not inherit listener registration scope; HTTP upgrade coverage does not establish socket-event compatibility.
+- The user subsequently approved F08a close-reason validation and socket-event compatibility restoration. Each socket captures its constructor's selection; runtime delivery enters that owner scope for listeners and callback properties, including asynchronous descendants. Dedicated thread initialization supplies an immutable, once-initialized fallback before application imports; shared-process execution uses native compatibility ALS without global toggles. The shared pair delivery boundary also covers CLI/Vite bridges and DO hibernation callbacks. Socket tracing lifetimes remain separate.
 
 ### Node restriction feasibility: separate unit
 

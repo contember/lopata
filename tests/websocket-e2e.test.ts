@@ -46,7 +46,7 @@ interface WSClient {
 }
 
 async function startStandaloneServer(port: number): Promise<Subprocess> {
-	const proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(port)], {
+	const proc = Bun.spawn([process.execPath, CLI_PATH, 'dev', '--port', String(port)], {
 		cwd: FIXTURE_DIR,
 		stdout: 'pipe',
 		stderr: 'pipe',
@@ -205,6 +205,20 @@ function cleanup() {
 function defineWebSocketTests(getPort: () => number) {
 	const base = () => `ws://localhost:${getPort()}`
 	const httpBase = () => `http://localhost:${getPort()}`
+
+	for (const path of ['/ws/plain', '/ws/do-standard/compatibility', '/ws/do-hibernation/compatibility']) {
+		test(`selected close validation and callback ownership: ${path}`, async () => {
+			const clients = await Promise.all([connectWS(`${base()}${path}`), connectWS(`${base()}${path}`)])
+			await Promise.all(clients.map(async client => {
+				const closed = client.waitForClose()
+				client.send('compatibility-probe')
+				const message = await client.waitForMessage()
+				if (typeof message !== 'string') throw new Error('Expected JSON probe result')
+				expect(JSON.parse(message)).toEqual({ before: true, after: true, name: 'SyntaxError', unchanged: true, nested: 'SyntaxError' })
+				expect(await closed).toEqual({ code: 1000, reason: '€'.repeat(41) })
+			}))
+		})
+	}
 
 	describe('Plain worker WebSocket', () => {
 		test('upgrade establishes connection', async () => {

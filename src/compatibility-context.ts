@@ -3,9 +3,15 @@ import { type CompatibilitySelection, resolveCompatibility } from './compatibili
 
 export const legacyCompatibility = resolveCompatibility({})
 const storage = new AsyncLocalStorage<CompatibilitySelection>()
+let isolateCompatibility: CompatibilitySelection | undefined
+
+export function initializeIsolateCompatibility(selection: CompatibilitySelection): void {
+	if (isolateCompatibility) throw new Error('Isolate compatibility is already initialized')
+	isolateCompatibility = resolveCompatibility({ date: selection.date ?? undefined, flags: selection.flags })
+}
 
 export function getActiveCompatibility(): CompatibilitySelection {
-	return storage.getStore() ?? legacyCompatibility
+	return storage.getStore() ?? isolateCompatibility ?? legacyCompatibility
 }
 
 export function runWithCompatibility<T>(selection: CompatibilitySelection, callback: () => T): T {

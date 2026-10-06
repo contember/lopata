@@ -12,7 +12,23 @@ await Promise.resolve()
 const afterTopLevelAwait = typeof crypto.subtle.encapsulateBits === 'function'
 export default class {
 	constructor() { this.constructed = typeof crypto.subtle.encapsulateBits === 'function' }
-	async fetch() {
+	async fetch(request) {
+		if (request.headers.get('upgrade') === 'websocket') {
+			const pair = new WebSocketPair()
+			pair[1].accept()
+			pair[1].addEventListener('message', async () => {
+				const before = typeof crypto.subtle.encapsulateBits === 'function'
+				await new Promise(resolve => setTimeout(resolve, 20))
+				const nested = new WebSocketPair()
+				nested[0].accept()
+				let reasonError = null
+				try { nested[0].close(1000, '€'.repeat(42)) }
+				catch (error) { reasonError = error instanceof DOMException ? error.name : 'unexpected' }
+				pair[1].send(JSON.stringify({ before, after: typeof crypto.subtle.encapsulateBits === 'function', reasonError }))
+				pair[1].close(1000, 'done')
+			})
+			return new Response(null, { status: 101, webSocket: pair[0] })
+		}
 		const before = typeof crypto.subtle.encapsulateBits === 'function'
 		await new Promise(resolve => setTimeout(resolve, 20))
 		return Response.json({ topLevel, afterTopLevelAwait, nativeTopLevel, before, after: typeof crypto.subtle.encapsulateBits === 'function', cached: typeof cached.encapsulateBits === 'function', constructed: this.constructed, revision: ${revision} })
@@ -33,7 +49,11 @@ async function start(name: string, modern: boolean) {
 	await Bun.write(join(root, 'worker.ts'), source(1))
 	await Bun.write(
 		join(root, 'wrangler.json'),
-		JSON.stringify({ name, main: './worker.ts', compatibility_flags: modern ? ['webcrypto_modern_algorithms'] : [] }),
+		JSON.stringify({
+			name,
+			main: './worker.ts',
+			compatibility_flags: modern ? ['webcrypto_modern_algorithms', 'websocket_close_reason_byte_limit'] : [],
+		}),
 	)
 	const reservation = Bun.serve({ port: 0, fetch: () => new Response() })
 	const port = reservation.port
@@ -63,11 +83,38 @@ function expected(modern: boolean, revision = 1) {
 	}
 }
 
+async function socketProbe(url: string): Promise<unknown> {
+	return new Promise((resolve, reject) => {
+		const socket = new WebSocket(url.replace('http:', 'ws:'))
+		const timeout = setTimeout(() => {
+			socket.close()
+			reject(new Error('WebSocket compatibility probe timed out'))
+		}, 5000)
+		socket.onopen = () => socket.send('probe')
+		socket.onerror = () => {
+			clearTimeout(timeout)
+			reject(new Error('WebSocket compatibility probe failed'))
+		}
+		socket.onmessage = event => {
+			clearTimeout(timeout)
+			if (typeof event.data !== 'string') {
+				reject(new Error('Expected WebSocket probe JSON'))
+				return
+			}
+			resolve(JSON.parse(event.data))
+		}
+	})
+}
+
 try {
 	const on = await start('modern', true)
 	const off = await start('legacy', false)
 	const results = await Promise.all([fetch(on.url).then(response => response.json()), fetch(off.url).then(response => response.json())])
 	assert.deepEqual(results, [expected(true), expected(false)])
+	assert.deepEqual(await Promise.all([socketProbe(on.url), socketProbe(off.url)]), [
+		{ before: true, after: true, reasonError: 'SyntaxError' },
+		{ before: false, after: false, reasonError: null },
+	])
 	await Bun.write(join(on.root, 'worker.ts'), source(2))
 	on.server.environments.ssr.moduleGraph.invalidateAll()
 	const environment = on.server.environments.ssr

@@ -6,6 +6,8 @@
  * Events are buffered until accept() is called.
  */
 
+import { getActiveCompatibility, runWithCompatibility } from '../compatibility-context'
+
 export type WSEventType = 'message' | 'close' | 'error' | 'open'
 
 export interface WSEvent {
@@ -40,6 +42,7 @@ export class CFWebSocket extends EventTarget {
 	readonly CLOSED = CLOSED
 
 	readyState: number = CONNECTING
+	private readonly compatibility = getActiveCompatibility()
 
 	/** @internal */ _peer: CFWebSocket | null = null
 	/** @internal */ _accepted = false
@@ -109,6 +112,9 @@ export class CFWebSocket extends EventTarget {
 	}
 
 	close(code?: number, reason?: string): void {
+		if (this.compatibility.websocketCloseReasonByteLimit === 'enabled' && new TextEncoder().encode(reason ?? '').byteLength > 123) {
+			throw new DOMException('WebSocket close reason must not be longer than 123 bytes when UTF-8 encoded.', 'SyntaxError')
+		}
 		if (this.readyState === CLOSED || this.readyState === CLOSING) return
 
 		this.readyState = CLOSING
@@ -152,6 +158,10 @@ export class CFWebSocket extends EventTarget {
 
 	/** @internal */
 	_dispatchWSEvent(evt: WSEvent): void {
+		runWithCompatibility(this.compatibility, () => this.dispatchWSEvent(evt))
+	}
+
+	private dispatchWSEvent(evt: WSEvent): void {
 		switch (evt.type) {
 			case 'message': {
 				const me = new MessageEvent('message', { data: evt.data })

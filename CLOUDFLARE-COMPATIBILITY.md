@@ -114,6 +114,16 @@ This bounded contract was explicitly approved separately from F03a. It does not 
 
 **Approved deletion precedence:** the running alarm's own deletion permits default/true abort retry, matching the cleanup sequence in the [released abort announcement](https://developers.cloudflare.com/changelog/post/2026-08-25-durable-object-alarm-abort-no-retry/). External cancellation or any replacement permanently supersedes that attempt; a later own deletion cannot revive it. An alarm's own replacement, including an identical timestamp, is not overwritten by its retry. `retryAlarm: false` always suppresses the interrupted attempt. Ownership follows the alarm handler's async context and is cleared at separate request/RPC dispatch, including another request to the same executor. Ordered committed mutation notifications carry ownership and the preceding revision; rolled-back mutations have no effect. Attempt ownership and supersession are in-memory/typed transport metadata only, not durable attempt recovery.
 
+### WebSocket close reasons and callback ownership — F08a
+
+`WebSocketPair` sockets enforce the **123 UTF-8-byte** close-reason bound with compatibility dates from `2026-03-03` or `websocket_close_reason_byte_limit`. `no_websocket_close_reason_byte_limit` disables it; explicit flags override dates. With neither a date nor an override, the existing unvalidated local behavior remains. The reference is released workerd [`v1.20261005.1`](https://github.com/cloudflare/workerd/blob/v1.20261005.1/src/workerd/api/web-socket.c++), `LegacyWebSocketAdapter::close`.
+
+Oversized reasons throw a `DOMException` named `SyntaxError` before any ready-state early return, including repeated close calls. Failed validation does not change either socket's state or dispatch close events. This bounded change preserves the existing close handshake and close-code behavior.
+
+Each socket captures its owning compatibility selection at construction. Dedicated user/DO/dynamic threads initialize an immutable isolate fallback before application import; same-process dispatch uses native compatibility ALS. Runtime-delivered message, close, error and open events enter the socket owner's scope for both EventTarget listeners and callback properties. Async descendants retain it, so scoped crypto and newly constructed pairs use the owner rather than the delivery caller. Queued events use the same delivery boundary. This does not add socket tracing lifetimes or scope native externalized module evaluation.
+
+Local verification on Bun **1.4.2 (`744846f84`)** covers date/flag selection, ASCII/multibyte/surrogate boundaries, state preservation, repeated close, cross-scope method calls, queued events, overlapping bridge delivery, and two differently configured Vite servers. Real CLI and Vite upgrades cover ordinary Worker, standard DO and hibernation callbacks, including async crypto visibility and nested sockets. Existing binary echo and close tests pass. Modern Blob delivery, half-open/automatic-close semantics and network message limits remain F08 follow-ups; these results do not establish hosted parity or durable hibernation.
+
 ### Modern Web Crypto
 
 Enable the new API in the Worker's Wrangler configuration:

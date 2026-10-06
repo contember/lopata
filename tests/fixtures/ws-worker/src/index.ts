@@ -1,3 +1,5 @@
+import { compatibilityProbe } from './compatibility-probe'
+
 export { EchoHibernationDO } from './echo-do-hibernation'
 export { EchoStandardDO } from './echo-do-standard'
 
@@ -23,6 +25,10 @@ export default {
 
 			server.addEventListener('message', (event: MessageEvent) => {
 				const data = event.data
+				if (data === 'compatibility-probe') {
+					void compatibilityProbe(server)
+					return
+				}
 				if (typeof data === 'string') {
 					server.send(`echo:${data}`)
 				} else {

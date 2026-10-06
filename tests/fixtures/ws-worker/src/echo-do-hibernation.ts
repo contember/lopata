@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoHibernationDO extends DurableObject {
 	async fetch(request: Request): Promise<Response> {
@@ -49,6 +50,10 @@ export class EchoHibernationDO extends DurableObject {
 	}
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		if (message === 'compatibility-probe') {
+			await compatibilityProbe(ws)
+			return
+		}
 		if (typeof message === 'string') {
 			// Attachment set
 			if (message.startsWith('set-attachment:')) {

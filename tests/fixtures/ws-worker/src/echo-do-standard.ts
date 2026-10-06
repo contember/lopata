@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoStandardDO extends DurableObject {
 	connections: WebSocket[] = []
@@ -27,6 +28,10 @@ export class EchoStandardDO extends DurableObject {
 
 		server.addEventListener('message', (event: MessageEvent) => {
 			const data = event.data
+			if (data === 'compatibility-probe') {
+				void compatibilityProbe(server)
+				return
+			}
 			if (typeof data === 'string') {
 				server.send(`echo:${data}`)
 			} else {

@@ -8,6 +8,7 @@
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
 import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { runWithParentContext } from '../tracing/context'
 import { createInvocationTrace, getActiveInvocation, type TraceCompletion } from '../tracing/invocation'
@@ -87,6 +88,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	const compatibility = workerConfig.compatibility
 		? resolveCompatibility({ date: workerConfig.compatibility.date ?? undefined, flags: workerConfig.compatibility.flags })
 		: resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
+	initializeIsolateCompatibility(compatibility)
 	configureCloudflareCrypto(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
