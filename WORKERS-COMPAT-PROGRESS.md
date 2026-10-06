@@ -99,7 +99,11 @@ F13a's private-versus-public transport boundary remains explicit: workerd's priv
 
   Published `7f827fd`, [PR #45](https://github.com/contember/lopata/pull/45), stacked on #44. Review found premature replacement during retained RPC calls and lost property-construction errors; both are fixed and final re-review is clean. Final full suite directly invoked on absolute Bun 1.4.2 under `cpu-lease`: **2,320 passed, 2 existing skips, 0 failed; 6,355 assertions across 131 files**. Reviewer independently verified 94 tests and 312 assertions. Typecheck, lint, formatting and whitespace checks passed. CI is pending. Container-backed termination and durable running-attempt/retry recovery remain follow-ups; in-process unsettled handlers can block replacement indefinitely.
 
-  Next: prepare F08 WebSocket compatibility contracts and implementation boundaries. Socket-event compatibility restoration and native top-level imports remain deferred. Node enforcement, Workflow subscriptions and definition identity remain separately gated.
+  [PR #45 CI passed](https://github.com/contember/lopata/actions/runs/37482086287). The user approved F08a close-reason validation, isolate-initialized selection fallback, per-socket capture and socket-event compatibility restoration.
+
+  Published `8d96e85`, [PR #46](https://github.com/contember/lopata/pull/46), stacked on #45. The selected 123-byte UTF-8 rule validates before ready-state early returns; runtime listeners and callback properties restore socket-owner scope. Independent review is clean (14 tests, 130 assertions). Final full suite directly invoked on absolute Bun 1.4.2 under `cpu-lease`: **2,340 passed, 2 existing skips, 0 failed; 6,509 assertions across 132 files**. Typecheck, lint, formatting and whitespace checks passed. CI is pending.
+
+  Next: propose F08b binary delivery boundaries. Binary types, half-open/automatic close and network limits remain follow-ups. Socket tracing, durable hibernation and native top-level imports remain deferred. Node enforcement, Workflow subscriptions and definition identity remain separately gated.
 - F04 stage 1: typed occurrence identity, additive migration, restart/dashboard/test-helper consumers and fresh-process replay. Stream persistence and cooperative deletion follow sequentially.
 - First-wave CI portability fixes are active in the original Images and Hyperdrive owners. These files do not overlap the second-wave territories.
 
