@@ -1,5 +1,7 @@
 # Workers compatibility execution
 
+> Verification correction: setting `PATH` to Bun 1.4.2 did not pin subprocesses launched by `bun run test`. That script resolved the repository-local Bun 1.3.9 binary. Historical full-suite results below invoked through `bun run test` must not be treated as Bun 1.4.2 evidence. Direct `bun test` commands explicitly selecting 1.4.2 are separate evidence. Future runtime checks use the absolute binary directly and confirm the version printed by the test runner.
+
 Started October 5, 2026. The user approved the whole [backlog](WORKERS-COMPAT-BACKLOG.md), subagent implementation, separate branches/PRs, and pushes. Merging and publishing releases are not part of this run. Concrete architecture decisions remain approval-gated.
 
 ## Delivery rules
@@ -68,6 +70,16 @@ F13a's private-versus-public transport boundary remains explicit: workerd's priv
   Workflow Stage 1 final re-review is clean: all four recovery/cleanup/clock findings are resolved (64 focused tests). The coordinator committed the isolated identity unit as `854a248` on `feat/workflow-occurrence-identity`. Full typecheck/lint/format/test verification is running in a detached worktree before publication. Tracing remains uncommitted and is not included in that check.
 
   Workflow identity is now published as [PR #38](https://github.com/contember/lopata/pull/38), above #37. Isolated checks at `854a248` passed: typecheck, lint, formatting and **2,022 tests, two pre-existing skips, zero failures, 5,083 assertions across 113 files** on Bun 1.4.2. Workflow tracing implementation is active in a separate uncommitted slice.
+
+  PR #38 CI exposed a harness-specific temporary-directory path in the fresh-process test. Commit `c9fb3b5` uses the platform temporary directory; eight migration tests and scoped lint/format passed. CI rerun is pending. Workflow tracing is implemented and independently reviewed without findings; coordinator lifecycle/rollback/reload verification passed ten tests. Vite/testing forced-disposal integration remains the final adapter handoff before whole-tree tracing verification.
+
+  [PR #38 CI passed](https://github.com/contember/lopata/actions/runs/37348213835). The final Vite/testing teardown adapter is implemented and reviewed without findings (22 tests, 136 assertions, including actual Vite shutdown). All assigned F05 slice reviews are now clean. Whole-tree typecheck and lint passed; one fixture required formatter correction, after which formatting and the full suite were restarted. Tracing remains unpublished pending those final results.
+
+  October 6: full-suite tracing verification exposed eager body capture in the existing outgoing-fetch instrumentation. The user approved omitting streamed-body diagnostics rather than adding stream observation. `src/plugin.ts` now retains HTTP metadata and errors but omits request/response body previews, including buffered inputs; it creates no diagnostic clones or readers. The original deadlock reproducer and new upload/response/cancellation tests pass (21 tests). Independent review found no issues.
+
+  Published the atomic tracing/runtime/local-RPC unit as `79ef047`, [PR #39](https://github.com/contember/lopata/pull/39), stacked on #38. The full suite invoked the absolute Bun 1.4.2 binary directly under `cpu-lease`: **2,188 passed, 2 existing skips, 0 failed; 5,783 assertions across 124 files**. Typecheck, lint, formatting and whitespace checks passed. [PR #39 CI passed](https://github.com/contember/lopata/actions/runs/37440991451). DO WebSocket-event tracing, the background-work eviction bound and cross-thread returned-capability transport remain follow-ups. No PR has been merged.
+
+  Stage 2 implementation is now assigned to the Workflow owner: bounded durable stream chunks, atomic checkpoint commit, independent replay readers and fenced recovery, following the approved Workflow design. Deletion follows this unit; subscription and definition-identity contracts remain separately gated.
 - F04 stage 1: typed occurrence identity, additive migration, restart/dashboard/test-helper consumers and fresh-process replay. Stream persistence and cooperative deletion follow sequentially.
 - First-wave CI portability fixes are active in the original Images and Hyperdrive owners. These files do not overlap the second-wave territories.
 
