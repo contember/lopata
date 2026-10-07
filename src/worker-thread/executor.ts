@@ -14,7 +14,6 @@ import { type CompatibilitySelection, resolveCompatibility } from '../compatibil
 import type { WranglerConfig } from '../config'
 import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
-import { getTraceStore, type TraceWriter } from '../tracing/store'
 import type {
 	BindingTarget,
 	ParentSpanContext,
@@ -26,16 +25,13 @@ import type {
 	WorkflowControlResult,
 } from './protocol'
 import { deserializeError } from './protocol'
+import { applyTraceMessage, isTraceMessage } from './remote-trace-store'
 import { RpcHostChannel } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
-
-function isTraceMessage(msg: WorkerMessage): msg is Extract<WorkerMessage, { type: `trace-${string}` }> {
-	return msg.type.startsWith('trace-')
-}
 
 interface Pending<T> {
 	resolve: (value: T) => void
@@ -77,9 +73,6 @@ export class WorkerThreadExecutor {
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
-	private readonly _traceWriter: TraceWriter
-	private _openTraceSpans = new Set<string>()
-	private _traceTerminationReason: string | undefined
 	private _wsBridge: WsHostBridge<WorkerCommand>
 	/** Main-side bridge for upstream CFWebSockets adopted from env-binding fetches
 	 *  the user worker initiated (`env.DO.fetch('/ws')` returning 101). The worker
@@ -129,7 +122,6 @@ export class WorkerThreadExecutor {
 		this._compatibility = resolveCompatibility({ date: options.config.compatibility_date, flags: options.config.compatibility_flags })
 		// Establish WAL and schema in main before fresh worker connections can race to initialize them.
 		getDatabase()
-		this._traceWriter = getTraceStore()
 		this._initConfig = options
 		this._mainEnv = options.mainEnv
 		this._ready = new Promise<WorkerReadyInfo>((res, rej) => {
@@ -167,15 +159,6 @@ export class WorkerThreadExecutor {
 	/** Reject every outstanding promise and tear down bridges. Shared by `onerror`
 	 *  (worker crashed) and `dispose()` (planned teardown). */
 	private _failAll(err: Error): void {
-		this._traceTerminationReason = err.message
-		for (const spanId of this._openTraceSpans) {
-			try {
-				this._traceWriter.endSpan(spanId, Date.now(), 'error', err.message)
-			} catch (error) {
-				console.error('[lopata] trace finalization failed (ignored):', error)
-			}
-		}
-		this._openTraceSpans.clear()
 		this._readyReject(err)
 		for (const [, pending] of this._pending) pending.reject(err)
 		for (const [, pending] of this._pendingHandlers) pending.reject(err)
@@ -201,8 +184,12 @@ export class WorkerThreadExecutor {
 
 	private _handleMessage(msg: WorkerMessage): void {
 		if (isTraceMessage(msg)) {
-			// Late inserts still need a terminal row when worker termination races with postMessage.
-			this._applyTrace(msg)
+			// Trace writes target the shared (process-wide) TraceStore + dashboard
+			// subscribers — they never touch this (possibly disposed) generation.
+			// Apply them even after dispose so a `trace-span-end` (or attrs/event)
+			// queued just before teardown still finalizes the span instead of
+			// leaving it dangling 'unset' for the dying generation.
+			applyTraceMessage(msg)
 			return
 		}
 		if (this._disposed) return
@@ -352,46 +339,6 @@ export class WorkerThreadExecutor {
 		}
 	}
 
-	/** Apply a forwarded trace-store write on main. Wrapped in try/catch because
-	 *  these run inside `worker.onmessage`: a write that throws (a `BigInt` /
-	 *  circular value `JSON.stringify` chokes on, a transient DB error) would be
-	 *  an uncaught exception that takes down the whole dev server. A failed trace
-	 *  write is diagnostic-only — never worth crashing for. */
-	private _applyTrace(msg: Extract<WorkerMessage, { type: `trace-${string}` }>): void {
-		try {
-			const store = this._traceWriter
-			if (this._traceTerminationReason !== undefined && msg.type !== 'trace-span-insert') return
-			switch (msg.type) {
-				case 'trace-span-insert':
-					store.insertSpan(msg.span)
-					if (this._traceTerminationReason !== undefined) {
-						store.endSpan(msg.span.spanId, Date.now(), 'error', this._traceTerminationReason)
-					} else {
-						this._openTraceSpans.add(msg.span.spanId)
-					}
-					break
-				case 'trace-span-end':
-					if (!this._openTraceSpans.delete(msg.spanId)) break
-					store.endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
-					break
-				case 'trace-span-status':
-					store.setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
-					break
-				case 'trace-span-attrs':
-					store.updateAttributes(msg.spanId, msg.attrs)
-					break
-				case 'trace-span-event':
-					store.addEvent(msg.event)
-					break
-				case 'trace-error':
-					store.insertError(msg.error)
-					break
-			}
-		} catch (err) {
-			console.error('[lopata] trace store write failed (ignored):', err)
-		}
-	}
-
 	/** Background `waitUntil` promises still in flight on the worker side. */
 	pendingWaitUntil(): number {
 		return this._pendingWaitUntil.size
@@ -473,14 +420,14 @@ export class WorkerThreadExecutor {
 		afterPost?: () => void,
 	): Promise<T> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
-		const active = getActiveContext()
-		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 		await this._ready
 		// `dispose()` may have run during `await this._ready` — `_failAll` already
 		// cleared the maps, so registering a fresh pending entry here would post to a
 		// terminated Worker (a silent no-op) and the promise would never settle.
 		// Re-check after the await (mirrors the DO channel's `_sendCommand`).
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
+		const active = getActiveContext()
+		const parent: ParentSpanContext | undefined = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 		const id = this._nextId++
 		return new Promise<T>((resolve, reject) => {
 			map.set(id, { resolve, reject })

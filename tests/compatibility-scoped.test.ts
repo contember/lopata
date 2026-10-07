@@ -150,36 +150,27 @@ test('shared module dispatchers and fallback RPC capabilities retain the callee 
 	}
 	const envOn = {}
 	const envOff = {}
-	const on = new WorkerDispatcher(module, envOn, props => new ExecutionContext(props), modern)
-	const off = new WorkerDispatcher(
-		module,
-		envOff,
-		props => new ExecutionContext(props),
-		legacyCompatibility,
-	)
+	// Constructing a dispatcher registers it for the service bindings below.
+	new WorkerDispatcher(module, envOn, props => new ExecutionContext(props), modern)
+	new WorkerDispatcher(module, envOff, props => new ExecutionContext(props), legacyCompatibility)
 	const serviceOn = new ServiceBinding('on')
 	const serviceOff = new ServiceBinding('off')
 	serviceOn._wire(() => ({ kind: 'in-process', workerModule: module, env: envOn, compatibility: modern }))
 	serviceOff._wire(() => ({ kind: 'in-process', workerModule: module, env: envOff, compatibility: legacyCompatibility }))
 	const fallback = new ServiceBinding('fallback')
 	fallback._wire(module, {}, modern)
-	try {
-		expect(await (await runWithCompatibility(legacyCompatibility, () => serviceOn.fetch('https://test/'))).json()).toBe(true)
-		expect(await (await runWithCompatibility(modern, () => serviceOff.fetch('https://test/'))).json()).toBe(false)
-		expect(await serviceOn.toProxy().value).toBe(true)
-		expect(await serviceOff.toProxy().value).toBe(false)
-		for (const service of [serviceOn, fallback]) {
-			const method = service.toProxy().capability
-			if (typeof method !== 'function') throw new Error('Expected RPC method')
-			const capability: unknown = await method()
-			if (typeof capability !== 'function') throw new Error('Expected returned capability')
-			expect(await runWithCompatibility(legacyCompatibility, () => capability())).toBe(true)
-			const dispose: unknown = Reflect.get(capability, Symbol.dispose)
-			if (typeof dispose === 'function') dispose.call(capability)
-		}
-	} finally {
-		on.terminateInvocations('test complete')
-		off.terminateInvocations('test complete')
+	expect(await (await runWithCompatibility(legacyCompatibility, () => serviceOn.fetch('https://test/'))).json()).toBe(true)
+	expect(await (await runWithCompatibility(modern, () => serviceOff.fetch('https://test/'))).json()).toBe(false)
+	expect(await serviceOn.toProxy().value).toBe(true)
+	expect(await serviceOff.toProxy().value).toBe(false)
+	for (const service of [serviceOn, fallback]) {
+		const method = service.toProxy().capability
+		if (typeof method !== 'function') throw new Error('Expected RPC method')
+		const capability: unknown = await method()
+		if (typeof capability !== 'function') throw new Error('Expected returned capability')
+		expect(await runWithCompatibility(legacyCompatibility, () => capability())).toBe(true)
+		const dispose: unknown = Reflect.get(capability, Symbol.dispose)
+		if (typeof dispose === 'function') dispose.call(capability)
 	}
 })
 

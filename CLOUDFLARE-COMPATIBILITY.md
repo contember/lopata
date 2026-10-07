@@ -139,7 +139,7 @@ These features had local implementations at the starting revision. This is an in
 
 ## Remaining runtime gaps
 
-The implementation scope remains the four backports above plus the approved parser-coexistence and cache-invalidation additions. The [follow-up backlog](WORKERS-COMPAT-BACKLOG.md) tracks the broader annual findings. Access identity simulation and active-span lookup were identified during the original final inventory check and deferred to follow-up work. The scope also excludes these additional projects:
+The implementation scope remains the four backports above plus the approved parser-coexistence and cache-invalidation additions. The [follow-up backlog](WORKERS-COMPAT-BACKLOG.md) tracks the broader annual findings. Access identity simulation was identified during the original final inventory check and deferred to follow-up work. The scope also excludes these additional projects:
 
 - [Durable Object Facets](https://blog.cloudflare.com/durable-object-facets-dynamic-workers/): dynamic Durable Object classes and independently managed facet storage need a separate implementation.
 - [Inbound TCP and gRPC](https://blog.cloudflare.com/grpc-workers/): the private-beta `connect(socket)` handler, Spectrum ingress and gRPC translation need their own transport design.
@@ -147,9 +147,9 @@ The implementation scope remains the four backports above plus the approved pars
 - [Rust/Emscripten support](https://blog.cloudflare.com/rust-workers-emscripten-target/): compatibility of the experimental toolchain's generated JavaScript/WebAssembly and required runtime APIs was not verified.
 - [Cloudflare Computer](https://blog.cloudflare.com/cloudflare-computer/): an application library built on several runtime primitives; end-to-end library compatibility was not verified here.
 - [Access for Workers](https://blog.cloudflare.com/workers-protected-by-access/): `ctx.access.getIdentity()` and Wrangler's `access.dev` identity simulation are local runtime APIs not yet implemented by Lopata.
-- [Issues and application context](https://blog.cloudflare.com/real-time-issue-detection/): the announcement uses `tracing.getActiveSpan()`, which Lopata does not yet expose. The existing `tracing.enterSpan()` API covers custom child spans only.
+- [Issues and application context](https://blog.cloudflare.com/real-time-issue-detection/): hosted Issues grouping is a platform service. Lopata exposes the custom tracing API (`enterSpan`, `startActiveSpan`, `startSpan`, `getActiveSpan`) with a local lifetime: `enterSpan` ends when its callback settles, request spans end when the handler returns, and spans from `startSpan`/`startActiveSpan` stay open until `end()`. Spans are not held open for response bodies, `waitUntil` work or returned RPC capabilities.
 
-Access policy enforcement, hosted Issues grouping and automations, managed AI model catalogs, billing, CI services and account provisioning are platform services. The Access identity and active-span APIs above are distinct local runtime gaps.
+Access policy enforcement, hosted Issues grouping and automations, managed AI model catalogs, billing, CI services and account provisioning are platform services. The Access identity API above is a distinct local runtime gap.
 
 ## Authoritative API references
 

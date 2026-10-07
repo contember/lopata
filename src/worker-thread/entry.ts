@@ -13,8 +13,6 @@ import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { runWithExecutionContext } from '../execution-context'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
-import { createInvocationTrace, type InvocationTrace, type TraceCompletion } from '../tracing/invocation'
-import { setSpanAttribute, setSpanStatus } from '../tracing/span'
 import { setTraceStoreOverride } from '../tracing/store'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
 import type {
@@ -93,12 +91,12 @@ type StreamErrorMsg = Extract<WorkerMessage, { type: 'stream-error' }>
 /** Per-in-flight-fetch AbortControllers, keyed by the main-side fetch id. Main
  *  posts `fetch-abort` on client disconnect; aborting fires the rebuilt Request's
  *  `signal` so user code's `request.signal.addEventListener('abort', …)` runs. */
-const fetchAbortControllers = new Map<number, { controller: AbortController; invocation: InvocationTrace }>()
+const fetchAbortControllers = new Map<number, AbortController>()
 
 /** Pump a response body to main as `stream-chunk`s, terminated by `stream-end`
  *  or `stream-error`. Started only after `fetch-result` is posted so main has
  *  the `streamId` registered before chunks arrive. */
-function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>, onComplete?: (completion: TraceCompletion) => void): void {
+function pumpResponseBody(streamId: number, body: ReadableStream<Uint8Array>, onComplete?: () => void): void {
 	pumpStream<StreamChunkMsg, StreamEndMsg, StreamErrorMsg>(
 		streamId,
 		body,
@@ -339,23 +337,6 @@ async function initRuntime(init: WorkerInitConfig) {
 		})
 	}
 
-	async function runInvocation<T>(
-		parent: ParentSpanContext | undefined,
-		name: string,
-		callback: (scope: InvocationTrace) => T | Promise<T>,
-	): Promise<T> {
-		const scope = runWithParentContext(parent, () => createInvocationTrace({ name, kind: 'server', workerName: init.workerName ?? init.config.name }))
-		try {
-			trackBackgroundWork(post, scope.completed)
-			const value = await scope.run(() => callback(scope))
-			scope.finishHandler()
-			return value
-		} catch (error) {
-			scope.finishHandler({ kind: 'error', error })
-			throw error
-		}
-	}
-
 	// When `noHandler:true` the `error.message` field is a wire-format placeholder —
 	// the main-side executor resolves with `ok:false` rather than rejecting, so the
 	// message is never surfaced to user code.
@@ -364,40 +345,21 @@ async function initRuntime(init: WorkerInitConfig) {
 		if (rpc.handle(cmd as { type: string })) return
 		switch (cmd.type) {
 			case 'fetch': {
+				const abortController = new AbortController()
+				fetchAbortControllers.set(cmd.id, abortController)
 				try {
-					await runInvocation(cmd.parent, `fetch ${cmd.entrypoint ?? 'default'}`, async scope => {
-						const controller = new AbortController()
-						fetchAbortControllers.set(cmd.id, { controller, invocation: scope })
-						const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
-						const request = deserializeRequest(cmd.request, reqBody, controller.signal)
-						setSpanAttribute('http.method', request.method)
-						setSpanAttribute('http.url', request.url)
-						const ctx = dispatcher.context(cmd.props)
-						const response = await dispatcher.fetch(request, cmd.entrypoint, cmd.props, ctx)
-						setSpanAttribute('http.status_code', response.status)
-						if (response.status >= 500) setSpanStatus('error', `HTTP ${response.status}`)
-						const releaseBody = response.body ? scope.retain('response-body') : undefined
-						try {
-							const serialized = serializeResponse(response, wsBridge)
-							post({ type: 'fetch-result', id: cmd.id, response: serialized })
-							if (serialized.streamId !== undefined && response.body) {
-								pumpResponseBody(serialized.streamId, response.body, completion => {
-									fetchAbortControllers.delete(cmd.id)
-									releaseBody?.(completion)
-								})
-							} else {
-								fetchAbortControllers.delete(cmd.id)
-								releaseBody?.()
-							}
-						} catch (error) {
-							try {
-								await response.body?.cancel(error)
-							} finally {
-								releaseBody?.({ kind: 'error', error })
-							}
-							throw error
-						}
-					})
+					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
+					const request = deserializeRequest(cmd.request, reqBody, abortController.signal)
+					const response = await runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props))
+					const serialized = serializeResponse(response, wsBridge)
+					post({ type: 'fetch-result', id: cmd.id, response: serialized })
+					if (serialized.streamId !== undefined && response.body) {
+						// Keep the AbortController alive until the streamed body finishes
+						// (an SSE loop may still observe request.signal); drop it on end.
+						pumpResponseBody(serialized.streamId, response.body, () => fetchAbortControllers.delete(cmd.id))
+					} else {
+						fetchAbortControllers.delete(cmd.id)
+					}
 				} catch (e) {
 					fetchAbortControllers.delete(cmd.id)
 					if (cmd.request.streamId !== undefined) requestStreams.cancel(cmd.request.streamId)
@@ -407,22 +369,18 @@ async function initRuntime(init: WorkerInitConfig) {
 			}
 			case 'scheduled':
 				try {
-					await runInvocation(cmd.parent, 'scheduled', async () => {
-						const result = await callScheduled(cmd.cronExpr, cmd.scheduledTime)
-						if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
-						else post({ type: 'scheduled-result', id: cmd.id })
-					})
+					const result = await runWithParentContext(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
+					if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
+					else post({ type: 'scheduled-result', id: cmd.id })
 				} catch (e) {
 					post({ type: 'scheduled-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 			case 'email':
 				try {
-					await runInvocation(cmd.parent, 'email', async () => {
-						const result = await callEmail(cmd.messageId, cmd.from, cmd.to, cmd.raw)
-						if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
-						else post({ type: 'email-result', id: cmd.id })
-					})
+					const result = await runWithParentContext(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, cmd.raw))
+					if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
+					else post({ type: 'email-result', id: cmd.id })
 				} catch (e) {
 					post({ type: 'email-error', id: cmd.id, error: serializeError(e) })
 				}
@@ -459,37 +417,26 @@ async function initRuntime(init: WorkerInitConfig) {
 				// running and are awaited by main via their wait-until registration.
 				for (const consumer of queueConsumers) consumer.stop()
 				break
-			case 'fetch-abort': {
+			case 'fetch-abort':
 				// Client disconnected — fire the request's signal so user cleanup runs.
-				const active = fetchAbortControllers.get(cmd.id)
-				if (active) {
-					active.invocation.run(() => {
-						active.invocation.retain('handler')({ kind: 'cancelled', reason: 'Request aborted' })
-						active.controller.abort()
-					})
-				}
+				fetchAbortControllers.get(cmd.id)?.abort()
 				break
-			}
 			case 'entrypoint-rpc':
 				try {
-					await runInvocation(cmd.parent, `rpc ${cmd.entrypoint ?? 'default'}.${cmd.method}`, async () => {
-						const value = await invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props)
-						post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
-					})
+					const value = await runWithParentContext(cmd.parent, () => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props))
+					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 			case 'entrypoint-rpc-get':
 				try {
-					await runInvocation(cmd.parent, `get ${cmd.entrypoint ?? 'default'}.${cmd.property}`, () => {
-						const result = invokeEntrypointPropertyGet(cmd.entrypoint, cmd.property, cmd.props)
-						if (result.kind === 'function') {
-							post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'function' })
-						} else {
-							post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'value', value: result.value })
-						}
-					})
+					const result = runWithParentContext(cmd.parent, () => invokeEntrypointPropertyGet(cmd.entrypoint, cmd.property, cmd.props))
+					if (result.kind === 'function') {
+						post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'function' })
+					} else {
+						post({ type: 'entrypoint-rpc-get-result', id: cmd.id, kind: 'value', value: result.value })
+					}
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-get-error', id: cmd.id, error: serializeError(e) })
 				}

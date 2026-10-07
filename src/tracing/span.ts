@@ -1,6 +1,6 @@
 import { generateId, generateTraceId, getActiveContext, runWithContext, type SpanContext } from './context'
 import { buildErrorFrames } from './frames'
-import { getTraceWriter, type TraceWriter } from './store'
+import { getTraceWriter } from './store'
 import type { SpanData } from './types'
 
 export interface SpanOptions {
@@ -19,6 +19,7 @@ export type SpanException =
 	| { code?: string | number; name: string; message?: string; stack?: string }
 	| { code?: string | number; name?: string; message: string; stack?: string }
 
+/** Cloudflare custom-span handle. */
 export interface SpanHandle {
 	readonly isTraced: boolean
 	setAttribute(key: string, value: SpanAttribute): this
@@ -27,6 +28,7 @@ export interface SpanHandle {
 	end(): void
 }
 
+/** Cloudflare-compatible `tracing` namespace exported from `cloudflare:workers` and exposed as `ctx.tracing`. */
 export interface Tracing {
 	enterSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T
 	startActiveSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T
@@ -74,79 +76,35 @@ function parseException(value: unknown): ExceptionData | undefined {
 	return data
 }
 
-const noopSpan: SpanHandle = {
-	get isTraced() {
-		return false
-	},
-	setAttribute() {
-		return this
-	},
-	setAttributes() {
-		return this
-	},
-	recordException() {},
-	end() {},
-}
-
-/** Runtime-only owner; public handles expose no IDs or runtime finalization methods. */
-export class OwnedSpan {
-	readonly context: SpanContext
+/** Writes to one span row. Runtime-owned spans ignore the public `end()`; only the runtime closes them. */
+class SpanRecord {
 	readonly handle: SpanHandle
 	private ended = false
 	private bytesUsed = 0
 
-	constructor(opts: SpanOptions, parent: SpanContext | undefined, readonly writer: TraceWriter, manual = false) {
-		this.context = {
-			traceId: parent?.traceId ?? generateTraceId(),
-			spanId: generateId(),
-			fetchStack: parent?.fetchStack ?? { current: null },
-			subrequests: parent?.subrequests ?? { count: 0 },
-			invocation: parent?.invocation,
-			invocationSpans: parent?.invocationSpans,
-			writer,
-			span: this,
-		}
-		writer.insertSpan({
-			spanId: this.context.spanId,
-			traceId: this.context.traceId,
-			parentSpanId: parent?.spanId ?? null,
-			name: opts.name,
-			kind: opts.kind ?? 'internal',
-			status: 'unset',
-			statusMessage: null,
-			startTime: Date.now(),
-			endTime: null,
-			durationMs: null,
-			attributes: opts.attributes ?? {},
-			workerName: opts.workerName ?? null,
-		})
-		const owner = this
+	constructor(readonly context: SpanContext, userOwned: boolean) {
+		const record = this
 		this.handle = {
 			get isTraced() {
-				return owner.isOpen
+				return !record.ended
 			},
 			setAttribute(key, value) {
-				owner.setAttribute(key, value)
+				record.setAttribute(key, value)
 				return this
 			},
 			setAttributes(attributes) {
-				if (!owner.isOpen || owner.bytesUsed > MAX_SPAN_BYTES) return this
+				if (record.ended || record.bytesUsed > MAX_SPAN_BYTES) return this
 				if (!attributes || typeof attributes !== 'object') throw new TypeError('Span attributes must be an object')
-				for (const [key, value] of Object.entries(attributes)) owner.setAttribute(key, value)
+				for (const [key, value] of Object.entries(attributes)) record.setAttribute(key, value)
 				return this
 			},
 			recordException(exception) {
-				owner.recordException(exception)
+				record.recordException(exception)
 			},
 			end() {
-				if (manual) owner.finish()
+				if (userOwned) record.finish()
 			},
 		}
-		parent?.invocationSpans?.add(this)
-	}
-
-	get isOpen(): boolean {
-		return !this.ended && !this.context.invocation?.closed
 	}
 
 	private acceptData(kind: 'attribute' | 'exception', name: string, valueSize: number): boolean {
@@ -156,7 +114,7 @@ export class OwnedSpan {
 		if (this.bytesUsed <= MAX_SPAN_BYTES) return true
 		const nameSize = encoder.encode(name).length
 		const shortName = nameSize > 64 ? `"${truncateName(name)}..." (key length ${nameSize})` : `"${name}"`
-		this.writer.updateAttributes(this.context.spanId, {
+		getTraceWriter().updateAttributes(this.context.spanId, {
 			'cloudflare.warning.type': 'span_data_limit_exceeded',
 			'cloudflare.warning.message': `exceeded span data limit while trying to record ${kind} ${shortName} of size ${valueSize}`,
 		})
@@ -164,23 +122,23 @@ export class OwnedSpan {
 	}
 
 	private setAttribute(key: string, value: SpanAttribute): void {
-		if (!this.isOpen || this.bytesUsed > MAX_SPAN_BYTES || value === undefined) return
+		if (this.ended || this.bytesUsed > MAX_SPAN_BYTES || value === undefined) return
 		if (typeof key !== 'string') throw new TypeError('Span attribute key must be a string')
 		if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
 			throw new TypeError('Span attribute value must be a string, number or boolean')
 		}
 		if (!this.acceptData('attribute', key, typeof value === 'string' ? encoder.encode(value).length : 8)) return
-		this.writer.updateAttributes(this.context.spanId, { [key]: value })
+		getTraceWriter().updateAttributes(this.context.spanId, { [key]: value })
 	}
 
 	private recordException(exception: SpanException): void {
-		if (!this.isOpen || this.bytesUsed > MAX_SPAN_BYTES) return
+		if (this.ended || this.bytesUsed > MAX_SPAN_BYTES) return
 		const data = parseException(exception)
 		if (!data) return
 		let size = 0
 		for (const value of Object.values(data)) size += typeof value === 'string' ? encoder.encode(value).length : 8
 		if (!this.acceptData('exception', data.name ?? '', size)) return
-		this.writer.addEvent({
+		getTraceWriter().addEvent({
 			spanId: this.context.spanId,
 			traceId: this.context.traceId,
 			timestamp: Date.now(),
@@ -194,15 +152,15 @@ export class OwnedSpan {
 	finish(status?: 'ok' | 'error', message?: string): void {
 		if (this.ended) return
 		this.ended = true
-		this.context.invocationSpans?.delete(this)
-		const finalStatus = status ?? (this.writer.getSpanStatus(this.context.spanId) === 'error' ? 'error' : 'ok')
-		this.writer.endSpan(this.context.spanId, Date.now(), finalStatus, message)
+		const writer = getTraceWriter()
+		const finalStatus = status ?? (writer.getSpanStatus(this.context.spanId) === 'error' ? 'error' : 'ok')
+		writer.endSpan(this.context.spanId, Date.now(), finalStatus, message)
 	}
 
 	fail(error: unknown): void {
-		if (!this.isOpen) return
+		if (this.ended) return
 		const message = error instanceof Error ? error.message : String(error)
-		this.writer.addEvent({
+		getTraceWriter().addEvent({
 			spanId: this.context.spanId,
 			traceId: this.context.traceId,
 			timestamp: Date.now(),
@@ -215,12 +173,50 @@ export class OwnedSpan {
 	}
 }
 
+const records = new WeakMap<SpanContext, SpanRecord>()
+
+function createSpan(opts: SpanOptions, userOwned: boolean): SpanRecord {
+	const parent = opts.newTrace ? undefined : getActiveContext()
+	const context: SpanContext = {
+		traceId: parent?.traceId ?? generateTraceId(),
+		spanId: generateId(),
+		// Share fetchStack ref across all spans in the same trace so that
+		// fetch call-site stacks captured in sub-spans are visible in the root
+		// span's error handler.
+		fetchStack: parent?.fetchStack ?? { current: null },
+		// Subrequest budget is per top-level request: a root span (no parent) mints
+		// a fresh counter; child spans inherit it.
+		subrequests: parent?.subrequests ?? { count: 0 },
+	}
+	getTraceWriter().insertSpan({
+		spanId: context.spanId,
+		traceId: context.traceId,
+		parentSpanId: parent?.spanId ?? null,
+		name: opts.name,
+		kind: opts.kind ?? 'internal',
+		status: 'unset',
+		statusMessage: null,
+		startTime: Date.now(),
+		endTime: null,
+		durationMs: null,
+		attributes: opts.attributes ?? {},
+		workerName: opts.workerName ?? null,
+	})
+	const record = new SpanRecord(context, userOwned)
+	records.set(context, record)
+	return record
+}
+
 function isThenable(value: unknown): value is PromiseLike<unknown> {
 	return value !== null && (typeof value === 'object' || typeof value === 'function') && 'then' in value && typeof value.then === 'function'
 }
 
-function runAndEnd<T>(span: OwnedSpan, fn: () => T, flagServerError?: boolean): T
-function runAndEnd(span: OwnedSpan, fn: () => unknown, flagServerError = false): unknown {
+/**
+ * Runs `fn` inside the span and ends the span when `fn` returns or — if it returned a thenable —
+ * when that settles. Sync callbacks stay sync. A throw/rejection marks the span errored.
+ */
+function runAndEnd<T>(span: SpanRecord, fn: () => T, flagServerError?: boolean): T
+function runAndEnd(span: SpanRecord, fn: () => unknown, flagServerError = false): unknown {
 	const succeed = (result: unknown) => {
 		if (flagServerError && result instanceof Response && result.status >= 500) {
 			span.finish('error', `HTTP ${result.status}`)
@@ -244,70 +240,60 @@ function runAndEnd(span: OwnedSpan, fn: () => unknown, flagServerError = false):
 	}
 }
 
-function createInternalSpan(opts: SpanOptions): OwnedSpan {
-	const parent = opts.newTrace ? undefined : getActiveContext()
-	return new OwnedSpan(opts, parent, parent?.writer ?? getTraceWriter())
-}
-
 export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>): Promise<T> {
-	if (!opts.newTrace && getActiveContext()?.invocation?.closed) return fn()
-	return runAndEnd(createInternalSpan(opts), fn, true)
+	return runAndEnd(createSpan(opts, false), fn, true)
 }
 
+/** Synchronous variant of startSpan for instrumenting non-async APIs (e.g. DO
+ *  state.storage.sql.exec is sync). The span ends as soon as fn returns. */
 export function startSyncSpan<T>(opts: SpanOptions, fn: () => T): T {
-	if (!opts.newTrace && getActiveContext()?.invocation?.closed) return fn()
-	return runAndEnd(createInternalSpan(opts), fn)
-}
-
-function createCustomSpan(name: string): OwnedSpan | undefined {
-	const truncatedName = truncateName(name)
-	const parent = getActiveContext()
-	if (!parent?.invocation || parent.invocation.closed) return
-	return new OwnedSpan({ name: truncatedName }, parent, parent.writer ?? getTraceWriter(), true)
+	return runAndEnd(createSpan(opts, false), fn)
 }
 
 export function enterSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T {
-	const span = createCustomSpan(name)
-	if (!span) return callback(noopSpan, ...args)
+	const span = createSpan({ name: truncateName(name) }, true)
 	return runAndEnd(span, () => callback(span.handle, ...args))
 }
 
+/** Spans opened by `startActiveSpan` / `startSpan` stay open until the user calls `end()`. */
 export const tracing: Tracing = {
 	enterSpan,
 	startActiveSpan(name, callback, ...args) {
-		const span = createCustomSpan(name)
-		if (!span) return callback(noopSpan, ...args)
+		const span = createSpan({ name: truncateName(name) }, true)
 		return runWithContext(span.context, () => callback(span.handle, ...args))
 	},
 	startSpan(name) {
-		return createCustomSpan(name)?.handle ?? noopSpan
+		return createSpan({ name: truncateName(name) }, true).handle
 	},
 	getActiveSpan() {
 		const context = getActiveContext()
-		if (!context?.invocation || context.invocation.closed) return
-		return context.span?.handle ?? context.invocation.root
+		if (!context) return
+		let record = records.get(context)
+		if (!record) {
+			// A parent adopted across a thread boundary is owned by the other side.
+			record = new SpanRecord(context, false)
+			records.set(context, record)
+		}
+		return record.handle
 	},
 }
 
 export function setSpanStatus(status: 'ok' | 'error', message?: string): void {
 	const ctx = getActiveContext()
-	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
-	const store = ctx.writer ?? getTraceWriter()
-	store.setSpanStatus(ctx.spanId, status, message ?? null)
+	if (!ctx) return
+	getTraceWriter().setSpanStatus(ctx.spanId, status, message ?? null)
 }
 
 export function setSpanAttribute(key: string, value: unknown): void {
 	const ctx = getActiveContext()
-	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
-	const store = ctx.writer ?? getTraceWriter()
-	store.updateAttributes(ctx.spanId, { [key]: value })
+	if (!ctx) return
+	getTraceWriter().updateAttributes(ctx.spanId, { [key]: value })
 }
 
 export function addSpanEvent(name: string, level: string, message: string, attrs?: Record<string, unknown>): void {
 	const ctx = getActiveContext()
-	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
-	const store = ctx.writer ?? getTraceWriter()
-	store.addEvent({
+	if (!ctx) return
+	getTraceWriter().addEvent({
 		spanId: ctx.spanId,
 		traceId: ctx.traceId,
 		timestamp: Date.now(),
@@ -324,7 +310,7 @@ export function persistError(error: unknown, source: string, workerName?: string
 	try {
 		const err = error instanceof Error ? error : new Error(String(error))
 		const ctx = getActiveContext()
-		const store = ctx?.writer ?? getTraceWriter()
+		const store = getTraceWriter()
 		const id = crypto.randomUUID()
 		store.insertError({
 			id,

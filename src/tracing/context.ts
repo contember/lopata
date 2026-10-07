@@ -1,7 +1,4 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import type { InvocationTrace } from './invocation'
-import type { OwnedSpan } from './span'
-import type { TraceWriter } from './store'
 
 /** Mutable ref shared across all spans in the same trace. Allows fetch()
  *  call-site stacks captured in sub-spans to be visible in the root span's
@@ -19,10 +16,6 @@ export interface SubrequestCounterRef {
 }
 
 export interface SpanContext {
-	writer?: TraceWriter
-	span?: OwnedSpan
-	invocation?: InvocationTrace
-	invocationSpans?: Set<OwnedSpan>
 	traceId: string
 	spanId: string
 	/** Shared ref to the last stack captured at an outbound fetch() call site.

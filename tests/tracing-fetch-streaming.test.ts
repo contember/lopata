@@ -2,25 +2,27 @@ import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import '../src/plugin'
 import { runTracingMigrations } from '../src/tracing/db'
-import { createInvocationTrace, type InvocationTrace } from '../src/tracing/invocation'
+import { startSpan } from '../src/tracing/span'
 import { setTraceStore, TraceStore } from '../src/tracing/store'
 
 let store: TraceStore
-let invocation: InvocationTrace
 
 beforeEach(() => {
 	const db = new Database(':memory:')
 	runTracingMigrations(db)
 	store = new TraceStore(db)
 	setTraceStore(store)
-	invocation = createInvocationTrace({ name: 'streaming fetch' })
 })
 
 afterEach(() => {
-	invocation.terminate('test cleanup')
 	setTraceStore(null)
 	store.close()
 })
+
+// Outgoing fetches are traced only inside an active request span.
+function inRequest<T>(callback: () => Promise<T>): Promise<T> {
+	return startSpan({ name: 'request', kind: 'server' }, callback)
+}
 
 function fetchSpan(name: string) {
 	const row = store.listAllSpans({}).items.find(span => span.name === name)
@@ -60,7 +62,7 @@ test('traced upload reaches the origin before EOF and retains HTTP metadata with
 		},
 	})
 	try {
-		const pending = invocation.run(() =>
+		const pending = inRequest(() =>
 			fetch(new URL('/upload', origin.url), {
 				method: 'POST',
 				headers: { 'content-type': 'text/plain', 'x-upload': 'stream' },
@@ -108,7 +110,7 @@ test('traced response returns headers before EOF and cancellation reaches the so
 		},
 	})
 	try {
-		const response = await invocation.run(() => fetch(new URL('/download', origin.url)))
+		const response = await inRequest(() => fetch(new URL('/download', origin.url)))
 		expect(response.status).toBe(200)
 		expect(response.bodyUsed).toBe(false)
 		const reader = response.body?.getReader()
@@ -118,8 +120,6 @@ test('traced response returns headers before EOF and cancellation reaches the so
 		await cancelled.promise
 		expect(cancelCount).toBe(1)
 		expect(fetchSpan('fetch GET /download').attributes).not.toHaveProperty('http.response.body')
-		invocation.finishHandler()
-		await invocation.completed
 	} finally {
 		await origin.stop(true)
 	}
@@ -128,6 +128,6 @@ test('traced response returns headers before EOF and cancellation reaches the so
 test('traced fetch preserves abort rejection and records the client error', async () => {
 	const controller = new AbortController()
 	controller.abort()
-	await expect(invocation.run(() => fetch('http://localhost:1/aborted', { signal: controller.signal }))).rejects.toThrow()
+	await expect(inRequest(() => fetch('http://localhost:1/aborted', { signal: controller.signal }))).rejects.toThrow()
 	expect(fetchSpan('fetch GET /aborted').status).toBe('error')
 })

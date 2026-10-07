@@ -5,7 +5,6 @@ import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility } from '../compatibility-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
-import { getActiveInvocation } from '../tracing/invocation'
 import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
@@ -670,21 +669,7 @@ export class DurableObjectStateImpl {
 		this._concurrencyGate = new Promise<void>(r => {
 			resolve = r
 		})
-		const release = getActiveInvocation()?.retain('handler')
-		let pending: Promise<T>
-		try {
-			pending = callback()
-		} catch (error) {
-			release?.({ kind: 'error', error })
-			throw error
-		}
-		return pending.then(value => {
-			release?.()
-			return value
-		}, error => {
-			release?.({ kind: 'error', error })
-			throw error
-		}).finally(() => {
+		return callback().finally(() => {
 			this._concurrencyGate = null
 			resolve!()
 		})
@@ -753,18 +738,8 @@ export class DurableObjectStateImpl {
 		return this._instanceResolver?.() ?? null
 	}
 
-	waitUntil(promise: Promise<unknown>): void {
-		const release = getActiveInvocation()?.retain('wait-until')
-		void Promise.resolve(promise).then(
-			() => release?.(),
-			error => {
-				try {
-					console.error('[lopata] waitUntil promise rejected:', error)
-				} finally {
-					release?.({ kind: 'error', error })
-				}
-			},
-		)
+	waitUntil(_promise: Promise<unknown>) {
+		// no-op in dev
 	}
 
 	// --- WebSocket Hibernation API ---

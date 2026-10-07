@@ -1,24 +1,14 @@
 import type { CompatibilitySelection } from '../compatibility'
-import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../compatibility-context'
-import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
-import { createInvocationTrace, getActiveInvocation, type InvocationTrace } from '../tracing/invocation'
 import type { DOAbortPolicy, DOExecutor, DOExecutorFactory, ExecutorConfig } from './do-executor'
 import { type DurableObjectBase, DurableObjectStateImpl } from './durable-object'
-import { createRpcSession, type RpcSession } from './rpc-session'
-import { createRpcFunctionStub, wrapRpcReturnValue } from './rpc-stub'
-import { isWorkerResponse, trackInvocationResponse } from './worker-dispatcher'
+import { isRpcTarget, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
 
 export class InProcessExecutor implements DOExecutor {
 	private _state: DurableObjectStateImpl
 	private _instance: DurableObjectBase
 	private _containerRuntime?: import('./container').ContainerRuntime
-	private _invocations = new Set<InvocationTrace>()
-	private _rpcSessions = new Set<RpcSession>()
-	// Keep empty sets until caller completion so repeated RPCs share one completion listener.
-	private _callerSessions = new WeakMap<InvocationTrace, Set<RpcSession>>()
-	private _namespaceName: string
-	private _disposed = false
 	private compatibility: CompatibilitySelection
 	private abortPolicy?: DOAbortPolicy
 	private abortSignal = Promise.withResolvers<never>()
@@ -26,7 +16,6 @@ export class InProcessExecutor implements DOExecutor {
 	constructor(config: ExecutorConfig) {
 		this.compatibility = config.compatibility ?? legacyCompatibility
 		const { id, db, namespaceName, cls, env, dataDir, limits, containerConfig, onAlarmSet } = config
-		this._namespaceName = namespaceName
 
 		this._state = new DurableObjectStateImpl(id, db, namespaceName, dataDir, limits, this.compatibility)
 		if (onAlarmSet) this._state.storage._setAlarmCallback(onAlarmSet)
@@ -35,8 +24,6 @@ export class InProcessExecutor implements DOExecutor {
 			this._state._setAbortCallback(policy => {
 				this.abortPolicy = policy
 				this.abortSignal.reject(new Error(policy.reason))
-				for (const scope of this._invocations) scope.terminate(policy.reason)
-				for (const session of this._rpcSessions) session.close()
 			})
 		}
 
@@ -66,108 +53,27 @@ export class InProcessExecutor implements DOExecutor {
 		this._state._setInstanceResolver(() => this._instance)
 	}
 
-	private _startInvocation(operation: string): InvocationTrace {
-		if (this._disposed) throw new Error('Durable Object executor has been disposed')
-		if (this.abortPolicy) throw new Error(this.abortPolicy.reason)
-		const scope = createInvocationTrace({
-			name: `do.${operation} ${this._namespaceName}`,
-			kind: 'server',
-			attributes: { 'do.namespace': this._namespaceName, 'do.id': this._state.id.toString() },
-		})
-		this._invocations.add(scope)
-		void scope.completed.then(() => this._invocations.delete(scope))
-		return scope
-	}
-
 	private _construct(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: unknown): DurableObjectBase {
-		const scope = this._startInvocation('constructor')
-		try {
-			const instance = runWithCompatibility(
-				this.compatibility,
-				() => scope.run(() => runWithExecutionContext(new ExecutionContext(), () => new cls(this._state, env))),
-			)
-			scope.finishHandler()
-			return instance
-		} catch (error) {
-			scope.finishHandler({ kind: 'error', error })
-			scope.terminate('Durable Object construction failed')
-			throw error
-		}
+		return runWithCompatibility(this.compatibility, () => new cls(this._state, env))
 	}
 
-	private async _invoke<T>(operation: string, callback: (scope: InvocationTrace, context: ExecutionContext) => Promise<T>): Promise<T> {
-		const scope = this._startInvocation(operation)
-		try {
-			const pending = runWithCompatibility(this.compatibility, () =>
-				scope.run(() => {
-					const context = new ExecutionContext()
-					return runWithExecutionContext(context, () => callback(scope, context))
-				}))
-			// In-process handlers cannot be killed; abort only detaches their callers.
-			const result = await Promise.race([pending, this.abortSignal.promise])
-			scope.finishHandler()
-			return result
-		} catch (error) {
-			scope.finishHandler({ kind: 'error', error })
-			throw error
-		}
-	}
+	private readonly scope: RpcExecutionScope = { run: callback => runWithCompatibility(this.compatibility, callback) }
 
-	private _invokeRpc(operation: string, member: string, callback: (session: RpcSession) => Promise<unknown>): Promise<unknown> {
-		const caller = getActiveInvocation()
-		let callerSessions = caller ? this._callerSessions.get(caller) : undefined
-		if (caller && !callerSessions) {
-			const sessions = new Set<RpcSession>()
-			const registry = this._callerSessions
-			registry.set(caller, sessions)
-			callerSessions = sessions
-			void caller.completed.then(() => {
-				for (const session of sessions) session.close()
-				sessions.clear()
-				registry.delete(caller)
-			})
-		}
-		return this._invoke(operation, async (invocation, context) => {
-			const compatibility = getActiveCompatibility()
-			const session: RpcSession = createRpcSession({
-				run: callback => runWithCompatibility(compatibility, () => invocation.run(() => runWithExecutionContext(context, callback))),
-				retain: () => {
-					const release = invocation.retain('handler')
-					return () => {
-						this._rpcSessions.delete(session)
-						callerSessions?.delete(session)
-						release()
-					}
-				},
-				isClosed: () => invocation.closed || this._disposed || caller?.closed === true,
-			})
-			this._rpcSessions.add(session)
-			callerSessions?.add(session)
-			try {
-				return await session.run(async () => {
-					const result = await callback(session)
-					return session.run(() => wrapRpcReturnValue(result, member, session))
-				})
-			} catch (error) {
-				session.close()
-				throw error
-			} finally {
-				session.finish()
-			}
-		})
+	private async _invoke<T>(callback: () => Promise<T>): Promise<T> {
+		if (this.abortPolicy) throw new Error(this.abortPolicy.reason)
+		// In-process handlers cannot be killed; abort only detaches their callers.
+		return Promise.race([runWithCompatibility(this.compatibility, callback), this.abortSignal.promise])
 	}
 
 	async executeFetch(request: Request): Promise<Response> {
-		return this._invoke('fetch', async scope => {
+		return this._invoke(async () => {
 			await this._state._enter()
 			try {
-				const fetchFn: unknown = Reflect.get(this._instance, 'fetch')
+				const fetchFn = (this._instance as unknown as Record<string, unknown>).fetch
 				if (typeof fetchFn !== 'function') {
 					throw new Error('Durable Object does not implement fetch()')
 				}
-				const response: unknown = await fetchFn.call(this._instance, request)
-				if (!isWorkerResponse(response)) throw new TypeError('Durable Object fetch() must return a Response')
-				return trackInvocationResponse(response, scope, getActiveExecutionContext())
+				return await (fetchFn as (req: Request) => Promise<Response>).call(this._instance, request)
 			} finally {
 				this._state._exit()
 			}
@@ -175,13 +81,16 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async executeRpc(method: string, args: unknown[]): Promise<unknown> {
-		return this._invokeRpc('rpc-call', method, async () => {
+		return this._invoke(async () => {
 			warnInvalidRpcArgs(args, method)
 			await this._state._enter()
 			try {
-				const val: unknown = Reflect.get(this._instance, method)
+				const val = (this._instance as unknown as Record<string, unknown>)[method]
 				if (typeof val === 'function') {
-					return await val.call(this._instance, ...args)
+					// Plain values stay raw — the namespace `get()` stub validates them once.
+					// Capabilities are pre-scoped so their calls keep this DO's compatibility selection.
+					const result: unknown = await (val as (...a: unknown[]) => unknown).call(this._instance, ...args)
+					return typeof result === 'function' || isRpcTarget(result) ? wrapRpcReturnValue(result, method, this.scope) : result
 				}
 				throw new Error(`"${method}" is not a method on the Durable Object`)
 			} finally {
@@ -191,24 +100,14 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async executeRpcGet(prop: string): Promise<unknown> {
-		return this._invokeRpc('rpc-get', prop, async session => {
+		return this._invoke(async () => {
 			await this._state._enter()
 			try {
-				const val: unknown = Reflect.get(this._instance, prop)
+				const val = (this._instance as unknown as Record<string, unknown>)[prop]
 				if (typeof val === 'function') {
-					const instance = this._instance
-					return createRpcFunctionStub(
-						async (...args: unknown[]) => {
-							await this._state._enter()
-							try {
-								return await Reflect.apply(val, instance, args)
-							} finally {
-								this._state._exit()
-							}
-						},
-						undefined,
-						session,
-					)
+					// Re-dispatching callable (mirrors WorkerExecutor.executeRpcGet); the
+					// stub wraps it once. Avoids the double function-stub wrap.
+					return (...args: unknown[]) => this.executeRpc(prop, args)
 				}
 				return val
 			} finally {
@@ -218,10 +117,10 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async executeAlarm(retryCount: number): Promise<void> {
-		return this._invoke('alarm', async () => {
+		return this._invoke(async () => {
 			await this._state._enter()
 			try {
-				const alarmFn: unknown = Reflect.get(this._instance, 'alarm')
+				const alarmFn = (this._instance as unknown as Record<string, unknown>).alarm
 				if (typeof alarmFn === 'function') {
 					await alarmFn.call(this._instance, {
 						retryCount,
@@ -239,7 +138,7 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	isActive(): boolean {
-		return this._state._hasActiveRequests() || this._invocations.size > 0
+		return this._state._hasActiveRequests()
 	}
 
 	isBlocked(): boolean {
@@ -262,11 +161,6 @@ export class InProcessExecutor implements DOExecutor {
 	}
 
 	async dispose(): Promise<void> {
-		this._disposed = true
-		for (const scope of this._invocations) scope.terminate('Durable Object executor disposed')
-		this._invocations.clear()
-		for (const session of this._rpcSessions) session.close()
-		this._rpcSessions.clear()
 		// Close all accepted WebSockets so clients can reconnect to new instance
 		for (const ws of this._state.getWebSockets()) {
 			try {
@@ -276,10 +170,6 @@ export class InProcessExecutor implements DOExecutor {
 		if (this._containerRuntime) {
 			await this._containerRuntime.cleanup()
 		}
-	}
-
-	isDisposed(): boolean {
-		return this._disposed
 	}
 
 	/** @internal Get the raw DO instance (for testing/dashboard) */

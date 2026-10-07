@@ -5,7 +5,7 @@ import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
-import { trackInvocationResponse, WorkerDispatcher } from '../bindings/worker-dispatcher'
+import { WorkerDispatcher } from '../bindings/worker-dispatcher'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import { resolveCompatibility } from '../compatibility'
 import { runWithCompatibility } from '../compatibility-context'
@@ -13,7 +13,7 @@ import type { WranglerConfig } from '../config'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
-import { createInvocationTrace, type InvocationTrace } from '../tracing/invocation'
+import { startSpan } from '../tracing/span'
 import type { ResolvedTarget } from '../worker-registry'
 import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
@@ -124,24 +124,14 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	setGlobalEnv(env)
 
 	// --- Handler dispatch helpers ---
-	const invocations = new Set<InvocationTrace>()
-
-	async function dispatch<T>(name: string, callback: (ctx: ExecutionContext, invocation: InvocationTrace) => Promise<T>): Promise<T> {
-		const invocation = createInvocationTrace({ name, kind: 'server' })
-		invocations.add(invocation)
-		void invocation.completed.then(() => invocations.delete(invocation))
+	async function dispatch<T>(name: string, callback: (ctx: ExecutionContext) => Promise<T>): Promise<T> {
 		return runWithCompatibility(compatibility, () =>
-			invocation.run(async () => {
+			startSpan({ name, kind: 'server' }, async () => {
 				const ctx = new ExecutionContext()
 				try {
-					const result = await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx, invocation)))
+					return await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx)))
+				} finally {
 					await ctx._awaitAll()
-					invocation.finishHandler()
-					return result
-				} catch (error) {
-					invocation.finishHandler({ kind: 'error', error })
-					await ctx._awaitAll()
-					throw error
 				}
 			}))
 	}
@@ -160,12 +150,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			request = init ? new Request(input, init) : input
 		}
 
-		return dispatch(`${request.method} ${new URL(request.url).pathname}`, async (ctx, invocation) => {
-			const response = trackInvocationResponse(await dispatcher.fetch(request, 'default', undefined, ctx), invocation, ctx)
-			invocation.root.setAttribute('http.status_code', response.status)
-			if (response.status >= 500) invocation.finishHandler({ kind: 'error', error: new Error(`HTTP ${response.status}`) })
-			return response
-		})
+		return dispatch(`${request.method} ${new URL(request.url).pathname}`, ctx => dispatcher.fetch(request, 'default', undefined, ctx))
 	}
 
 	async function queueHandler(queueName: string, messages: { body: unknown; contentType?: string }[]): Promise<void> {
@@ -253,9 +238,6 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	function dispose(): void {
-		dispatcher.terminateInvocations('Test environment disposed')
-		for (const invocation of invocations) invocation.terminate('Test environment disposed')
-		invocations.clear()
 		for (const tw of testWorkflows) tw.dispose()
 		for (const td of testDOs) td.dispose()
 		for (const entry of registry.durableObjects) {
@@ -264,7 +246,6 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			entry.namespace.destroy({ force: true })
 		}
 		for (const entry of registry.workflows) {
-			entry.binding.terminateTracing('Test environment disposed')
 			entry.binding.abortRunning()
 		}
 		db.close()

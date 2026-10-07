@@ -24,10 +24,8 @@ import type {
 	RpcStreamAck,
 	RpcStreamCancel,
 	SerializedError,
-	WorkerMessage,
 } from './protocol'
-
-export type DOTraceMessage = Extract<WorkerMessage, { type: `trace-${string}` }>
+import type { TraceMessage } from './remote-trace-store'
 
 /**
  * DO worker → main: the instance's lifecycle state changed. Main mirrors these
@@ -197,9 +195,7 @@ export type DOWorkerMessage =
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
-	| DOTraceMessage
-	| { type: 'do-invocation-start'; id: number }
-	| { type: 'do-invocation-end'; id: number }
+	| TraceMessage
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }
