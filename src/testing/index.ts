@@ -5,7 +5,7 @@ import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
-import { trackInvocationResponse, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
+import { trackInvocationResponse, WorkerDispatcher } from '../bindings/worker-dispatcher'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import { resolveCompatibility } from '../compatibility'
 import { runWithCompatibility } from '../compatibility-context'
@@ -108,7 +108,6 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	const dispatcher = new WorkerDispatcher(
 		workerModule,
 		env,
-		new WorkersCache(db, workerConfig.name, crypto.randomUUID(), workerConfig, () => clock?.now() ?? Date.now()),
 		props => new ExecutionContext(props),
 		compatibility,
 	)
@@ -162,7 +161,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		}
 
 		return dispatch(`${request.method} ${new URL(request.url).pathname}`, async (ctx, invocation) => {
-			const response = trackInvocationResponse(await dispatcher.fetch(request, 'default', undefined, false, ctx), invocation, ctx)
+			const response = trackInvocationResponse(await dispatcher.fetch(request, 'default', undefined, ctx), invocation, ctx)
 			invocation.root.setAttribute('http.status_code', response.status)
 			if (response.status >= 500) invocation.finishHandler({ kind: 'error', error: new Error(`HTTP ${response.status}`) })
 			return response

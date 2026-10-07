@@ -5,7 +5,7 @@ import type { ReadableStreamDefaultReader } from 'node:stream/web'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { type CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair.ts'
-import { cache, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache.ts'
+import { WorkerDispatcher } from '../bindings/worker-dispatcher.ts'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context.ts'
 import { resolveCompatibility } from '../compatibility.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
@@ -135,7 +135,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					workerDispatcher = new WorkerDispatcher(
 						workerModule,
 						env,
-						new WorkersCache(getDatabase(), config.name, crypto.randomUUID(), config),
 						props => new CacheContext(props),
 						compatibility,
 					)
@@ -213,7 +212,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 							// constructed at this point, and a throwing constructor deserves the same
 							// error page and persisted error as a throwing fetch().
 							if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
-							const resp = await workerDispatcher.fetch(request, 'default', undefined, false, ctx)
+							const resp = await workerDispatcher.fetch(request, 'default', undefined, ctx)
 							invocation.root.setAttribute('http.status_code', resp.status)
 
 							// Intercept React Router error boundary responses with lopata error page
@@ -467,7 +466,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			matchS3Path = s3Mod.matchS3Path
 			ForwardableEmailMessage = emailMod.ForwardableEmailMessage
 			getDatabase = dbMod.getDatabase
-			globalThis.__lopata_workerCacheApi = cache
 			globalThis.__lopata_tracing = spanMod.tracing
 			globalThis.__lopata_waitUntil = promise => {
 				const ctx = getActiveExecutionContext()
@@ -1061,7 +1059,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				attributes: { 'http.url': request.url, 'lopata.websocket': true, 'lopata.generation_id': currentGenerationId },
 			}, async ctx => {
 				if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
-				return workerDispatcher.fetch(request, 'default', undefined, false, ctx)
+				return workerDispatcher.fetch(request, 'default', undefined, ctx)
 			})
 
 			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket

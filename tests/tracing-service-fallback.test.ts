@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { RPC_TARGET_BRAND } from '../src/bindings/rpc-stub'
 import { ServiceBinding } from '../src/bindings/service-binding'
-import { WorkerDispatcher, WorkersCache } from '../src/bindings/worker-cache'
+import { WorkerDispatcher } from '../src/bindings/worker-dispatcher'
 import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../src/execution-context'
 import { runTracingMigrations } from '../src/tracing/db'
 import { createInvocationTrace, getActiveInvocation, type InvocationTrace } from '../src/tracing/invocation'
@@ -469,7 +469,6 @@ test('caller completion closes an undisposed idle session without another capabi
 })
 
 test('dispatcher-backed fetch, RPC and property reads get one target root each', async () => {
-	const db = new Database(':memory:')
 	const module = {
 		default: {
 			fetch() {
@@ -487,7 +486,6 @@ test('dispatcher-backed fetch, RPC and property reads get one target root each',
 	const dispatcher = new WorkerDispatcher(
 		module,
 		env,
-		new WorkersCache(db, 'backend', 'v1', { name: 'backend' }),
 		props => new ExecutionContext(props),
 	)
 	try {
@@ -499,7 +497,6 @@ test('dispatcher-backed fetch, RPC and property reads get one target root each',
 		expect(store.listAllSpans({}).items).toHaveLength(3)
 	} finally {
 		dispatcher.terminateInvocations('test cleanup')
-		db.close()
 	}
 })
 

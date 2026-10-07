@@ -11,7 +11,7 @@ The review covered the Cloudflare Workers blog archive, both 2026 Agents Week re
 | Announcement                                                                                                                                                               | Date                | Local implementation                                                                                         |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------ |
 | [Workflow saga rollbacks](https://blog.cloudflare.com/rollbacks-for-workflows/)                                                                                            | June 25             | Extend the existing Workflow engine with per-step compensation and durable rollback state.                   |
-| [Workers Cache](https://blog.cloudflare.com/workers-cache/)                                                                                                                | July 6              | Add an entrypoint-scoped response cache, separate from the existing `caches` API.                            |
+| [Workers Cache](https://blog.cloudflare.com/workers-cache/)                                                                                                                | July 6              | Accept the configuration and purge/invalidate API; responses pass through uncached.                          |
 | [Third-party AI models](https://blog.cloudflare.com/ai-platform/) and [Workers AI and AI Gateway unification](https://blog.cloudflare.com/workers-ai-gateway-unification/) | April 16 / August 7 | Extend the existing authenticated HTTP proxy to forward gateway options and support the gateway binding API. |
 | [Modern Web Crypto](https://blog.cloudflare.com/workers-ml-kem-ml-dsa-support/)                                                                                            | October 1           | Expose Bun's native implementation as-is; available on Bun 1.4.2 and later.                                  |
 
@@ -43,7 +43,7 @@ On terminal failure, started steps are compensated in reverse start order after 
 
 ### Workers Cache
 
-Enable entrypoint response caching in Wrangler configuration. Named exports can override the top-level setting:
+Lopata accepts the Workers Cache configuration but never caches entrypoint responses. Every request reaches the Worker, so local edits are visible immediately. Named exports can override the top-level setting:
 
 ```json
 {
@@ -54,43 +54,22 @@ Enable entrypoint response caching in Wrangler configuration. Named exports can 
 }
 ```
 
-Response headers control freshness and stale-while-revalidate behavior. Cache identity includes the Worker, entrypoint, version and `ctx.props`, while ignoring the request hostname. Responses persist in SQLite. Reloads start cold unless `cache.cross_version_cache` is enabled.
+Config loading still validates these keys: `enabled` must be a boolean, `cross_version_cache` is a top-level boolean only, unknown fields are rejected, and `cache` is rejected on Durable Object and Workflow exports.
 
-#### Purge and soft invalidation
-
-Soft invalidation is implemented and locally verified within the following contract and accepted limitations.
-
-Both operations are available through the execution context or the active-context import:
+Loopback entrypoints (`ctx.exports.<Name>.fetch()`, RPC methods and properties) dispatch to the target entrypoint as on Cloudflare. Purge and invalidation are available through the execution context or the module import, and resolve to `{ success: true, errors: [] }` without doing anything:
 
 ```ts
 import { cache } from 'cloudflare:workers'
 
 await ctx.cache.purge({ tags: ['articles'] })
-await cache.purge({ pathPrefixes: ['/articles/'] })
-await ctx.cache.invalidate({ tags: ['articles'] })
 await cache.invalidate({ purgeEverything: true })
 ```
 
-Both accept the same selectors and return a promise of `{ success: true, errors: [] }` on success, or `{ success: false, errors: [{ code: 1000, message }] }` for invalid options:
-
-- `tags`: 1–1,000 printable ASCII tags, each at most 1,024 characters; matching is case-insensitive.
-- `pathPrefixes`: a nonempty list of paths without a scheme, host, query or fragment. A missing leading slash is added; matching uses pathname prefixes.
-- `purgeEverything: true`: selects every entry and cannot be combined with the other selectors.
-- Tags and path prefixes may be combined; an entry matching either selector is selected. At least one selector is required; unknown options are rejected.
-
-Operations target the active Worker's entrypoint, including all of its props and version partitions. Other Workers and entrypoints are excluded. Imported `cache` requires an active Worker execution context. The separate `caches` API retains its existing behavior.
-
-`purge()` deletes matching entries. The next eligible request misses and invokes the Worker. `invalidate()` instead sets the stored TTL to zero using the existing SQLite schema. It preserves the response body, validators, headers and age origin; invalidation does not reset `Age` or rewrite the stored `Cache-Control` header.
-
-On the next eligible request, an invalidated entry is stale. Revalidation can send its retained `ETag` or `Last-Modified` validator to the Worker. A `304 Not Modified` reuses the stored body and updates freshness from the revalidation response; subsequent requests can hit that refreshed entry while it remains fresh. A cacheable replacement response can likewise serve subsequent hits. Existing stale-while-revalidate (SWR) and stale-if-error (SIE) windows still apply: SWR may serve the stale body while revalidation runs, and SIE may permit stale fallback on an error.
-
-**Accepted local semantics:** after TTL is set to zero, SWR/SIE windows are measured from the original age origin, not restarted at invalidation. An already old entry can therefore be outside either window immediately after invalidation. Live Cloudflare parity for this TTL-zero, preserved-age and stale-window combination has not been verified. Neither operation emulates global propagation.
+Freshness, stale-while-revalidate, revalidation, `cf-cache-status`, custom cache keys and purge option validation are not emulated. The separate `caches` API retains its existing behavior.
 
 #### Shared export declarations
 
 The locally verified parser accepts concrete `worker`, `durable-object` and `workflow` declarations together, with or without Worker cache configuration. Worker cache validation still applies. Accepting these declarations does not implement declarative Durable Object lifecycle, Workflow lifecycle or their binding/loopback wiring. That work remains in [F07 — Declarative exports and complete loopback wiring](WORKERS-COMPAT-BACKLOG.md#f07--declarative-exports-and-complete-loopback-wiring-design-gated-pr-series).
-
-**Local cache limits:** stale-while-revalidate deduplication applies within one dispatcher. Unknown-length and multipart range responses buffer the representation with a 30-second timeout and a 512 MiB limit; the exact timeout and size boundaries were not exercised. Cloudflare purge rate limits are not emulated.
 
 ### Durable Object scheduled-alarm deletion
 

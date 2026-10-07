@@ -6,7 +6,7 @@
 
 import type { Database } from 'bun:sqlite'
 import { QueueConsumer } from '../bindings/queue'
-import type { WorkerDispatcher } from '../bindings/worker-cache'
+import type { WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { wireWorkflowClass } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'

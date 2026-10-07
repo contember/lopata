@@ -18,7 +18,7 @@ import type { ResolvedTarget } from '../worker-registry'
 import { createRpcSession, type RpcSession } from './rpc-session'
 import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { assetsOnlyRejection } from './static-assets'
-import { getWorkerDispatcher, isWorkerResponse, trackInvocationResponse, workerRequest } from './worker-cache'
+import { getWorkerDispatcher, isWorkerResponse, toRequest, trackInvocationResponse } from './worker-dispatcher'
 
 type WorkerModule = Record<string, unknown>
 
@@ -187,14 +187,14 @@ export class ServiceBinding {
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
-		const request = workerRequest(input, init)
+		const request = toRequest(input, init)
 
 		// Resolve first so a missing target throws the real error instead of
 		// burning a slot in the per-request subrequest budget on every failed call.
 		const resolved = this._resolve()
 		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
-			return resolved.executor.executeFetch(request, this._props, this._entrypoint, true)
+			return resolved.executor.executeFetch(request, this._props, this._entrypoint)
 		}
 		// Assets-only target: no script to invoke — its asset layer answers, including
 		// its own html_handling / not_found_handling. A declared `entrypoint` names an
@@ -214,7 +214,7 @@ export class ServiceBinding {
 		}
 
 		const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
-		if (dispatcher) return dispatcher.fetch(request, this._entrypoint, this._props, true)
+		if (dispatcher) return dispatcher.fetch(request, this._entrypoint, this._props)
 		return this._invokeFallback(resolved, `${request.method} ${new URL(request.url).pathname}`, async (ctx, invocation) => {
 			const target = resolveEntrypointTarget(resolved.workerModule, this._entrypoint, ctx, resolved.env)
 			const handler = target?.fetch

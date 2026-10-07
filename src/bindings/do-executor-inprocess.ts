@@ -7,7 +7,7 @@ import type { DOAbortPolicy, DOAlarmAborted, DOExecutor, DOExecutorFactory, Exec
 import { type DurableObjectBase, DurableObjectStateImpl } from './durable-object'
 import { createRpcSession, type RpcSession } from './rpc-session'
 import { createRpcFunctionStub, wrapRpcReturnValue } from './rpc-stub'
-import { isWorkerResponse, trackInvocationResponse } from './worker-cache'
+import { isWorkerResponse, trackInvocationResponse } from './worker-dispatcher'
 
 export class InProcessExecutor implements DOExecutor {
 	private _state: DurableObjectStateImpl

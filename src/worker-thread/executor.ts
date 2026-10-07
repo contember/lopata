@@ -497,7 +497,7 @@ export class WorkerThreadExecutor {
 		})
 	}
 
-	async executeFetch(request: Request, props?: Record<string, unknown>, entrypoint?: string, trusted = false): Promise<Response> {
+	async executeFetch(request: Request, props?: Record<string, unknown>, entrypoint?: string): Promise<Response> {
 		const shell = serializeRequestShell(request)
 		const body = request.body
 		const reqStreamId = body ? this._topRequestStreams.allocateId() : undefined
@@ -520,7 +520,7 @@ export class WorkerThreadExecutor {
 			this._pending,
 			(id, parent) => {
 				fetchId = id
-				return { type: 'fetch', id, request: req, parent, props, entrypoint, trusted }
+				return { type: 'fetch', id, request: req, parent, props, entrypoint }
 			},
 			() => {
 				// Wire the signal only AFTER the fetch command is posted: a client

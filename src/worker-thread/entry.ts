@@ -5,7 +5,7 @@ import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
-import { type CacheExecutionContext, WorkerDispatcher, WorkersCache } from '../bindings/worker-cache'
+import { type DispatchExecutionContext, WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility } from '../compatibility-context'
 import { validateWorkerCacheConfig } from '../config'
@@ -136,7 +136,7 @@ post({ type: 'need-init' })
 function dispatchServiceWorkerFetch(
 	handler: (event: unknown) => void,
 	request: Request,
-	ctx: CacheExecutionContext,
+	ctx: DispatchExecutionContext,
 ): Promise<Response> {
 	return new Promise<Response>((resolve, reject) => {
 		let responded = false
@@ -231,7 +231,6 @@ async function initRuntime(init: WorkerInitConfig) {
 	const dispatcher = new WorkerDispatcher(
 		workerModule,
 		env,
-		new WorkersCache(built.db, init.workerName ?? init.config.name, crypto.randomUUID(), init.config),
 		props => new WorkerExecutionContext(post, props),
 		compatibility,
 		(request, ctx) => {
@@ -282,7 +281,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		args: unknown[],
 		props?: Record<string, unknown>,
 	): Promise<unknown> => {
-		const ctx = dispatcher.context(entrypoint, props)
+		const ctx = dispatcher.context(props)
 		return runWithExecutionContext(ctx, async () => {
 			const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
 			const member = target?.[method]
@@ -298,7 +297,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		property: string,
 		props?: Record<string, unknown>,
 	): { kind: 'value'; value: unknown } | { kind: 'function' } => {
-		const ctx = dispatcher.context(entrypoint, props)
+		const ctx = dispatcher.context(props)
 		return runWithExecutionContext(ctx, () => {
 			const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
 			const member = target?.[property]
@@ -314,7 +313,7 @@ async function initRuntime(init: WorkerInitConfig) {
 	}
 
 	/** Resolve a named handler honoring class- vs object-based exports. */
-	function resolveHandler(name: WorkerHandlerName, ctx: CacheExecutionContext): ((...args: unknown[]) => unknown) | null {
+	function resolveHandler(name: WorkerHandlerName, ctx: DispatchExecutionContext): ((...args: unknown[]) => unknown) | null {
 		return resolveEntrypointHandler(defaultExport, name, ctx, env)
 	}
 
@@ -373,8 +372,8 @@ async function initRuntime(init: WorkerInitConfig) {
 						const request = deserializeRequest(cmd.request, reqBody, controller.signal)
 						setSpanAttribute('http.method', request.method)
 						setSpanAttribute('http.url', request.url)
-						const ctx = dispatcher.context(cmd.entrypoint, cmd.props)
-						const response = await dispatcher.fetch(request, cmd.entrypoint, cmd.props, cmd.trusted, ctx)
+						const ctx = dispatcher.context(cmd.props)
+						const response = await dispatcher.fetch(request, cmd.entrypoint, cmd.props, ctx)
 						setSpanAttribute('http.status_code', response.status)
 						if (response.status >= 500) setSpanStatus('error', `HTTP ${response.status}`)
 						const releaseBody = response.body ? scope.retain('response-body') : undefined

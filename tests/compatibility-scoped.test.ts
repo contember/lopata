@@ -1,11 +1,10 @@
-import { Database } from 'bun:sqlite'
 import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DurableObjectBase, DurableObjectStateImpl } from '../src/bindings/durable-object'
 import { ServiceBinding } from '../src/bindings/service-binding'
-import { WorkerDispatcher, WorkersCache } from '../src/bindings/worker-cache'
+import { WorkerDispatcher } from '../src/bindings/worker-dispatcher'
 import { SqliteWorkflowBinding, WorkflowEntrypointBase, type WorkflowStepImpl } from '../src/bindings/workflow'
 import { resolveCompatibility } from '../src/compatibility'
 import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../src/compatibility-context'
@@ -136,7 +135,6 @@ test('test dispatch and DO/Workflow helpers own selection outside caller scopes'
 })
 
 test('shared module dispatchers and fallback RPC capabilities retain the callee selection', async () => {
-	const db = new Database(':memory:')
 	const module = {
 		default: {
 			fetch() {
@@ -152,11 +150,10 @@ test('shared module dispatchers and fallback RPC capabilities retain the callee 
 	}
 	const envOn = {}
 	const envOff = {}
-	const on = new WorkerDispatcher(module, envOn, new WorkersCache(db, 'on', 'v1', { name: 'on' }), props => new ExecutionContext(props), modern)
+	const on = new WorkerDispatcher(module, envOn, props => new ExecutionContext(props), modern)
 	const off = new WorkerDispatcher(
 		module,
 		envOff,
-		new WorkersCache(db, 'off', 'v1', { name: 'off' }),
 		props => new ExecutionContext(props),
 		legacyCompatibility,
 	)
@@ -183,7 +180,6 @@ test('shared module dispatchers and fallback RPC capabilities retain the callee 
 	} finally {
 		on.terminateInvocations('test complete')
 		off.terminateInvocations('test complete')
-		db.close()
 	}
 })
 

@@ -27,7 +27,7 @@ export interface WorkflowExportDeclaration {
 	default_retention?: { success_retention?: string | number; error_retention?: string | number }
 }
 
-// Non-Worker declarations are preserved here; their lifecycle is not implemented by the cache runtime.
+// Declarations are validated and preserved; lopata implements neither entrypoint caching nor declarative DO/Workflow lifecycle.
 export type ExportDeclaration = WorkerExportDeclaration | DurableObjectExportDeclaration | WorkflowExportDeclaration
 
 export interface WranglerConfig {

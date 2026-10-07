@@ -4,7 +4,7 @@
  * notifies main of each add/settle so reload drain can wait for them.
  */
 
-import { unavailableWorkerCache } from '../bindings/worker-cache'
+import { cache } from '../bindings/worker-cache'
 import { logIfRejected } from '../execution-context'
 import { getActiveInvocation, type TraceCompletion } from '../tracing/invocation'
 import { tracing } from '../tracing/span'
@@ -33,7 +33,7 @@ export function trackBackgroundWork(post: (msg: WorkerMessage) => void, promise:
 export class WorkerExecutionContext {
 	readonly tracing = tracing
 	private readonly invocation = getActiveInvocation()
-	cache = unavailableWorkerCache
+	readonly cache = cache
 	exports: Record<string, unknown> = {}
 	/** `ctx.props` — carries the calling worker's service-binding `props` for
 	 *  `entrypoint-rpc` / `fetch` dispatch; `{}` for top-level HTTP. */

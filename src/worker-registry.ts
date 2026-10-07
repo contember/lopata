@@ -1,4 +1,4 @@
-import { getWorkerDispatcher } from './bindings/worker-cache'
+import { getWorkerDispatcher } from './bindings/worker-dispatcher'
 import { type CompatibilitySelection, resolveCompatibility } from './compatibility'
 import { hasScript } from './config'
 import type { GenerationManager } from './generation-manager'

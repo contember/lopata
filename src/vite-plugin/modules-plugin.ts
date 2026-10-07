@@ -90,14 +90,8 @@ export const tracing = {
   getActiveSpan() { return nativeTracing().getActiveSpan(); }
 };
 export const cache = {
-  purge(options) {
-    if (!globalThis.__lopata_workerCacheApi) throw new Error("Workers Cache runtime is not initialized");
-    return globalThis.__lopata_workerCacheApi.purge(options);
-  },
-  invalidate(options) {
-    if (!globalThis.__lopata_workerCacheApi) throw new Error("Workers Cache runtime is not initialized");
-    return globalThis.__lopata_workerCacheApi.invalidate(options);
-  }
+  async purge() { return { success: true, errors: [] }; },
+  async invalidate() { return { success: true, errors: [] }; }
 };
 `
 			}

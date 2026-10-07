@@ -15,7 +15,7 @@ import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { addStatelessBindings, type BrowserConfig } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
-import { workerRequest } from '../bindings/worker-cache'
+import { toRequest } from '../bindings/worker-dispatcher'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
@@ -127,7 +127,7 @@ async function proxyFetch(
 	input: Request | string | URL,
 	init?: RequestInit,
 ): Promise<Response> {
-	const request = workerRequest(input, init)
+	const request = toRequest(input, init)
 	const serialized = await rpc.callFetch(target, request)
 	const response = rpc.makeResponse(serialized) as ResponseWithWebSocket
 	// If the binding's response carried a WebSocket upgrade, main adopted the

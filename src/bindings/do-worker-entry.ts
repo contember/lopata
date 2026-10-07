@@ -19,7 +19,7 @@ import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 import type { DurableObjectBase } from './durable-object'
-import { isWorkerResponse } from './worker-cache'
+import { isWorkerResponse } from './worker-dispatcher'
 
 declare var self: Worker
 

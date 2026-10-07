@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-describe('Vite Workers Cache execution-context accounting', () => {
+describe('Vite Workers Cache pass-through and execution-context accounting', () => {
 	let process: Subprocess
 	let dir: string
 	let base: string
@@ -59,34 +59,10 @@ describe('Vite Workers Cache execution-context accounting', () => {
 		}
 	})
 
-	test('SWR returns stale immediately and registers its refresh on the drained middleware context', async () => {
-		const before = await accounting()
-		expect(await (await get('/page')).text()).toBe('1')
-		const stale = await get('/page')
-		expect(stale.headers.get('cf-cache-status')).toBe('UPDATING')
-		expect(await stale.text()).toBe('1')
-		expect(await accounting()).toBe(before + 1)
-		await Bun.sleep(150)
-		expect(await (await get('/page')).text()).toBe('2')
-	})
-
-	test('Vite imported cache purges the active entrypoint cache', async () => {
-		expect(await (await get('/purge')).json()).toEqual({ success: true, errors: [] })
-		const response = await get('/page')
-		expect(response.headers.get('cf-cache-status')).toBe('MISS')
-		await response.text()
-	})
-
-	test('Vite imported and context invalidate retain validators and the cached body', async () => {
-		expect(await (await get('/validated')).text()).toBe('validated')
-		for (const path of ['/invalidate', '/invalidate-ctx']) {
-			expect(await (await get(path)).json()).toEqual({ success: true, errors: [] })
-			const revalidated = await get('/validated')
-			expect(revalidated.headers.get('cf-cache-status')).toBe('REVALIDATED')
-			expect(await revalidated.text()).toBe('validated')
-			const hit = await get('/validated')
-			expect(hit.headers.get('cf-cache-status')).toBe('HIT')
-			expect(await hit.text()).toBe('validated')
-		}
+	test('requests pass through and imported and context purge operations resolve', async () => {
+		const first = Number(await (await get('/page')).text())
+		expect(Number(await (await get('/page')).text())).toBe(first + 1)
+		const resolved = { success: true, errors: [] }
+		expect(await (await get('/purge')).json()).toEqual([resolved, resolved])
 	})
 })

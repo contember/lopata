@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { QueueConsumer, SqliteQueueProducer } from '../src/bindings/queue'
-import { WorkerDispatcher, WorkersCache } from '../src/bindings/worker-cache'
+import { WorkerDispatcher } from '../src/bindings/worker-dispatcher'
 import { SqliteWorkflowBinding, WorkflowEntrypointBase } from '../src/bindings/workflow'
 import { runMigrations } from '../src/db'
 import { ExecutionContext, runWithExecutionContext } from '../src/execution-context'
@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 function dispatcher(module: Record<string, unknown>): WorkerDispatcher {
-	const result = new WorkerDispatcher(module, {}, new WorkersCache(db, 'test', 'v1', { name: 'test' }), props => new ExecutionContext(props))
+	const result = new WorkerDispatcher(module, {}, props => new ExecutionContext(props))
 	dispatchers.push(result)
 	return result
 }
@@ -363,7 +363,7 @@ test('supplied event context reuses the event invocation and leaves body ownersh
 			},
 		},
 	})
-	await event.run(() => target.fetch(new Request('http://test/'), 'default', undefined, false, new ExecutionContext()))
+	await event.run(() => target.fetch(new Request('http://test/'), 'default', undefined, new ExecutionContext()))
 	expect(active).toBe(event)
 	expect(event.closed).toBe(false)
 	expect(store.listAllSpans({}).items).toHaveLength(1)

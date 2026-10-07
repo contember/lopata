@@ -6,7 +6,6 @@
  * terminate + respawn.
  */
 
-import type { WorkerFetchOptions } from '../bindings/worker-cache'
 import type { WorkflowBatchDeleteResult, WorkflowInstanceStatus } from '../bindings/workflow'
 import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
@@ -23,7 +22,6 @@ export interface ParentSpanContext {
 export type TraceErrorPayload = Parameters<TraceStore['insertError']>[0]
 
 export interface SerializedRequest {
-	cf?: WorkerFetchOptions['cf']
 	url: string
 	method: string
 	headers: [string, string][]
@@ -404,7 +402,6 @@ export type WorkerCommand =
 		parent?: ParentSpanContext
 		props?: Record<string, unknown>
 		entrypoint?: string
-		trusted?: boolean
 	}
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }

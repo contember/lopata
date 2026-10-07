@@ -1,13 +1,12 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
-import { WorkerDispatcher, WorkersCache } from '../src/bindings/worker-cache'
+import { WorkerDispatcher } from '../src/bindings/worker-dispatcher'
 import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../src/execution-context'
 import { runTracingMigrations } from '../src/tracing/db'
 import { createInvocationTrace, getActiveInvocation, type InvocationTrace } from '../src/tracing/invocation'
 import { tracing } from '../src/tracing/span'
 import { setTraceStore, TraceStore } from '../src/tracing/store'
 
-let db: Database
 let store: TraceStore
 let dispatcher: WorkerDispatcher
 let owners: InvocationTrace[]
@@ -50,7 +49,6 @@ function dispose(value: unknown): void {
 }
 
 beforeEach(() => {
-	db = new Database(':memory:')
 	const traces = new Database(':memory:')
 	runTracingMigrations(traces)
 	store = new TraceStore(traces)
@@ -131,7 +129,6 @@ beforeEach(() => {
 	dispatcher = new WorkerDispatcher(
 		{ Target },
 		{},
-		new WorkersCache(db, 'rpc-session', 'v1', { name: 'rpc-session' }),
 		props => new ExecutionContext(props),
 	)
 })
@@ -143,7 +140,6 @@ afterEach(() => {
 	pendingCall.resolve()
 	store.close()
 	setTraceStore(null)
-	db.close()
 })
 
 test('returned function invoked under B keeps A target context and captured waitUntil ownership', async () => {
@@ -343,7 +339,6 @@ function forwardingDispatcher() {
 	dispatcher = new WorkerDispatcher(
 		{ Outer, Inner },
 		{},
-		new WorkersCache(db, 'forwarded-rpc-session', 'v1', { name: 'forwarded-rpc-session' }),
 		props => new ExecutionContext(props),
 	)
 	return roots

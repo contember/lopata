@@ -1,6 +1,5 @@
 /** Request/Response serialization helpers shared between the worker bridges. */
 
-import { readWorkerCf, workerRequest } from '../bindings/worker-cache'
 import type { SerializedRequest, SerializedResponse } from './protocol'
 
 /**
@@ -13,7 +12,7 @@ import type { SerializedRequest, SerializedResponse } from './protocol'
 export function serializeRequestShell(request: Request): Omit<SerializedRequest, 'body' | 'streamId'> {
 	const headers: [string, string][] = []
 	request.headers.forEach((v, k) => headers.push([k, v]))
-	return { url: request.url, method: request.method, headers, cf: readWorkerCf(request) }
+	return { url: request.url, method: request.method, headers }
 }
 
 export function deserializeRequest(
@@ -21,12 +20,11 @@ export function deserializeRequest(
 	body?: ReadableStream<Uint8Array> | null,
 	signal?: AbortSignal,
 ): Request {
-	return workerRequest(req.url, {
+	return new Request(req.url, {
 		method: req.method,
 		headers: req.headers,
 		body: body !== undefined ? body : req.body,
 		signal,
-		cf: req.cf,
 	})
 }
 
