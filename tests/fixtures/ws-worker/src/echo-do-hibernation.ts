@@ -106,7 +106,7 @@ export class EchoHibernationDO extends DurableObject {
 	async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
 		const attachment: unknown = ws.deserializeAttachment()
 		if (attachment && typeof attachment === 'object' && 'closeToken' in attachment && typeof attachment.closeToken === 'string') {
-			void recordClose(attachment.closeToken, 'hibernation', ws.readyState, code, reason)
+			recordClose(attachment.closeToken, 'hibernation', ws.readyState, code, reason)
 		}
 		// Must call ws.close() to complete the close handshake
 		ws.close(code, reason)

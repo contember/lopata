@@ -14,8 +14,8 @@
 
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility } from '../compatibility-context'
-import { configureCloudflareCrypto } from '../setup-globals'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
+import { patchGlobalCrypto } from './crypto-extras'
 
 declare var self: Worker
 
@@ -74,7 +74,7 @@ self.postMessage({ type: 'need-init' } satisfies WorkerToMain)
 async function init(data: LoaderInitMessage): Promise<void> {
 	const compatibility = resolveCompatibility({ date: data.compatibility.date ?? undefined, flags: data.compatibility.flags })
 	initializeIsolateCompatibility(compatibility)
-	configureCloudflareCrypto(compatibility)
+	patchGlobalCrypto()
 	loaderEnv = data.env ?? {}
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {

@@ -70,28 +70,17 @@ describe('compatibility selection', () => {
 		})
 	}
 
-	test('crypto is always opt-in and has no invented disable flag', () => {
-		for (const date of [undefined, '2000-01-01', '2026-10-05', '2999-12-31']) {
-			expect(resolveCompatibility({ date }).modernCrypto).toBe(false)
-			expect(resolveCompatibility({ date, flags: ['webcrypto_modern_algorithms'] }).modernCrypto).toBe(true)
-			const selection = resolveCompatibility({ date, flags: ['no_webcrypto_modern_algorithms', 'webcrypto_modern_algorithms'] })
-			expect(selection.modernCrypto).toBe(true)
-			expect(selection.unimplementedFlags).toEqual(['no_webcrypto_modern_algorithms'])
-		}
-	})
-
 	test('unimplemented flags are retained in order without inferred conflicts or Node selection', () => {
 		const flags = ['nodejs_compat', 'no_nodejs_compat', 'nodejs_compat_v2', 'future_feature', 'no_future_feature']
 		const selection = resolveCompatibility({ flags })
 		expect(selection.flags).toEqual(flags)
 		expect(selection.unimplementedFlags).toEqual(flags)
 		expect(selection.date).toBeNull()
-		expect(selection.modernCrypto).toBe(false)
 		for (const { key } of datedCases) expect(selection[key]).toBe('legacy-local')
 	})
 
 	test('registered flags are separated from unimplemented input without dropping raw flags', () => {
-		const flags = ['unknown', ...datedCases.map(rule => rule.disable), 'webcrypto_modern_algorithms']
+		const flags = ['unknown', ...datedCases.map(rule => rule.disable)]
 		const selection = resolveCompatibility({ flags })
 		expect(selection.flags).toEqual(flags)
 		expect(selection.unimplementedFlags).toEqual(['unknown'])
@@ -108,8 +97,8 @@ describe('compatibility selection', () => {
 		expect(selection.date).toBe('2026-02-23')
 		expect(selection.deleteAllDeletesAlarm).toBe('disabled')
 		expect(selection.flags).toEqual(['future_feature'])
-		expect(Reflect.set(selection, 'modernCrypto', true)).toBe(false)
-		expect(Reflect.set(selection.flags, '0', 'webcrypto_modern_algorithms')).toBe(false)
+		expect(Reflect.set(selection, 'deleteAllDeletesAlarm', 'enabled')).toBe(false)
+		expect(Reflect.set(selection.flags, '0', 'delete_all_deletes_alarm')).toBe(false)
 		expect(Reflect.set(selection.unimplementedFlags, '0', 'changed')).toBe(false)
 	})
 
@@ -140,7 +129,7 @@ describe('compatibility selection', () => {
 				'2100-02-29',
 				'2026-04-31',
 			].map(date => ({ date })),
-			...[null, 'nodejs_compat', {}, [null], [1], [''], ['unknown', 'unknown'], ['webcrypto_modern_algorithms', 'webcrypto_modern_algorithms']]
+			...[null, 'nodejs_compat', {}, [null], [1], [''], ['unknown', 'unknown'], ['delete_all_deletes_alarm', 'delete_all_deletes_alarm']]
 				.map(flags => ({ flags })),
 		]
 		for (const input of invalid) expect(() => parseCompatibility(input)).toThrow(TypeError)
@@ -216,7 +205,7 @@ compatibility_flags = ["delete_all_preserves_alarm", "unknown"]
 			{ compatibility_date: [] },
 			{ compatibility_date: '2026-02-30' },
 			{ compatibility_flags: null },
-			{ compatibility_flags: 'webcrypto_modern_algorithms' },
+			{ compatibility_flags: 'delete_all_deletes_alarm' },
 			{ compatibility_flags: {} },
 			{ compatibility_flags: [true] },
 			{ compatibility_flags: [''] },

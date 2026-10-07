@@ -12,7 +12,6 @@ import { validateWorkerCacheConfig } from '../config'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { runWithExecutionContext } from '../execution-context'
-import { configureCloudflareCrypto } from '../setup-globals'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { createInvocationTrace, type InvocationTrace, type TraceCompletion } from '../tracing/invocation'
 import { setSpanAttribute, setSpanStatus } from '../tracing/span'
@@ -170,7 +169,6 @@ function dispatchServiceWorkerFetch(
 async function initRuntime(init: WorkerInitConfig) {
 	const compatibility = resolveCompatibility({ date: init.compatibility.date ?? undefined, flags: init.compatibility.flags })
 	initializeIsolateCompatibility(compatibility)
-	configureCloudflareCrypto(compatibility)
 	validateWorkerCacheConfig(init.config)
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.

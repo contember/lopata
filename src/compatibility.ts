@@ -9,7 +9,6 @@ export interface CompatibilitySelection {
 	readonly date: string | null
 	readonly flags: readonly string[]
 	readonly unimplementedFlags: readonly string[]
-	readonly modernCrypto: boolean
 	readonly deleteAllDeletesAlarm: CompatibilityMode
 	readonly websocketCloseReasonByteLimit: CompatibilityMode
 	readonly websocketStandardBinaryType: CompatibilityMode
@@ -18,13 +17,12 @@ export interface CompatibilitySelection {
 
 interface CompatibilityRule {
 	readonly enable: string
-	readonly disable: string | null
-	readonly date: string | null
+	readonly disable: string
+	readonly date: string
 }
 
 // Pinned to workerd v1.20261005.1, src/workerd/io/compatibility-date.capnp.
 const rules = {
-	modernCrypto: { enable: 'webcrypto_modern_algorithms', disable: null, date: null },
 	deleteAllDeletesAlarm: { enable: 'delete_all_deletes_alarm', disable: 'delete_all_preserves_alarm', date: '2026-02-24' },
 	websocketCloseReasonByteLimit: {
 		enable: 'websocket_close_reason_byte_limit',
@@ -73,7 +71,7 @@ export function parseCompatibility(input: unknown): CompatibilityInput {
 			flags.push(flag)
 		}
 		for (const rule of Object.values(rules)) {
-			if (rule.disable !== null && seen.has(rule.enable) && seen.has(rule.disable)) {
+			if (seen.has(rule.enable) && seen.has(rule.disable)) {
 				throw new TypeError(`Conflicting compatibility flags: ${rule.enable} and ${rule.disable}`)
 			}
 		}
@@ -87,15 +85,14 @@ export function resolveCompatibility(input: CompatibilityInput): CompatibilitySe
 	const flags = Object.freeze([...(parsed.flags ?? [])])
 	function select(rule: CompatibilityRule): CompatibilityMode {
 		if (flags.includes(rule.enable)) return 'enabled'
-		if (rule.disable !== null && flags.includes(rule.disable)) return 'disabled'
+		if (flags.includes(rule.disable)) return 'disabled'
 		if (date === null) return 'legacy-local'
-		return rule.date !== null && date >= rule.date ? 'enabled' : 'disabled'
+		return date >= rule.date ? 'enabled' : 'disabled'
 	}
 	return Object.freeze({
 		date,
 		flags,
 		unimplementedFlags: Object.freeze(flags.filter(flag => !Object.values(rules).some(rule => rule.enable === flag || rule.disable === flag))),
-		modernCrypto: select(rules.modernCrypto) === 'enabled',
 		deleteAllDeletesAlarm: select(rules.deleteAllDeletesAlarm),
 		websocketCloseReasonByteLimit: select(rules.websocketCloseReasonByteLimit),
 		websocketStandardBinaryType: select(rules.websocketStandardBinaryType),

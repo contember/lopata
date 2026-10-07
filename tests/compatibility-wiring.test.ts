@@ -94,10 +94,10 @@ test('dynamic receiver recomputes derived selection and rejects conflicting clon
 			worker.terminate()
 		}
 	}
-	const baseline = resolveCompatibility({ flags: ['unknown_flag', 'no_webcrypto_modern_algorithms'] })
-	const response = await initialize({ ...baseline, modernCrypto: true })
+	const baseline = resolveCompatibility({ flags: ['unknown_flag', 'no_websocket_close_reason_byte_limit'] })
+	const response = await initialize({ ...baseline, websocketCloseReasonByteLimit: 'enabled' })
 	if (response.type !== 'result' || response.result.type !== 'fetch') throw new Error('Expected worker response')
-	expect(await new Response(response.result.body).json()).toEqual({ topLevelModern: false, modern: false })
+	expect(await new Response(response.result.body).json()).toEqual({ topLevelLimited: false, limited: false })
 	const failure = await initialize({ ...baseline, flags: ['web_socket_auto_reply_to_close', 'web_socket_manual_reply_to_close'] })
 	if (failure.type !== 'result' || failure.result.type !== 'error') throw new Error('Expected init rejection')
 	expect(failure.id).toBe(-1)

@@ -13,7 +13,6 @@ import type { WranglerConfig } from '../config'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
-import { installCompatibilityCrypto } from '../setup-globals'
 import { createInvocationTrace, type InvocationTrace } from '../tracing/invocation'
 import type { ResolvedTarget } from '../worker-registry'
 import { TestClock } from './clock'
@@ -35,7 +34,6 @@ export type { TestWorkflowBinding, TestWorkflowInstance, TestWorkflowRun } from 
 export async function createTestEnv<Env = Record<string, unknown>>(options: TestEnvOptions = {}): Promise<TestEnv<Env>> {
 	// Ensure virtual modules + globals are registered (no-op if preload already ran)
 	setupTestEnv()
-	installCompatibilityCrypto()
 
 	// Resolve clock
 	let clock: TestClock | null = null

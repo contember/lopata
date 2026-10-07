@@ -2,10 +2,9 @@ import { describe, expect, test } from 'bun:test'
 import { CFWebSocket, copyWebSocketBytes, WebSocketPair, type WSEventType } from '../src/bindings/websocket-pair'
 import { type CompatibilityInput, resolveCompatibility } from '../src/compatibility'
 import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../src/compatibility-context'
-import { installCompatibilityCrypto } from '../src/setup-globals'
 import { WsGuestBridge } from '../src/worker-thread/ws-bridge-shared'
 
-const modern = resolveCompatibility({ date: '2026-03-03', flags: ['webcrypto_modern_algorithms'] })
+const modern = resolveCompatibility({ date: '2026-03-03' })
 const oversized = '€'.repeat(41) + 'a'
 
 describe('selected WebSocket binary delivery', () => {
@@ -156,7 +155,7 @@ describe('selected automatic close-event state', () => {
 	}
 
 	test('queued close is CLOSED before both callbacks, once, in the captured owner scope', async () => {
-		const owner = resolveCompatibility({ date: '2026-04-07', flags: ['webcrypto_modern_algorithms'] })
+		const owner = resolveCompatibility({ date: '2026-04-07' })
 		const socket = runWithCompatibility(owner, () => new CFWebSocket())
 		const events: Event[] = []
 		const continuations: Promise<void>[] = []
@@ -167,7 +166,6 @@ describe('selected automatic close-event state', () => {
 			socket.close(1000, 'nested close')
 			continuations.push((async () => {
 				await Promise.resolve()
-				expect(typeof crypto.subtle.encapsulateBits).toBe('function')
 				expect(getActiveCompatibility()).toBe(owner)
 			})())
 		}
@@ -275,19 +273,15 @@ describe('selected WebSocket close reason', () => {
 })
 
 describe('socket-owned event delivery', () => {
-	installCompatibilityCrypto()
-
 	for (const type of ['message', 'close', 'error', 'open'] satisfies WSEventType[]) {
 		test(`${type} listeners and callback properties restore the owner`, async () => {
 			const socket = runWithCompatibility(modern, () => new CFWebSocket())
 			const pending: Promise<void>[] = []
 			const callback = () => {
 				expect(getActiveCompatibility()).toBe(modern)
-				expect(typeof crypto.subtle.encapsulateBits).toBe('function')
 				pending.push((async () => {
 					await Promise.resolve()
 					expect(getActiveCompatibility()).toBe(modern)
-					expect(typeof crypto.subtle.encapsulateBits).toBe('function')
 					expectReasonError(() => new WebSocketPair()[0].close(1000, oversized))
 				})())
 			}
@@ -300,7 +294,6 @@ describe('socket-owned event delivery', () => {
 				socket.dispatchOrQueue({ type, data: 'buffered' })
 				socket.accept()
 				expect(getActiveCompatibility()).toBe(legacyCompatibility)
-				expect(typeof crypto.subtle.encapsulateBits).toBe('undefined')
 			})
 			await Promise.all(pending)
 			expect(pending).toHaveLength(2)
@@ -321,7 +314,6 @@ describe('socket-owned event delivery', () => {
 				pending.push((async () => {
 					await gate.promise
 					expect(getActiveCompatibility()).toBe(selection)
-					expect(typeof crypto.subtle.encapsulateBits === 'function').toBe(selection.modernCrypto)
 					const nested = new WebSocketPair()
 					if (selection === modern) expectReasonError(() => nested[0].close(1000, oversized))
 					else nested[0].close(1000, oversized)

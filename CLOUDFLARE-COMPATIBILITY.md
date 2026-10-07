@@ -8,16 +8,14 @@ The review covered the Cloudflare Workers blog archive, both 2026 Agents Week re
 
 ## Backports selected for this update
 
-**Current runtime requirement:** Bun 1.4.2 or later. CI and release verification are pinned to 1.4.2. The scoped crypto facade requires property behavior verified on that version; older Bun versions are no longer supported. Older-version probes and test results below remain historical evidence, not current support claims.
-
 | Announcement                                                                                                                                                               | Date                | Local implementation                                                                                         |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------ |
 | [Workflow saga rollbacks](https://blog.cloudflare.com/rollbacks-for-workflows/)                                                                                            | June 25             | Extend the existing Workflow engine with per-step compensation and durable rollback state.                   |
 | [Workers Cache](https://blog.cloudflare.com/workers-cache/)                                                                                                                | July 6              | Add an entrypoint-scoped response cache, separate from the existing `caches` API.                            |
 | [Third-party AI models](https://blog.cloudflare.com/ai-platform/) and [Workers AI and AI Gateway unification](https://blog.cloudflare.com/workers-ai-gateway-unification/) | April 16 / August 7 | Extend the existing authenticated HTTP proxy to forward gateway options and support the gateway binding API. |
-| [Modern Web Crypto](https://blog.cloudflare.com/workers-ml-kem-ml-dsa-support/)                                                                                            | October 1           | Add the opt-in modern crypto API using `@noble/post-quantum` for primitives unavailable in Bun.              |
+| [Modern Web Crypto](https://blog.cloudflare.com/workers-ml-kem-ml-dsa-support/)                                                                                            | October 1           | Expose Bun's native implementation as-is; available on Bun 1.4.2 and later.                                  |
 
-The modern-crypto target is Cloudflare's shipped subset: ML-KEM-768/1024, ML-DSA-44/65/87, the four encapsulation methods, `getPublicKey()`, static `SubtleCrypto.supports()` and JWK import/export. It requires `webcrypto_modern_algorithms`. ML-KEM-512, SHA-3, cSHAKE, TurboSHAKE, ChaCha20-Poly1305 and HPKE are not part of this Cloudflare release.
+The modern-crypto target is Cloudflare's shipped subset: ML-KEM-768/1024, ML-DSA-44/65/87, the four encapsulation methods, `getPublicKey()`, static `SubtleCrypto.supports()` and JWK import/export. Lopata relies on Bun's native support; see [Modern Web Crypto](#modern-web-crypto). ML-KEM-512, SHA-3, cSHAKE, TurboSHAKE, ChaCha20-Poly1305 and HPKE are not part of this Cloudflare release.
 
 ### AI Gateway
 
@@ -120,9 +118,9 @@ This bounded contract was explicitly approved separately from F03a. It does not 
 
 Oversized reasons throw a `DOMException` named `SyntaxError` before any ready-state early return, including repeated close calls. Failed validation does not change either socket's state or dispatch close events. This bounded change preserves the existing close handshake and close-code behavior.
 
-Each socket captures its owning compatibility selection at construction. Dedicated user/DO/dynamic threads initialize an immutable isolate fallback before application import; same-process dispatch uses native compatibility ALS. Runtime-delivered message, close, error and open events enter the socket owner's scope for both EventTarget listeners and callback properties. Async descendants retain it, so scoped crypto and newly constructed pairs use the owner rather than the delivery caller. Queued events use the same delivery boundary. This does not add socket tracing lifetimes or scope native externalized module evaluation.
+Each socket captures its owning compatibility selection at construction. Dedicated user/DO/dynamic threads initialize an immutable isolate fallback before application import; same-process dispatch uses native compatibility ALS. Runtime-delivered message, close, error and open events enter the socket owner's scope for both EventTarget listeners and callback properties. Async descendants retain it, so newly constructed pairs use the owner rather than the delivery caller. Queued events use the same delivery boundary. This does not add socket tracing lifetimes or scope native externalized module evaluation.
 
-Local verification on Bun **1.4.2 (`744846f84`)** covers date/flag selection, ASCII/multibyte/surrogate boundaries, state preservation, repeated close, cross-scope method calls, queued events, overlapping bridge delivery, and two differently configured Vite servers. Real CLI and Vite upgrades cover ordinary Worker, standard DO and hibernation callbacks, including async crypto visibility and nested sockets. Existing binary echo and close tests pass. Binary selection and the bounded automatic close-event subset are covered below; full close-handshake semantics and network message limits remain F08 follow-ups. These results do not establish hosted parity or durable hibernation.
+Local verification on Bun **1.4.2 (`744846f84`)** covers date/flag selection, ASCII/multibyte/surrogate boundaries, state preservation, repeated close, cross-scope method calls, queued events, overlapping bridge delivery, and two differently configured Vite servers. Real CLI and Vite upgrades cover ordinary Worker, standard DO and hibernation callbacks, including nested sockets. Existing binary echo and close tests pass. Binary selection and the bounded automatic close-event subset are covered below; full close-handshake semantics and network message limits remain F08 follow-ups. These results do not establish hosted parity or durable hibernation.
 
 ### WebSocket binary delivery — F08b
 
@@ -150,21 +148,7 @@ Focused tests on Bun 1.4.2 verify thresholds/overrides, preserved legacy and hib
 
 ### Modern Web Crypto
 
-Enable the new API in the Worker's Wrangler configuration:
-
-```json
-{
-	"compatibility_flags": ["webcrypto_modern_algorithms"]
-}
-```
-
-The opt-in API adds post-quantum key generation, import/export, ML-DSA signing and verification, and ML-KEM encapsulation and decapsulation. The key helpers produce native symmetric keys for use with existing Web Crypto operations. The flag also enables `crypto.subtle.getPublicKey()` and static `SubtleCrypto.supports()`.
-
-The compatibility flag gates these APIs even on Bun 1.4.2, which provides native modern crypto. Without the flag, post-quantum operations remain unavailable. Enabling the flag uses Lopata's adapter. The original adapter was also verified on Bun 1.3.14 before the minimum runtime was raised; that historical result does not establish scoped-facade support on older Bun.
-
-Existing classical algorithms continue to use Bun's native implementations. The post-quantum primitives use `@noble/post-quantum`; private key material is held separately from the public `CryptoKey` metadata.
-
-**Post-quantum key limitation:** The adapter's key objects work with Lopata's crypto methods but do not carry Bun's native key brand. Native `CryptoKey` prototype getters reject them, and `structuredClone()` produces an empty object rather than a usable key. Do not send these key objects through worker messages or other structured-clone paths. This limitation was explicitly accepted for the original backport, whose Bun 1.3.14 probes could not create native ML-KEM/ML-DSA `CryptoKey` objects. Classical keys and symmetric keys produced by the encapsulation helpers remain native.
+Lopata exposes Bun's native Web Crypto as-is. There is no adapter and no compatibility-flag gating; `webcrypto_modern_algorithms` is accepted as an unimplemented flag with no effect. On Bun 1.4.2 and later, ML-KEM, ML-DSA, the encapsulation methods, `crypto.subtle.getPublicKey()` and `SubtleCrypto.supports()` are available natively. On older Bun versions they are absent. Cloudflare-specific extras (`crypto.subtle.timingSafeEqual`, `crypto.DigestStream`, PKCS#1 import) are applied on top of the native object.
 
 ## Existing local building blocks
 

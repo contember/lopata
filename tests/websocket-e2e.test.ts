@@ -60,7 +60,7 @@ async function startStandaloneServer(port: number): Promise<Subprocess> {
 }
 
 async function startViteServer(port: number): Promise<Subprocess> {
-	const proc = Bun.spawn([process.execPath, '--bun', VITE_BIN, 'dev', '--port', String(port)], {
+	const proc = Bun.spawn(['bun', '--bun', VITE_BIN, 'dev', '--port', String(port)], {
 		cwd: FIXTURE_DIR,
 		stdout: 'pipe',
 		stderr: 'pipe',
@@ -233,8 +233,6 @@ function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite'
 					state: 3,
 					code,
 					reason,
-					modern: true,
-					afterModern: true,
 					sameEvent: true,
 				})))
 			})
@@ -254,8 +252,6 @@ function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite'
 			state,
 			code: 1000,
 			reason: 'hibernation probe',
-			modern: true,
-			afterModern: true,
 			sameEvent: true,
 		})))
 	})
@@ -305,7 +301,7 @@ function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite'
 				client.send('compatibility-probe')
 				const message = await client.waitForMessage()
 				if (typeof message !== 'string') throw new Error('Expected JSON probe result')
-				expect(JSON.parse(message)).toEqual({ before: true, after: true, name: 'SyntaxError', unchanged: true, nested: 'SyntaxError' })
+				expect(JSON.parse(message)).toEqual({ name: 'SyntaxError', unchanged: true, nested: 'SyntaxError' })
 				expect(await closed).toEqual({ code: 1000, reason: '€'.repeat(41) })
 			}))
 		})

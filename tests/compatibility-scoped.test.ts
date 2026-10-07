@@ -3,7 +3,6 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DigestStream } from '../src/bindings/crypto-extras'
 import { DurableObjectBase, DurableObjectStateImpl } from '../src/bindings/durable-object'
 import { ServiceBinding } from '../src/bindings/service-binding'
 import { WorkerDispatcher, WorkersCache } from '../src/bindings/worker-cache'
@@ -11,71 +10,18 @@ import { SqliteWorkflowBinding, WorkflowEntrypointBase, type WorkflowStepImpl } 
 import { resolveCompatibility } from '../src/compatibility'
 import { getActiveCompatibility, legacyCompatibility, runWithCompatibility } from '../src/compatibility-context'
 import { ExecutionContext } from '../src/execution-context'
-import { installCompatibilityCrypto } from '../src/setup-globals'
 import { createTestEnv } from '../src/testing'
 
-const modern = resolveCompatibility({ flags: ['webcrypto_modern_algorithms'] })
-installCompatibilityCrypto()
+const modern = resolveCompatibility({ flags: ['websocket_close_reason_byte_limit'] })
 
 function enabled() {
-	return typeof crypto.subtle.encapsulateBits === 'function'
+	return getActiveCompatibility().websocketCloseReasonByteLimit === 'enabled'
 }
 
-test('overlapping scopes retain facades, detached methods and key contracts', async () => {
-	const gate = Promise.withResolvers<void>()
-	const entered = Promise.withResolvers<void>()
-	const captured = runWithCompatibility(modern, () => {
-		const supports: unknown = Reflect.get(SubtleCrypto, 'supports')
-		return { subtle: crypto.subtle, supports, generate: crypto.subtle.generateKey }
-	})
-	const active = runWithCompatibility(modern, async () => {
-		entered.resolve()
-		await gate.promise
-		expect(enabled()).toBe(true)
-		expect(getActiveCompatibility()).toBe(modern)
-		return crypto.subtle.generateKey('ML-DSA-44', false, ['sign', 'verify'])
-	})
-	await entered.promise
-	await runWithCompatibility(legacyCompatibility, async () => {
-		expect(enabled()).toBe(false)
-		expect(Reflect.get(SubtleCrypto, 'supports')).toBeUndefined()
-		expect('supports' in SubtleCrypto).toBe(true)
-		expect(Object.hasOwn(SubtleCrypto, 'supports')).toBe(true)
-		await expect(crypto.subtle.generateKey('ML-DSA-44', false, ['sign'])).rejects.toMatchObject({ name: 'NotSupportedError' })
-		gate.resolve()
-		const pair = await active
-		if (!('privateKey' in pair)) throw new Error('Expected key pair')
-		expect(pair.privateKey instanceof CryptoKey).toBe(true)
-		expect(pair.privateKey.extractable).toBe(false)
-		const sign = captured.subtle.sign
-		const signature = await sign('ML-DSA-44', pair.privateKey, new Uint8Array([7]))
-		expect(await captured.subtle.verify('ML-DSA-44', pair.publicKey, signature, new Uint8Array([7]))).toBe(true)
-		await expect(captured.subtle.exportKey('pkcs8', pair.privateKey)).rejects.toMatchObject({ name: 'InvalidAccessError' })
-		await expect(sign('ML-DSA-44', pair.publicKey, new Uint8Array([7]))).rejects.toMatchObject({ name: 'InvalidAccessError' })
-		if (typeof captured.supports !== 'function') throw new Error('Expected supports function')
-		expect(captured.supports('sign', 'ML-DSA-44')).toBe(true)
-		const generated = await captured.generate('ML-DSA-44', false, ['sign'])
-		expect('privateKey' in generated).toBe(true)
-		expect(enabled()).toBe(false)
-		const digest = crypto.subtle.digest
-		expect((await digest('SHA-256', new Uint8Array([7]))).byteLength).toBe(32)
-		const timingSafeEqual: unknown = Reflect.get(crypto.subtle, 'timingSafeEqual')
-		if (typeof timingSafeEqual !== 'function') throw new Error('Expected timingSafeEqual')
-		expect(timingSafeEqual(new Uint8Array([7]), new Uint8Array([7]))).toBe(true)
-		expect(Reflect.get(crypto, 'DigestStream')).toBe(DigestStream)
-		const stream = new DigestStream('SHA-256')
-		const writer = stream.getWriter()
-		await writer.write(new Uint8Array([7]))
-		await writer.close()
-		expect(new Uint8Array(await stream.digest)).toEqual(new Uint8Array(await digest('SHA-256', new Uint8Array([7]))))
-	})
-	expect(enabled()).toBe(false)
-})
-
 test('test dispatch and DO/Workflow helpers own selection outside caller scopes', async () => {
-	const directory = mkdtempSync(join(tmpdir(), 'lopata-scoped-crypto-'))
+	const directory = mkdtempSync(join(tmpdir(), 'lopata-scoped-compatibility-'))
 	const config = join(directory, 'wrangler.json')
-	await Bun.write(config, JSON.stringify({ name: 'modern', compatibility_flags: ['webcrypto_modern_algorithms'] }))
+	await Bun.write(config, JSON.stringify({ name: 'modern', compatibility_flags: ['websocket_close_reason_byte_limit'] }))
 	const pending = Promise.withResolvers<void>()
 	const observations: boolean[] = []
 	const events: { kind: string; modern: boolean }[] = []
@@ -244,7 +190,7 @@ test('shared module dispatchers and fallback RPC capabilities retain the callee 
 test('native test-module evaluation stays at fallback while configured dispatch is scoped', async () => {
 	const directory = mkdtempSync(join(tmpdir(), 'lopata-native-import-'))
 	const wrangler = join(directory, 'wrangler.json')
-	await Bun.write(wrangler, JSON.stringify({ name: 'modern', compatibility_flags: ['webcrypto_modern_algorithms'] }))
+	await Bun.write(wrangler, JSON.stringify({ name: 'modern', compatibility_flags: ['websocket_close_reason_byte_limit'] }))
 	const env = await createTestEnv({ worker: join(import.meta.dir, 'fixtures/compatibility-native-import-worker.ts'), wrangler })
 	try {
 		expect(await (await env.fetch('/')).json()).toEqual({ topLevel: false, dispatch: true })

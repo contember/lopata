@@ -84,12 +84,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
-	const { configureCloudflareCrypto } = await import('../setup-globals')
 	const compatibility = workerConfig.compatibility
 		? resolveCompatibility({ date: workerConfig.compatibility.date ?? undefined, flags: workerConfig.compatibility.flags })
 		: resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
 	initializeIsolateCompatibility(compatibility)
-	configureCloudflareCrypto(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))

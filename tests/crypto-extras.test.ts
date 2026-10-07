@@ -150,3 +150,13 @@ describe('crypto.DigestStream', () => {
 		expect(hex).toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824')
 	})
 })
+
+describe('native modern algorithms', () => {
+	test.skipIf(typeof crypto.subtle.encapsulateBits !== 'function')('ML-KEM stays reachable on patched crypto.subtle', async () => {
+		const pair = await crypto.subtle.generateKey('ML-KEM-768', false, ['encapsulateBits', 'decapsulateBits'])
+		if (!('privateKey' in pair)) throw new Error('Expected key pair')
+		const { ciphertext, sharedKey } = await crypto.subtle.encapsulateBits('ML-KEM-768', pair.publicKey)
+		const decapsulated = await crypto.subtle.decapsulateBits('ML-KEM-768', pair.privateKey, ciphertext)
+		expect(new Uint8Array(decapsulated)).toEqual(new Uint8Array(sharedKey))
+	})
+})

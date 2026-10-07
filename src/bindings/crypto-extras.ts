@@ -3,11 +3,6 @@
  */
 
 import { timingSafeEqual } from 'node:crypto'
-import type { webcrypto } from 'node:crypto'
-import type { AlgorithmIdentifier, BufferSource, EcKeyImportParams, HmacImportParams, JsonWebKey, RsaHashedImportParams } from './crypto-modern-types'
-
-type KeyFormat = webcrypto.KeyFormat
-type KeyUsage = webcrypto.KeyUsage
 
 /**
  * Constant-time comparison of two buffers.
@@ -149,14 +144,10 @@ function toUint8Array(data: ArrayBuffer | ArrayBufferView): Uint8Array {
 	return new Uint8Array(data)
 }
 
-let patched = false
-
 /**
  * Patches the global `crypto` object with CF-specific extensions.
  */
 export function patchGlobalCrypto(): void {
-	if (patched) return
-	patched = true
 	// Add timingSafeEqual to crypto.subtle
 	const subtle = crypto.subtle
 	Object.defineProperty(subtle, 'timingSafeEqual', {
@@ -175,39 +166,13 @@ export function patchGlobalCrypto(): void {
 	// Patch importKey to accept PKCS#1 RSA keys with "pkcs8" format (matching workerd behavior).
 	// Workerd is lenient and auto-wraps PKCS#1 in PKCS#8; Bun/Node native crypto rejects it.
 	const origImportKey = subtle.importKey.bind(subtle)
-	function importKey(
-		format: 'jwk',
-		keyData: JsonWebKey,
-		algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams | HmacImportParams,
-		extractable: boolean,
-		keyUsages: KeyUsage[],
-	): Promise<CryptoKey>
-	function importKey(
-		format: Exclude<KeyFormat, 'jwk'>,
-		keyData: BufferSource,
-		algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams | HmacImportParams,
-		extractable: boolean,
-		keyUsages: KeyUsage[],
-	): Promise<CryptoKey>
-	function importKey(
-		format: KeyFormat,
-		keyData: JsonWebKey | BufferSource,
-		algorithm: AlgorithmIdentifier | RsaHashedImportParams | EcKeyImportParams | HmacImportParams,
-		extractable: boolean,
-		keyUsages: KeyUsage[],
-	): Promise<CryptoKey> {
-		if (format === 'jwk') {
-			if (keyData instanceof ArrayBuffer || ArrayBuffer.isView(keyData)) return Promise.reject(new TypeError('JWK must be an object'))
-			return origImportKey(format, keyData, algorithm, extractable, keyUsages)
-		}
-		if (!(keyData instanceof ArrayBuffer) && !ArrayBuffer.isView(keyData)) return Promise.reject(new TypeError('Key data must be a buffer'))
-		if (format === 'pkcs8') {
-			const bytes = toUint8Array(keyData)
+	subtle.importKey = ((format: string, keyData: unknown, algorithm: unknown, extractable: boolean, keyUsages: readonly string[]) => {
+		if (format === 'pkcs8' && typeof keyData === 'object' && keyData !== null && !('kty' in keyData)) {
+			const bytes = toUint8Array(keyData as ArrayBuffer | ArrayBufferView)
 			if (isPkcs1RsaKey(bytes)) {
-				return origImportKey('pkcs8', new Uint8Array(wrapPkcs1InPkcs8(bytes)), algorithm, extractable, keyUsages)
+				return (origImportKey as any)('pkcs8', wrapPkcs1InPkcs8(bytes), algorithm, extractable, [...keyUsages])
 			}
 		}
-		return origImportKey(format, new Uint8Array(toUint8Array(keyData)), algorithm, extractable, keyUsages)
-	}
-	subtle.importKey = importKey
+		return (origImportKey as any)(format, keyData, algorithm, extractable, [...keyUsages])
+	}) as typeof subtle.importKey
 }

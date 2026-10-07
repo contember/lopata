@@ -3,8 +3,6 @@ interface CloseObservation {
 	state: number
 	code: number
 	reason: string
-	modern: boolean
-	afterModern: boolean | null
 	sameEvent: boolean
 }
 
@@ -20,28 +18,24 @@ export function closeObservations(token: string): Response {
 	return Response.json(observations.get(token) ?? [])
 }
 
-export async function recordClose(
+export function recordClose(
 	token: string,
 	kind: CloseObservation['kind'],
 	state: number,
 	code: number,
 	reason: string,
 	sameEvent = true,
-): Promise<void> {
+): void {
 	const observation: CloseObservation = {
 		kind,
 		state,
 		code,
 		reason,
-		modern: typeof crypto.subtle.encapsulateBits === 'function',
-		afterModern: null,
 		sameEvent,
 	}
 	const records = observations.get(token) ?? []
 	records.push(observation)
 	observations.set(token, records)
-	await Promise.resolve()
-	observation.afterModern = typeof crypto.subtle.encapsulateBits === 'function'
 }
 
 export function attachCloseProbe(socket: CloseProbeSocket, token: string): void {
@@ -49,10 +43,10 @@ export function attachCloseProbe(socket: CloseProbeSocket, token: string): void 
 	socket.addEventListener('close', event => {
 		if (!(event instanceof CloseEvent)) throw new Error('Expected CloseEvent')
 		listenerEvent = event
-		void recordClose(token, 'listener', socket.readyState, event.code, event.reason)
+		recordClose(token, 'listener', socket.readyState, event.code, event.reason)
 		socket.close(event.code, event.reason)
 	})
 	socket.onclose = event => {
-		void recordClose(token, 'property', socket.readyState, event.code, event.reason, event === listenerEvent)
+		recordClose(token, 'property', socket.readyState, event.code, event.reason, event === listenerEvent)
 	}
 }

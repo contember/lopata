@@ -5,7 +5,6 @@ interface ProbeSocket {
 }
 
 export async function compatibilityProbe(socket: ProbeSocket): Promise<void> {
-	const before = typeof crypto.subtle.encapsulateBits === 'function'
 	await new Promise(resolve => setTimeout(resolve, 10))
 	const state = socket.readyState
 	let error: unknown
@@ -22,8 +21,6 @@ export async function compatibilityProbe(socket: ProbeSocket): Promise<void> {
 		nestedError = caught
 	}
 	socket.send(JSON.stringify({
-		before,
-		after: typeof crypto.subtle.encapsulateBits === 'function',
 		name: error instanceof DOMException ? error.name : null,
 		unchanged: socket.readyState === state,
 		nested: nestedError instanceof DOMException ? nestedError.name : null,

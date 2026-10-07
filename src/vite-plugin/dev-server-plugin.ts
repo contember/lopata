@@ -13,7 +13,6 @@ import { ExecutionContext as CacheContext, getActiveExecutionContext, runWithExe
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
-import { installCompatibilityCrypto } from '../setup-globals.ts'
 import { createInvocationTrace, type InvocationTrace, type TraceCompletion } from '../tracing/invocation.ts'
 import type { SpanOptions } from '../tracing/span.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
@@ -482,7 +481,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				: await configMod.autoLoadConfig(projectRoot)
 			config = loadedConfig
 			compatibility = resolveCompatibility({ date: loadedConfig.compatibility_date, flags: loadedConfig.compatibility_flags })
-			installCompatibilityCrypto()
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// The Vite plugin drives a worker built by Vite, so the main worker must have

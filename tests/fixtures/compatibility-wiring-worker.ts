@@ -1,4 +1,10 @@
-const topLevelModern = 'encapsulateBits' in crypto.subtle
+import { getActiveCompatibility } from '../../src/compatibility-context'
+
+function limited(): boolean {
+	return getActiveCompatibility().websocketCloseReasonByteLimit === 'enabled'
+}
+
+const topLevelLimited = limited()
 
 export default {
 	async fetch(request: Request, env: {
@@ -12,12 +18,12 @@ export default {
 		if (new URL(request.url).pathname === '/target' && env.TARGET) {
 			return env.TARGET.fetch(new Request('https://worker.test/'))
 		}
-		return Response.json({ topLevelModern, modern: 'encapsulateBits' in crypto.subtle })
+		return Response.json({ topLevelLimited, limited: limited() })
 	},
 }
 
 export class CompatibilityProbe {
 	fetch() {
-		return Response.json({ topLevelModern, modern: 'encapsulateBits' in crypto.subtle })
+		return Response.json({ topLevelLimited, limited: limited() })
 	}
 }

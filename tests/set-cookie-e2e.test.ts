@@ -71,7 +71,7 @@ describe('Multiple Set-Cookie headers — vite', () => {
 
 	beforeAll(async () => {
 		cleanup()
-		proc = Bun.spawn([process.execPath, '--bun', VITE_BIN, 'dev', '--port', String(VITE_PORT)], {
+		proc = Bun.spawn(['bun', '--bun', VITE_BIN, 'dev', '--port', String(VITE_PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',
