@@ -543,10 +543,4 @@ export class WorkflowStore {
 			this.db.query('DELETE FROM workflow_instances WHERE id = ?').run(instanceId)
 		})
 	}
-	deleteInstance(token: WorkflowExecutionToken): void {
-		this.transaction(token, () => {
-			this.fenceExecution(token)
-			this.removeOwnedState(token.instanceId, token.workflowName)
-		})
-	}
 }

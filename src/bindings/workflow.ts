@@ -1,5 +1,4 @@
 import type { Database } from 'bun:sqlite'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { realpathSync } from 'node:fs'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
@@ -190,46 +189,23 @@ function instanceRegistryKey(db: Database, id: string): string {
 const runningForwardAttempts = new Map<string, Set<Promise<unknown>>>()
 const ROLLBACK_REQUESTED = 'workflow rollback requested'
 const WORKFLOW_TERMINATED = 'workflow terminated'
-const WORKFLOW_DELETED = 'workflow deleted'
-const workflowExecution = new AsyncLocalStorage<WorkflowExecutionToken>()
 
 export interface WorkflowBatchDeleteResult {
 	deleted: { id: string }[]
 	errors: { id: string; code: number; message: string }[]
 }
 
-// Addressable IDs and batch error codes follow miniflare@5.20261001.0-alpha (workflows-shared@0.15.0).
+// Addressable IDs and the batch not-found error follow miniflare@5.20261001.0-alpha (workflows-shared@0.15.0).
 function validateDeleteId(id: unknown): void {
 	if (typeof id !== 'string' || id.length === 0 || id.length > 271 || !/^[a-zA-Z0-9, */#_-]+$/.test(id)) {
 		throw new Error('Instance ID is invalid (instance.invalid_id)')
 	}
 }
 
-function isOwnExecution(token: WorkflowExecutionToken): boolean {
-	const caller = workflowExecution.getStore()
-	return caller?.incarnation === token.incarnation && caller.run === token.run && caller.epoch === token.epoch
-}
-
 function deleteWorkflowInstance(db: Database, token: WorkflowExecutionToken): void {
-	const key = registryKey(db, token)
-	new WorkflowStore(db).deleteInstance(token)
-	abortControllers.get(key)?.abort(WORKFLOW_DELETED)
-	runningForwardAttempts.get(key)?.clear()
-	runningForwardAttempts.delete(key)
-	executions.delete(key)
-	abortControllers.delete(key)
-	eventWaiters.delete(key)
-	sleepResolvers.delete(key)
-	clearInstanceMocks(key)
-	try {
-		fireStatusCallbacks(key, 'deleted')
-	} catch (error) {
-		console.error('[workflow] deletion listener failed:', error)
-	}
-	statusCallbacks.delete(key)
-	stepCallbacks.delete(key)
-	sleepCallbacks.delete(key)
-	eventWaitCallbacks.delete(key)
+	new WorkflowStore(db).removeOwnedState(token.instanceId, token.workflowName)
+	// Stops a running execution the same way terminate() does; its rows are already gone.
+	abortControllers.get(registryKey(db, token))?.abort(WORKFLOW_TERMINATED)
 }
 
 // --- Sleep skip registry (per-process) ---
@@ -424,7 +400,6 @@ export class WorkflowStepImpl {
 			return Promise.reject(error)
 		}
 		const promise = this.executeDo(record, config, callback, options).catch(err => {
-			if (this.abortSignal.reason === WORKFLOW_DELETED) return new Promise<never>(() => {})
 			if (!this.abortSignal.aborted && !this.replayRollback) this.recordForwardFailure(record, workflowError(err))
 			throw err
 		})
@@ -461,7 +436,7 @@ export class WorkflowStepImpl {
 	}
 
 	private startForwardAttempt<T>(callback: () => Promise<T>): Promise<T> {
-		const attempt = Promise.resolve().then(() => workflowExecution.run(this.token, callback))
+		const attempt = Promise.resolve().then(callback)
 		const attempts = runningForwardAttempts.get(this.registryId) ?? this.forwardAttempts
 		this.forwardAttempts = attempts
 		runningForwardAttempts.set(this.registryId, attempts)
@@ -653,7 +628,7 @@ export class WorkflowStepImpl {
 			if (signal.aborted) throw new Error('workflow terminated')
 			this.store.startRollbackAttempt(this.ref(history))
 			try {
-				await runWithTimeout(() => workflowExecution.run(this.token, callback), timeout, `Rollback "${name}"`, signal)
+				await runWithTimeout(callback, timeout, `Rollback "${name}"`, signal)
 				if (signal.aborted) throw new Error('workflow terminated')
 				this.store.finishRollback(this.ref(history), 'complete')
 				return
@@ -1225,7 +1200,6 @@ export class SqliteWorkflowInstance {
 		const token = this.currentToken()
 		if (this.binding) return this.binding._deleteInstance(token)
 		deleteWorkflowInstance(this.db, token)
-		if (isOwnExecution(token)) return new Promise<never>(() => {})
 	}
 
 	async restart(options?: WorkflowRestartOptions): Promise<void> {
@@ -1552,64 +1526,34 @@ export class SqliteWorkflowBinding {
 	}
 
 	async deleteBatch(instanceIds: string[]): Promise<WorkflowBatchDeleteResult> {
-		if (!Array.isArray(instanceIds)) throw new Error('Provided argument is invalid (body)')
-		const ids = [...instanceIds]
-		if (ids.length < 1 || ids.length > 100) {
+		if (!Array.isArray(instanceIds) || instanceIds.length < 1 || instanceIds.length > 100) {
 			throw new Error('deleteBatch requires between 1 and 100 instance IDs (body)')
 		}
-		for (const id of ids) validateDeleteId(id)
+		for (const id of instanceIds) validateDeleteId(id)
 		if (this._threadRouter) {
-			const result = await this._threadRouter({ kind: 'deleteBatch', instanceIds: ids })
+			const result = await this._threadRouter({ kind: 'deleteBatch', instanceIds })
 			if (result.kind !== 'deleteBatch') throw new Error('Unexpected workflow batch deletion result')
 			return result.value
 		}
-		const results = new Map<string, { id: string; code: number; message: string } | null>()
-		let deletedSelf = false
-		for (const id of new Set(ids)) {
-			try {
-				const token = new WorkflowStore(this.db).currentToken(id, this.workflowName)
-				deleteWorkflowInstance(this.db, token)
-				deletedSelf ||= isOwnExecution(token)
-				results.set(id, null)
-			} catch (error) {
-				const missing = error instanceof WorkflowInstanceNotFoundError
-				results.set(id, {
-					id,
-					code: missing ? 10400 : 10001,
-					message: missing ? 'workflows.api.error.instance.not_found' : 'workflows.api.error.internal_server',
-				})
-			}
-		}
-		this.startQueuedAfterDeletion()
-		// Local cooperative contract: finish all unique attempts, including failures, before parking the self-caller.
-		if (deletedSelf) return new Promise<never>(() => {})
 		const result: WorkflowBatchDeleteResult = { deleted: [], errors: [] }
-		for (const id of ids) {
-			const error = results.get(id)
-			if (error === undefined) throw new Error('Missing batch deletion result')
-			if (error) result.errors.push(error)
-			else result.deleted.push({ id })
+		for (const id of instanceIds) {
+			try {
+				deleteWorkflowInstance(this.db, new WorkflowStore(this.db).currentToken(id, this.workflowName))
+				result.deleted.push({ id })
+			} catch (error) {
+				if (!(error instanceof WorkflowInstanceNotFoundError)) throw error
+				result.errors.push({ id, code: 10400, message: 'workflows.api.error.instance.not_found' })
+			}
 		}
 		return result
 	}
 
 	async _deleteInstance(token: WorkflowExecutionToken): Promise<void> {
-		if (token.workflowName !== this.workflowName) throw new WorkflowInstanceNotFoundError('Workflow instance not found')
 		if (this._threadRouter) {
-			await this._threadRouter({ kind: 'delete', instanceId: token.instanceId, incarnation: token.incarnation })
+			await this._threadRouter({ kind: 'delete', instanceId: token.instanceId })
 			return
 		}
 		deleteWorkflowInstance(this.db, token)
-		this.startQueuedAfterDeletion()
-		if (isOwnExecution(token)) return new Promise<never>(() => {})
-	}
-
-	private startQueuedAfterDeletion(): void {
-		try {
-			this.tryStartQueued()
-		} catch (error) {
-			console.error('[workflow] could not start queued instance after deletion:', error)
-		}
 	}
 
 	/**
@@ -1631,17 +1575,8 @@ export class SqliteWorkflowBinding {
 	 */
 	async executeControl(op: WorkflowControlOp): Promise<WorkflowControlResult> {
 		if (this._threadRouter) return this._threadRouter(op)
-		if (op.incarnation !== undefined && 'instanceId' in op) {
-			const token = new WorkflowStore(this.db).currentToken(op.instanceId, this.workflowName)
-			if (token.incarnation !== op.incarnation) throw new WorkflowInstanceNotFoundError('Workflow instance no longer exists')
-		}
 		switch (op.kind) {
-			case 'getHandle': {
-				const token = new WorkflowStore(this.db).currentToken(op.instanceId, this.workflowName)
-				return { kind: 'getHandle', id: token.instanceId, incarnation: token.incarnation }
-			}
 			case 'delete': {
-				validateDeleteId(op.instanceId)
 				await (await this.get(op.instanceId)).delete()
 				return { kind: 'ok' }
 			}
@@ -1649,7 +1584,7 @@ export class SqliteWorkflowBinding {
 				return { kind: 'deleteBatch', value: await this.deleteBatch(op.instanceIds) }
 			case 'create': {
 				const instance = await this.create({ id: op.id, params: op.params })
-				return { kind: 'create', id: instance.id, incarnation: new WorkflowStore(this.db).currentToken(instance.id, this.workflowName).incarnation }
+				return { kind: 'create', id: instance.id }
 			}
 			case 'status': {
 				return { kind: 'status', value: await (await this.get(op.instanceId)).status() }
@@ -1819,25 +1754,10 @@ export class SqliteWorkflowBinding {
 			await Promise.resolve()
 			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) {
 				if (abortControllers.get(registryId) === abortController) abortControllers.delete(registryId)
-				if (abortController.signal.reason === WORKFLOW_TERMINATED || abortController.signal.reason === WORKFLOW_DELETED) startQueued()
+				if (abortController.signal.reason === WORKFLOW_TERMINATED) startQueued()
 				return
 			}
-			try {
-				while (runningForwardAttempts.get(registryId)?.size) {
-					await runWithTimeout(
-						async () => {
-							await Promise.allSettled([...runningForwardAttempts.get(registryId) ?? []])
-						},
-						undefined,
-						'Forward attempts',
-						abortController.signal,
-					)
-				}
-			} catch (error) {
-				if (!abortController.signal.aborted) throw error
-				if (abortController.signal.reason === WORKFLOW_DELETED) startQueued()
-				return
-			}
+			while (runningForwardAttempts.get(registryId)?.size) await Promise.allSettled([...runningForwardAttempts.get(registryId) ?? []])
 			if (abortController.signal.aborted && abortController.signal.reason !== ROLLBACK_REQUESTED) return
 			const token = store.transaction(initialToken, () => store.acquireExecution(id, initialToken.workflowName))
 			const invocation = createInvocationTrace({
@@ -1864,7 +1784,6 @@ export class SqliteWorkflowBinding {
 						// Rollback termination drains forward steps; reload and default termination abort them.
 						const forwardController = new AbortController()
 						const onControlAbort = () => {
-							if (activeController.signal.reason === WORKFLOW_DELETED) invocation.terminate(WORKFLOW_DELETED)
 							if (completion.kind !== 'error') {
 								completion = {
 									kind: 'cancelled',
@@ -1878,7 +1797,7 @@ export class SqliteWorkflowBinding {
 								abortControllers.set(registryId, activeController)
 								activeController.signal.addEventListener('abort', onControlAbort, { once: true })
 							} else {
-								forwardController.abort(activeController.signal.reason)
+								forwardController.abort()
 							}
 						}
 						activeController.signal.addEventListener('abort', onControlAbort, { once: true })
@@ -1912,12 +1831,7 @@ export class SqliteWorkflowBinding {
 							step = new WorkflowStepImpl(forwardController.signal, db, id, resolvedLimits, resolvedClock, token)
 							const instance = new workflowClass(ctx, env)
 							const event = { payload: params, timestamp: new Date(createdAt ?? resolvedClock.now()), instanceId: id }
-							const result = await runWithTimeout(
-								() => workflowExecution.run(token, () => instance.run(event, step)),
-								undefined,
-								'Workflow',
-								activeController.signal,
-							)
+							const result = await runWithTimeout(() => instance.run(event, step), undefined, 'Workflow', activeController.signal)
 							await step.settlePending()
 							if (activeController.signal.aborted) return
 							const rollback = db.query<RollbackState, [string]>('SELECT * FROM workflow_rollbacks WHERE instance_id = ?').get(id)
@@ -1997,10 +1911,7 @@ export class SqliteWorkflowBinding {
 								eventWaiters.delete(registryId)
 								abortControllers.delete(registryId)
 							}
-							if (
-								!activeController.signal.aborted || activeController.signal.reason === WORKFLOW_TERMINATED
-								|| activeController.signal.reason === WORKFLOW_DELETED
-							) startQueued()
+							if (!activeController.signal.aborted || activeController.signal.reason === WORKFLOW_TERMINATED) startQueued()
 						}
 					})
 				})

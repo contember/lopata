@@ -233,71 +233,59 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 	}
 	const expectCreate = (result: WorkflowControlResult) => {
 		if (result.kind !== 'create') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "create")`)
-		if (typeof result.id !== 'string' || typeof result.incarnation !== 'string') throw new Error('Malformed workflow handle')
 		return result
 	}
 	const expectStatus = (result: WorkflowControlResult) => {
 		if (result.kind !== 'status') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "status")`)
 		return result
 	}
-	const makeHandle = (id: string, incarnation: string) => ({
+	const makeHandle = (id: string) => ({
 		id,
 		delete: async () => {
-			await control({ kind: 'delete', instanceId: id, incarnation })
+			await control({ kind: 'delete', instanceId: id })
 		},
-		status: async () => expectStatus(await control({ kind: 'status', instanceId: id, incarnation })).value,
+		status: async () => expectStatus(await control({ kind: 'status', instanceId: id })).value,
 		pause: async () => {
-			await control({ kind: 'pause', instanceId: id, incarnation })
+			await control({ kind: 'pause', instanceId: id })
 		},
 		resume: async () => {
-			await control({ kind: 'resume', instanceId: id, incarnation })
+			await control({ kind: 'resume', instanceId: id })
 		},
 		terminate: async (options?: { rollback?: boolean }) => {
-			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback, incarnation })
+			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback })
 		},
 		restart: async (options?: WorkflowRestartOptions) => {
-			await control({ kind: 'restart', instanceId: id, from: options?.from, fromStep: options?.fromStep, incarnation })
+			await control({ kind: 'restart', instanceId: id, from: options?.from, fromStep: options?.fromStep })
 		},
 		skipSleep: async () => {
-			await control({ kind: 'skipSleep', instanceId: id, incarnation })
+			await control({ kind: 'skipSleep', instanceId: id })
 		},
 		sendEvent: async (event: { type: string; payload?: unknown }) => {
-			await control({ kind: 'sendEvent', instanceId: id, eventType: event.type, payload: event.payload, incarnation })
+			await control({ kind: 'sendEvent', instanceId: id, eventType: event.type, payload: event.payload })
 		},
 	})
 	return makeRpcProxy(target, rpc, envWsBridge, {
 		create: async (options?: { id?: string; params?: unknown }) => {
 			const r = expectCreate(await control({ kind: 'create', params: options?.params ?? {}, id: options?.id }))
-			return makeHandle(r.id, r.incarnation)
+			return makeHandle(r.id)
 		},
 		createBatch: async (batch: { id?: string; params?: unknown }[]) => {
 			const handles = []
 			for (const item of batch) {
 				const r = expectCreate(await control({ kind: 'create', params: item.params ?? {}, id: item.id }))
-				handles.push(makeHandle(r.id, r.incarnation))
+				handles.push(makeHandle(r.id))
 			}
 			return handles
 		},
 		deleteBatch: async (instanceIds: string[]) => {
 			const result = await control({ kind: 'deleteBatch', instanceIds })
-			if (
-				result.kind !== 'deleteBatch' || !result.value || !Array.isArray(result.value.deleted) || !Array.isArray(result.value.errors)
-				|| !result.value.deleted.every((entry: unknown) => entry !== null && typeof entry === 'object' && 'id' in entry && typeof entry.id === 'string')
-				|| !result.value.errors.every((entry: unknown) =>
-					entry !== null && typeof entry === 'object' && 'id' in entry && typeof entry.id === 'string'
-					&& 'code' in entry && typeof entry.code === 'number' && 'message' in entry && typeof entry.message === 'string'
-				)
-			) {
-				throw new Error('Malformed workflow batch deletion result')
-			}
+			if (result.kind !== 'deleteBatch') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "deleteBatch")`)
 			return result.value
 		},
 		get: async (id: string) => {
-			const result = await control({ kind: 'getHandle', instanceId: id })
-			if (result.kind !== 'getHandle' || typeof result.id !== 'string' || typeof result.incarnation !== 'string') {
-				throw new Error('Malformed workflow handle')
-			}
-			return makeHandle(result.id, result.incarnation)
+			// Existence check (worker-side `get` throws for unknown ids).
+			expectStatus(await control({ kind: 'status', instanceId: id }))
+			return makeHandle(id)
 		},
 	})
 }
