@@ -33,7 +33,9 @@ Lopata takes a different approach: it implements all Cloudflare bindings nativel
 
 ## Requirements
 
-- [Bun](https://bun.sh) v1.1+
+- [Bun](https://bun.sh) v1.4.2 or later
+
+CI and release verification run on Bun 1.4.2, the minimum supported version.
 
 ## Quick start
 
@@ -350,6 +352,8 @@ The built-in dashboard is available at `/__dashboard` and provides:
 | **Send Email**        | SQLite (captured)            | Full        |
 
 Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
+
+See the [April–October 2026 compatibility review](CLOUDFLARE-COMPATIBILITY.md) for recent Workers announcements, local implementations, and remaining runtime gaps.
 
 ## Local data
 

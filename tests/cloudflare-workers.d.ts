@@ -38,6 +38,7 @@ declare module 'cloudflare:workers' {
 	export const env: Record<string, any>
 
 	export function waitUntil(promise: Promise<unknown>): void
+	export const cache: import('../src/bindings/worker-cache').WorkerCacheApi
 
 	export interface Span {
 		setAttribute(key: string, value: string | number | boolean | undefined): void

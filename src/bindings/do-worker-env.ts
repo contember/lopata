@@ -27,6 +27,7 @@ import { SqliteQueueProducer } from './queue'
 import { makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -232,51 +233,71 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 	}
 	const expectCreate = (result: WorkflowControlResult) => {
 		if (result.kind !== 'create') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "create")`)
+		if (typeof result.id !== 'string' || typeof result.incarnation !== 'string') throw new Error('Malformed workflow handle')
 		return result
 	}
 	const expectStatus = (result: WorkflowControlResult) => {
 		if (result.kind !== 'status') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "status")`)
 		return result
 	}
-	const makeHandle = (id: string) => ({
+	const makeHandle = (id: string, incarnation: string) => ({
 		id,
-		status: async () => expectStatus(await control({ kind: 'status', instanceId: id })).value,
+		delete: async () => {
+			await control({ kind: 'delete', instanceId: id, incarnation })
+		},
+		status: async () => expectStatus(await control({ kind: 'status', instanceId: id, incarnation })).value,
 		pause: async () => {
-			await control({ kind: 'pause', instanceId: id })
+			await control({ kind: 'pause', instanceId: id, incarnation })
 		},
 		resume: async () => {
-			await control({ kind: 'resume', instanceId: id })
+			await control({ kind: 'resume', instanceId: id, incarnation })
 		},
-		terminate: async () => {
-			await control({ kind: 'terminate', instanceId: id })
+		terminate: async (options?: { rollback?: boolean }) => {
+			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback, incarnation })
 		},
-		restart: async (options?: { fromStep?: string }) => {
-			await control({ kind: 'restart', instanceId: id, fromStep: options?.fromStep })
+		restart: async (options?: WorkflowRestartOptions) => {
+			await control({ kind: 'restart', instanceId: id, from: options?.from, fromStep: options?.fromStep, incarnation })
 		},
 		skipSleep: async () => {
-			await control({ kind: 'skipSleep', instanceId: id })
+			await control({ kind: 'skipSleep', instanceId: id, incarnation })
 		},
 		sendEvent: async (event: { type: string; payload?: unknown }) => {
-			await control({ kind: 'sendEvent', instanceId: id, eventType: event.type, payload: event.payload })
+			await control({ kind: 'sendEvent', instanceId: id, eventType: event.type, payload: event.payload, incarnation })
 		},
 	})
 	return makeRpcProxy(target, rpc, envWsBridge, {
 		create: async (options?: { id?: string; params?: unknown }) => {
 			const r = expectCreate(await control({ kind: 'create', params: options?.params ?? {}, id: options?.id }))
-			return makeHandle(r.id)
+			return makeHandle(r.id, r.incarnation)
 		},
 		createBatch: async (batch: { id?: string; params?: unknown }[]) => {
 			const handles = []
 			for (const item of batch) {
 				const r = expectCreate(await control({ kind: 'create', params: item.params ?? {}, id: item.id }))
-				handles.push(makeHandle(r.id))
+				handles.push(makeHandle(r.id, r.incarnation))
 			}
 			return handles
 		},
+		deleteBatch: async (instanceIds: string[]) => {
+			const result = await control({ kind: 'deleteBatch', instanceIds })
+			if (
+				result.kind !== 'deleteBatch' || !result.value || !Array.isArray(result.value.deleted) || !Array.isArray(result.value.errors)
+				|| !result.value.deleted.every((entry: unknown) => entry !== null && typeof entry === 'object' && 'id' in entry && typeof entry.id === 'string')
+				|| !result.value.errors.every((entry: unknown) =>
+					entry !== null && typeof entry === 'object' && 'id' in entry && typeof entry.id === 'string'
+					&& 'code' in entry && typeof entry.code === 'number' && 'message' in entry && typeof entry.message === 'string'
+				)
+			) {
+				throw new Error('Malformed workflow batch deletion result')
+			}
+			return result.value
+		},
 		get: async (id: string) => {
-			// Existence check (worker-side `get` throws for unknown ids).
-			expectStatus(await control({ kind: 'status', instanceId: id }))
-			return makeHandle(id)
+			const result = await control({ kind: 'getHandle', instanceId: id })
+			if (result.kind !== 'getHandle' || typeof result.id !== 'string' || typeof result.incarnation !== 'string') {
+				throw new Error('Malformed workflow handle')
+			}
+			return makeHandle(result.id, result.incarnation)
 		},
 	})
 }

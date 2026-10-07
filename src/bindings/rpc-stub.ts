@@ -8,6 +8,7 @@
  */
 
 import { warnInvalidRpcArgs, warnInvalidRpcReturn } from '../rpc-validate'
+import type { RpcLease } from './rpc-session'
 
 // Brand symbol shared across plugin.ts and vite-plugin/modules-plugin.ts
 export const RPC_TARGET_BRAND = Symbol.for('lopata.RpcTarget')
@@ -104,152 +105,158 @@ export function makeBindingProxy(
 
 // Cache to avoid wrapping the same target twice (handles `return this`)
 const stubCache = new WeakMap<object, object>()
+export interface RpcExecutionScope {
+	run<T>(callback: () => T): T
+	retain?(): RpcLease
+	/** Wrap caller-facing promises outside run() so interruption cannot settle the actual call. */
+	awaitResult?<T>(pending: Promise<T>): Promise<T>
+}
+const scopedStubCaches = new WeakMap<RpcExecutionScope, WeakMap<object, object>>()
+interface RpcStubOwner {
+	scope: RpcExecutionScope | undefined
+	receiver: RpcExecutionScope | undefined
+	run<T>(callback: () => T): T
+	rebind(scope: RpcExecutionScope): object
+	dispose(): void
+}
+const stubOwners = new WeakMap<object, RpcStubOwner>()
+const scopeReceivers = new WeakMap<RpcExecutionScope, RpcExecutionScope>()
+const rpcDisposers = new WeakMap<object, () => void>()
+
+function withinScope<T>(scope: RpcExecutionScope | undefined, callback: () => T): T {
+	return scope ? scope.run(callback) : callback()
+}
+
+function awaitScopedResult<T>(scope: RpcExecutionScope | undefined, pending: Promise<T>): Promise<T> {
+	return scope?.awaitResult ? scope.awaitResult(pending) : pending
+}
 
 /**
  * Wrap an RpcTarget instance in a Proxy that mimics CF stub behavior:
  * - Method calls: validate args → call → wrap return value
  * - Property access: thenable pattern, wraps returned RpcTarget/function values
  * - Filters `_`-prefixed properties (returns undefined)
- * - Symbol.dispose / Symbol.asyncDispose → undefined (spec-defined no-op for `using`)
+ * - Session-backed stubs own a disposable lease; legacy stubs use no-op disposal
  * - dup() → new stub wrapping same target
  */
-export function createRpcStub(target: object): object {
-	const cached = stubCache.get(target)
+export function createRpcStub(target: object, scope?: RpcExecutionScope): object {
+	let cache = scope ? scopedStubCaches.get(scope) : stubCache
+	if (!cache) {
+		cache = new WeakMap()
+		if (scope) scopedStubCaches.set(scope, cache)
+	}
+	const cached = scope?.retain ? undefined : cache.get(target)
 	if (cached) return cached
-
-	const stub = new Proxy({} as Record<string, unknown>, {
-		get(_obj, prop: string | symbol) {
-			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
-			if (NON_RPC_PROPS.has(prop)) return undefined
-
-			if (typeof prop === 'symbol') return undefined
-
-			// Filter _-prefixed private members (CF hides these)
-			if (prop.startsWith('_')) return undefined
-
-			// dup() — returns a new stub wrapping the same target
-			if (prop === 'dup') {
-				return () => {
-					// Create a fresh stub (bypass cache)
-					const dup = createRpcStubUncached(target)
-					return dup
-				}
-			}
-
-			const member = (target as Record<string, unknown>)[prop]
-
-			// If it's a function, return an rpcCallable with thenable for property access
-			if (typeof member === 'function') {
-				const rpcCallable = (...args: unknown[]) => {
-					warnInvalidRpcArgs(args, prop)
-					const result = (member as Function).call(target, ...args)
-					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop))
-				}
-
-				// Thenable for `await stub.method` (returns the wrapped function itself)
-				rpcCallable.then = (
-					onFulfilled?: ((value: unknown) => unknown) | null,
-					onRejected?: ((reason: unknown) => unknown) | null,
-				) => {
-					const wrapped = createRpcFunctionStub(member as Function, target)
-					return Promise.resolve(wrapped).then(onFulfilled, onRejected)
-				}
-
-				return rpcCallable
-			}
-
-			// Non-function property: return thenable
-			const rpcCallable = (..._args: unknown[]) => {
-				return Promise.reject(new Error(`"${prop}" is not a method on the RPC target`))
-			}
-
-			rpcCallable.then = (
-				onFulfilled?: ((value: unknown) => unknown) | null,
-				onRejected?: ((reason: unknown) => unknown) | null,
-			) => {
-				const wrapped = wrapRpcReturnValue(member, prop)
-				return Promise.resolve(wrapped).then(onFulfilled, onRejected)
-			}
-
-			return rpcCallable
-		},
-	})
-
-	stubCache.set(target, stub)
+	const stub = createRpcStubUncached(target, scope)
+	if (!scope?.retain) cache.set(target, stub)
 	return stub
 }
 
 /** Create a stub without caching (used by dup()) */
-function createRpcStubUncached(target: object): object {
-	return new Proxy({} as Record<string, unknown>, {
+function createRpcStubUncached(target: object, scope?: RpcExecutionScope): object {
+	const lease = scope?.retain?.()
+	const execution = lease ?? scope
+	const stub = new Proxy({}, {
 		get(_obj, prop: string | symbol) {
-			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return noopDispose
+			if (prop === Symbol.dispose || prop === Symbol.asyncDispose) return lease ? () => lease.dispose() : noopDispose
 			if (NON_RPC_PROPS.has(prop)) return undefined
 			if (typeof prop === 'symbol') return undefined
 			if (typeof prop === 'string' && prop.startsWith('_')) return undefined
-			if (prop === 'dup') return () => createRpcStubUncached(target)
+			if (prop === 'dup') return () => withinScope(execution, () => createRpcStubUncached(target, scope))
 
-			const member = (target as Record<string, unknown>)[prop]
+			const member: unknown = withinScope(execution, () => Reflect.get(target, prop))
 
 			if (typeof member === 'function') {
-				const rpcCallable = (...args: unknown[]) => {
-					warnInvalidRpcArgs(args, prop as string)
-					const result = (member as Function).call(target, ...args)
-					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop as string))
-				}
-				rpcCallable.then = (
-					onFulfilled?: ((value: unknown) => unknown) | null,
-					onRejected?: ((reason: unknown) => unknown) | null,
-				) => {
-					const wrapped = createRpcFunctionStub(member as Function, target)
-					return Promise.resolve(wrapped).then(onFulfilled, onRejected)
-				}
+				const rpcCallable = async (...args: unknown[]) =>
+					awaitScopedResult(
+						scope,
+						withinScope(execution, async () => {
+							warnInvalidRpcArgs(args, prop)
+							const result: unknown = await Reflect.apply(member, target, args)
+							return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
+						}),
+					)
+				Object.defineProperty(rpcCallable, 'then', {
+					get() {
+						const pending = awaitScopedResult(scope, withinScope(execution, async () => createRpcFunctionStub(member, target, scope)))
+						return pending.then.bind(pending)
+					},
+				})
 				return rpcCallable
 			}
 
 			const rpcCallable = (..._args: unknown[]) => {
 				return Promise.reject(new Error(`"${prop}" is not a method on the RPC target`))
 			}
-			rpcCallable.then = (
-				onFulfilled?: ((value: unknown) => unknown) | null,
-				onRejected?: ((reason: unknown) => unknown) | null,
-			) => {
-				const wrapped = wrapRpcReturnValue(member, prop as string)
-				return Promise.resolve(wrapped).then(onFulfilled, onRejected)
-			}
+			Object.defineProperty(rpcCallable, 'then', {
+				get() {
+					// Promise assimilation reads `then` synchronously, before invoking it in a microtask.
+					const pending = awaitScopedResult(
+						scope,
+						withinScope(execution, async () => {
+							const result = await member
+							return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
+						}),
+					)
+					return pending.then.bind(pending)
+				},
+			})
 			return rpcCallable
 		},
 	})
+	stubOwners.set(stub, {
+		scope,
+		receiver: scope ? scopeReceivers.get(scope) ?? scope : undefined,
+		run: callback => withinScope(execution, callback),
+		rebind: next => createRpcStubUncached(target, next),
+		dispose: lease ? () => lease.dispose() : noopDispose,
+	})
+	if (lease) rpcDisposers.set(stub, () => lease.dispose())
+	return stub
 }
 
 /**
  * Wrap a function in a callable stub with validation + Symbol.dispose + dup().
  */
-export function createRpcFunctionStub(fn: Function, thisArg?: object): Function {
-	const stub = (...args: unknown[]) => {
-		warnInvalidRpcArgs(args, fn.name || '<anonymous>')
-		const result = fn.call(thisArg, ...args)
-		return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, fn.name || '<anonymous>'))
-	}
+export function createRpcFunctionStub(fn: Function, thisArg?: object, scope?: RpcExecutionScope): Function {
+	const lease = scope?.retain?.()
+	const execution = lease ?? scope
+	const stub = async (...args: unknown[]) =>
+		awaitScopedResult(
+			scope,
+			withinScope(execution, async () => {
+				warnInvalidRpcArgs(args, fn.name || '<anonymous>')
+				const result: unknown = await Reflect.apply(fn, thisArg, args)
+				return withinScope(scope, () => wrapRpcReturnValue(result, fn.name || '<anonymous>', scope))
+			}),
+		)
 
 	Object.defineProperty(stub, Symbol.dispose, {
-		value: noopDispose,
+		value: lease ? () => lease.dispose() : noopDispose,
 		writable: false,
 		configurable: true,
 	})
 
 	Object.defineProperty(stub, Symbol.asyncDispose, {
-		value: noopDispose,
+		value: lease ? () => lease.dispose() : noopDispose,
 		writable: false,
 		configurable: true,
 	})
 
 	Object.defineProperty(stub, 'dup', {
-		value: () => createRpcFunctionStub(fn, thisArg),
+		value: () => withinScope(execution, () => createRpcFunctionStub(fn, thisArg, scope)),
 		writable: false,
 		configurable: true,
 	})
 
+	stubOwners.set(stub, {
+		scope,
+		receiver: scope ? scopeReceivers.get(scope) ?? scope : undefined,
+		run: callback => withinScope(execution, callback),
+		rebind: next => createRpcFunctionStub(fn, thisArg, next),
+		dispose: lease ? () => lease.dispose() : noopDispose,
+	})
+	if (lease) rpcDisposers.set(stub, () => lease.dispose())
 	return stub
 }
 
@@ -326,15 +333,137 @@ export function createRpcPromise(promise: Promise<unknown>): Promise<unknown> {
  * - Function → createRpcFunctionStub()
  * - Otherwise → warn if invalid + pass through
  */
-export function wrapRpcReturnValue(value: unknown, context: string): unknown {
+export function wrapRpcReturnValue(value: unknown, context: string, scope?: RpcExecutionScope): unknown {
+	const acquired: (() => void)[] = []
+	const transferred: (() => void)[] = []
+	try {
+		const result = wrapRpcValue(value, context, scope, new Map(), acquired, transferred)
+		disposeRpcValues(transferred)
+		return result
+	} catch (error) {
+		try {
+			disposeRpcValues(acquired)
+		} catch (cleanupError) {
+			throw new AggregateError([error, cleanupError], 'RPC result wrapping and cleanup failed')
+		}
+		throw error
+	}
+}
+
+function forwardingScope(receiver: RpcExecutionScope, retain: () => RpcLease, origin: RpcExecutionScope | undefined): RpcExecutionScope {
+	const scope: RpcExecutionScope = {
+		run: callback => withinScope(receiver, () => withinScope(origin, callback)),
+		awaitResult: pending => awaitScopedResult(receiver, awaitScopedResult(origin, pending)),
+		retain() {
+			const receivingLease = retain()
+			let originatingLease: RpcLease | undefined
+			try {
+				originatingLease = origin?.retain?.()
+			} catch (error) {
+				receivingLease.dispose()
+				throw error
+			}
+			let disposed = false
+			return {
+				run: callback => receivingLease.run(() => withinScope(originatingLease ?? origin, callback)),
+				dispose() {
+					if (disposed) return
+					disposed = true
+					disposeRpcValues([
+						() => originatingLease?.dispose(),
+						() => receivingLease.dispose(),
+					])
+				},
+			}
+		},
+	}
+	scopeReceivers.set(scope, receiver)
+	return scope
+}
+
+function disposeRpcValues(disposers: readonly (() => void)[]): void {
+	const errors: unknown[] = []
+	for (const dispose of disposers) {
+		try {
+			dispose()
+		} catch (error) {
+			errors.push(error)
+		}
+	}
+	if (errors.length) throw new AggregateError(errors, 'RPC result disposal failed')
+}
+
+function wrapRpcValue(
+	value: unknown,
+	context: string,
+	scope: RpcExecutionScope | undefined,
+	seen: Map<object, object>,
+	acquired: (() => void)[],
+	transferred: (() => void)[],
+): unknown {
 	if (value === null || value === undefined) return value
+	if (typeof value === 'object' || typeof value === 'function') {
+		const owner = stubOwners.get(value)
+		if (owner) {
+			if (!scope?.retain || owner.scope === scope || owner.receiver === scope) return value
+			const previous = seen.get(value)
+			if (previous) return previous
+			const retain = scope.retain.bind(scope)
+			const forwarded = owner.run(() => owner.rebind(forwardingScope(scope, retain, owner.scope)))
+			seen.set(value, forwarded)
+			const dispose = rpcDisposers.get(forwarded)
+			if (dispose) acquired.push(dispose)
+			transferred.push(() => owner.dispose())
+			return forwarded
+		}
+	}
 
 	if (isRpcTarget(value)) {
-		return createRpcStub(value as object)
+		if (typeof value === 'object') {
+			const stub = createRpcStub(value, scope)
+			const dispose = rpcDisposers.get(stub)
+			if (dispose) acquired.push(dispose)
+			return stub
+		}
 	}
 
 	if (typeof value === 'function') {
-		return createRpcFunctionStub(value as Function)
+		const stub = createRpcFunctionStub(value, undefined, scope)
+		const dispose = rpcDisposers.get(stub)
+		if (dispose) acquired.push(dispose)
+		return stub
+	}
+
+	if (
+		scope?.retain && typeof value === 'object'
+		&& (Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+	) {
+		const previous = seen.get(value)
+		if (previous) return previous
+		const result: unknown[] | Record<string, unknown> = Array.isArray(value) ? new Array(value.length) : {}
+		if (Object.getPrototypeOf(value) === null) Object.setPrototypeOf(result, null)
+		seen.set(value, result)
+		const children: (() => void)[] = []
+		let disposed = false
+		const dispose = () => {
+			if (disposed) return
+			disposed = true
+			disposeRpcValues(children)
+		}
+		Object.defineProperty(result, Symbol.dispose, { value: dispose })
+		Object.defineProperty(result, Symbol.asyncDispose, { value: dispose })
+		rpcDisposers.set(result, dispose)
+		// Read each enumerable property once, matching the existing RPC serialization contract.
+		for (const key of Object.keys(value)) {
+			const child: unknown = withinScope(scope, () => Reflect.get(value, key))
+			const wrapped = wrapRpcValue(child, context, scope, seen, acquired, transferred)
+			Object.defineProperty(result, key, { value: wrapped, enumerable: true, writable: true, configurable: true })
+			if (wrapped !== null && (typeof wrapped === 'object' || typeof wrapped === 'function')) {
+				const dispose = rpcDisposers.get(wrapped)
+				if (dispose) children.push(dispose)
+			}
+		}
+		return result
 	}
 
 	// Not an RpcTarget or function — validate and pass through

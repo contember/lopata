@@ -14,6 +14,7 @@ import type { Subprocess } from 'bun'
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
+import type { WorkflowStepKey } from '../src/bindings/workflow-store'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/thread-workflow-control-worker')
 const CLI_PATH = resolve(import.meta.dir, '../src/cli.ts')
@@ -154,3 +155,99 @@ describe('Workflow dashboard control (worker-thread runtime)', () => {
 		expect(inst.status).toBe('terminated')
 	})
 })
+
+test('typed dashboard and DO restarts select the second occurrence after fresh-process replay', async () => {
+	const directory = resolve(import.meta.dir, 'fixtures/workflow-occurrences-worker')
+	const base = 'http://localhost:18853'
+	rmSync(resolve(directory, '.lopata'), { recursive: true, force: true })
+	const start = () => Bun.spawn([process.execPath, CLI_PATH, 'dev', '--port', '18853'], { cwd: directory, stdout: 'ignore', stderr: 'inherit' })
+	let proc = start()
+	async function rpc(procedure: string, input: object): Promise<unknown> {
+		const response = await fetch(`${base}/__api/rpc`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ procedure, input }),
+		})
+		if (!response.ok) throw new Error(await response.text())
+		return response.json()
+	}
+	function stepKey(value: unknown): WorkflowStepKey {
+		if (
+			!value || typeof value !== 'object' || !('type' in value) || !('name' in value) || !('count' in value)
+			|| (value.type !== 'do' && value.type !== 'sleep' && value.type !== 'waitForEvent')
+			|| typeof value.name !== 'string' || typeof value.count !== 'number' || !Number.isSafeInteger(value.count) || value.count < 1
+		) throw new Error('Invalid workflow occurrence key')
+		return { type: value.type, name: value.name, count: value.count }
+	}
+	async function detail(id: string) {
+		const value = await rpc('workflows.getInstance', { name: 'OCCURRENCES', id })
+		if (
+			!value || typeof value !== 'object' || !('status' in value) || typeof value.status !== 'string'
+			|| !('steps' in value) || !Array.isArray(value.steps) || !('occurrences' in value) || !Array.isArray(value.occurrences)
+		) throw new Error('Invalid workflow detail response')
+		const steps = value.steps.map((step: unknown) => {
+			if (
+				!step || typeof step !== 'object' || !('key' in step) || !('output' in step)
+				|| (step.output !== null && typeof step.output !== 'string')
+			) throw new Error('Invalid workflow checkpoint response')
+			return { key: step.key === null ? null : stepKey(step.key), output: step.output }
+		})
+		const occurrences = value.occurrences.map((occurrence: unknown) => {
+			if (!occurrence || typeof occurrence !== 'object' || !('key' in occurrence)) throw new Error('Invalid workflow occurrence response')
+			return { key: stepKey(occurrence.key) }
+		})
+		return { status: value.status, steps, occurrences }
+	}
+	async function waitFor(predicate: () => Promise<boolean>) {
+		const deadline = Date.now() + 5000
+		while (!await predicate()) {
+			if (Date.now() > deadline) throw new Error('Typed dashboard control timed out')
+			await Bun.sleep(20)
+		}
+	}
+	try {
+		await waitForServer(base, 20000)
+		const created = await rpc('workflows.create', { name: 'OCCURRENCES', params: '{}' })
+		if (!created || typeof created !== 'object' || !('id' in created) || typeof created.id !== 'string') {
+			throw new Error('Invalid workflow create response')
+		}
+		const { id } = created
+		await waitFor(async () => (await detail(id)).status === 'waiting')
+		const first = (await detail(id)).steps.find(row => row.key?.type === 'do')?.output
+		expect(first).toBeString()
+		proc.kill()
+		await proc.exited
+		proc = start()
+		await waitForServer(base, 20000)
+		await waitFor(async () => (await detail(id)).status === 'waiting')
+		expect((await detail(id)).steps.find(row => row.key?.type === 'do')?.output).toBe(first)
+		await rpc('workflows.sendEvent', { name: 'OCCURRENCES', id, type: 'go' })
+		await waitFor(async () => (await detail(id)).occurrences.filter(row => row.key.type === 'waitForEvent').length === 2)
+		await rpc('workflows.sendEvent', { name: 'OCCURRENCES', id, type: 'go' })
+		await waitFor(async () => (await detail(id)).status === 'complete')
+		const second = (await detail(id)).steps.find(row => row.key?.type === 'do' && row.key.count === 2)?.output
+		await rpc('workflows.restart', { name: 'OCCURRENCES', id, from: { name: 'same', count: 2, type: 'do' } })
+		await waitFor(async () => (await detail(id)).status === 'waiting')
+		await rpc('workflows.sendEvent', { name: 'OCCURRENCES', id, type: 'go' })
+		await waitFor(async () => (await detail(id)).status === 'complete')
+		const final = await detail(id)
+		expect(final.steps.find(row => row.key?.type === 'do' && row.key.count === 1)?.output).toBe(first)
+		expect(final.steps.find(row => row.key?.type === 'do' && row.key.count === 2)?.output).not.toBe(second)
+		expect(await (await fetch(`${base}/effects?id=${encodeURIComponent(id)}`)).json()).toEqual([1, 2])
+		const beforeDoRestart = final.steps.find(row => row.key?.type === 'do' && row.key.count === 2)?.output
+		const restarted = await fetch(`${base}/do-restart?id=${encodeURIComponent(id)}`, { method: 'POST' })
+		if (!restarted.ok) throw new Error(await restarted.text())
+		await waitFor(async () => (await detail(id)).status === 'waiting')
+		expect((await detail(id)).steps.find(row => row.key?.type === 'do' && row.key.count === 1)?.output).toBe(first)
+		await rpc('workflows.sendEvent', { name: 'OCCURRENCES', id, type: 'go' })
+		await waitFor(async () => (await detail(id)).status === 'complete')
+		const afterDoRestart = await detail(id)
+		expect(afterDoRestart.steps.find(row => row.key?.type === 'do' && row.key.count === 1)?.output).toBe(first)
+		expect(afterDoRestart.steps.find(row => row.key?.type === 'do' && row.key.count === 2)?.output).not.toBe(beforeDoRestart)
+		expect(await (await fetch(`${base}/effects?id=${encodeURIComponent(id)}`)).json()).toEqual([1, 3])
+	} finally {
+		proc.kill()
+		await proc.exited
+		rmSync(resolve(directory, '.lopata'), { recursive: true, force: true })
+	}
+}, 60000)

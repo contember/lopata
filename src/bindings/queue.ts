@@ -1,10 +1,11 @@
 import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import crypto from 'node:crypto'
-import { ExecutionContext } from '../execution-context'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
-import { persistError, startSpan } from '../tracing/span'
+import { createInvocationTrace, type InvocationTrace } from '../tracing/invocation'
+import { persistError } from '../tracing/span'
 
 // --- Types ---
 
@@ -283,8 +284,18 @@ export class QueueConsumer {
 		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
 	): Promise<void> {
 		this._activeDeliveries++
+		const invocation = createInvocationTrace({
+			name: `queue ${this.config.queue}`,
+			kind: 'server',
+			attributes: { 'messaging.queue': this.config.queue, 'messaging.batch_size': rows.length },
+			workerName: this.workerName,
+		})
 		try {
-			await this._deliverBatchInner(rows)
+			await invocation.run(() => this._deliverBatchInner(rows, invocation))
+			invocation.finishHandler()
+		} catch (error) {
+			invocation.finishHandler({ kind: 'error', error })
+			throw error
 		} finally {
 			this._activeDeliveries--
 		}
@@ -292,6 +303,7 @@ export class QueueConsumer {
 
 	private async _deliverBatchInner(
 		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
+		invocation: InvocationTrace,
 	): Promise<void> {
 		// Increment attempts for all fetched messages
 		const ids = rows.map((r) => r.id)
@@ -333,12 +345,7 @@ export class QueueConsumer {
 		const ctx = new ExecutionContext()
 
 		let handlerError = false
-		await startSpan({
-			name: `queue ${this.config.queue}`,
-			kind: 'server',
-			attributes: { 'messaging.queue': this.config.queue, 'messaging.batch_size': messages.length },
-			workerName: this.workerName,
-		}, async () => {
+		await runWithExecutionContext(ctx, async () => {
 			try {
 				await this.handler(batch, this.env, ctx)
 			} catch (err) {
@@ -346,6 +353,7 @@ export class QueueConsumer {
 				persistError(err, 'queue', this.workerName)
 				// On handler error, retry all messages
 				handlerError = true
+				invocation.finishHandler({ kind: 'error', error: err })
 			}
 
 			// Wait for all waitUntil promises to settle (best-effort)

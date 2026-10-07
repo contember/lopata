@@ -11,6 +11,7 @@ import { createServiceBinding } from './bindings/service-binding'
 import { addStatelessBindings, createStaticAssets } from './bindings/stateless-env'
 import type { StaticAssets } from './bindings/static-assets'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
+import { legacyCompatibility } from './compatibility-context'
 import type { WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
 import { instrumentBinding, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
@@ -312,16 +313,17 @@ export function wireClassRefs(
 	env: Record<string, unknown>,
 	workerRegistry?: WorkerRegistry,
 	generationId?: number,
+	compatibility = legacyCompatibility,
 ) {
 	for (const entry of registry.durableObjects) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Durable Object class "${entry.className}" not exported from worker module`)
-		entry.namespace._setClass(cls as any, env, generationId)
+		entry.namespace._setClass(cls as any, env, generationId, compatibility)
 		console.log(`[lopata] Wired DO class: ${entry.className}`)
 	}
 
 	for (const entry of registry.workflows) {
-		wireWorkflowClass(entry.binding, entry.className, workerModule, env)
+		wireWorkflowClass(entry.binding, entry.className, workerModule, env, compatibility)
 		console.log(`[lopata] Wired Workflow class: ${entry.className}`)
 	}
 
@@ -342,7 +344,7 @@ export function wireClassRefs(
 		console.log(`[lopata] Wired container config: ${entry.className} (image: ${entry.image})`)
 	}
 
-	wireServiceBindings(registry, workerModule, env, workerRegistry)
+	wireServiceBindings(registry, workerModule, env, workerRegistry, compatibility)
 }
 
 /**
@@ -355,6 +357,7 @@ export function wireServiceBindings(
 	workerModule: Record<string, unknown>,
 	env: Record<string, unknown>,
 	workerRegistry?: WorkerRegistry,
+	compatibility = legacyCompatibility,
 ) {
 	for (const entry of registry.serviceBindings) {
 		const wire = entry.proxy._wire as ((resolver: () => ResolvedTarget) => void) | undefined
@@ -364,7 +367,7 @@ export function wireServiceBindings(
 			wire(() => workerRegistry.resolveTarget(entry.serviceName))
 		} else {
 			// Backward compat: self-reference, in-process
-			wire(() => ({ kind: 'in-process', workerModule, env }))
+			wire(() => ({ kind: 'in-process', workerModule, env, compatibility }))
 		}
 		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
 	}

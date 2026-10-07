@@ -1,0 +1,6 @@
+{
+	"name": "tracing-do",
+	"durable_objects": {
+		"bindings": [{ "name": "OBJECTS", "class_name": "TracedObject" }]
+	}
+}

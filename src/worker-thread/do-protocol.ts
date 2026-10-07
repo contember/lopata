@@ -11,7 +11,9 @@
  * executor/entry implementation logic stays in the bindings layer.
  */
 
+import type { DOAbortPolicy, DOAlarmMutationOwnership } from '../bindings/do-executor'
 import type {
+	ParentSpanContext,
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcGetRequest,
@@ -22,7 +24,10 @@ import type {
 	RpcStreamAck,
 	RpcStreamCancel,
 	SerializedError,
+	WorkerMessage,
 } from './protocol'
+
+export type DOTraceMessage = Extract<WorkerMessage, { type: `trace-${string}` }>
 
 /**
  * DO worker → main: the instance's lifecycle state changed. Main mirrors these
@@ -56,7 +61,7 @@ export type DOCommand =
 	}
 	| { type: 'rpc-call'; method: string; args: unknown[] }
 	| { type: 'rpc-get'; prop: string }
-	| { type: 'alarm'; retryCount: number }
+	| { type: 'alarm'; retryCount: number; attemptId?: number }
 	// Stop the DO's Docker container (rm -f + stop timers) before main terminates
 	// the worker thread. terminate() kills the activity/health timers but leaves
 	// the Docker process running; only an explicit cleanup stops it.
@@ -167,7 +172,7 @@ export interface DoReqStreamAck {
 
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
-	| { type: 'command'; id: number; command: DOCommand }
+	| { type: 'command'; id: number; command: DOCommand; parent?: ParentSpanContext }
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
@@ -192,10 +197,14 @@ export type DOWorkerMessage =
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
+	| DOTraceMessage
+	| { type: 'do-invocation-start'; id: number }
+	| { type: 'do-invocation-end'; id: number }
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }
-	| { type: 'alarm-set'; time: number | null }
+	| { type: 'alarm-set'; time: number | null; revision: number; ownership: DOAlarmMutationOwnership }
+	| { type: 'do-abort'; policy: DOAbortPolicy }
 	| DoStateSignal
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }

@@ -12,6 +12,9 @@
  * access behave identically to the parent.
  */
 
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
+import { configureCloudflareCrypto } from '../setup-globals'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 
 declare var self: Worker
@@ -21,6 +24,7 @@ export interface LoaderInitMessage {
 	mainModulePath: string
 	env: unknown
 	globalOutbound: 'allow' | 'block'
+	compatibility: CompatibilitySelection
 }
 
 export type LoaderCommand =
@@ -68,6 +72,9 @@ self.onmessage = async (event: MessageEvent<MainToWorker>) => {
 self.postMessage({ type: 'need-init' } satisfies WorkerToMain)
 
 async function init(data: LoaderInitMessage): Promise<void> {
+	const compatibility = resolveCompatibility({ date: data.compatibility.date ?? undefined, flags: data.compatibility.flags })
+	initializeIsolateCompatibility(compatibility)
+	configureCloudflareCrypto(compatibility)
 	loaderEnv = data.env ?? {}
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {

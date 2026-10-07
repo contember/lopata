@@ -6,7 +6,11 @@
  * terminate + respawn.
  */
 
+import type { WorkerFetchOptions } from '../bindings/worker-cache'
+import type { WorkflowBatchDeleteResult, WorkflowInstanceStatus } from '../bindings/workflow'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
+export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 
@@ -19,6 +23,7 @@ export interface ParentSpanContext {
 export type TraceErrorPayload = Parameters<TraceStore['insertError']>[0]
 
 export interface SerializedRequest {
+	cf?: WorkerFetchOptions['cf']
 	url: string
 	method: string
 	headers: [string, string][]
@@ -135,6 +140,7 @@ export function deserializeError(err: SerializedError): Error {
 }
 
 export interface WorkerInitConfig {
+	compatibility: CompatibilitySelection
 	modulePath: string
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
 	config: WranglerConfig
@@ -169,36 +175,37 @@ export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
  * `create`.
  */
 export type WorkflowControlOp =
-	| { kind: 'create'; params: unknown; id?: string }
-	// Resume all interrupted (running/waiting) instances. Driven by main AFTER the
-	// previous generation's worker is disposed, so an interrupted workflow is never
-	// re-executed in the new worker while the old one is still running it.
-	| { kind: 'resumeInterrupted' }
-	| { kind: 'terminate'; instanceId: string }
-	| { kind: 'pause'; instanceId: string }
-	| { kind: 'resume'; instanceId: string }
-	| { kind: 'restart'; instanceId: string; fromStep?: string }
-	| { kind: 'skipSleep'; instanceId: string }
-	| { kind: 'sendEvent'; instanceId: string; eventType: string; payload?: unknown }
-	// Introspection reads of the worker-side in-memory registries — the dashboard
-	// instance detail renders "sleeping" / "waiting for events" from these.
-	| { kind: 'isSleeping'; instanceId: string }
-	| { kind: 'waitingEventTypes'; instanceId: string }
-	// `WorkflowInstance.status()` for DO-worker proxies; also doubles as the
-	// existence check behind their `get(id)`.
-	| { kind: 'status'; instanceId: string }
-
-/** `WorkflowInstance.status()` payload (see `SqliteWorkflowInstance.status`). */
-export interface WorkflowInstanceStatus {
-	status: string
-	output?: unknown
-	error?: { name: string; message: string }
-}
+	& (
+		| { kind: 'create'; params: unknown; id?: string }
+		| { kind: 'getHandle'; instanceId: string }
+		| { kind: 'delete'; instanceId: string; incarnation?: string }
+		| { kind: 'deleteBatch'; instanceIds: string[] }
+		// Resume all interrupted (running/waiting) instances. Driven by main AFTER the
+		// previous generation's worker is disposed, so an interrupted workflow is never
+		// re-executed in the new worker while the old one is still running it.
+		| { kind: 'resumeInterrupted' }
+		| { kind: 'terminate'; instanceId: string; rollback?: boolean }
+		| { kind: 'pause'; instanceId: string }
+		| { kind: 'resume'; instanceId: string }
+		| { kind: 'restart'; instanceId: string; fromStep?: string; from?: { name: string; count?: number; type?: 'do' | 'sleep' | 'waitForEvent' } }
+		| { kind: 'skipSleep'; instanceId: string }
+		| { kind: 'sendEvent'; instanceId: string; eventType: string; payload?: unknown }
+		// Introspection reads of the worker-side in-memory registries — the dashboard
+		// instance detail renders "sleeping" / "waiting for events" from these.
+		| { kind: 'isSleeping'; instanceId: string }
+		| { kind: 'waitingEventTypes'; instanceId: string }
+		// `WorkflowInstance.status()` for DO-worker proxies; also doubles as the
+		// existence check behind their `get(id)`.
+		| { kind: 'status'; instanceId: string }
+	)
+	& { incarnation?: string }
 
 /** Result payload of a {@link WorkflowControlOp}. `create` reports the new id,
  *  the introspection reads report their value; mutating ops report nothing. */
 export type WorkflowControlResult =
-	| { kind: 'create'; id: string }
+	| { kind: 'create'; id: string; incarnation: string }
+	| { kind: 'getHandle'; id: string; incarnation: string }
+	| { kind: 'deleteBatch'; value: WorkflowBatchDeleteResult }
 	| { kind: 'ok' }
 	| { kind: 'isSleeping'; value: boolean }
 	| { kind: 'waitingEventTypes'; value: string[] }
@@ -390,7 +397,15 @@ export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	// `props` carry the service-binding context `props` from the calling worker
 	// across to the target's `ExecutionContext.props`. Absent for top-level HTTP.
-	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext; props?: Record<string, unknown> }
+	| {
+		type: 'fetch'
+		id: number
+		request: SerializedRequest
+		parent?: ParentSpanContext
+		props?: Record<string, unknown>
+		entrypoint?: string
+		trusted?: boolean
+	}
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| RpcCallReply

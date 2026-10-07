@@ -2,9 +2,38 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parse as parseTOML } from 'smol-toml'
 import type { WorkflowLimits } from './bindings/workflow'
+import { parseCompatibility } from './compatibility'
+
+export interface WorkerExportDeclaration {
+	type: 'worker'
+	cache?: { enabled: boolean }
+}
+
+export type DurableObjectExportDeclaration =
+	& { type: 'durable-object' }
+	& (
+		| { state?: 'created'; storage: 'sqlite' | 'legacy-kv'; container?: string }
+		| { state: 'deleted' }
+		| { state: 'renamed'; renamed_to: string }
+		| { state: 'transferred'; transferred_to: string }
+		| { state: 'expecting-transfer'; storage: 'sqlite' | 'legacy-kv'; transfer_from: string; container?: string }
+	)
+
+export interface WorkflowExportDeclaration {
+	type: 'workflow'
+	name: string
+	limits?: { steps?: number }
+	schedules?: string | string[]
+	default_retention?: { success_retention?: string | number; error_retention?: string | number }
+}
+
+// Non-Worker declarations are preserved here; their lifecycle is not implemented by the cache runtime.
+export type ExportDeclaration = WorkerExportDeclaration | DurableObjectExportDeclaration | WorkflowExportDeclaration
 
 export interface WranglerConfig {
 	name: string
+	cache?: { enabled: boolean; cross_version_cache?: boolean }
+	exports?: Record<string, ExportDeclaration>
 	/**
 	 * Entry module. Optional: a worker that only has `assets` is an assets-only
 	 * (static-site) worker — Cloudflare runs no script for it, and neither do we.
@@ -113,7 +142,42 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	} else {
 		config = Bun.JSONC.parse(raw) as WranglerConfig
 	}
-	return applyEnvOverrides(config, envName)
+	const merged = applyEnvOverrides(config, envName)
+	const compatibility = parseCompatibility({ date: merged.compatibility_date, flags: merged.compatibility_flags })
+	if (compatibility.date !== undefined) merged.compatibility_date = compatibility.date
+	if (compatibility.flags !== undefined) merged.compatibility_flags = [...compatibility.flags]
+	validateWorkerCacheConfig(merged)
+	return merged
+}
+
+export function validateWorkerCacheConfig(config: WranglerConfig): void {
+	function object(value: unknown, path: string): Record<string, unknown> {
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new TypeError(`${path} must be an object`)
+		return Object.fromEntries(Object.entries(value))
+	}
+	function cacheBlock(value: unknown, path: string, crossVersion: boolean): void {
+		const block = object(value, path)
+		if (typeof block.enabled !== 'boolean') throw new TypeError(`${path}.enabled must be a boolean`)
+		if (block.cross_version_cache !== undefined && (!crossVersion || typeof block.cross_version_cache !== 'boolean')) {
+			throw new TypeError(`${path}.cross_version_cache is only supported as a top-level boolean`)
+		}
+		if (Object.keys(block).some(key => key !== 'enabled' && !(crossVersion && key === 'cross_version_cache'))) {
+			throw new TypeError(`${path} contains an unsupported field`)
+		}
+	}
+	if (config.cache !== undefined) cacheBlock(config.cache, 'cache', true)
+	if (config.exports !== undefined) {
+		for (const [name, value] of Object.entries(object(config.exports, 'exports'))) {
+			const entry = object(value, `exports.${name}`)
+			if (entry.type === 'worker') {
+				if (entry.cache !== undefined) cacheBlock(entry.cache, `exports.${name}.cache`, false)
+			} else if (entry.type === 'durable-object' || entry.type === 'workflow') {
+				if (entry.cache !== undefined) throw new TypeError(`exports.${name}.cache is only supported on worker exports`)
+			} else {
+				throw new TypeError(`exports.${name}.type must be "worker", "durable-object", or "workflow"`)
+			}
+		}
+	}
 }
 
 /**

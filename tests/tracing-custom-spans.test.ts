@@ -1,18 +1,29 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { runTracingMigrations } from '../src/tracing/db'
-import { enterSpan, tracing } from '../src/tracing/span'
+import { createInvocationTrace, type InvocationTrace } from '../src/tracing/invocation'
+import { enterSpan as publicEnterSpan, type SpanHandle, tracing } from '../src/tracing/span'
 import { setTraceStore, TraceStore } from '../src/tracing/store'
 
 let db: Database
+let store: TraceStore
+let invocation: InvocationTrace
+
+function enterSpan<T>(name: string, callback: (span: SpanHandle) => T): T {
+	return invocation.run(() => publicEnterSpan(name, callback))
+}
 
 beforeEach(() => {
 	db = new Database(':memory:')
 	runTracingMigrations(db)
-	setTraceStore(new TraceStore(db))
+	store = new TraceStore(db)
+	setTraceStore(store)
+	invocation = createInvocationTrace({ name: 'invocation' })
 })
 
 afterEach(() => {
+	invocation.finishHandler()
+	store.close()
 	setTraceStore(null)
 })
 
@@ -28,7 +39,7 @@ interface SpanRow {
 	attributes: string | null
 }
 
-const spans = () => db.query<SpanRow, []>('SELECT * FROM spans ORDER BY start_time').all()
+const spans = () => db.query<SpanRow, []>("SELECT * FROM spans WHERE name != 'invocation' ORDER BY start_time").all()
 const events = () => db.query<{ name: string; level: string | null; message: string | null }, []>('SELECT * FROM span_events').all()
 const firstSpan = () => spans()[0]!
 const firstEvent = () => events()[0]!
@@ -103,7 +114,7 @@ describe('tracing.enterSpan (Cloudflare custom spans)', () => {
 
 	test('nests child spans under the active span in the same trace', () => {
 		enterSpan('outer', () => {
-			enterSpan('inner', () => {})
+			publicEnterSpan('inner', () => {})
 		})
 
 		const all = spans()
@@ -111,7 +122,7 @@ describe('tracing.enterSpan (Cloudflare custom spans)', () => {
 		const inner = all.find(s => s.name === 'inner')!
 		expect(inner.parent_span_id).toBe(outer.span_id)
 		expect(inner.trace_id).toBe(outer.trace_id)
-		expect(outer.parent_span_id).toBeNull()
+		expect(outer.parent_span_id).toBe(db.query<{ span_id: string }, []>("SELECT span_id FROM spans WHERE name = 'invocation'").get()!.span_id)
 	})
 
 	test('marks the span errored and records an exception event on a synchronous throw', () => {
@@ -144,6 +155,6 @@ describe('tracing.enterSpan (Cloudflare custom spans)', () => {
 	})
 
 	test('tracing namespace exposes enterSpan', () => {
-		expect(tracing.enterSpan).toBe(enterSpan)
+		expect(tracing.enterSpan).toBe(publicEnterSpan)
 	})
 })

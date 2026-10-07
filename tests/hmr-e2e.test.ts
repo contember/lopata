@@ -234,7 +234,7 @@ describe('HMR E2E — vite', () => {
 		cleanup()
 		restore = backupFile(WORKER_SRC)
 
-		proc = Bun.spawn(['bun', '--bun', VITE_BIN, 'dev', '--port', String(PORT)], {
+		proc = Bun.spawn([process.execPath, '--bun', VITE_BIN, 'dev', '--port', String(PORT)], {
 			cwd: FIXTURE_DIR,
 			stdout: 'pipe',
 			stderr: 'pipe',

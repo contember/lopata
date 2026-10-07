@@ -7,14 +7,24 @@
 
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
+import { ExecutionContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
+import { runWithParentContext } from '../tracing/context'
+import { createInvocationTrace, getActiveInvocation, type TraceCompletion } from '../tracing/invocation'
+import { setTraceStoreOverride } from '../tracing/store'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
+import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
+import type { DurableObjectBase } from './durable-object'
+import { isWorkerResponse } from './worker-cache'
 
 declare var self: Worker
 
 interface WorkerConfig {
+	compatibility?: CompatibilitySelection
 	modulePath: string
 	configPath: string
 	/** Main's parsed, env-overridden config. When present it's used verbatim so
@@ -54,6 +64,11 @@ self.onmessage = async (event: MessageEvent) => {
 postMessage({ type: 'need-init' })
 
 async function initWorker(workerConfig: WorkerConfig) {
+	setTraceStoreOverride(
+		new RemoteTraceStore(message => {
+			if (message.type.startsWith('trace-')) postMessage(message)
+		}),
+	)
 	// Register Bun plugins for cloudflare:workers etc.
 	await import('../plugin')
 
@@ -69,6 +84,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
+	const { configureCloudflareCrypto } = await import('../setup-globals')
+	const compatibility = workerConfig.compatibility
+		? resolveCompatibility({ date: workerConfig.compatibility.date ?? undefined, flags: workerConfig.compatibility.flags })
+		: resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
+	initializeIsolateCompatibility(compatibility)
+	configureCloudflareCrypto(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
@@ -110,7 +131,15 @@ async function initWorker(workerConfig: WorkerConfig) {
 		throw new Error(`DO class "${workerConfig.namespaceName}" not exported from worker module`)
 	}
 
-	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
+	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir, undefined, compatibility)
+	state.storage._setAlarmCallback((time, revision, ownership) => {
+		postMessage({ type: 'alarm-set', time, revision, ownership } satisfies DOMainMessage)
+	})
+	if (!config.containers?.some(container => container.class_name === workerConfig.namespaceName)) {
+		state._setAbortCallback(policy => {
+			postMessage({ type: 'do-abort', policy } satisfies DOMainMessage)
+		})
+	}
 
 	// Mirror the instance's abort/block lifecycle to main so the idle reaper
 	// evicts an aborted instance (every subsequent command throws — it must be
@@ -120,9 +149,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 		postMessage({ type: 'do-state', aborted: state._isAborted(), blocked: state._isBlocked() } satisfies DOMainMessage)
 	}
 	const originalAbort = state.abort.bind(state)
-	state.abort = (reason?: string) => {
-		originalAbort(reason)
-		postState()
+	state.abort = (reason?: string, options?: { retryAlarm?: boolean }) => {
+		try {
+			originalAbort(reason, options)
+		} finally {
+			postState()
+		}
 	}
 	const originalBlock = state.blockConcurrencyWhile.bind(state)
 	state.blockConcurrencyWhile = <T>(cb: () => Promise<T>): Promise<T> => {
@@ -159,13 +191,23 @@ async function initWorker(workerConfig: WorkerConfig) {
 		state.container = new ContainerContext(containerRuntime)
 	}
 
-	const instance = new (cls as any)(state, env)
-
-	if (containerRuntime && instance instanceof ContainerBase) {
-		instance._wireRuntime(containerRuntime)
+	let instance: DurableObjectBase | undefined
+	let constructionFailure: { error: unknown } | undefined
+	function ensureInstance(): DurableObjectBase {
+		if (constructionFailure) throw constructionFailure.error
+		if (!instance) {
+			try {
+				instance = new cls(state, env)
+			} catch (error) {
+				constructionFailure = { error }
+				throw error
+			}
+			if (!instance) throw new Error('Durable Object construction failed')
+			if (containerRuntime && instance instanceof ContainerBase) instance._wireRuntime(containerRuntime)
+			state._setInstanceResolver(() => instance ?? null)
+		}
+		return instance
 	}
-
-	state._setInstanceResolver(() => instance)
 
 	/**
 	 * Bridge for `Response{webSocket}` returned by the DO's own fetch(). Forwards
@@ -180,6 +222,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	/** Active body pumps for streamed DO-fetch responses, keyed by `streamId`,
 	 *  so an inbound `do-stream-cancel` can stop the source reader. */
 	const fetchStreams = new OutboundStreamRegistry()
+	const fetchCancellations = new Map<number, () => void>()
 
 	/** Active reconstructed DO-fetch request bodies (main → DO worker). Chunks
 	 *  arriving before the controller registers queue inside the receiver. */
@@ -193,15 +236,26 @@ async function initWorker(workerConfig: WorkerConfig) {
 		},
 	)
 
-	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>): void {
+	function pumpFetchBody(streamId: number, body: ReadableStream<Uint8Array>, complete?: (completion: TraceCompletion) => void): void {
+		const invocation = getActiveInvocation()
+		const context = getActiveExecutionContext()
+		fetchCancellations.set(streamId, () => {
+			const cancel = () => context ? runWithExecutionContext(context, () => fetchStreams.cancel(streamId)) : fetchStreams.cancel(streamId)
+			if (invocation) invocation.run(cancel)
+			else cancel()
+		})
 		type Chunk = Extract<DOMainMessage, { type: 'do-stream-chunk' }>
 		type End = Extract<DOMainMessage, { type: 'do-stream-end' }>
 		type Err = Extract<DOMainMessage, { type: 'do-stream-error' }>
+		let terminal: End | Err | undefined
 		pumpStream<Chunk, End, Err>(
 			streamId,
 			body,
 			fetchStreams,
-			msg => postMessage(msg),
+			msg => {
+				if (msg.type === 'do-stream-chunk') postMessage(msg)
+				else terminal = msg
+			},
 			{
 				chunk: (id, chunk) => ({ type: 'do-stream-chunk', streamId: id, chunk }),
 				end: (id) => ({ type: 'do-stream-end', streamId: id }),
@@ -209,13 +263,16 @@ async function initWorker(workerConfig: WorkerConfig) {
 			},
 			undefined,
 			STREAM_BACKPRESSURE_WINDOW,
+			completion => {
+				fetchCancellations.delete(streamId)
+				complete?.(completion)
+				// Publish completion before EOF so main's activity state is current when the body settles.
+				queueMicrotask(() => {
+					if (terminal) postMessage(terminal)
+				})
+			},
 		)
 	}
-
-	// Wire alarm callback
-	state.storage._setAlarmCallback((time: number | null) => {
-		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
-	})
 
 	// --- Command handler ---
 
@@ -230,14 +287,20 @@ async function initWorker(workerConfig: WorkerConfig) {
 	interface HandledCommand {
 		result: DOResult
 		afterPost?: () => void
+		cancelResponse?: (error: unknown) => Promise<void>
 	}
 
 	async function handleCommand(cmd: DOCommand): Promise<HandledCommand> {
+		if (cmd.type === 'cleanup') {
+			await containerRuntime?.cleanup()
+			return { result: { type: 'cleanup' } }
+		}
+		const target = ensureInstance()
 		switch (cmd.type) {
 			case 'fetch': {
 				await state._enter()
 				try {
-					const fetchFn = (instance as any).fetch
+					const fetchFn: unknown = Reflect.get(target, 'fetch')
 					if (typeof fetchFn !== 'function') {
 						throw new Error('Durable Object does not implement fetch()')
 					}
@@ -249,7 +312,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 					})
 					let response: Response
 					try {
-						response = await fetchFn.call(instance, request)
+						const result: unknown = await fetchFn.call(target, request)
+						if (!isWorkerResponse(result)) throw new TypeError('Durable Object fetch() must return a Response')
+						response = result
 					} catch (e) {
 						// The instance's fetch errored without draining the streamed
 						// request body — cancel the receiver so main stops pumping and
@@ -259,29 +324,37 @@ async function initWorker(workerConfig: WorkerConfig) {
 					}
 					// Resolved but the body wasn't consumed (e.g. a 401 before reading) —
 					// cancel the receiver so main's pump doesn't park forever holding the
-					// source. DO fetch has no ctx.waitUntil, so nothing reads it later.
+					// source. Preserve the transport's existing unread-body policy.
 					if (cmd.streamId !== undefined && !request.bodyUsed) {
 						requestStreams.cancel(cmd.streamId)
 					}
-					const clientWs = (response as { webSocket?: unknown }).webSocket
+					const clientWs: unknown = Reflect.get(response, 'webSocket')
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
 					const resHeaders = serializeResponseHeaders(response)
 
 					let fetchWebSocketId: string | undefined
 					if (hasWebSocket) {
-						const cw = clientWs as InstanceType<typeof CFWebSocket>
 						// Main pins the executor on this id (hibernation or plain socket
 						// alike) when it processes the result and unpins on close, so no
 						// separate accept signal is needed.
-						fetchWebSocketId = fetchWsBridge.register(cw)
+						fetchWebSocketId = fetchWsBridge.register(clientWs)
 					}
 
 					let streamId: number | undefined
 					let afterPost: (() => void) | undefined
+					let cancelResponse: ((error: unknown) => Promise<void>) | undefined
 					if (!hasWebSocket && response.body) {
 						streamId = fetchStreams.allocateId()
 						const body = response.body
-						afterPost = () => pumpFetchBody(streamId!, body)
+						const release = getActiveInvocation()?.retain('response-body')
+						afterPost = () => pumpFetchBody(streamId!, body, release)
+						cancelResponse = async error => {
+							try {
+								await body.cancel(error)
+							} finally {
+								release?.({ kind: 'error', error })
+							}
+						}
 					}
 
 					return {
@@ -295,6 +368,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 							streamId,
 						},
 						afterPost,
+						cancelResponse,
 					}
 				} finally {
 					state._exit()
@@ -304,11 +378,11 @@ async function initWorker(workerConfig: WorkerConfig) {
 			case 'rpc-call': {
 				await state._enter()
 				try {
-					const val = (instance as any)[cmd.method]
+					const val: unknown = Reflect.get(target, cmd.method)
 					if (typeof val !== 'function') {
 						throw new Error(`"${cmd.method}" is not a method on the Durable Object`)
 					}
-					const result = await val.call(instance, ...cmd.args)
+					const result: unknown = await val.call(target, ...cmd.args)
 					return { result: { type: 'rpc-call', value: result } }
 				} finally {
 					state._exit()
@@ -318,7 +392,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 			case 'rpc-get': {
 				await state._enter()
 				try {
-					const val = (instance as any)[cmd.prop]
+					const val: unknown = await Reflect.get(target, cmd.prop)
 					if (typeof val === 'function') {
 						return { result: { type: 'rpc-get', kind: 'function' } }
 					}
@@ -331,12 +405,13 @@ async function initWorker(workerConfig: WorkerConfig) {
 			case 'alarm': {
 				await state._enter()
 				try {
-					const alarmFn = (instance as any).alarm
+					const alarmFn: unknown = Reflect.get(target, 'alarm')
 					if (typeof alarmFn === 'function') {
-						await alarmFn.call(instance, {
-							retryCount: cmd.retryCount,
-							isRetry: cmd.retryCount > 0,
-						})
+						await state.storage._runAlarmAttempt(cmd.attemptId, () =>
+							alarmFn.call(target, {
+								retryCount: cmd.retryCount,
+								isRetry: cmd.retryCount > 0,
+							}))
 					}
 					return { result: { type: 'alarm' } }
 				} finally {
@@ -344,15 +419,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 				}
 			}
 
-			case 'cleanup': {
-				// Tear down the Docker container (rm -f + stop timers) before main
-				// terminates this thread. No-op for non-container DOs.
-				await containerRuntime?.cleanup()
-				return { result: { type: 'cleanup' } }
-			}
-
 			default:
-				throw new Error(`Unknown command type: ${(cmd as any).type}`)
+				throw new Error('Unknown Durable Object command')
 		}
 	}
 
@@ -361,25 +429,41 @@ async function initWorker(workerConfig: WorkerConfig) {
 		const msg = event.data
 
 		// Env-binding RPC replies from main (service-binding fetches, etc.)
-		if (envRpc.handle(msg as { type: string })) return
+		if (envRpc.handle(msg)) return
 
 		if (msg.type === 'command') {
-			try {
-				const { result, afterPost } = await handleCommand(msg.command)
-				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
-				// Post-result side effects: for streamed fetch responses, start the
-				// body pump *after* `result` ships so main has registered the
-				// `streamId` before any chunk arrives.
+			const scope = msg.command.type === 'cleanup' ? undefined : runWithParentContext(msg.parent, () =>
+				createInvocationTrace({
+					name: `do.${msg.command.type} ${workerConfig.namespaceName}`,
+					kind: 'server',
+					workerName: config.name,
+					attributes: { 'do.namespace': workerConfig.namespaceName, 'do.id': workerConfig.idStr },
+				}))
+			if (scope) {
+				postMessage({ type: 'do-invocation-start', id: msg.id } satisfies DOMainMessage)
+				void scope.completed.then(() => postMessage({ type: 'do-invocation-end', id: msg.id } satisfies DOMainMessage))
+			}
+			const dispatch = async () => {
+				const { result, afterPost, cancelResponse } = await handleCommand(msg.command)
+				try {
+					postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
+				} catch (error) {
+					await cancelResponse?.(error)
+					throw error
+				}
 				afterPost?.()
-				// Surface any abort/block transition this command caused (e.g. it
-				// called state.abort()). The wrappers above catch abort/block from
-				// outside a command (timers, WS handlers); this catches in-command.
 				postState()
+			}
+			try {
+				if (scope) await state.storage._runAlarmAttempt(undefined, () => scope.run(() => runWithExecutionContext(new ExecutionContext(), dispatch)))
+				else await state.storage._runAlarmAttempt(undefined, dispatch)
+				scope?.finishHandler()
 			} catch (e) {
+				scope?.finishHandler({ kind: 'error', error: e })
 				postMessage(
 					{
 						type: 'result',
-						id: msg.id,
+						id: constructionFailure ? -1 : msg.id,
 						result: { type: 'error', error: serializeError(e) },
 					} satisfies DOMainMessage,
 				)
@@ -390,7 +474,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 		} else if (msg.type === 'do-stream-ack') {
 			fetchStreams.grantCredit(msg.streamId)
 		} else if (msg.type === 'do-stream-cancel') {
-			fetchStreams.cancel(msg.streamId)
+			fetchCancellations.get(msg.streamId)?.()
 		} else if (msg.type === 'do-req-stream-chunk') {
 			requestStreams.push(msg.streamId, msg.chunk)
 		} else if (msg.type === 'do-req-stream-end') {

@@ -112,7 +112,8 @@ export function addStatelessBindings(env: Record<string, unknown>, opts: Statele
 
 	for (const hd of config.hyperdrive ?? []) {
 		log(`Hyperdrive: ${hd.binding}`)
-		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
+		const override = process.env[`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_${hd.binding}`]
+		env[hd.binding] = new HyperdriveBinding(override || hd.localConnectionString || '')
 	}
 
 	if (config.browser) {

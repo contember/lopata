@@ -1,6 +1,6 @@
-import { generateId, generateTraceId, getActiveContext, runWithContext } from './context'
+import { generateId, generateTraceId, getActiveContext, runWithContext, type SpanContext } from './context'
 import { buildErrorFrames } from './frames'
-import { getTraceStore, type TraceStore } from './store'
+import { getTraceWriter, type TraceWriter } from './store'
 import type { SpanData } from './types'
 
 export interface SpanOptions {
@@ -12,161 +12,301 @@ export interface SpanOptions {
 	newTrace?: boolean
 }
 
-/** Handle passed to span callbacks, mirroring Cloudflare's custom-span Span object. */
+export type SpanAttribute = string | number | boolean | undefined
+export type SpanException =
+	| string
+	| { code: string | number; name?: string; message?: string; stack?: string }
+	| { code?: string | number; name: string; message?: string; stack?: string }
+	| { code?: string | number; name?: string; message: string; stack?: string }
+
 export interface SpanHandle {
-	/** Set an attribute on the span. Passing `undefined` is a no-op, matching Cloudflare (allows optional chaining). */
-	setAttribute(key: string, value: string | number | boolean | undefined): void
-	/** Whether this invocation is being traced. Always true in lopata's dev runtime. */
 	readonly isTraced: boolean
+	setAttribute(key: string, value: SpanAttribute): this
+	setAttributes(attributes: Record<string, SpanAttribute>): this
+	recordException(exception: SpanException): void
+	end(): void
 }
 
-interface SpanRunOptions extends SpanOptions {
-	/** Internal hook: inspect a successful result before the span's final status is computed,
-	 *  so it can flag a failure (used by startSpan to mark an HTTP 5xx Response errored). */
-	onSuccess?: (result: unknown, spanId: string, store: TraceStore) => void
+export interface Tracing {
+	enterSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T
+	startActiveSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T
+	startSpan(name: string): SpanHandle
+	getActiveSpan(): SpanHandle | undefined
 }
 
-/**
- * Core span runner shared by startSpan / startSyncSpan / enterSpan. Creates a child span of
- * the active context (or a new root when `newTrace`), runs `fn` inside it, and ends the span
- * when `fn` returns or — if it returned a thenable — when that promise settles. The result is
- * returned as-is: synchronous callbacks stay synchronous, async ones return the promise. On a
- * thrown/rejected error the span is marked errored and an `exception` event is recorded.
- */
-function runInSpan<T>(opts: SpanRunOptions, fn: (span: SpanHandle) => T): T {
-	const store = getTraceStore()
-	const parent = opts.newTrace ? undefined : getActiveContext()
+const encoder = new TextEncoder()
+const MAX_SPAN_BYTES = 64 * 1024
 
-	const spanId = generateId()
-	const traceId = parent?.traceId ?? generateTraceId()
-	const parentSpanId = parent?.spanId ?? null
+function truncateName(name: string): string {
+	if (typeof name !== 'string') throw new TypeError('Span name must be a string')
+	const bytes = encoder.encode(name)
+	if (bytes.length <= 64) return name
+	let end = 64
+	while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--
+	return new TextDecoder().decode(bytes.subarray(0, end))
+}
 
-	const span: SpanData = {
-		spanId,
-		traceId,
-		parentSpanId,
-		name: opts.name,
-		kind: opts.kind ?? 'internal',
-		status: 'unset',
-		statusMessage: null,
-		startTime: Date.now(),
-		endTime: null,
-		durationMs: null,
-		attributes: opts.attributes ?? {},
-		workerName: opts.workerName ?? null,
+interface ExceptionData {
+	code?: string | number
+	name?: string
+	message?: string
+	stack?: string
+}
+
+function parseException(value: unknown): ExceptionData | undefined {
+	if (typeof value === 'string') return { message: value }
+	if (!value || typeof value !== 'object') return
+	const data: ExceptionData = {}
+	const code: unknown = Reflect.get(value, 'code')
+	if (code !== undefined) {
+		if (typeof code !== 'string' && typeof code !== 'number') throw new TypeError('Exception code must be a string or number')
+		data.code = code
 	}
-	store.insertSpan(span)
+	for (const key of ['name', 'message', 'stack']) {
+		const field: unknown = Reflect.get(value, key)
+		if (field === undefined) continue
+		if (typeof field !== 'string') throw new TypeError(`Exception ${key} must be a string`)
+		if (key === 'name') data.name = field
+		else if (key === 'message') data.message = field
+		else data.stack = field
+	}
+	if (data.code === undefined && data.name === undefined && data.message === undefined) return
+	return data
+}
 
-	// Share fetchStack ref across all spans in the same trace so that
-	// fetch call-site stacks captured in sub-spans are visible in the root
-	// span's error handler.
-	const fetchStack = parent?.fetchStack ?? { current: null }
-	// Subrequest budget is per top-level request: a root span (no parent) mints
-	// a fresh counter; child spans inherit it. This resets the budget on each
-	// incoming request, matching Cloudflare — instead of leaking across the
-	// whole dev-server lifetime.
-	const subrequests = parent?.subrequests ?? { count: 0 }
+const noopSpan: SpanHandle = {
+	get isTraced() {
+		return false
+	},
+	setAttribute() {
+		return this
+	},
+	setAttributes() {
+		return this
+	},
+	recordException() {},
+	end() {},
+}
 
-	const handle: SpanHandle = {
-		setAttribute(key, value) {
-			if (value === undefined) return
-			store.updateAttributes(spanId, { [key]: value })
-		},
-		isTraced: true,
+/** Runtime-only owner; public handles expose no IDs or runtime finalization methods. */
+export class OwnedSpan {
+	readonly context: SpanContext
+	readonly handle: SpanHandle
+	private ended = false
+	private bytesUsed = 0
+
+	constructor(opts: SpanOptions, parent: SpanContext | undefined, readonly writer: TraceWriter, manual = false) {
+		this.context = {
+			traceId: parent?.traceId ?? generateTraceId(),
+			spanId: generateId(),
+			fetchStack: parent?.fetchStack ?? { current: null },
+			subrequests: parent?.subrequests ?? { count: 0 },
+			invocation: parent?.invocation,
+			invocationSpans: parent?.invocationSpans,
+			writer,
+			span: this,
+		}
+		writer.insertSpan({
+			spanId: this.context.spanId,
+			traceId: this.context.traceId,
+			parentSpanId: parent?.spanId ?? null,
+			name: opts.name,
+			kind: opts.kind ?? 'internal',
+			status: 'unset',
+			statusMessage: null,
+			startTime: Date.now(),
+			endTime: null,
+			durationMs: null,
+			attributes: opts.attributes ?? {},
+			workerName: opts.workerName ?? null,
+		})
+		const owner = this
+		this.handle = {
+			get isTraced() {
+				return owner.isOpen
+			},
+			setAttribute(key, value) {
+				owner.setAttribute(key, value)
+				return this
+			},
+			setAttributes(attributes) {
+				if (!owner.isOpen || owner.bytesUsed > MAX_SPAN_BYTES) return this
+				if (!attributes || typeof attributes !== 'object') throw new TypeError('Span attributes must be an object')
+				for (const [key, value] of Object.entries(attributes)) owner.setAttribute(key, value)
+				return this
+			},
+			recordException(exception) {
+				owner.recordException(exception)
+			},
+			end() {
+				if (manual) owner.finish()
+			},
+		}
+		parent?.invocationSpans?.add(this)
 	}
 
-	const succeed = (result: unknown): void => {
-		opts.onSuccess?.(result, spanId, store)
-		const currentStatus = store.getSpanStatus(spanId)
-		store.endSpan(spanId, Date.now(), currentStatus === 'error' ? 'error' : 'ok')
+	get isOpen(): boolean {
+		return !this.ended && !this.context.invocation?.closed
 	}
 
-	const fail = (err: unknown): void => {
-		const message = err instanceof Error ? err.message : String(err)
-		store.endSpan(spanId, Date.now(), 'error', message)
-		store.addEvent({
-			spanId,
-			traceId,
+	private acceptData(kind: 'attribute' | 'exception', name: string, valueSize: number): boolean {
+		if (this.bytesUsed > MAX_SPAN_BYTES) return false
+		// workerd v1.20261005.1 tracing.c++ counts writes cumulatively, including overwrites.
+		this.bytesUsed += valueSize + (kind === 'attribute' ? encoder.encode(name).length : 0)
+		if (this.bytesUsed <= MAX_SPAN_BYTES) return true
+		const nameSize = encoder.encode(name).length
+		const shortName = nameSize > 64 ? `"${truncateName(name)}..." (key length ${nameSize})` : `"${name}"`
+		this.writer.updateAttributes(this.context.spanId, {
+			'cloudflare.warning.type': 'span_data_limit_exceeded',
+			'cloudflare.warning.message': `exceeded span data limit while trying to record ${kind} ${shortName} of size ${valueSize}`,
+		})
+		return false
+	}
+
+	private setAttribute(key: string, value: SpanAttribute): void {
+		if (!this.isOpen || this.bytesUsed > MAX_SPAN_BYTES || value === undefined) return
+		if (typeof key !== 'string') throw new TypeError('Span attribute key must be a string')
+		if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+			throw new TypeError('Span attribute value must be a string, number or boolean')
+		}
+		if (!this.acceptData('attribute', key, typeof value === 'string' ? encoder.encode(value).length : 8)) return
+		this.writer.updateAttributes(this.context.spanId, { [key]: value })
+	}
+
+	private recordException(exception: SpanException): void {
+		if (!this.isOpen || this.bytesUsed > MAX_SPAN_BYTES) return
+		const data = parseException(exception)
+		if (!data) return
+		let size = 0
+		for (const value of Object.values(data)) size += typeof value === 'string' ? encoder.encode(value).length : 8
+		if (!this.acceptData('exception', data.name ?? '', size)) return
+		this.writer.addEvent({
+			spanId: this.context.spanId,
+			traceId: this.context.traceId,
+			timestamp: Date.now(),
+			name: 'exception',
+			level: 'error',
+			message: data.message ?? '',
+			attributes: { ...data },
+		})
+	}
+
+	finish(status?: 'ok' | 'error', message?: string): void {
+		if (this.ended) return
+		this.ended = true
+		this.context.invocationSpans?.delete(this)
+		const finalStatus = status ?? (this.writer.getSpanStatus(this.context.spanId) === 'error' ? 'error' : 'ok')
+		this.writer.endSpan(this.context.spanId, Date.now(), finalStatus, message)
+	}
+
+	fail(error: unknown): void {
+		if (!this.isOpen) return
+		const message = error instanceof Error ? error.message : String(error)
+		this.writer.addEvent({
+			spanId: this.context.spanId,
+			traceId: this.context.traceId,
 			timestamp: Date.now(),
 			name: 'exception',
 			level: 'error',
 			message,
-			attributes: err instanceof Error ? { stack: err.stack } : {},
+			attributes: error instanceof Error ? { stack: error.stack } : {},
 		})
-	}
-
-	try {
-		const result = runWithContext({ traceId, spanId, fetchStack, subrequests }, () => fn(handle))
-		if (result != null && typeof (result as { then?: unknown }).then === 'function') {
-			return (result as unknown as Promise<unknown>).then(
-				value => {
-					succeed(value)
-					return value
-				},
-				err => {
-					fail(err)
-					throw err
-				},
-			) as T
-		}
-		succeed(result)
-		return result
-	} catch (err) {
-		fail(err)
-		throw err
+		this.finish('error', message)
 	}
 }
 
-/** Flags a span errored when the handler returned an HTTP 5xx Response. */
-function flagServerErrorStatus(result: unknown, spanId: string, store: TraceStore): void {
-	if (result instanceof Response && result.status >= 500) {
-		store.setSpanStatus(spanId, 'error', `HTTP ${result.status}`)
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+	return value !== null && (typeof value === 'object' || typeof value === 'function') && 'then' in value && typeof value.then === 'function'
+}
+
+function runAndEnd<T>(span: OwnedSpan, fn: () => T, flagServerError?: boolean): T
+function runAndEnd(span: OwnedSpan, fn: () => unknown, flagServerError = false): unknown {
+	const succeed = (result: unknown) => {
+		if (flagServerError && result instanceof Response && result.status >= 500) {
+			span.finish('error', `HTTP ${result.status}`)
+		} else {
+			span.finish()
+		}
+		return result
 	}
+	try {
+		const result = runWithContext(span.context, fn)
+		if (isThenable(result)) {
+			return Promise.resolve(result).then(succeed, error => {
+				span.fail(error)
+				throw error
+			})
+		}
+		return succeed(result)
+	} catch (error) {
+		span.fail(error)
+		throw error
+	}
+}
+
+function createInternalSpan(opts: SpanOptions): OwnedSpan {
+	const parent = opts.newTrace ? undefined : getActiveContext()
+	return new OwnedSpan(opts, parent, parent?.writer ?? getTraceWriter())
 }
 
 export async function startSpan<T>(opts: SpanOptions, fn: () => T | Promise<T>): Promise<T> {
-	return runInSpan<T | Promise<T>>({ ...opts, onSuccess: flagServerErrorStatus }, () => fn())
+	if (!opts.newTrace && getActiveContext()?.invocation?.closed) return fn()
+	return runAndEnd(createInternalSpan(opts), fn, true)
 }
 
-/** Synchronous variant of startSpan for instrumenting non-async APIs (e.g. DO
- *  state.storage.sql.exec is sync). The span ends as soon as fn returns; fn runs
- *  inside the span context so any spans it creates nest correctly. */
 export function startSyncSpan<T>(opts: SpanOptions, fn: () => T): T {
-	return runInSpan<T>(opts, () => fn())
+	if (!opts.newTrace && getActiveContext()?.invocation?.closed) return fn()
+	return runAndEnd(createInternalSpan(opts), fn)
 }
 
-/**
- * Cloudflare-compatible custom span API (`tracing.enterSpan` from `cloudflare:workers`, also
- * `ctx.tracing`). Runs `fn` inside a child span of the active trace context, passing a span
- * handle for `setAttribute` / `isTraced`. The callback's value is returned as-is (sync stays
- * sync, async returns the promise) and the span auto-ends when the callback returns or its
- * returned promise settles — matching Cloudflare's semantics.
- */
-export function enterSpan<T>(name: string, fn: (span: SpanHandle) => T): T {
-	return runInSpan<T>({ name }, fn)
+function createCustomSpan(name: string): OwnedSpan | undefined {
+	const truncatedName = truncateName(name)
+	const parent = getActiveContext()
+	if (!parent?.invocation || parent.invocation.closed) return
+	return new OwnedSpan({ name: truncatedName }, parent, parent.writer ?? getTraceWriter(), true)
 }
 
-/** Cloudflare-compatible `tracing` namespace exported from `cloudflare:workers` and exposed as `ctx.tracing`. */
-export const tracing = { enterSpan }
+export function enterSpan<T, A extends unknown[]>(name: string, callback: (span: SpanHandle, ...args: A) => T, ...args: A): T {
+	const span = createCustomSpan(name)
+	if (!span) return callback(noopSpan, ...args)
+	return runAndEnd(span, () => callback(span.handle, ...args))
+}
+
+export const tracing: Tracing = {
+	enterSpan,
+	startActiveSpan(name, callback, ...args) {
+		const span = createCustomSpan(name)
+		if (!span) return callback(noopSpan, ...args)
+		return runWithContext(span.context, () => callback(span.handle, ...args))
+	},
+	startSpan(name) {
+		return createCustomSpan(name)?.handle ?? noopSpan
+	},
+	getActiveSpan() {
+		const context = getActiveContext()
+		if (!context?.invocation || context.invocation.closed) return
+		return context.span?.handle ?? context.invocation.root
+	},
+}
 
 export function setSpanStatus(status: 'ok' | 'error', message?: string): void {
 	const ctx = getActiveContext()
-	if (!ctx) return
-	const store = getTraceStore()
+	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
+	const store = ctx.writer ?? getTraceWriter()
 	store.setSpanStatus(ctx.spanId, status, message ?? null)
 }
 
 export function setSpanAttribute(key: string, value: unknown): void {
 	const ctx = getActiveContext()
-	if (!ctx) return
-	const store = getTraceStore()
+	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
+	const store = ctx.writer ?? getTraceWriter()
 	store.updateAttributes(ctx.spanId, { [key]: value })
 }
 
 export function addSpanEvent(name: string, level: string, message: string, attrs?: Record<string, unknown>): void {
 	const ctx = getActiveContext()
-	if (!ctx) return
-	const store = getTraceStore()
+	if (!ctx || (ctx.span && !ctx.span.isOpen)) return
+	const store = ctx.writer ?? getTraceWriter()
 	store.addEvent({
 		spanId: ctx.spanId,
 		traceId: ctx.traceId,
@@ -184,7 +324,7 @@ export function persistError(error: unknown, source: string, workerName?: string
 	try {
 		const err = error instanceof Error ? error : new Error(String(error))
 		const ctx = getActiveContext()
-		const store = getTraceStore()
+		const store = ctx?.writer ?? getTraceWriter()
 		const id = crypto.randomUUID()
 		store.insertError({
 			id,
