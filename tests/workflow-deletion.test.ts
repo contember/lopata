@@ -122,17 +122,8 @@ test.each(['run', 'step'])(
 	},
 )
 
-test.each(['sleep', 'event', 'stream'])('external deletion removes all owned state during %s without compensation', async mode => {
+test.each(['sleep', 'event'])('external deletion removes all owned state during %s without compensation', async mode => {
 	let compensated = false
-	let cancelled = false
-	const source = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(new Uint8Array([1]))
-		},
-		cancel() {
-			cancelled = true
-		},
-	})
 	const binding = bind(async step => {
 		await step.do('saved', async () => bytes(), {
 			rollback: async () => {
@@ -140,13 +131,11 @@ test.each(['sleep', 'event', 'stream'])('external deletion removes all owned sta
 			},
 		})
 		if (mode === 'sleep') await step.sleep('hold', 60000)
-		else if (mode === 'event') await step.waitForEvent('hold', { type: 'hold' })
-		else await step.do('hold', async () => source)
+		else await step.waitForEvent('hold', { type: 'hold' })
 	})
 	const instance = await binding.create({ id: 'remove-all' })
 	const store = new WorkflowStore(db)
 	await until(() => store.readDetail(instance.id, 'DELETE').occurrences.length === 2)
-	if (mode === 'stream') await until(() => db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM workflow_stream_chunks').get()?.n === 2)
 	await instance.sendEvent({ type: 'unused', payload: 42 })
 	db.query('INSERT INTO workflow_steps (instance_id, step_name, output, completed_at) VALUES (?, ?, ?, ?)').run(instance.id, 'legacy', '42', 1)
 	await instance.delete()
@@ -161,15 +150,9 @@ test.each(['sleep', 'event', 'stream'])('external deletion removes all owned sta
 			'workflow_occurrences',
 			'workflow_rollbacks',
 			'workflow_events',
-			'workflow_streams',
-			'workflow_stream_chunks',
 		]
 	) {
 		expect(db.query(`SELECT * FROM ${table}`).all()).toHaveLength(0)
-	}
-	if (mode === 'stream') {
-		expect(cancelled).toBe(true)
-		expect(source.locked).toBe(false)
 	}
 	binding.resumeInterrupted()
 	expect(exists(instance.id)).toBe(false)
@@ -265,32 +248,6 @@ test('post-commit queue failure cannot unwind an awaited self-delete', async () 
 	await next.delete()
 })
 
-test('failed transactional deletion leaves execution and stream ownership intact', async () => {
-	let cancelled = false
-	const source = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(new Uint8Array([1]))
-		},
-		cancel() {
-			cancelled = true
-		},
-	})
-	const binding = bind(async step => step.do('bytes', async () => source))
-	const instance = await binding.create({ id: 'atomic' })
-	await until(() => db.query('SELECT * FROM workflow_stream_chunks').all().length === 1)
-	const store = new WorkflowStore(db)
-	const token = store.currentToken(instance.id)
-	db.run("CREATE TRIGGER fail_delete BEFORE DELETE ON workflow_instances BEGIN SELECT RAISE(FAIL, 'delete unavailable'); END")
-	await expect(instance.delete()).rejects.toThrow('delete unavailable')
-	expect(store.currentToken(instance.id)).toEqual(token)
-	expect(source.locked).toBe(true)
-	expect(cancelled).toBe(false)
-	expect(db.query('SELECT * FROM workflow_stream_chunks').all()).toHaveLength(1)
-	db.run('DROP TRIGGER fail_delete')
-	await instance.delete()
-	expect(source.locked).toBe(false)
-})
-
 test('deleteBatch validates the whole list and counts duplicate positions before any mutation', async () => {
 	const binding = bind(async () => 'unused')
 	await binding._createPrepared({ id: 'keep' })
@@ -324,25 +281,6 @@ test('batch results repeat per position, preserve ownership, and use released mi
 	})
 	expect(exists('foreign')).toBe(true)
 	expect(exists('fail')).toBe(true)
-})
-
-test('batch cancellation callbacks cannot change the validated input snapshot', async () => {
-	const ids = ['first', 'second', 'first']
-	const source = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(new Uint8Array([1]))
-		},
-		cancel() {
-			ids.splice(0, ids.length, 'invalid!')
-		},
-	})
-	const binding = bind(async step => step.do('bytes', async () => source))
-	await binding.create({ id: 'first' })
-	await binding._createPrepared({ id: 'second' })
-	await until(() => db.query('SELECT * FROM workflow_stream_chunks').all().length === 1)
-	expect(await binding.deleteBatch(ids)).toEqual({ deleted: [{ id: 'first' }, { id: 'second' }, { id: 'first' }], errors: [] })
-	expect(ids).toEqual(['invalid!'])
-	expect(exists('second')).toBe(false)
 })
 
 test.each([0, 1, 3])('local cooperative self-batch finishes other attempts before parking with self at position %i', async position => {

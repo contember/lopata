@@ -9,7 +9,7 @@ import { getActiveContext } from '../tracing/context'
 import { createInvocationTrace, getActiveInvocation, type InvocationTrace, type TraceCompletion } from '../tracing/invocation'
 import { addSpanEvent, persistError, setSpanAttribute, startSpan } from '../tracing/span'
 import type { WorkflowControlOp, WorkflowControlResult } from '../worker-thread/protocol'
-import { decodeWorkflowEvent, WorkflowInstanceNotFoundError, WorkflowStore } from './workflow-store'
+import { checkpointOutput, decodeWorkflowEvent, WorkflowInstanceNotFoundError, WorkflowStore } from './workflow-store'
 import type {
 	WorkflowCheckpoint,
 	WorkflowExecutionToken,
@@ -134,28 +134,20 @@ function restoredError(message: string | null, name: string | null, nonRetryable
 	return error
 }
 
-function decodeStepOutput<T>(checkpoint: WorkflowCheckpoint, store: WorkflowStore): T
-function decodeStepOutput(checkpoint: WorkflowCheckpoint, store: WorkflowStore): unknown {
-	if (checkpoint.kind === 'stream') return store.openStream(checkpoint.streamId)
-	return checkpoint.kind === 'json' ? JSON.parse(checkpoint.serialized) : undefined
+function decodeStepOutput<T>(checkpoint: WorkflowCheckpoint): T
+function decodeStepOutput(checkpoint: WorkflowCheckpoint): unknown {
+	return checkpointOutput(checkpoint)
 }
 
-function acceptWorkflowStream(source: ReadableStream<unknown>): ReadableStream<Uint8Array> {
-	if (source.locked) throw new TypeError('Workflow stream must be unlocked')
-	let byob: ReadableStreamBYOBReader | undefined
-	try {
-		byob = source.getReader({ mode: 'byob' })
-	} catch (error) {
-		if (!(error instanceof TypeError)) throw error
+type StepResult<T> = { kind: 'value'; value: T } | { kind: 'stream'; bytes: Uint8Array }
+
+async function readStreamBytes(stream: ReadableStream<unknown>): Promise<Uint8Array> {
+	const chunks: Uint8Array[] = []
+	for await (const chunk of stream) {
+		if (!(chunk instanceof Uint8Array)) throw new TypeError('Workflow stream chunks must be Uint8Array')
+		chunks.push(chunk)
 	}
-	if (byob) {
-		byob.releaseLock()
-		throw new TypeError('BYOB workflow streams are not supported')
-	}
-	// Bun's isDisturbed misses Web streams; Response validates freshness and may transfer native body ownership.
-	const body = new Response(source).body
-	if (!body) throw new TypeError('Workflow stream has no body')
-	return body
+	return new Uint8Array(Bun.concatArrayBuffers(chunks))
 }
 
 // --- Event waiting registry (in-memory, per-process) ---
@@ -388,60 +380,6 @@ export class WorkflowStepImpl {
 		return this.store.readCheckpoint(this.ref(record))
 	}
 
-	private async persistStream(
-		record: WorkflowOccurrenceRecord,
-		source: ReadableStream<unknown>,
-		attemptToken: string,
-		signal: AbortSignal,
-	): Promise<void> {
-		const body = acceptWorkflowStream(source)
-		const reader = body.getReader()
-		let committed = false
-		let released = false
-		const release = () => {
-			if (released) return
-			released = true
-			reader.releaseLock()
-		}
-		const cancel = () => {
-			if (released) return
-			try {
-				void reader.cancel(signal.reason).catch(() => {})
-			} finally {
-				release()
-			}
-		}
-		signal.addEventListener('abort', cancel, { once: true })
-		try {
-			signal.throwIfAborted()
-			const attempt = this.store.beginStream(this.ref(record), attemptToken)
-			let writes = 0
-			while (true) {
-				signal.throwIfAborted()
-				const chunk = await reader.read()
-				signal.throwIfAborted()
-				if (chunk.done) break
-				if (!(chunk.value instanceof Uint8Array)) throw new TypeError('Workflow stream chunks must be Uint8Array')
-				for (let offset = 0; offset < chunk.value.byteLength; offset += 65536) {
-					signal.throwIfAborted()
-					this.store.appendStreamChunk(attempt, chunk.value.subarray(offset, offset + 65536))
-					if (++writes % 16 === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
-				}
-				// Empty and synchronously ready producer chunks must not starve cancellation.
-				if (chunk.value.byteLength === 0) await new Promise<void>(resolve => setTimeout(resolve, 0))
-			}
-			this.store.commitStream(attempt, this.clock.now())
-			committed = true
-		} finally {
-			if (!committed) {
-				this.store.invalidateStreamAttempt(this.ref(record), attemptToken)
-				cancel()
-			}
-			signal.removeEventListener('abort', cancel)
-			release()
-		}
-	}
-
 	private cacheStep(record: WorkflowOccurrenceRecord, output: unknown): void {
 		const name = record.key.name
 		const serialized = JSON.stringify(output)
@@ -451,6 +389,15 @@ export class WorkflowStepImpl {
 		this.store.commitCheckpoint(this.ref(record), serialized === undefined ? { kind: 'undefined' } : { kind: 'json', serialized }, this.clock.now())
 		if (record.key.count === 1) fireStepCallbacks(this.registryId, name, output)
 		fireStepCallbacks(this.registryId, name, output, record.key)
+	}
+
+	private cacheStreamStep<T>(record: WorkflowOccurrenceRecord, bytes: Uint8Array): T {
+		const checkpoint: WorkflowCheckpoint = { kind: 'stream', bytes }
+		this.store.commitCheckpoint(this.ref(record), checkpoint, this.clock.now())
+		const readOutput = () => decodeStepOutput(checkpoint)
+		if (record.key.count === 1) fireStepCallbacks(this.registryId, record.key.name, undefined, undefined, readOutput)
+		fireStepCallbacks(this.registryId, record.key.name, undefined, record.key, readOutput)
+		return decodeStepOutput<T>(checkpoint)
 	}
 
 	do<T>(name: string, callback: (ctx: WorkflowStepContext) => Promise<T>, rollbackOptions?: WorkflowStepRollbackOptions<T>): Promise<T>
@@ -566,7 +513,7 @@ export class WorkflowStepImpl {
 				const history = this.store.readOccurrence(this.ref(record))
 				await this.runRollback(history, options.rollbackConfig, signal, async () => {
 					const cached = this.getCachedStep(record)
-					const output = cached ? decodeStepOutput<T>(cached, this.store) : undefined
+					const output = cached ? decodeStepOutput<T>(cached) : undefined
 					await options.rollback({ ctx: { step: { name, count }, attempt: history.attempt, config: resolvedConfig }, error, output })
 				})
 			})
@@ -576,7 +523,7 @@ export class WorkflowStepImpl {
 		const cached = this.getCachedStep(record)
 		if (cached) {
 			console.log(`  [workflow] step: ${name} (cached)`)
-			return decodeStepOutput<T>(cached, this.store)
+			return decodeStepOutput<T>(cached)
 		}
 		if (previous?.state === 'failed' || this.replayRollback) {
 			throw restoredError(previous.error?.message ?? null, previous.error?.name ?? null, previous.error?.nonRetryable)
@@ -630,42 +577,23 @@ export class WorkflowStepImpl {
 			for (let attempt = startAttempt; attempt <= maxRetries; attempt++) {
 				if (this.abortSignal.aborted) throw new Error('workflow terminated')
 				const ctx: WorkflowStepContext = { step: { name, count }, attempt: attempt + 1, config: resolvedConfig }
-				const attemptToken = this.store.startAttempt(this.ref(record), attempt + 1)
-				const streamController = new AbortController()
-				const stopAttempt = (reason: unknown) => {
-					if (streamController.signal.aborted) return
-					this.store.invalidateStreamAttempt(this.ref(record), attemptToken)
-					streamController.abort(reason)
-				}
-				const onAbort = () => stopAttempt(this.abortSignal.reason)
-				this.abortSignal.addEventListener('abort', onAbort, { once: true })
+				this.store.startAttempt(this.ref(record), attempt + 1)
 				try {
-					return await runWithTimeout(
-						async () => {
-							const result = await this.startForwardAttempt(() => callback(ctx))
-							if (result instanceof ReadableStream) {
-								await this.persistStream(record, result, attemptToken, streamController.signal)
-								const checkpoint = this.getCachedStep(record)
-								if (!checkpoint) throw new Error('Missing committed workflow stream checkpoint')
-								const output = decodeStepOutput<T>(checkpoint, this.store)
-								const readOutput = () => decodeStepOutput(checkpoint, this.store)
-								if (count === 1) fireStepCallbacks(this.registryId, name, undefined, undefined, readOutput)
-								fireStepCallbacks(this.registryId, name, undefined, record.key, readOutput)
-								return output
-							}
-							streamController.signal.throwIfAborted()
-							if (this.abortSignal.aborted) throw new Error('workflow terminated')
-							this.cacheStep(record, result)
-							return result
+					const result = await runWithTimeout(
+						async (): Promise<StepResult<T>> => {
+							const value = await this.startForwardAttempt(() => callback(ctx))
+							return value instanceof ReadableStream ? { kind: 'stream', bytes: await readStreamBytes(value) } : { kind: 'value', value }
 						},
 						timeoutMs,
 						`Step "${name}"`,
 						this.abortSignal,
 					)
+					if (this.abortSignal.aborted) throw new Error('workflow terminated')
+					if (result.kind === 'stream') return this.cacheStreamStep<T>(record, result.bytes)
+					this.cacheStep(record, result.value)
+					return result.value
 				} catch (err) {
-					stopAttempt(err)
 					if (this.abortSignal.aborted) throw err
-					if (this.getCachedStep(record)?.kind === 'stream') throw err
 					if (err instanceof NonRetryableError) {
 						this.recordForwardFailure(record, err)
 						throw err
@@ -693,8 +621,6 @@ export class WorkflowStepImpl {
 					if (attempt < maxRetries) {
 						await this.retryDelay(resolvedConfig, ctx, workflowError(err), this.abortSignal)
 					}
-				} finally {
-					this.abortSignal.removeEventListener('abort', onAbort)
 				}
 			}
 			this.recordForwardFailure(record, workflowError(lastError))
@@ -1291,7 +1217,6 @@ export class SqliteWorkflowInstance {
 		// Abort via global registry so get()-retrieved instances also work
 		const ac = abortControllers.get(registryId)
 		ac?.abort(WORKFLOW_TERMINATED)
-		store.cleanupAbandonedStreams(token)
 		fireStatusCallbacks(registryId, 'terminated')
 	}
 
@@ -1767,7 +1692,6 @@ export class SqliteWorkflowBinding {
 	/** Resume any workflow instances that were running/waiting when the process last exited. */
 	resumeInterrupted(): void {
 		if (!this._class) return
-		new WorkflowStore(this.db).cleanupTerminalStreams(this.workflowName)
 
 		const rows = this.db
 			.query("SELECT id, params, created_at FROM workflow_instances WHERE workflow_name = ? AND status IN ('running', 'waiting')")
