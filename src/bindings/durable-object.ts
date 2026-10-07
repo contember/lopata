@@ -910,6 +910,7 @@ export class DurableObjectNamespaceImpl {
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
 	/** Running alarm attempts by id; `mutated` is set when the alarm is set or deleted during the attempt. */
 	private runningAlarms = new Map<string, { mutated: boolean }>()
+	private _destroyed = false
 	private dataDir: string | undefined
 	private limits: DurableObjectLimits | undefined
 	private _lastActivity = new Map<string, number>()
@@ -1076,6 +1077,8 @@ export class DurableObjectNamespaceImpl {
 				},
 			}, () => executor.executeAlarm(retryCount))
 		} catch (e) {
+			// Teardown rejects the running attempt; a destroyed namespace must not reschedule it or touch the (possibly closed) db.
+			if (this._destroyed) return
 			persistError(e, 'alarm')
 			if (executor.getAbortPolicy?.()?.retryAlarm === false) return
 			// A replacement or deletion made during the attempt wins over its retry.
@@ -1258,6 +1261,7 @@ export class DurableObjectNamespaceImpl {
 	 * would outlive teardown (and the DB close that follows).
 	 */
 	destroy(options?: { force?: boolean }): void {
+		this._destroyed = true
 		if (this._evictionTimer) {
 			clearInterval(this._evictionTimer)
 			this._evictionTimer = null

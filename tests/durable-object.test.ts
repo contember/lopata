@@ -2337,4 +2337,28 @@ describe('DurableObjectNamespaceImpl.destroy({ force })', () => {
 		// Teardown: force-destroy so the re-armed 30s interval doesn't outlive the test.
 		ns.destroy({ force: true })
 	})
+
+	test('an alarm attempt failing after force destroy does not retry or touch the closed db', async () => {
+		const ownDb = new Database(':memory:')
+		runMigrations(ownDb)
+		const entered = Promise.withResolvers<void>()
+		const fail = Promise.withResolvers<void>()
+		class FailingAlarm extends DurableObjectBase {
+			async alarm() {
+				entered.resolve()
+				await fail.promise
+				throw new Error('interrupted by teardown')
+			}
+		}
+		const ns = new DurableObjectNamespaceImpl(ownDb, 'DestroyAlarm', undefined, { evictionTimeoutMs: 0 })
+		ns._setClass(FailingAlarm, {})
+		const attempt = ns.triggerAlarm(ns.idFromName('a').toString())
+		await entered.promise
+
+		ns.destroy({ force: true })
+		ownDb.close()
+		fail.resolve()
+
+		expect(await attempt).toBeUndefined()
+	})
 })
