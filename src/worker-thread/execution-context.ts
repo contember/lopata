@@ -4,7 +4,9 @@
  * notifies main of each add/settle so reload drain can wait for them.
  */
 
+import { cache } from '../bindings/worker-cache'
 import { logIfRejected } from '../execution-context'
+import { tracing } from '../tracing/span'
 import type { WorkerMessage } from './protocol'
 
 // Worker-thread-global wait-until id sequence. Ids never cross thread
@@ -28,6 +30,9 @@ export function trackBackgroundWork(post: (msg: WorkerMessage) => void, promise:
 }
 
 export class WorkerExecutionContext {
+	readonly tracing = tracing
+	readonly cache = cache
+	exports: Record<string, unknown> = {}
 	/** `ctx.props` — carries the calling worker's service-binding `props` for
 	 *  `entrypoint-rpc` / `fetch` dispatch; `{}` for top-level HTTP. */
 	readonly props: Record<string, unknown>

@@ -6,7 +6,9 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import { resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
+import { getActiveContext } from '../tracing/context'
 import type {
 	DOCommand,
 	DOMainMessage,
@@ -18,11 +20,12 @@ import type {
 } from '../worker-thread/do-protocol'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
+import { applyTraceMessage, isTraceMessage } from '../worker-thread/remote-trace-store'
 import { RpcHostChannel } from '../worker-thread/rpc-shared'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import { WsHostBridge } from '../worker-thread/ws-bridge-shared'
 import { registerContainer, unregisterContainer } from './container-cleanup'
-import type { DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
+import type { DOAbortPolicy, DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
 import { DurableObjectIdImpl } from './durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from './websocket-pair'
 
@@ -77,6 +80,7 @@ export class WorkerExecutor implements DOExecutor {
 	/** Mirrors of the DO worker's `state` lifecycle, fed by `do-state` signals. */
 	private _blocked = false
 	private _aborted = false
+	private _abortPolicy?: DOAbortPolicy
 	/**
 	 * `wsId`s of every open WebSocket this DO's fetch handler returned — both
 	 * hibernation (`state.acceptWebSocket`) and plain (`new WebSocketPair`) ones.
@@ -135,7 +139,12 @@ export class WorkerExecutor implements DOExecutor {
 	private _fetchRequestStreams = new OutboundStreamRegistry()
 
 	constructor(config: ExecutorConfig) {
-		this._config = config
+		const compatibility = config._wranglerConfig
+			? resolveCompatibility({ date: config._wranglerConfig.compatibility_date, flags: config._wranglerConfig.compatibility_flags })
+			: config.compatibility
+			? resolveCompatibility({ date: config.compatibility.date ?? undefined, flags: config.compatibility.flags })
+			: undefined
+		this._config = { ...config, compatibility }
 	}
 
 	private _ensureWorker(): Worker {
@@ -169,12 +178,17 @@ export class WorkerExecutor implements DOExecutor {
 		})
 
 		worker.onmessage = (event: MessageEvent<DOMainMessage>) => {
+			const msg = event.data
+			// Applied even after dispose so spans the dying instance already ended are still finalized.
+			if (isTraceMessage(msg)) {
+				applyTraceMessage(msg)
+				return
+			}
 			// Drop late messages after dispose/onerror — the shared RPC dispatchers
 			// would otherwise commit side effects (KV write, R2 put, queue send)
 			// from a dying generation before their reply gets filtered by
 			// `hooks.isAlive()`. Mirrors `WorkerThreadExecutor._handleMessage`.
 			if (this._disposed) return
-			const msg = event.data
 			if (this._rpcChannel.handle(msg)) return
 
 			switch (msg.type) {
@@ -188,6 +202,7 @@ export class WorkerExecutor implements DOExecutor {
 							// Main's parsed, env-overridden config — the DO worker uses this
 							// instead of re-loading from configPath WITHOUT the --env overrides.
 							wranglerConfig: this._config._wranglerConfig,
+							compatibility: this._config.compatibility,
 							runtime: this._config._runtime,
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
@@ -222,6 +237,12 @@ export class WorkerExecutor implements DOExecutor {
 				case 'alarm-set':
 					// Forward alarm set/delete to namespace via callback
 					config.onAlarmSet?.(msg.time)
+					break
+				case 'do-abort':
+					// Terminating the thread rejects pending commands and rolls back its open SQLite transaction.
+					this._abortPolicy = msg.policy
+					this._aborted = true
+					this._teardown(new Error(msg.policy.reason))
 					break
 
 				case 'do-state':
@@ -308,6 +329,8 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	private async _sendCommand(command: DOCommand, afterPost?: () => void): Promise<DOResult> {
+		const active = getActiveContext()
+		const parent = active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 		const worker = this._ensureWorker()
 		// Wait for the prior executor's container teardown (docker rm) before any
 		// command — a container DO's first fetch triggers `docker run` for the
@@ -340,7 +363,7 @@ export class WorkerExecutor implements DOExecutor {
 				},
 			})
 			try {
-				worker.postMessage({ type: 'command', id, command } satisfies DOWorkerMessage)
+				worker.postMessage({ type: 'command', id, command, parent } satisfies DOWorkerMessage)
 				// Runs only AFTER the command is posted, which is after `await this._ready`
 				// — so the DO worker's full message handler is installed (it's set right
 				// before the worker posts `ready`). Starting the request-body pump here
@@ -487,13 +510,11 @@ export class WorkerExecutor implements DOExecutor {
 	}
 
 	async executeAlarm(retryCount: number): Promise<void> {
-		const result = await this._sendCommand({
-			type: 'alarm',
-			retryCount,
-		})
-		if (result.type === 'error') {
-			throw deserializeError(result.error)
-		}
+		await this._sendCommand({ type: 'alarm', retryCount })
+	}
+
+	getAbortPolicy(): DOAbortPolicy | undefined {
+		return this._abortPolicy
 	}
 
 	isActive(): boolean {
@@ -558,6 +579,7 @@ export class WorkerExecutor implements DOExecutor {
 	 * Idempotent. Counterpart of `WorkerThreadExecutor._failAll`.
 	 */
 	private _teardown(error: Error): void {
+		if (this._disposed) return
 		this._disposed = true
 		if (this._worker) {
 			this._worker.terminate()
@@ -591,9 +613,16 @@ export class WorkerExecutorFactory implements DOExecutorFactory {
 	 * loading config.
 	 */
 	configure(modulePath: string, configPath: string, wranglerConfig?: WranglerConfig, runtime?: DOWorkerRuntimeOptions): void {
+		let configSnapshot: WranglerConfig | undefined
+		if (wranglerConfig) {
+			const compatibility = resolveCompatibility({ date: wranglerConfig.compatibility_date, flags: wranglerConfig.compatibility_flags })
+			// A rejected reload must not change compatibility for DOs created by the active generation.
+			configSnapshot = { ...wranglerConfig }
+			if (wranglerConfig.compatibility_flags !== undefined) configSnapshot.compatibility_flags = [...compatibility.flags]
+		}
 		this._modulePath = modulePath
 		this._configPath = configPath
-		this._wranglerConfig = wranglerConfig
+		this._wranglerConfig = configSnapshot
 		this._runtime = runtime
 	}
 

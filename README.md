@@ -351,6 +351,8 @@ The built-in dashboard is available at `/__dashboard` and provides:
 
 Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
 
+See [FEATURES.md](FEATURES.md) for the full feature list and [recently added Cloudflare features](FEATURES.md#recently-added-cloudflare-features) for their local behavior and limitations.
+
 ## Local data
 
 All persistent state is stored in `.lopata/` in your project directory:

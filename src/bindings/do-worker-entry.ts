@@ -7,7 +7,12 @@
 
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
+import { runWithParentContext } from '../tracing/context'
+import { setTraceStoreOverride } from '../tracing/store'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
+import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
@@ -15,6 +20,7 @@ import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-e
 declare var self: Worker
 
 interface WorkerConfig {
+	compatibility?: CompatibilitySelection
 	modulePath: string
 	configPath: string
 	/** Main's parsed, env-overridden config. When present it's used verbatim so
@@ -54,6 +60,8 @@ self.onmessage = async (event: MessageEvent) => {
 postMessage({ type: 'need-init' })
 
 async function initWorker(workerConfig: WorkerConfig) {
+	// Forward trace writes to main's store so DO spans reach dashboard subscribers.
+	setTraceStoreOverride(new RemoteTraceStore(message => postMessage(message)))
 	// Register Bun plugins for cloudflare:workers etc.
 	await import('../plugin')
 
@@ -69,6 +77,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
+	const compatibility = workerConfig.compatibility
+		? resolveCompatibility({ date: workerConfig.compatibility.date ?? undefined, flags: workerConfig.compatibility.flags })
+		: resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
+	initializeIsolateCompatibility(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))
@@ -110,7 +122,15 @@ async function initWorker(workerConfig: WorkerConfig) {
 		throw new Error(`DO class "${workerConfig.namespaceName}" not exported from worker module`)
 	}
 
-	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir)
+	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir, undefined, compatibility)
+	state.storage._setAlarmCallback((time: number | null) => {
+		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
+	})
+	if (!config.containers?.some(container => container.class_name === workerConfig.namespaceName)) {
+		state._setAbortCallback(policy => {
+			postMessage({ type: 'do-abort', policy } satisfies DOMainMessage)
+		})
+	}
 
 	// Mirror the instance's abort/block lifecycle to main so the idle reaper
 	// evicts an aborted instance (every subsequent command throws — it must be
@@ -120,9 +140,12 @@ async function initWorker(workerConfig: WorkerConfig) {
 		postMessage({ type: 'do-state', aborted: state._isAborted(), blocked: state._isBlocked() } satisfies DOMainMessage)
 	}
 	const originalAbort = state.abort.bind(state)
-	state.abort = (reason?: string) => {
-		originalAbort(reason)
-		postState()
+	state.abort = (reason?: string, options?: { retryAlarm?: boolean }) => {
+		try {
+			originalAbort(reason, options)
+		} finally {
+			postState()
+		}
 	}
 	const originalBlock = state.blockConcurrencyWhile.bind(state)
 	state.blockConcurrencyWhile = <T>(cb: () => Promise<T>): Promise<T> => {
@@ -211,11 +234,6 @@ async function initWorker(workerConfig: WorkerConfig) {
 			STREAM_BACKPRESSURE_WINDOW,
 		)
 	}
-
-	// Wire alarm callback
-	state.storage._setAlarmCallback((time: number | null) => {
-		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
-	})
 
 	// --- Command handler ---
 
@@ -365,7 +383,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 		if (msg.type === 'command') {
 			try {
-				const { result, afterPost } = await handleCommand(msg.command)
+				const { result, afterPost } = await runWithParentContext(msg.parent, () => handleCommand(msg.command))
 				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
 				// Post-result side effects: for streamed fetch responses, start the
 				// body pump *after* `result` ships so main has registered the

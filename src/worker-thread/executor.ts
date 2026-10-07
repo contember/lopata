@@ -10,10 +10,10 @@
 import { dirname, resolve } from 'node:path'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
-import { getDataDir } from '../db'
+import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
-import { getTraceStore } from '../tracing/store'
 import type {
 	BindingTarget,
 	ParentSpanContext,
@@ -25,16 +25,13 @@ import type {
 	WorkflowControlResult,
 } from './protocol'
 import { deserializeError } from './protocol'
+import { applyTraceMessage, isTraceMessage } from './remote-trace-store'
 import { RpcHostChannel } from './rpc-shared'
 import { deserializeResponse, serializeRequestShell } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { WsHostBridge } from './ws-bridge-shared'
 
 const WORKER_ENTRY = resolve(dirname(new URL(import.meta.url).pathname), 'entry.ts')
-
-function isTraceMessage(msg: WorkerMessage): msg is Extract<WorkerMessage, { type: `trace-${string}` }> {
-	return msg.type.startsWith('trace-')
-}
 
 interface Pending<T> {
 	resolve: (value: T) => void
@@ -61,6 +58,7 @@ export interface WorkerReadyInfo {
 }
 
 export class WorkerThreadExecutor {
+	private readonly _compatibility: CompatibilitySelection
 	private _worker: Worker
 	private _ready: Promise<WorkerReadyInfo>
 	private _readyResolve!: (info: WorkerReadyInfo) => void
@@ -121,6 +119,9 @@ export class WorkerThreadExecutor {
 	private _topRequestStreams = new OutboundStreamRegistry()
 
 	constructor(options: WorkerThreadExecutorOptions) {
+		this._compatibility = resolveCompatibility({ date: options.config.compatibility_date, flags: options.config.compatibility_flags })
+		// Establish WAL and schema in main before fresh worker connections can race to initialize them.
+		getDatabase()
 		this._initConfig = options
 		this._mainEnv = options.mainEnv
 		this._ready = new Promise<WorkerReadyInfo>((res, rej) => {
@@ -188,7 +189,7 @@ export class WorkerThreadExecutor {
 			// Apply them even after dispose so a `trace-span-end` (or attrs/event)
 			// queued just before teardown still finalizes the span instead of
 			// leaving it dangling 'unset' for the dying generation.
-			this._applyTrace(msg)
+			applyTraceMessage(msg)
 			return
 		}
 		if (this._disposed) return
@@ -199,6 +200,7 @@ export class WorkerThreadExecutor {
 					type: 'init',
 					config: {
 						modulePath: this._initConfig.modulePath,
+						compatibility: this._compatibility,
 						config: this._initConfig.config,
 						baseDir: this._initConfig.baseDir,
 						// Same physical .lopata dir main + DO workers use, NOT baseDir —
@@ -337,39 +339,6 @@ export class WorkerThreadExecutor {
 		}
 	}
 
-	/** Apply a forwarded trace-store write on main. Wrapped in try/catch because
-	 *  these run inside `worker.onmessage`: a write that throws (a `BigInt` /
-	 *  circular value `JSON.stringify` chokes on, a transient DB error) would be
-	 *  an uncaught exception that takes down the whole dev server. A failed trace
-	 *  write is diagnostic-only — never worth crashing for. */
-	private _applyTrace(msg: Extract<WorkerMessage, { type: `trace-${string}` }>): void {
-		try {
-			const store = getTraceStore()
-			switch (msg.type) {
-				case 'trace-span-insert':
-					store.insertSpan(msg.span)
-					break
-				case 'trace-span-end':
-					store.endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
-					break
-				case 'trace-span-status':
-					store.setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
-					break
-				case 'trace-span-attrs':
-					store.updateAttributes(msg.spanId, msg.attrs)
-					break
-				case 'trace-span-event':
-					store.addEvent(msg.event)
-					break
-				case 'trace-error':
-					store.insertError(msg.error)
-					break
-			}
-		} catch (err) {
-			console.error('[lopata] trace store write failed (ignored):', err)
-		}
-	}
-
 	/** Background `waitUntil` promises still in flight on the worker side. */
 	pendingWaitUntil(): number {
 		return this._pendingWaitUntil.size
@@ -475,7 +444,7 @@ export class WorkerThreadExecutor {
 		})
 	}
 
-	async executeFetch(request: Request, props?: Record<string, unknown>): Promise<Response> {
+	async executeFetch(request: Request, props?: Record<string, unknown>, entrypoint?: string): Promise<Response> {
 		const shell = serializeRequestShell(request)
 		const body = request.body
 		const reqStreamId = body ? this._topRequestStreams.allocateId() : undefined
@@ -498,7 +467,7 @@ export class WorkerThreadExecutor {
 			this._pending,
 			(id, parent) => {
 				fetchId = id
-				return { type: 'fetch', id, request: req, parent, props }
+				return { type: 'fetch', id, request: req, parent, props, entrypoint }
 			},
 			() => {
 				// Wire the signal only AFTER the fetch command is posted: a client

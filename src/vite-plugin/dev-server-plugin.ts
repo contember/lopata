@@ -3,10 +3,16 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createScheduledController } from '../bindings/scheduled.ts'
+import { type CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair.ts'
+import { WorkerDispatcher } from '../bindings/worker-dispatcher.ts'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context.ts'
+import { resolveCompatibility } from '../compatibility.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
+import { ExecutionContext as CacheContext, getActiveExecutionContext, runWithExecutionContext } from '../execution-context.ts'
 import { FileWatcher } from '../file-watcher.ts'
 import type { RoutableManager } from '../route-matcher.ts'
 import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
+import type { SpanOptions } from '../tracing/span.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
 interface DevServerPluginOptions {
@@ -35,6 +41,7 @@ interface DevServerPluginOptions {
  * via link:), so dynamic imports here run through Bun's native loader.
  */
 export function devServerPlugin(options: DevServerPluginOptions): Plugin {
+	let compatibility = legacyCompatibility
 	let server: ViteDevServer
 	let config: any
 	let env: Record<string, unknown>
@@ -44,11 +51,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	// Lazy-loaded runtime functions
 	let wireClassRefs: Function
 	let setGlobalEnv: Function
-	let ExecutionContext: new() => any
-	let runWithExecutionContext: <T>(ctx: any, fn: () => T) => T
+	let ExecutionContext: typeof CacheContext
 
 	// Tracing functions (lazy-loaded)
-	let startSpan: Function
+	let startSpan: typeof import('../tracing/span.ts').startSpan
 	let setSpanAttribute: Function
 	let persistError: Function
 	let getActiveContext: Function
@@ -70,6 +76,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 	// Track current module to detect when Vite HMR invalidates it
 	let currentModule: Record<string, unknown> | null = null
+	let workerDispatcher: WorkerDispatcher | undefined
 	// Serializes module reload — prevents concurrent wireClassRefs calls
 	let reloadLock: Promise<void> | null = null
 	// Generation counter — increments on each module reload for tracing
@@ -84,6 +91,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	 * Serialized via reloadLock to prevent concurrent wireClassRefs calls.
 	 */
 	async function ensureWorkerModule(): Promise<Record<string, unknown>> {
+		return runWithCompatibility(compatibility, loadWorkerModule)
+	}
+
+	async function loadWorkerModule(): Promise<Record<string, unknown>> {
 		const ssrEnv = server.environments[options.envName]
 		if (!ssrEnv || !('runner' in ssrEnv)) {
 			throw new Error(`SSR environment "${options.envName}" not found or has no runner`)
@@ -116,7 +127,13 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					}
 					currentGenerationId++
 					viteGenerations.set(currentGenerationId, { id: currentGenerationId, createdAt: Date.now(), state: 'active' })
-					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId)
+					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId, compatibility)
+					workerDispatcher = new WorkerDispatcher(
+						workerModule,
+						env,
+						props => new CacheContext(props),
+						compatibility,
+					)
 					setGlobalEnv(env)
 					console.log(`[lopata:vite] Worker module (re)loaded, classes wired (generation ${currentGenerationId})`)
 					// Schedule cleanup of old generation after successful reload
@@ -168,71 +185,83 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	 * can retry.
 	 */
 	async function handleWorkerFetch(req: IncomingMessage, res: ServerResponse, next: Function): Promise<void> {
-		const activeModule = await ensureWorkerModule()
+		await ensureWorkerModule()
+		const request = nodeReqToRequest(req)
+		const callerStack = new Error()
+		const ctx = new ExecutionContext()
+		const response = await runWorkerSpan({
+			name: `${request.method} ${new URL(request.url).pathname}`,
+			kind: 'server',
+			attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': currentGenerationId },
+		}, () =>
+			runWithExecutionContext(ctx, async (): Promise<Response | typeof NO_FETCH_HANDLER> => {
+				try {
+					// Resolved in here rather than up front because a class entrypoint is
+					// constructed at this point, and a throwing constructor deserves the same
+					// error page and persisted error as a throwing fetch().
+					if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+					const resp = await workerDispatcher.fetch(request, 'default', undefined, ctx)
+					setSpanAttribute('http.status_code', resp.status)
+
+					// Intercept React Router error boundary responses with lopata error page
+					const routeError = (globalThis as any).__lopata_routeError
+					delete (globalThis as any).__lopata_routeError
+					if (routeError) {
+						if (resp.body) ctx.waitUntil(resp.body.cancel(routeError))
+						if (routeError instanceof Error) {
+							stitchAsyncStack(routeError, callerStack)
+						}
+						console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
+						return (renderErrorPage as Function)(routeError, request, env, config)
+					}
+
+					return resp
+				} catch (err) {
+					if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
+					if (isHmrRaceError(err)) {
+						currentModule = null
+						throw err
+					}
+					if (err instanceof Error) {
+						stitchAsyncStack(err, callerStack)
+					}
+					console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
+					return (renderErrorPage as Function)(err, request, env, config)
+				} finally {
+					ctx._awaitAll().catch(() => {})
+				}
+			}))
+		if (response === NO_FETCH_HANDLER) {
+			console.error('[lopata:vite] Worker module default export has no fetch() method')
+			next()
+			return
+		}
+		writeResponse(response, res).catch(() => {})
+	}
+
+	/** Run a worker event inside a server span, counting it as active work of the current generation. */
+	async function runWorkerSpan<T>(options: SpanOptions, callback: () => Promise<T>): Promise<T> {
 		const genId = currentGenerationId
 		genActiveRequests.set(genId, (genActiveRequests.get(genId) ?? 0) + 1)
-
 		try {
-			const request = nodeReqToRequest(req)
-			const parsedUrl = new URL(request.url)
-
-			// Capture caller stack before entering the worker (for async stack stitching)
-			const callerStack = new Error()
-
-			const ctx = new ExecutionContext()
-			const response = await (startSpan as Function)({
-				name: `${request.method} ${parsedUrl.pathname}`,
-				kind: 'server',
-				attributes: { 'http.method': request.method, 'http.url': request.url, 'lopata.generation_id': genId },
-			}, () =>
-				runWithExecutionContext(ctx, async () => {
-					try {
-						// Resolved in here rather than up front because a class entrypoint is
-						// constructed at this point, and a throwing constructor deserves the same
-						// error page and persisted error as a throwing fetch().
-						const fetchHandler = resolveWorkerHandler(activeModule, 'fetch', ctx)
-						if (!fetchHandler) return NO_FETCH_HANDLER
-						const resp = await fetchHandler(request, env, ctx) as Response
-						;(setSpanAttribute as Function)('http.status_code', resp.status)
-
-						// Intercept React Router error boundary responses with lopata error page
-						const routeError = (globalThis as any).__lopata_routeError
-						delete (globalThis as any).__lopata_routeError
-						if (routeError) {
-							if (routeError instanceof Error) {
-								stitchAsyncStack(routeError, callerStack)
-							}
-							console.error('[lopata:vite] Route error:\n' + (routeError instanceof Error ? routeError.stack : String(routeError)))
-							return (renderErrorPage as Function)(routeError, request, env, config)
-						}
-
-						ctx._awaitAll().catch(() => {})
-						return resp
-					} catch (err) {
-						if (isHmrRaceError(err)) {
-							currentModule = null
-							throw err
-						}
-						if (err instanceof Error) {
-							stitchAsyncStack(err, callerStack)
-						}
-						console.error('[lopata:vite] Request error:\n' + (err instanceof Error ? err.stack : String(err)))
-						return (renderErrorPage as Function)(err, request, env, config)
-					}
-				})) as Response | typeof NO_FETCH_HANDLER
-
-			if (response === NO_FETCH_HANDLER) {
-				console.error('[lopata:vite] Worker module default export has no fetch() method')
-				next()
-				return
-			}
-
-			writeResponse(response, res).catch(() => {})
+			return await runWithCompatibility(compatibility, () => startSpan(options, callback))
 		} finally {
 			const count = genActiveRequests.get(genId) ?? 1
 			if (count <= 1) genActiveRequests.delete(genId)
 			else genActiveRequests.set(genId, count - 1)
 		}
+	}
+
+	async function runWorkerEvent(options: SpanOptions, callback: (ctx: CacheContext) => Promise<Response>): Promise<Response> {
+		return runWorkerSpan(options, async () => {
+			const ctx = new ExecutionContext()
+			workerDispatcher?.attachContext(ctx)
+			try {
+				return await runWithExecutionContext(ctx, () => callback(ctx))
+			} finally {
+				ctx._awaitAll().catch(() => {})
+			}
+		})
 	}
 
 	/**
@@ -248,33 +277,30 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const activeModule = await ensureWorkerModule()
 		const genId = currentGenerationId
 
-		const ctx = new ExecutionContext()
 		const controller = createScheduledController(cronExpr, Date.now())
 
-		return await (startSpan as Function)({
+		return await runWorkerEvent({
 			name: 'scheduled',
 			kind: 'server',
 			attributes: { cron: cronExpr, 'lopata.generation_id': genId },
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				// Resolved inside the span: constructing a class entrypoint runs user code,
-				// which belongs in the trace and in persistError like the handler body itself.
-				const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
-				if (!handler) {
-					return new Response('No scheduled handler defined', { status: 404 })
-				}
-				try {
-					await handler(controller, env, ctx)
-					// waitUntil work outlives the trigger, as it does on a real cron tick — the
-					// dev server stays up, so let it settle instead of blocking the response.
-					ctx._awaitAll().catch(() => {})
-					return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
-					persistError(err, 'scheduled', config.name)
-					throw err
-				}
-			}))
+		}, async ctx => {
+			// Resolved inside the span: constructing a class entrypoint runs user code,
+			// which belongs in the trace and in persistError like the handler body itself.
+			const handler = resolveWorkerHandler(activeModule, 'scheduled', ctx)
+			if (!handler) {
+				return new Response('No scheduled handler defined', { status: 404 })
+			}
+			try {
+				await handler(controller, env, ctx)
+				// waitUntil work outlives the trigger, as it does on a real cron tick — the
+				// dev server stays up, so let it settle instead of blocking the response.
+				return new Response(`Scheduled handler executed (cron: ${cronExpr})`, { status: 200 })
+			} catch (err) {
+				console.error('[lopata:vite] scheduled handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+				persistError(err, 'scheduled', config.name)
+				throw err
+			}
+		})
 	}
 
 	/**
@@ -289,37 +315,33 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		const activeModule = await ensureWorkerModule()
 		const genId = currentGenerationId
 
-		const ctx = new ExecutionContext()
-
-		return await (startSpan as Function)({
+		return await runWorkerEvent({
 			name: 'email',
 			kind: 'server',
 			attributes: { 'email.from': from, 'email.to': to, 'lopata.generation_id': genId },
-		}, () =>
-			runWithExecutionContext(ctx, async () => {
-				// Persist before dispatch, as Generation.callEmail does: a message the worker
-				// has no handler for still belongs in the dashboard's list, and setReject() /
-				// forward() resolve themselves from this row by id.
-				const db = getDatabase()
-				const messageId = randomUUIDv7()
-				db.run(
-					"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
-					[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
-				)
-				const handler = resolveWorkerHandler(activeModule, 'email', ctx)
-				if (!handler) {
-					return new Response('No email handler defined', { status: 404 })
-				}
-				try {
-					await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
-					ctx._awaitAll().catch(() => {})
-					return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
-				} catch (err) {
-					console.error('[lopata:vite] email handler error:\n' + (err instanceof Error ? err.stack : String(err)))
-					persistError(err, 'email', config.name)
-					throw err
-				}
-			}))
+		}, async ctx => {
+			// Persist before dispatch, as Generation.callEmail does: a message the worker
+			// has no handler for still belongs in the dashboard's list, and setReject() /
+			// forward() resolve themselves from this row by id.
+			const db = getDatabase()
+			const messageId = randomUUIDv7()
+			db.run(
+				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+				[messageId, '_incoming', from, to, rawBytes, rawBytes.byteLength, Date.now()],
+			)
+			const handler = resolveWorkerHandler(activeModule, 'email', ctx)
+			if (!handler) {
+				return new Response('No email handler defined', { status: 404 })
+			}
+			try {
+				await handler(new ForwardableEmailMessage(db, messageId, from, to, rawBytes), env, ctx)
+				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
+			} catch (err) {
+				console.error('[lopata:vite] email handler error:\n' + (err instanceof Error ? err.stack : String(err)))
+				persistError(err, 'email', config.name)
+				throw err
+			}
+		})
 	}
 
 	/**
@@ -396,7 +418,6 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
 			ExecutionContext = ecMod.ExecutionContext
-			runWithExecutionContext = ecMod.runWithExecutionContext
 			startSpan = spanMod.startSpan
 			setSpanAttribute = spanMod.setSpanAttribute
 			persistError = spanMod.persistError
@@ -409,13 +430,19 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			matchS3Path = s3Mod.matchS3Path
 			ForwardableEmailMessage = emailMod.ForwardableEmailMessage
 			getDatabase = dbMod.getDatabase
+			globalThis.__lopata_tracing = spanMod.tracing
+			globalThis.__lopata_waitUntil = promise => {
+				const ctx = getActiveExecutionContext()
+				if (!ctx) throw new Error('waitUntil() requires an active Worker execution context')
+				ctx.waitUntil(promise)
+			}
 
 			// 1. Load wrangler config
-			if (options.configPath) {
-				config = await configMod.loadConfig(resolve(projectRoot, options.configPath))
-			} else {
-				config = await configMod.autoLoadConfig(projectRoot)
-			}
+			const loadedConfig = options.configPath
+				? await configMod.loadConfig(resolve(projectRoot, options.configPath))
+				: await configMod.autoLoadConfig(projectRoot)
+			config = loadedConfig
+			compatibility = resolveCompatibility({ date: loadedConfig.compatibility_date, flags: loadedConfig.compatibility_flags })
 			console.log(`[lopata:vite] Loaded config: ${config.name}`)
 
 			// The Vite plugin drives a worker built by Vite, so the main worker must have
@@ -986,16 +1013,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				return
 			}
 
-			const activeModule = await ensureWorkerModule()
-			const handler = activeModule.default as Record<string, unknown>
-			if (!handler || typeof handler.fetch !== 'function') {
-				socket.destroy()
-				return
-			}
-
-			const ctx = new ExecutionContext()
-			const response = await runWithExecutionContext(ctx, async () => {
-				return (handler.fetch as Function).call(handler, request, env, ctx) as Response
+			await ensureWorkerModule()
+			const response = await runWorkerEvent({
+				name: `WS ${parsedUrl.pathname}`,
+				kind: 'server',
+				attributes: { 'http.url': request.url, 'lopata.websocket': true, 'lopata.generation_id': currentGenerationId },
+			}, async ctx => {
+				if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+				return workerDispatcher.fetch(request, 'default', undefined, ctx)
 			})
 
 			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket
@@ -1045,7 +1070,8 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 }
 
 /** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
-function bridgeCfWebSocket(cfSocket: any, ws: any): void {
+function bridgeCfWebSocket(cfSocket: CFWebSocket, ws: any): void {
+	cfSocket._useRawBinaryDelivery()
 	// CF → real WS
 	cfSocket.addEventListener('message', (ev: Event) => {
 		const msgData = (ev as MessageEvent).data
@@ -1065,7 +1091,7 @@ function bridgeCfWebSocket(cfSocket: any, ws: any): void {
 	// Real WS → CF
 	ws.on('message', (data: Buffer, isBinary: boolean) => {
 		const msgData = isBinary
-			? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer
+			? copyWebSocketBytes(data)
 			: data.toString('utf-8')
 		const evt = { type: 'message' as const, data: msgData }
 		if (cfSocket._peer?._accepted) {

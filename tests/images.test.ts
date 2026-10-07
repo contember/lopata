@@ -1,3 +1,4 @@
+import type { HeadersInit } from 'bun'
 import { describe, expect, test } from 'bun:test'
 import sharp from 'sharp'
 import { ImagesBinding } from '../src/bindings/images'
@@ -194,6 +195,40 @@ describe('ImagesBinding', () => {
 			expect(info.height).toBe(48)
 			expect(info.fileSize).toBe(avif.byteLength)
 		})
+	})
+
+	describe('output().response()', () => {
+		test('returns a synchronous response containing resized and converted Sharp output', async () => {
+			const data = await makeRealPng(80, 40)
+			const result = await images.input(toStream(data)).transform({ width: 20, height: 10 }).output({ format: 'image/jpeg' })
+			const response = result.response()
+			expect(response).toBeInstanceOf(Response)
+			expect(response.status).toBe(200)
+			expect(response.headers.get('content-type')).toBe('image/jpeg')
+			const bytes: Uint8Array = new Uint8Array(await response.arrayBuffer())
+			expect(bytes).toEqual(await readStreamToBuffer(result.image()))
+			expect(bytes).not.toEqual(data)
+			expect(await sharp(bytes).metadata()).toMatchObject({ width: 20, height: 10, format: 'jpeg' })
+		})
+
+		const cases: { name: string; headers: HeadersInit }[] = [
+			{ name: 'record', headers: { 'CoNtEnT-TyPe': 'text/html', 'X-Image': 'record' } },
+			{ name: 'tuples', headers: [['Content-Type', 'text/html'], ['content-type', 'application/javascript'], ['X-Image', 'tuples']] },
+			{ name: 'Headers', headers: new Headers({ 'CONTENT-TYPE': 'text/html', 'X-Image': 'Headers' }) },
+		]
+		for (const { name, headers } of cases) {
+			test(`copies ${name} headers and overrides content-type with the resolved output format`, async () => {
+				const original = structuredClone(headers instanceof Headers ? [...headers] : headers)
+				const result = await images.input(toStream(await makeRealPng(4, 2)))
+					.transform({ format: 'webp' }).output({ format: 'image/png' })
+				const response = result.response({ headers })
+				expect(response.headers.get('content-type')).toBe('image/webp')
+				expect(response.headers.get('x-image')).toBe(name)
+				response.headers.set('x-image', 'changed')
+				expect(headers instanceof Headers ? [...headers] : headers).toEqual(original)
+				expect(await sharp(new Uint8Array(await response.arrayBuffer())).metadata()).toMatchObject({ format: 'webp' })
+			})
+		}
 	})
 
 	describe('input() / transform / output', () => {

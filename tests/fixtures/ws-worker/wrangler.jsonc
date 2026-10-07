@@ -1,7 +1,8 @@
 {
 	"name": "ws-test-worker",
 	"main": "src/index.ts",
-	"compatibility_date": "2026-02-12",
+	"compatibility_date": "2026-04-07",
+	"compatibility_flags": ["websocket_close_reason_byte_limit"],
 	"durable_objects": {
 		"bindings": [
 			{ "name": "ECHO_STANDARD", "class_name": "EchoStandardDO" },

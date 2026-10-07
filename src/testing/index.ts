@@ -5,16 +5,16 @@ import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
+import { WorkerDispatcher } from '../bindings/worker-dispatcher'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
-import {
-	constructEntrypoint,
-	type EntrypointHandlerName,
-	handlerFromInstance,
-	isClassEntrypoint,
-	resolveEntrypointHandler,
-} from '../entrypoint-handler'
+import { resolveCompatibility } from '../compatibility'
+import { runWithCompatibility } from '../compatibility-context'
+import type { WranglerConfig } from '../config'
+import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { startSpan } from '../tracing/span'
+import type { ResolvedTarget } from '../worker-registry'
 import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
 import { buildTestEnv, configToBindings } from './env-builder'
@@ -48,11 +48,13 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 	let mergedBindings = options.bindings
 	let mergedVars = options.vars
+	let workerConfig: WranglerConfig = { name: 'test-worker' }
 
 	// Load from wrangler config if specified — translate to BindingSpec
 	if (options.wrangler) {
 		const { loadConfig } = await import('../config')
 		const config = await loadConfig(resolve(options.wrangler))
+		workerConfig = config
 		const { bindings: configBindings, vars: configVars } = configToBindings(config)
 		// Merge: explicit options.bindings override wrangler-derived bindings
 		mergedBindings = { ...configBindings, ...options.bindings }
@@ -60,6 +62,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		mergedVars = { ...configVars, ...options.vars }
 	}
 
+	const compatibility = resolveCompatibility({ date: workerConfig.compatibility_date, flags: workerConfig.compatibility_flags })
 	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars, clock ?? undefined)
 
 	// Wire in-memory caches for this test env
@@ -68,18 +71,15 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	// Resolve worker module
 	let workerModule: Record<string, unknown>
 	let defaultExport: unknown
-	let classBasedExport = false
 
 	if (typeof options.worker === 'string') {
 		workerModule = await import(resolve(options.worker))
 		defaultExport = workerModule.default
-		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker && 'default' in options.worker) {
 		// WorkerModule — has a `default` export (class or object) + named exports
 		const mod = options.worker as WorkerModule
 		defaultExport = mod.default
 		workerModule = { ...mod }
-		classBasedExport = isClassEntrypoint(defaultExport)
 	} else if (options.worker) {
 		// Inline handlers object — also expose extra properties (e.g. DO/Workflow classes)
 		// as top-level module exports so wireClassRefs can find them
@@ -94,23 +94,29 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	for (const entry of registry.durableObjects) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Durable Object class "${entry.className}" not exported from worker module`)
-		entry.namespace._setClass(cls as any, env)
+		entry.namespace._setClass(cls as any, env, undefined, compatibility)
 	}
 
 	for (const entry of registry.workflows) {
 		const cls = workerModule[entry.className]
 		if (!cls) throw new Error(`Workflow class "${entry.className}" not exported from worker module`)
-		entry.binding._setClass(cls as any, env)
+		entry.binding._setClass(cls as any, env, compatibility)
 		entry.binding.resumeInterrupted()
 	}
 
 	// Wire service bindings — self-referencing (always in-process for tests)
+	const dispatcher = new WorkerDispatcher(
+		workerModule,
+		env,
+		props => new ExecutionContext(props),
+		compatibility,
+	)
 	for (const entry of registry.serviceBindings) {
 		const wire = entry.proxy._wire as
-			| ((resolver: () => { kind: 'in-process'; workerModule: Record<string, unknown>; env: Record<string, unknown> }) => void)
+			| ((resolver: () => ResolvedTarget) => void)
 			| undefined
 		if (wire) {
-			wire(() => ({ kind: 'in-process', workerModule, env }))
+			wire(() => ({ kind: 'in-process', workerModule, env, compatibility }))
 		}
 	}
 
@@ -118,19 +124,21 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	setGlobalEnv(env)
 
 	// --- Handler dispatch helpers ---
+	async function dispatch<T>(name: string, callback: (ctx: ExecutionContext) => Promise<T>): Promise<T> {
+		return runWithCompatibility(compatibility, () =>
+			startSpan({ name, kind: 'server' }, async () => {
+				const ctx = new ExecutionContext()
+				try {
+					return await runWithExecutionContext(ctx, () => runWithFetchMock(fetchMock, () => callback(ctx)))
+				} finally {
+					await ctx._awaitAll()
+				}
+			}))
+	}
 
-	function getHandler(name: EntrypointHandlerName): ((...args: unknown[]) => Promise<unknown>) | undefined {
-		if (classBasedExport) {
-			// Probe on a throwaway instance — a class field only exists once constructed —
-			// then build a fresh one per call so each invocation gets its own ctx.
-			if (!handlerFromInstance(constructEntrypoint(defaultExport, new ExecutionContext(), env), name)) return undefined
-			return (...args: unknown[]) => {
-				const instance = constructEntrypoint(defaultExport, new ExecutionContext(), env)
-				return handlerFromInstance(instance, name)!(...args) as Promise<unknown>
-			}
-		}
-		const handler = resolveEntrypointHandler(defaultExport, name, undefined, env)
-		return (handler as ((...args: unknown[]) => Promise<unknown>) | null) ?? undefined
+	function getHandler(name: EntrypointHandlerName, ctx: ExecutionContext): ((...args: unknown[]) => unknown) | null {
+		dispatcher.attachContext(ctx)
+		return runWithExecutionContext(ctx, () => resolveEntrypointHandler(defaultExport, name, ctx, env))
 	}
 
 	async function fetchHandler(input: string | Request, init?: RequestInit): Promise<Response> {
@@ -142,76 +150,59 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 			request = init ? new Request(input, init) : input
 		}
 
-		const ctx = new ExecutionContext()
-		return runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				const handler = resolveEntrypointHandler(defaultExport, 'fetch', ctx, env)
-				if (!handler) throw new Error('No fetch handler found')
-				const response = await handler(request, env, ctx) as Response
-				await ctx._awaitAll()
-				return response
-			}))
+		return dispatch(`${request.method} ${new URL(request.url).pathname}`, ctx => dispatcher.fetch(request, 'default', undefined, ctx))
 	}
 
 	async function queueHandler(queueName: string, messages: { body: unknown; contentType?: string }[]): Promise<void> {
-		const handler = getHandler('queue')
-		if (!handler) throw new Error('No queue handler found')
+		return dispatch(`queue ${queueName}`, async ctx => {
+			const handler = getHandler('queue', ctx)
+			if (!handler) throw new Error('No queue handler found')
 
-		const builtMessages = messages.map((msg, i) => ({
-			id: randomUUIDv7(),
-			timestamp: new Date(),
-			body: msg.body,
-			attempts: 1,
-			ack() {},
-			retry(_options?: { delaySeconds?: number }) {},
-		}))
-
-		const batch = {
-			queue: queueName,
-			messages: builtMessages,
-			ackAll() {},
-			retryAll(_options?: { delaySeconds?: number }) {},
-		}
-
-		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(batch, env, ctx)
-				await ctx._awaitAll()
+			const builtMessages = messages.map((msg, i) => ({
+				id: randomUUIDv7(),
+				timestamp: new Date(),
+				body: msg.body,
+				attempts: 1,
+				ack() {},
+				retry(_options?: { delaySeconds?: number }) {},
 			}))
+
+			const batch = {
+				queue: queueName,
+				messages: builtMessages,
+				ackAll() {},
+				retryAll(_options?: { delaySeconds?: number }) {},
+			}
+
+			await handler(batch, env, ctx)
+		})
 	}
 
 	async function scheduledHandler(opts?: { cron?: string; scheduledTime?: number }): Promise<void> {
-		const handler = getHandler('scheduled')
-		if (!handler) throw new Error('No scheduled handler found')
+		return dispatch('scheduled', async ctx => {
+			const handler = getHandler('scheduled', ctx)
+			if (!handler) throw new Error('No scheduled handler found')
 
-		const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
-		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(controller, env, ctx)
-				await ctx._awaitAll()
-			}))
+			const controller = createScheduledController(opts?.cron ?? '* * * * *', opts?.scheduledTime ?? Date.now())
+			await handler(controller, env, ctx)
+		})
 	}
 
 	async function emailHandler(opts: { from: string; to: string; raw: Uint8Array | string }): Promise<void> {
-		const handler = getHandler('email')
-		if (!handler) throw new Error('No email handler found')
+		return dispatch('email', async ctx => {
+			const handler = getHandler('email', ctx)
+			if (!handler) throw new Error('No email handler found')
 
-		const rawBytes = typeof opts.raw === 'string' ? new TextEncoder().encode(opts.raw) : opts.raw
-		const messageId = randomUUIDv7()
-		db.run(
-			"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
-			[messageId, '_incoming', opts.from, opts.to, rawBytes, rawBytes.byteLength, Date.now()],
-		)
+			const rawBytes = typeof opts.raw === 'string' ? new TextEncoder().encode(opts.raw) : opts.raw
+			const messageId = randomUUIDv7()
+			db.run(
+				"INSERT INTO email_messages (id, binding, from_addr, to_addr, raw, raw_size, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'received', ?)",
+				[messageId, '_incoming', opts.from, opts.to, rawBytes, rawBytes.byteLength, Date.now()],
+			)
 
-		const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
-		const ctx = new ExecutionContext()
-		await runWithExecutionContext(ctx, () =>
-			runWithFetchMock(fetchMock, async () => {
-				await handler(message, env, ctx)
-				await ctx._awaitAll()
-			}))
+			const message = new ForwardableEmailMessage(db, messageId, opts.from, opts.to, rawBytes)
+			await handler(message, env, ctx)
+		})
 	}
 
 	// --- Test helper factories ---

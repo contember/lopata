@@ -6,8 +6,10 @@
 
 import type { Database } from 'bun:sqlite'
 import { QueueConsumer } from '../bindings/queue'
+import type { WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { wireWorkflowClass } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import type { ThreadEnvBuilt } from './thread-env'
 
 export function wireWorkflows(built: ThreadEnvBuilt, workerModule: Record<string, unknown>): void {
@@ -28,6 +30,7 @@ export function startThreadQueueConsumers(
 	workerModule: Record<string, unknown>,
 	workerName?: string,
 	trackBatch?: (p: Promise<unknown>) => void,
+	dispatcher?: WorkerDispatcher,
 ): QueueConsumer[] {
 	const handler = resolveQueueHandler(workerModule)
 	if (!handler) return []
@@ -44,7 +47,10 @@ export function startThreadQueueConsumers(
 				maxConcurrency: cfg.max_concurrency ?? null,
 				retryDelay: cfg.retry_delay ?? null,
 			},
-			handler,
+			(batch, env, ctx: ExecutionContext) => {
+				dispatcher?.attachContext(ctx)
+				return runWithExecutionContext(ctx, () => handler(batch, env, ctx))
+			},
 			env,
 			workerName,
 			undefined,

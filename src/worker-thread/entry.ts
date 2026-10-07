@@ -5,8 +5,13 @@ import { ForwardableEmailMessage } from '../bindings/email'
 import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { type DispatchExecutionContext, WorkerDispatcher } from '../bindings/worker-dispatcher'
+import { resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
+import { validateWorkerCacheConfig } from '../config'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { runWithExecutionContext } from '../execution-context'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
@@ -129,7 +134,7 @@ post({ type: 'need-init' })
 function dispatchServiceWorkerFetch(
 	handler: (event: unknown) => void,
 	request: Request,
-	ctx: WorkerExecutionContext,
+	ctx: DispatchExecutionContext,
 ): Promise<Response> {
 	return new Promise<Response>((resolve, reject) => {
 		let responded = false
@@ -160,6 +165,9 @@ function dispatchServiceWorkerFetch(
 }
 
 async function initRuntime(init: WorkerInitConfig) {
+	const compatibility = resolveCompatibility({ date: init.compatibility.date ?? undefined, flags: init.compatibility.flags })
+	initializeIsolateCompatibility(compatibility)
+	validateWorkerCacheConfig(init.config)
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	const plugin = await import('../plugin')
@@ -218,6 +226,17 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
+	const dispatcher = new WorkerDispatcher(
+		workerModule,
+		env,
+		props => new WorkerExecutionContext(post, props),
+		compatibility,
+		(request, ctx) => {
+			const handler = plugin.getServiceWorkerFetchHandler()
+			if (!handler) throw new Error('Worker module does not export a fetch handler')
+			return dispatchServiceWorkerFetch(handler, request, ctx)
+		},
+	)
 
 	// Introspect DO + container classes for `alarm()` so main's
 	// `DurableObjectNamespaceImpl.hasAlarmHandler()` returns the right value in
@@ -251,6 +270,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		workerModule,
 		init.workerName,
 		(p) => trackBackgroundWork(post, p),
+		dispatcher,
 	)
 
 	const invokeEntrypointRpc = async (
@@ -259,13 +279,15 @@ async function initRuntime(init: WorkerInitConfig) {
 		args: unknown[],
 		props?: Record<string, unknown>,
 	): Promise<unknown> => {
-		const ctx = new WorkerExecutionContext(post, props)
-		const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
-		const member = target?.[method]
-		if (typeof member !== 'function') {
-			throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
-		}
-		return await (member as (...a: unknown[]) => unknown).call(target, ...args)
+		const ctx = dispatcher.context(props)
+		return runWithExecutionContext(ctx, async () => {
+			const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
+			const member = target?.[method]
+			if (typeof member !== 'function') {
+				throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
+			}
+			return await Reflect.apply(member, target, args)
+		})
 	}
 
 	const invokeEntrypointPropertyGet = (
@@ -273,11 +295,13 @@ async function initRuntime(init: WorkerInitConfig) {
 		property: string,
 		props?: Record<string, unknown>,
 	): { kind: 'value'; value: unknown } | { kind: 'function' } => {
-		const ctx = new WorkerExecutionContext(post, props)
-		const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
-		const member = target?.[property]
-		if (typeof member === 'function') return { kind: 'function' }
-		return { kind: 'value', value: member }
+		const ctx = dispatcher.context(props)
+		return runWithExecutionContext(ctx, () => {
+			const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
+			const member = target?.[property]
+			if (typeof member === 'function') return { kind: 'function' }
+			return { kind: 'value', value: member }
+		})
 	}
 
 	const invokeWorkflowControl = async (bindingName: string, op: WorkflowControlOp): Promise<WorkflowControlResult> => {
@@ -286,42 +310,31 @@ async function initRuntime(init: WorkerInitConfig) {
 		return wf.binding.executeControl(op)
 	}
 
-	const callFetch = async (request: Request, props?: Record<string, unknown>): Promise<Response> => {
-		const ctx = new WorkerExecutionContext(post, props)
-		const fetchHandler = resolveEntrypointHandler(defaultExport, 'fetch', ctx, env)
-		if (fetchHandler) {
-			return fetchHandler(request, env, ctx) as Promise<Response>
-		}
-		// Legacy service-worker syntax: `addEventListener('fetch', e => e.respondWith(...))`.
-		// The plugin shim captured the handler at module-import time.
-		const swFetch = plugin.getServiceWorkerFetchHandler()
-		if (swFetch) {
-			return dispatchServiceWorkerFetch(swFetch, request, ctx)
-		}
-		throw new Error('Worker module does not export a fetch handler (and no addEventListener("fetch") handler was registered)')
-	}
-
 	/** Resolve a named handler honoring class- vs object-based exports. */
-	function resolveHandler(name: WorkerHandlerName, ctx: WorkerExecutionContext): ((...args: unknown[]) => Promise<unknown>) | null {
-		return resolveEntrypointHandler(defaultExport, name, ctx, env) as ((...args: unknown[]) => Promise<unknown>) | null
+	function resolveHandler(name: WorkerHandlerName, ctx: DispatchExecutionContext): ((...args: unknown[]) => unknown) | null {
+		return resolveEntrypointHandler(defaultExport, name, ctx, env)
 	}
 
 	const callScheduled = async (cronExpr: string, scheduledTime: number): Promise<{ ok: boolean; noHandler?: boolean }> => {
-		const ctx = new WorkerExecutionContext(post)
-		const handler = resolveHandler('scheduled', ctx)
-		if (!handler) return { ok: false, noHandler: true }
-		const controller = createScheduledController(cronExpr, scheduledTime)
-		await handler(controller, env, ctx)
-		return { ok: true }
+		const ctx = dispatcher.context()
+		return runWithExecutionContext(ctx, async () => {
+			const handler = resolveHandler('scheduled', ctx)
+			if (!handler) return { ok: false, noHandler: true }
+			const controller = createScheduledController(cronExpr, scheduledTime)
+			await handler(controller, env, ctx)
+			return { ok: true }
+		})
 	}
 
 	const callEmail = async (messageId: string, from: string, to: string, raw: Uint8Array): Promise<{ ok: boolean; noHandler?: boolean }> => {
-		const ctx = new WorkerExecutionContext(post)
-		const handler = resolveHandler('email', ctx)
-		if (!handler) return { ok: false, noHandler: true }
-		const message = new ForwardableEmailMessage(getDatabase(), messageId, from, to, raw)
-		await handler(message, env, ctx)
-		return { ok: true }
+		const ctx = dispatcher.context()
+		return runWithExecutionContext(ctx, async () => {
+			const handler = resolveHandler('email', ctx)
+			if (!handler) return { ok: false, noHandler: true }
+			const message = new ForwardableEmailMessage(getDatabase(), messageId, from, to, raw)
+			await handler(message, env, ctx)
+			return { ok: true }
+		})
 	}
 
 	// When `noHandler:true` the `error.message` field is a wire-format placeholder —
@@ -337,7 +350,7 @@ async function initRuntime(init: WorkerInitConfig) {
 				try {
 					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
 					const request = deserializeRequest(cmd.request, reqBody, abortController.signal)
-					const response = await runWithParentContext(cmd.parent, () => callFetch(request, cmd.props))
+					const response = await runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props))
 					const serialized = serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 					if (serialized.streamId !== undefined && response.body) {
@@ -349,6 +362,7 @@ async function initRuntime(init: WorkerInitConfig) {
 					}
 				} catch (e) {
 					fetchAbortControllers.delete(cmd.id)
+					if (cmd.request.streamId !== undefined) requestStreams.cancel(cmd.request.streamId)
 					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
 				}
 				break

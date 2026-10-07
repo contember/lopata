@@ -27,6 +27,7 @@ import { SqliteQueueProducer } from './queue'
 import { makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
 export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
@@ -240,6 +241,9 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 	}
 	const makeHandle = (id: string) => ({
 		id,
+		delete: async () => {
+			await control({ kind: 'delete', instanceId: id })
+		},
 		status: async () => expectStatus(await control({ kind: 'status', instanceId: id })).value,
 		pause: async () => {
 			await control({ kind: 'pause', instanceId: id })
@@ -247,11 +251,11 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 		resume: async () => {
 			await control({ kind: 'resume', instanceId: id })
 		},
-		terminate: async () => {
-			await control({ kind: 'terminate', instanceId: id })
+		terminate: async (options?: { rollback?: boolean }) => {
+			await control({ kind: 'terminate', instanceId: id, rollback: options?.rollback })
 		},
-		restart: async (options?: { fromStep?: string }) => {
-			await control({ kind: 'restart', instanceId: id, fromStep: options?.fromStep })
+		restart: async (options?: WorkflowRestartOptions) => {
+			await control({ kind: 'restart', instanceId: id, from: options?.from, fromStep: options?.fromStep })
 		},
 		skipSleep: async () => {
 			await control({ kind: 'skipSleep', instanceId: id })
@@ -272,6 +276,11 @@ function makeWorkflowEnvProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 				handles.push(makeHandle(r.id))
 			}
 			return handles
+		},
+		deleteBatch: async (instanceIds: string[]) => {
+			const result = await control({ kind: 'deleteBatch', instanceIds })
+			if (result.kind !== 'deleteBatch') throw new Error(`Unexpected workflow control result "${result.kind}" (expected "deleteBatch")`)
+			return result.value
 		},
 		get: async (id: string) => {
 			// Existence check (worker-side `get` throws for unknown ids).

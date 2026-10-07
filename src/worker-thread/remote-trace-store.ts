@@ -6,7 +6,7 @@
  * synchronously and the bridge is async-only.
  */
 
-import type { TraceStore } from '../tracing/store'
+import { getTraceStore, type TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 import type { TraceErrorPayload, WorkerMessage } from './protocol'
 
@@ -86,5 +86,41 @@ export class RemoteTraceStore implements Pick<TraceStore, RemotedMethods> {
 
 	insertError(opts: TraceErrorPayload): void {
 		this._post({ type: 'trace-error', error: opts })
+	}
+}
+
+export type TraceMessage = Extract<WorkerMessage, { type: `trace-${string}` }>
+
+export function isTraceMessage<T extends { type: string }>(msg: T | TraceMessage): msg is TraceMessage {
+	return msg.type.startsWith('trace-')
+}
+
+/** Main-side counterpart of `RemoteTraceStore`. Runs inside `worker.onmessage`, where a throwing write
+ *  (unserializable value, transient DB error) would crash the dev server; trace writes are diagnostic-only. */
+export function applyTraceMessage(msg: TraceMessage): void {
+	try {
+		const store = getTraceStore()
+		switch (msg.type) {
+			case 'trace-span-insert':
+				store.insertSpan(msg.span)
+				break
+			case 'trace-span-end':
+				store.endSpan(msg.spanId, msg.endTime, msg.status, msg.statusMessage ?? undefined)
+				break
+			case 'trace-span-status':
+				store.setSpanStatus(msg.spanId, msg.status, msg.statusMessage)
+				break
+			case 'trace-span-attrs':
+				store.updateAttributes(msg.spanId, msg.attrs)
+				break
+			case 'trace-span-event':
+				store.addEvent(msg.event)
+				break
+			case 'trace-error':
+				store.insertError(msg.error)
+				break
+		}
+	} catch (err) {
+		console.error('[lopata] trace store write failed (ignored):', err)
 	}
 }

@@ -15,6 +15,7 @@ import { makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { addStatelessBindings, type BrowserConfig } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { toRequest } from '../bindings/worker-dispatcher'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
@@ -56,8 +57,8 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })
 
 	const db = new Database(path.join(dataDir, 'data.sqlite'), { create: true })
-	db.run('PRAGMA journal_mode=WAL')
 	db.run('PRAGMA busy_timeout=5000')
+	db.run('PRAGMA journal_mode=WAL')
 	runMigrations(db)
 	// Expose this thread's DB handle so the fetch patch (plugin.ts) can serve the
 	// intercepted Analytics Engine SQL API from the right data dir in multi-worker setups.
@@ -126,8 +127,7 @@ async function proxyFetch(
 	input: Request | string | URL,
 	init?: RequestInit,
 ): Promise<Response> {
-	const url = input instanceof URL ? input.toString() : input
-	const request = typeof url === 'string' ? new Request(url, init) : url
+	const request = toRequest(input, init)
 	const serialized = await rpc.callFetch(target, request)
 	const response = rpc.makeResponse(serialized) as ResponseWithWebSocket
 	// If the binding's response carried a WebSocket upgrade, main adopted the

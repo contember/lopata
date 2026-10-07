@@ -1,13 +1,15 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { cache } from './bindings/worker-cache'
+import type { DispatchExecutionContext } from './bindings/worker-dispatcher'
 import { tracing } from './tracing/span'
 
-const storage = new AsyncLocalStorage<ExecutionContext>()
+const storage = new AsyncLocalStorage<DispatchExecutionContext>()
 
-export function getActiveExecutionContext(): ExecutionContext | undefined {
+export function getActiveExecutionContext(): DispatchExecutionContext | undefined {
 	return storage.getStore()
 }
 
-export function runWithExecutionContext<T>(ctx: ExecutionContext, fn: () => T): T {
+export function runWithExecutionContext<T>(ctx: DispatchExecutionContext, fn: () => T): T {
 	return storage.run(ctx, fn)
 }
 
@@ -21,6 +23,8 @@ export function logIfRejected(promise: Promise<unknown>): Promise<unknown> {
 }
 
 export class ExecutionContext {
+	readonly cache = cache
+	exports: Record<string, unknown> = {}
 	private _promises: Promise<unknown>[] = []
 	readonly props: Record<string, unknown>
 	/** Cloudflare-compatible custom span API: `ctx.tracing.enterSpan(...)`. */
@@ -40,6 +44,11 @@ export class ExecutionContext {
 
 	/** Dev-only: await all tracked background promises */
 	async _awaitAll(): Promise<void> {
-		await Promise.allSettled(this._promises)
+		let consumed = 0
+		while (consumed < this._promises.length) {
+			const pending = this._promises.slice(consumed)
+			consumed = this._promises.length
+			await Promise.allSettled(pending)
+		}
 	}
 }

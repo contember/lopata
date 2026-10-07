@@ -1,5 +1,7 @@
 import type { SQLQueryBindings } from 'bun:sqlite'
 import type { SqliteWorkflowBinding } from '../../bindings/workflow'
+import { WorkflowStore } from '../../bindings/workflow-store'
+import type { WorkflowRestartOptions } from '../../bindings/workflow-store'
 import { getDatabase } from '../../db'
 import type { HandlerContext, OkResponse, WorkflowDetail, WorkflowInstance, WorkflowSummary } from '../types'
 import { getAllConfigs } from '../types'
@@ -67,28 +69,38 @@ export const handlers = {
 
 	async 'workflows.getInstance'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<WorkflowDetail> {
 		const db = getDatabase()
-		const instance = db.query<Record<string, unknown>, [string]>(
-			'SELECT * FROM workflow_instances WHERE id = ?',
-		).get(id)
+		const instance = db.query<WorkflowInstance, [string, string]>(
+			'SELECT * FROM workflow_instances WHERE id = ? AND workflow_name = ?',
+		).get(id, name)
 		if (!instance) throw new Error('Workflow instance not found')
 
-		const steps = db.query<{ step_name: string; output: string | null; completed_at: number }, [string]>(
-			'SELECT step_name, output, completed_at FROM workflow_steps WHERE instance_id = ? ORDER BY completed_at',
-		).all(id)
-
-		const stepAttempts = db.query<
-			{
-				step_name: string
-				failed_attempts: number
-				last_error: string | null
-				last_error_name: string | null
-				last_error_id: string | null
-				updated_at: number | null
-			},
-			[string]
-		>(
-			'SELECT step_name, failed_attempts, last_error, last_error_name, last_error_id, updated_at FROM workflow_step_attempts WHERE instance_id = ? ORDER BY updated_at DESC',
-		).all(id)
+		const { occurrences, legacy } = new WorkflowStore(db).readDetail(id, name)
+		const steps: WorkflowDetail['steps'] = [
+			...occurrences.filter(row => row.checkpoint).map(row => ({
+				key: row.key,
+				step_name: row.key.name,
+				output: row.checkpoint?.kind === 'json' ? row.checkpoint.serialized : null,
+				completed_at: row.completedAt,
+			})),
+			...legacy.filter(row => row.completed_at !== null).map(row => ({
+				key: null,
+				step_name: row.step_name,
+				output: row.output,
+				completed_at: row.completed_at,
+			})),
+		]
+		const stepAttempts: WorkflowDetail['stepAttempts'] = [
+			...occurrences.filter(row => row.failedAttempts > 0).map(row => ({
+				key: row.key,
+				step_name: row.key.name,
+				failed_attempts: row.failedAttempts,
+				last_error: row.error?.message ?? null,
+				last_error_name: row.error?.name ?? null,
+				last_error_id: row.error?.errorId ?? null,
+				updated_at: row.updatedAt,
+			})),
+			...legacy.filter(row => row.failed_attempts > 0).map(row => ({ ...row, key: null })),
+		]
 
 		const events = db.query<{ id: number; event_type: string; payload: string | null; created_at: number }, [string]>(
 			'SELECT id, event_type, payload, created_at FROM workflow_events WHERE instance_id = ? ORDER BY created_at',
@@ -113,25 +125,15 @@ export const handlers = {
 			}
 		} catch {}
 
-		// Compute active sleep: find the latest sleep/sleepUntil step "until" time.
 		let activeSleep: WorkflowDetail['activeSleep'] = null
 		if (sleeping) {
-			for (let i = steps.length - 1; i >= 0; i--) {
-				const s = steps[i]!
-				if ((s.step_name.startsWith('sleep:') || s.step_name.startsWith('sleepUntil:')) && s.output) {
-					try {
-						const parsed = JSON.parse(s.output) as { until: number | string }
-						const until = typeof parsed.until === 'string' ? new Date(parsed.until).getTime() : parsed.until
-						if (until > Date.now()) {
-							activeSleep = { stepName: s.step_name, until }
-							break
-						}
-					} catch {}
-				}
+			const sleep = occurrences.find(row => row.key.type === 'sleep' && row.state === 'started' && row.deadline !== null)
+			if (sleep?.deadline !== undefined && sleep.deadline !== null) {
+				activeSleep = { stepName: `${sleep.key.name} #${sleep.key.count}`, until: sleep.deadline }
 			}
 		}
 
-		return { ...instance, steps, stepAttempts, events, activeSleep, waitingForEvents } as WorkflowDetail
+		return { ...instance, occurrences, legacy, steps, stepAttempts, events, activeSleep, waitingForEvents }
 	},
 
 	async 'workflows.terminate'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<OkResponse> {
@@ -155,8 +157,11 @@ export const handlers = {
 		return { ok: true }
 	},
 
-	async 'workflows.restart'({ name, id, fromStep }: { name: string; id: string; fromStep?: string }, ctx: HandlerContext): Promise<OkResponse> {
-		await getWorkflowBinding(ctx, name).executeControl({ kind: 'restart', instanceId: id, fromStep })
+	async 'workflows.restart'(
+		{ name, id, fromStep, from }: { name: string; id: string } & WorkflowRestartOptions,
+		ctx: HandlerContext,
+	): Promise<OkResponse> {
+		await getWorkflowBinding(ctx, name).executeControl({ kind: 'restart', instanceId: id, fromStep, from })
 		return { ok: true }
 	},
 
@@ -180,9 +185,9 @@ export const handlers = {
 
 	async 'workflows.duplicate'({ name, id }: { name: string; id: string }, ctx: HandlerContext): Promise<{ ok: true; id: string }> {
 		const db = getDatabase()
-		const row = db.query<{ params: string | null }, [string]>(
-			'SELECT params FROM workflow_instances WHERE id = ?',
-		).get(id)
+		const row = db.query<{ params: string | null }, [string, string]>(
+			'SELECT params FROM workflow_instances WHERE id = ? AND workflow_name = ?',
+		).get(id, name)
 		if (!row) throw new Error('Workflow instance not found')
 		const params = row.params !== null ? JSON.parse(row.params) : {}
 		const result = await getWorkflowBinding(ctx, name).executeControl({ kind: 'create', params })

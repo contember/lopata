@@ -30,9 +30,79 @@
 
 | Priority | Feature       | Notes                                  |
 | -------- | ------------- | -------------------------------------- |
-| Low      | `ctx.exports` | Loopback bindings (enable_ctx_exports) |
 | Very low | Tail handler  | Hard to simulate locally               |
 | Very low | Secrets Store | `[[secrets_store_secrets]]`, open beta |
+
+---
+
+## Recently added Cloudflare features
+
+Short overview of Cloudflare Workers features added in 2026. Each entry lists what works locally, how to enable it, and notable local limitations.
+
+### Compatibility dates and flags
+
+- Lopata reads `compatibility_date` and `compatibility_flags` from the Wrangler config and validates them (date format, duplicate and conflicting flags).
+- Only the behaviors listed below depend on them. An explicit flag wins over the date. Without a date, each behavior keeps its previous local default. Other flags are accepted and ignored.
+
+### Workflow rollbacks
+
+- Register compensation per step: `step.do(name, callback, { rollback, rollbackConfig })` (or with a step config before the callback). The rollback receives `{ ctx, error, output }`.
+- On terminal failure, started steps are compensated in reverse start order. `instance.terminate({ rollback: true })` compensates before termination. `instance.status().rollback` reports `complete` or `failed`.
+- Limitation: a step timeout cannot stop JavaScript that is still running; compensation waits for the forward callback to settle.
+
+### Workflow steps: repeated names, restart from a step, streams
+
+- Steps with the same name are separate occurrences; the step callback context exposes `ctx.step.name` and `ctx.step.count`.
+- `instance.restart({ from: { name, count?, type? } })` restarts from that occurrence and keeps the earlier checkpoints. `restart({ fromStep })` still works.
+- A `step.do` callback can return a `ReadableStream`. Lopata reads it fully into memory, stores the bytes in the checkpoint and returns a new stream on replay.
+
+### Workflow instance deletion
+
+- `instance.delete()` and `env.MY_WORKFLOW.deleteBatch(ids)` (1–100 IDs) remove the instance and its state. A running instance is aborted as with `terminate()`; no compensation runs.
+- `deleteBatch` reports missing IDs as `instance.not_found`.
+
+### Workers Cache and `ctx.exports`
+
+- `cache` (top level and on `exports.<Name>` of type `worker`) and `exports` declarations of type `worker`, `durable-object` and `workflow` are validated at config load.
+- Lopata never caches entrypoint responses; every request reaches the Worker. `ctx.cache.purge()` and `cache.invalidate()` from `cloudflare:workers` resolve `{ success: true, errors: [] }` and do nothing.
+- `ctx.exports.<Name>` gives loopback `fetch()`, RPC and property access to the Worker's own `WorkerEntrypoint` exports. Declarative Durable Object and Workflow lifecycle from `exports` is not implemented.
+
+### Workers AI and AI Gateway
+
+- `env.AI.run(model, inputs, { gateway: { id, ... } })` routes through AI Gateway. Model names that do not start with `@` use the unified third-party model API.
+- `env.AI.gateway(id)` provides `run()` (universal requests, single or fallback array), `getUrl()`, `getLog()` and `patchLog()`.
+- `run()` accepts `{ rejectIfBusy }` and a streamed `{ multipart: { body, contentType } }` input for native models.
+- Requires `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; inference stays remote. Multipart is not supported with Gateway, third-party models or `rejectIfBusy`.
+
+### Modern Web Crypto
+
+- Lopata exposes Bun's native Web Crypto. On Bun 1.4.2 and later, ML-KEM, ML-DSA, the encapsulation methods, `crypto.subtle.getPublicKey()` and `SubtleCrypto.supports()` are available.
+- On older Bun versions they are absent. The `webcrypto_modern_algorithms` flag has no effect.
+
+### Custom tracing spans
+
+- `tracing` from `cloudflare:workers` and `ctx.tracing` provide `enterSpan`, `startActiveSpan`, `startSpan` and `getActiveSpan`. Handles support `setAttribute`, `setAttributes`, `recordException` and `end()`.
+- `enterSpan` ends its span when the callback settles. Spans from `startSpan`/`startActiveSpan` stay open until `end()`. Spans are not held open for response bodies or `waitUntil` work.
+
+### Durable Objects: `deleteAll()` and `ctx.abort()`
+
+- `storage.deleteAll()` also deletes the alarm from compatibility date `2026-02-24` or with `delete_all_deletes_alarm` (`delete_all_preserves_alarm` disables it).
+- `deleteAll()` throws inside a transaction. Objects in the same process can share a SQLite connection, so a call can also throw while another object has a transaction open.
+- `ctx.abort(reason, { retryAlarm })` throws `reason`, rejects pending calls and replaces the instance on the next request. An aborted alarm is retried unless `retryAlarm: false` or the alarm changed during the attempt.
+- Limitation: an in-process object (testing helpers) keeps running detached from its callers. Container-backed objects do not throw.
+
+### WebSockets
+
+- Close reasons longer than 123 UTF-8 bytes throw `SyntaxError` from compatibility date `2026-03-03` or with `websocket_close_reason_byte_limit`.
+- `binaryType` defaults to `'blob'` from `2026-03-17` or with `websocket_standard_binary_type`, otherwise `'arraybuffer'`. Without a date the property is absent and messages are `ArrayBuffer`. Hibernation handlers always receive `ArrayBuffer`.
+- From `2026-04-07` or with `web_socket_auto_reply_to_close`, `readyState` is `CLOSED` when close listeners run.
+- Not supported: `accept({ allowHalfOpen })`, manual close replies, network message-size limits.
+
+### Email, Hyperdrive and Images
+
+- `env.EMAIL.send()` returns `{ messageId }`. `to`, `cc` and `bcc` accept `{ name, email }` objects. String attachment content is treated as base64.
+- Hyperdrive reads `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_<BINDING>` before `localConnectionString`. MySQL URLs default to port 3306.
+- Images output results provide `.response({ headers })`; Lopata sets `content-type` from the output format.
 
 ---
 
@@ -135,9 +205,9 @@
 - ✅ `ctx.waitUntil(promise)` — extend Worker lifetime past response
 - ✅ `ctx.passThroughOnException()` — fail open to origin on error (no-op in dev)
 - ✅ `ctx.props` — arbitrary JSON from Service Bindings
-- ❌ `ctx.exports` — loopback bindings for exports (enable_ctx_exports flag)
+- ✅ `ctx.exports` — loopback bindings for `WorkerEntrypoint` exports
 - ✅ `waitUntil()` standalone import from `cloudflare:workers`
-- ✅ `ctx.tracing.enterSpan()` / `import { tracing } from "cloudflare:workers"` — custom trace spans (`span.setAttribute`, `span.isTraced`)
+- ✅ `ctx.tracing` / `import { tracing } from "cloudflare:workers"` — custom trace spans (`enterSpan`, `startActiveSpan`, `startSpan`, `getActiveSpan`)
 
 ### 1.6 Fetch Handler
 
@@ -836,14 +906,16 @@
 - ✅ `env.MY_WORKFLOW.create(options?)` — create instance; options: { id?, params? }
 - ✅ `env.MY_WORKFLOW.createBatch(batch)` — create up to 100 instances
 - ✅ `env.MY_WORKFLOW.get(id)` — get instance by ID
+- ✅ `env.MY_WORKFLOW.deleteBatch(ids)` — delete up to 100 instances
 
 ### 7.7 WorkflowInstance
 
 - ✅ `instance.id` — instance identifier
 - ✅ `instance.pause()` — suspend instance
 - ✅ `instance.resume()` — resume paused instance
-- ✅ `instance.terminate()` — permanently stop (via AbortController)
-- ✅ `instance.restart()` — cancel and re-run from beginning (clears cached steps)
+- ✅ `instance.terminate(options?)` — permanently stop (via AbortController); `{ rollback: true }` compensates first
+- ✅ `instance.restart(options?)` — cancel and re-run from the beginning or from a step (`{ from: { name, count?, type? } }`)
+- ✅ `instance.delete()` — stop and remove the instance
 - ✅ `instance.status()` — returns InstanceStatus
 - ✅ `instance.sendEvent({ type, payload })` — deliver event to waitForEvent
 

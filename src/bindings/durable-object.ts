@@ -1,14 +1,17 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility } from '../compatibility-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
-import type { DOExecutor, DOExecutorFactory } from './do-executor'
+import type { DOAbortPolicy, DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { mayHaveMultipleStatements, splitStatements } from './sql-split'
+import { CFWebSocket } from './websocket-pair'
 
 // --- SQL Storage Cursor ---
 
@@ -368,7 +371,7 @@ export class SqliteDurableObjectStorage {
 	private _dataDir: string | null = null
 	private _kv: SyncKV | null = null
 
-	constructor(db: Database, namespace: string, id: string, dataDir?: string) {
+	constructor(db: Database, namespace: string, id: string, dataDir?: string, private compatibility = legacyCompatibility) {
 		this.db = db
 		this.namespace = namespace
 		this.id = id
@@ -465,9 +468,21 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async deleteAll(_options?: StorageOptions): Promise<void> {
-		this.db
-			.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?')
-			.run(this.namespace, this.id)
+		// Shared-connection transactions must not roll back deletion after its scheduler cancellation has escaped.
+		if (this.db.inTransaction) throw new Error('Cannot call deleteAll() within a transaction')
+		const deleteAlarm = this.compatibility.deleteAllDeletesAlarm === 'enabled'
+		this.db.transaction(() => {
+			this.db.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
+			if (deleteAlarm) {
+				this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
+			}
+		})()
+		if (deleteAlarm) this._onAlarmSet?.(null)
+	}
+
+	/** @internal Retained state follows the owning executor's hot-reloaded configuration. */
+	_setCompatibility(compatibility: CompatibilitySelection): void {
+		this.compatibility = compatibility
 	}
 
 	async list(
@@ -628,10 +643,24 @@ export class DurableObjectStateImpl {
 	private _activeRequests = 0
 	private _aborted = false
 	private _abortReason: string | undefined
+	private _abortPolicy?: DOAbortPolicy
+	private _onAbort?: (policy: DOAbortPolicy) => void
 
-	constructor(id: DurableObjectIdImpl, db: Database, namespace: string, dataDir?: string, limits?: DurableObjectLimits) {
+	/** @internal Container executors keep the eviction-only abort lifecycle. */
+	_setAbortCallback(callback: (policy: DOAbortPolicy) => void): void {
+		this._onAbort = callback
+	}
+
+	constructor(
+		id: DurableObjectIdImpl,
+		db: Database,
+		namespace: string,
+		dataDir?: string,
+		limits?: DurableObjectLimits,
+		compatibility = legacyCompatibility,
+	) {
 		this.id = id
-		this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir)
+		this.storage = new SqliteDurableObjectStorage(db, namespace, id.toString(), dataDir, compatibility)
 		this._limits = { ...DO_DEFAULTS, ...limits }
 	}
 
@@ -684,9 +713,14 @@ export class DurableObjectStateImpl {
 	 * Abort the Durable Object instance. Rejects all queued requests and
 	 * marks the instance for eviction so it will be re-created fresh on next access.
 	 */
-	abort(reason?: string): void {
+	abort(reason?: string, options?: { retryAlarm?: boolean }): void {
+		if (this._abortPolicy) throw new Error(this._abortPolicy.reason)
 		this._aborted = true
 		this._abortReason = reason ?? 'Durable Object reset by abort()'
+		if (!this._onAbort) return
+		this._abortPolicy = { reason: this._abortReason, retryAlarm: options?.retryAlarm ?? true }
+		this._onAbort(this._abortPolicy)
+		throw new Error(this._abortReason)
 	}
 
 	/** @internal Check if this state has been aborted */
@@ -724,10 +758,7 @@ export class DurableObjectStateImpl {
 			throw new Error(`Exceeded max concurrent WebSocket connections (${this._limits.maxConcurrentWebSockets})`)
 		}
 
-		// Implicitly accept the WebSocket (in CF production, ctx.acceptWebSocket handles this)
-		if ('accept' in ws && typeof ws.accept === 'function') {
-			;(ws as any).accept()
-		}
+		if (ws instanceof CFWebSocket) ws._useHibernationDelivery()
 
 		const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null }
 		this._acceptedWebSockets.add(entry)
@@ -772,6 +803,7 @@ export class DurableObjectStateImpl {
 				;(obj.webSocketError as (ws: WebSocket, error: unknown) => Promise<void>).call(instance, ws, event)
 			}
 		})
+		if ('accept' in ws && typeof ws.accept === 'function') ws.accept()
 	}
 
 	getWebSockets(tag?: string): WebSocket[] {
@@ -876,6 +908,9 @@ export class DurableObjectNamespaceImpl {
 	private db: Database
 	private namespaceName: string
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
+	/** Running alarm attempts by id; `mutated` is set when the alarm is set or deleted during the attempt. */
+	private runningAlarms = new Map<string, { mutated: boolean }>()
+	private _destroyed = false
 	private dataDir: string | undefined
 	private limits: DurableObjectLimits | undefined
 	private _lastActivity = new Map<string, number>()
@@ -885,6 +920,7 @@ export class DurableObjectNamespaceImpl {
 	private _factoryOverride?: DOExecutorFactory
 	private _defaultFactory?: DOExecutorFactory
 	private _generationId?: number
+	private _compatibility?: CompatibilitySelection
 	private clock: Clock
 
 	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory, clock?: Clock) {
@@ -910,11 +946,16 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** Called after worker module is loaded to wire the actual class */
-	_setClass(cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase, env: Record<string, unknown>, generationId?: number) {
+	_setClass(
+		cls: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase,
+		env: Record<string, unknown>,
+		generationId?: number,
+		compatibility = legacyCompatibility,
+	) {
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
 				// Hot-swap: reuse state + WebSocket connections, create new instance with new code
-				executor.reloadClass(cls, env)
+				executor.reloadClass(cls, env, compatibility)
 			} else {
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
@@ -923,6 +964,7 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = cls
+		this._compatibility = compatibility
 		this._externalClassName = undefined
 		this._env = env
 		this._generationId = generationId
@@ -959,6 +1001,7 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		this._class = undefined
+		this._compatibility = undefined
 		this._externalClassName = className
 		// Clear the previous generation's hint; the new generation's `'ready'` message
 		// will deliver a fresh one via `_setAlarmHandlerHint`. Without this, removing
@@ -1020,6 +1063,8 @@ export class DurableObjectNamespaceImpl {
 			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
 			.run(this.namespaceName, idStr)
 
+		const attempt = { mutated: false }
+		this.runningAlarms.set(idStr, attempt)
 		try {
 			await startSpan({
 				name: `do.alarm ${this.namespaceName}`,
@@ -1032,7 +1077,12 @@ export class DurableObjectNamespaceImpl {
 				},
 			}, () => executor.executeAlarm(retryCount))
 		} catch (e) {
+			// Teardown rejects the running attempt; a destroyed namespace must not reschedule it or touch the (possibly closed) db.
+			if (this._destroyed) return
 			persistError(e, 'alarm')
+			if (executor.getAbortPolicy?.()?.retryAlarm === false) return
+			// A replacement or deletion made during the attempt wins over its retry.
+			if (attempt.mutated) return
 			if (retryCount < MAX_ALARM_RETRIES) {
 				// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
 				const backoffMs = Math.pow(2, retryCount) * 1000
@@ -1048,16 +1098,23 @@ export class DurableObjectNamespaceImpl {
 				this.alarmTimers.set(idStr, timer)
 			}
 			// After max retries, alarm is discarded
+		} finally {
+			if (this.runningAlarms.get(idStr) === attempt) this.runningAlarms.delete(idStr)
 		}
+	}
+
+	private _markAlarmMutated(idStr: string): void {
+		const attempt = this.runningAlarms.get(idStr)
+		if (attempt) attempt.mutated = true
 	}
 
 	/** @internal Get or create a DO executor by id string */
 	private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
 		const existing = this._executors.get(idStr)
 		if (existing) {
-			// A crashed worker leaves a dead executor behind; drop it so the access
-			// below recreates a fresh one instead of posting to a terminated Worker.
-			if (!existing.isDisposed?.()) return existing
+			// A crashed or aborted instance is dropped so the access below
+			// recreates a fresh one instead of posting to a dead executor.
+			if (!existing.isDisposed?.() && !existing.isAborted()) return existing
 			this._disposeExecutor(idStr, existing)
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
@@ -1074,6 +1131,7 @@ export class DurableObjectNamespaceImpl {
 			.run(this.namespaceName, idStr, id.name ?? null)
 
 		const executor = this._getFactory().create({
+			compatibility: this._compatibility,
 			id,
 			db: this.db,
 			namespaceName: this.namespaceName,
@@ -1086,6 +1144,7 @@ export class DurableObjectNamespaceImpl {
 			// (container DOs only — see `_disposing`).
 			_priorDisposal: this._containerConfig ? this._disposing.get(idStr) : undefined,
 			onAlarmSet: (time) => {
+				this._markAlarmMutated(idStr)
 				if (time === null) {
 					const t = this.alarmTimers.get(idStr)
 					if (t) clearTimeout(t)
@@ -1202,6 +1261,7 @@ export class DurableObjectNamespaceImpl {
 	 * would outlive teardown (and the DB close that follows).
 	 */
 	destroy(options?: { force?: boolean }): void {
+		this._destroyed = true
 		if (this._evictionTimer) {
 			clearInterval(this._evictionTimer)
 			this._evictionTimer = null
@@ -1316,6 +1376,7 @@ export class DurableObjectNamespaceImpl {
 
 	/** @internal Cancel a scheduled alarm without firing it */
 	cancelAlarm(idStr: string): void {
+		this._markAlarmMutated(idStr)
 		const timer = this.alarmTimers.get(idStr)
 		if (timer) clearTimeout(timer)
 		this.alarmTimers.delete(idStr)

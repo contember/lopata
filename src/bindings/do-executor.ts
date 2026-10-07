@@ -1,4 +1,5 @@
 import type { Database } from 'bun:sqlite'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import type { ContainerConfig } from './container'
 import type { DurableObjectBase, DurableObjectIdImpl, DurableObjectLimits } from './durable-object'
@@ -9,6 +10,11 @@ export interface DOWorkerRuntimeOptions {
 	/** Base URL of main's Artifacts git endpoint. */
 	artifactsBaseUrl?: string
 	browserConfig?: BrowserConfig
+}
+
+export interface DOAbortPolicy {
+	readonly reason: string
+	readonly retryAlarm: boolean
 }
 
 export interface ExecutorConfig {
@@ -29,6 +35,8 @@ export interface ExecutorConfig {
 	 *  the DO worker so it doesn't re-load from `_configPath` WITHOUT the `--env`
 	 *  overrides (which the re-parse silently dropped). */
 	_wranglerConfig?: WranglerConfig
+	/** Absent only when the standalone worker must select from its config-file fallback. */
+	compatibility?: CompatibilitySelection
 	/** @internal Runtime settings the worker env gets too, so the DO env matches it. */
 	_runtime?: DOWorkerRuntimeOptions
 	/** @internal Disposal of the PRIOR executor for this same id, still in flight
@@ -51,6 +59,9 @@ export interface DOExecutor {
 	/** Execute the alarm handler */
 	executeAlarm(retryCount: number): Promise<void>
 
+	/** Policy of the first `ctx.abort()`, which decides whether an interrupted alarm is retried. */
+	getAbortPolicy?(): DOAbortPolicy | undefined
+
 	/** Whether the instance has in-flight requests */
 	isActive(): boolean
 
@@ -69,7 +80,7 @@ export interface DOExecutor {
 	isDisposed?(): boolean
 
 	/** Hot-swap the DO class and env without disposing (preserves WebSocket connections) */
-	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown): void
+	reloadClass?(cls: new(ctx: any, env: unknown) => DurableObjectBase, env: unknown, compatibility?: CompatibilitySelection): void
 
 	/** Kill the instance */
 	dispose(): Promise<void>

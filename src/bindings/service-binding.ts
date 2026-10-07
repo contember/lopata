@@ -8,12 +8,15 @@
  * - `.connect()` — stub for TCP socket (throws — not supported in dev)
  */
 
-import { ExecutionContext } from '../execution-context'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
-import { getActiveContext, runWithContext } from '../tracing/context'
+import { getActiveContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
-import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
+import { createRpcFunctionStub, NON_RPC_PROPS, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
 import { assetsOnlyRejection } from './static-assets'
+import { getWorkerDispatcher, isWorkerResponse, toRequest } from './worker-dispatcher'
 
 type WorkerModule = Record<string, unknown>
 
@@ -41,7 +44,7 @@ export function serviceBindingConnectError(name: string): Error {
  * Resolve the call target for a service binding RPC (`fetch` or method):
  * a named entrypoint class, an unnamed default class, or the default object.
  *
- * Used by `ServiceBinding._getTarget` (in-process) and the worker-thread's
+ * Used by in-process service dispatch and the worker-thread's
  * `invokeEntrypointRpc`. Single source of truth so the in-process and
  * thread-mode paths can't drift.
  */
@@ -84,6 +87,7 @@ export class ServiceBinding {
 	_wire(
 		resolverOrModule: (() => ResolvedTarget) | Record<string, unknown>,
 		env?: Record<string, unknown>,
+		compatibility: CompatibilitySelection = legacyCompatibility,
 	): void {
 		if (typeof resolverOrModule === 'function' && env === undefined) {
 			// New API: resolver function
@@ -92,7 +96,7 @@ export class ServiceBinding {
 			// Legacy API: _wire(workerModule, env)
 			const workerModule = resolverOrModule as Record<string, unknown>
 			const capturedEnv = env!
-			this._resolver = () => ({ kind: 'in-process', workerModule, env: capturedEnv })
+			this._resolver = () => ({ kind: 'in-process', workerModule, env: capturedEnv, compatibility })
 		}
 	}
 
@@ -123,8 +127,10 @@ export class ServiceBinding {
 		}
 	}
 
-	private _getTarget(ctx?: ExecutionContext): Record<string, unknown> {
-		const resolved = this._resolve()
+	private async _invokeFallback<T>(
+		resolved: ResolvedTarget,
+		callback: (ctx: ExecutionContext, target: Extract<ResolvedTarget, { kind: 'in-process' }>) => T | Promise<T>,
+	): Promise<T> {
 		// An assets-only worker has no script, so it exposes no RPC surface at all —
 		// say that plainly instead of blaming thread isolation.
 		if (resolved.kind === 'assets') {
@@ -137,20 +143,32 @@ export class ServiceBinding {
 				`Service binding "${this._serviceName}": in-process resolve attempted but the target worker runs in thread isolation — calls must route through the thread executor`,
 			)
 		}
-		const execCtx = ctx ?? new ExecutionContext(this._props)
-		return resolveEntrypointTarget(resolved.workerModule, this._entrypoint, execCtx, resolved.env)
+		const ctx = new ExecutionContext(this._props)
+		return runWithCompatibility(resolved.compatibility, () => runWithExecutionContext(ctx, () => callback(ctx, resolved)))
+	}
+
+	private _invokeRpcFallback(
+		resolved: ResolvedTarget,
+		callback: (target: Record<string, unknown>, scope: RpcExecutionScope) => unknown,
+	): Promise<unknown> {
+		return this._invokeFallback(resolved, async (ctx, target) => {
+			const scope: RpcExecutionScope = {
+				run: callback => runWithCompatibility(target.compatibility, () => runWithExecutionContext(ctx, callback)),
+			}
+			const instance = resolveEntrypointTarget(target.workerModule, this._entrypoint, ctx, target.env)
+			return callback(instance, scope)
+		})
 	}
 
 	async fetch(input: Request | string | URL, init?: RequestInit): Promise<Response> {
-		const url = input instanceof URL ? input.toString() : input
-		const request = typeof url === 'string' ? new Request(url, init) : url
+		const request = toRequest(input, init)
 
 		// Resolve first so a missing target throws the real error instead of
 		// burning a slot in the per-request subrequest budget on every failed call.
 		const resolved = this._resolve()
 		this._checkSubrequestLimit()
 		if (resolved.kind === 'thread') {
-			return resolved.executor.executeFetch(request, this._props)
+			return resolved.executor.executeFetch(request, this._props, this._entrypoint)
 		}
 		// Assets-only target: no script to invoke — its asset layer answers, including
 		// its own html_handling / not_found_handling. A declared `entrypoint` names an
@@ -169,28 +187,20 @@ export class ServiceBinding {
 			return resolved.assets.fetch(request)
 		}
 
-		const execCtx = new ExecutionContext(this._props)
-		const target = this._getTarget(execCtx)
-		if (!target?.fetch || typeof target.fetch !== 'function') {
-			throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
-		}
-		const { workerModule, env } = resolved
-		const def = workerModule.default
-		const isClass = this._entrypoint || (typeof def === 'function' && def.prototype?.fetch)
-
-		const parentCtx = getActiveContext()
-		const doCall = async () => {
-			const response = isClass
-				? await (target.fetch as (r: Request) => Promise<Response>)(request)
-				: await (target.fetch as (r: Request, e: unknown, c: ExecutionContext) => Promise<Response>)(request, env, execCtx)
-			execCtx._awaitAll().catch(() => {})
+		const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
+		if (dispatcher) return dispatcher.fetch(request, this._entrypoint, this._props)
+		return this._invokeFallback(resolved, async ctx => {
+			const target = resolveEntrypointTarget(resolved.workerModule, this._entrypoint, ctx, resolved.env)
+			const handler = target?.fetch
+			if (typeof handler !== 'function') {
+				throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
+			}
+			const def = resolved.workerModule.default
+			const isClass = this._entrypoint || (typeof def === 'function' && def.prototype)
+			const response: unknown = await Reflect.apply(handler, target, isClass ? [request] : [request, resolved.env, ctx])
+			if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
 			return response
-		}
-
-		if (parentCtx) {
-			return runWithContext(parentCtx, doCall)
-		}
-		return doCall()
+		})
 	}
 
 	connect(_address: string | { hostname: string; port: number }): never {
@@ -236,19 +246,18 @@ export class ServiceBinding {
 						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
-					const target = self._getTarget()
-					const member = target[prop]
-					if (typeof member !== 'function') {
-						throw new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`)
+					if (resolved.kind === 'in-process') {
+						const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
+						if (dispatcher) return dispatcher.rpc(self._entrypoint, prop, args, self._props)
 					}
-					// Propagate trace context so child spans link correctly
-					const parentCtx = getActiveContext()
-					const doCall = () => (member as (...a: unknown[]) => unknown).call(target, ...args)
-					const result = parentCtx
-						? runWithContext(parentCtx, doCall)
-						: doCall()
-					// CF always wraps in Promise for async consistency
-					return Promise.resolve(result).then((r) => wrapRpcReturnValue(r, prop))
+					return self._invokeRpcFallback(resolved, async (target, scope) => {
+						const member = target[prop]
+						if (typeof member !== 'function') {
+							throw new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`)
+						}
+						const value: unknown = await Reflect.apply(member, target, args)
+						return wrapRpcReturnValue(value, prop, scope)
+					})
 				}
 
 				// Make it thenable for property access: `await binding.prop`
@@ -274,18 +283,15 @@ export class ServiceBinding {
 						})
 						return promise.then(onFulfilled, onRejected)
 					}
-					const promise = new Promise<unknown>((resolveP, rejectP) => {
-						try {
-							const target = self._getTarget()
-							const member = target[prop]
-							if (typeof member === 'function') {
-								resolveP(createRpcFunctionStub(member as Function, target))
-							} else {
-								resolveP(wrapRpcReturnValue(member, prop))
-							}
-						} catch (e) {
-							rejectP(e)
-						}
+					if (resolved.kind === 'in-process') {
+						const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
+						if (dispatcher) return dispatcher.property(self._entrypoint, prop, self._props).then(onFulfilled, onRejected)
+					}
+					const promise = self._invokeRpcFallback(resolved, async (target, scope) => {
+						const member: unknown = await target[prop]
+						return typeof member === 'function'
+							? createRpcFunctionStub(member, target, scope)
+							: wrapRpcReturnValue(member, prop, scope)
 					})
 					return promise.then(onFulfilled, onRejected)
 				}

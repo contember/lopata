@@ -6,7 +6,10 @@
  * terminate + respawn.
  */
 
+import type { WorkflowBatchDeleteResult, WorkflowInstanceStatus } from '../bindings/workflow'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
+export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 
@@ -135,6 +138,7 @@ export function deserializeError(err: SerializedError): Error {
 }
 
 export interface WorkerInitConfig {
+	compatibility: CompatibilitySelection
 	modulePath: string
 	/** Wrangler config — already parsed, with `env.<name>` overrides applied. */
 	config: WranglerConfig
@@ -170,14 +174,16 @@ export type WorkerHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
  */
 export type WorkflowControlOp =
 	| { kind: 'create'; params: unknown; id?: string }
+	| { kind: 'delete'; instanceId: string }
+	| { kind: 'deleteBatch'; instanceIds: string[] }
 	// Resume all interrupted (running/waiting) instances. Driven by main AFTER the
 	// previous generation's worker is disposed, so an interrupted workflow is never
 	// re-executed in the new worker while the old one is still running it.
 	| { kind: 'resumeInterrupted' }
-	| { kind: 'terminate'; instanceId: string }
+	| { kind: 'terminate'; instanceId: string; rollback?: boolean }
 	| { kind: 'pause'; instanceId: string }
 	| { kind: 'resume'; instanceId: string }
-	| { kind: 'restart'; instanceId: string; fromStep?: string }
+	| { kind: 'restart'; instanceId: string; fromStep?: string; from?: { name: string; count?: number; type?: 'do' | 'sleep' | 'waitForEvent' } }
 	| { kind: 'skipSleep'; instanceId: string }
 	| { kind: 'sendEvent'; instanceId: string; eventType: string; payload?: unknown }
 	// Introspection reads of the worker-side in-memory registries — the dashboard
@@ -188,17 +194,11 @@ export type WorkflowControlOp =
 	// existence check behind their `get(id)`.
 	| { kind: 'status'; instanceId: string }
 
-/** `WorkflowInstance.status()` payload (see `SqliteWorkflowInstance.status`). */
-export interface WorkflowInstanceStatus {
-	status: string
-	output?: unknown
-	error?: { name: string; message: string }
-}
-
 /** Result payload of a {@link WorkflowControlOp}. `create` reports the new id,
  *  the introspection reads report their value; mutating ops report nothing. */
 export type WorkflowControlResult =
 	| { kind: 'create'; id: string }
+	| { kind: 'deleteBatch'; value: WorkflowBatchDeleteResult }
 	| { kind: 'ok' }
 	| { kind: 'isSleeping'; value: boolean }
 	| { kind: 'waitingEventTypes'; value: string[] }
@@ -390,7 +390,14 @@ export type WorkerCommand =
 	| { type: 'init'; config: WorkerInitConfig }
 	// `props` carry the service-binding context `props` from the calling worker
 	// across to the target's `ExecutionContext.props`. Absent for top-level HTTP.
-	| { type: 'fetch'; id: number; request: SerializedRequest; parent?: ParentSpanContext; props?: Record<string, unknown> }
+	| {
+		type: 'fetch'
+		id: number
+		request: SerializedRequest
+		parent?: ParentSpanContext
+		props?: Record<string, unknown>
+		entrypoint?: string
+	}
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
 	| RpcCallReply
