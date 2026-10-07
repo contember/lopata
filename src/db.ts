@@ -108,14 +108,6 @@ export function runMigrations(db: Database): void {
 			PRIMARY KEY (namespace, id)
 		)
 	`)
-	db.run(`
-		CREATE TABLE IF NOT EXISTS do_alarm_revisions (
-			namespace TEXT NOT NULL,
-			id TEXT NOT NULL,
-			revision INTEGER NOT NULL,
-			PRIMARY KEY (namespace, id)
-		)
-	`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS queue_messages (

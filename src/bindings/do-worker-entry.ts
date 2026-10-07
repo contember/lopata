@@ -130,8 +130,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	}
 
 	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir, undefined, compatibility)
-	state.storage._setAlarmCallback((time, revision, ownership) => {
-		postMessage({ type: 'alarm-set', time, revision, ownership } satisfies DOMainMessage)
+	state.storage._setAlarmCallback((time: number | null) => {
+		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
 	})
 	if (!config.containers?.some(container => container.class_name === workerConfig.namespaceName)) {
 		state._setAbortCallback(policy => {
@@ -405,11 +405,10 @@ async function initWorker(workerConfig: WorkerConfig) {
 				try {
 					const alarmFn: unknown = Reflect.get(target, 'alarm')
 					if (typeof alarmFn === 'function') {
-						await state.storage._runAlarmAttempt(cmd.attemptId, () =>
-							alarmFn.call(target, {
-								retryCount: cmd.retryCount,
-								isRetry: cmd.retryCount > 0,
-							}))
+						await alarmFn.call(target, {
+							retryCount: cmd.retryCount,
+							isRetry: cmd.retryCount > 0,
+						})
 					}
 					return { result: { type: 'alarm' } }
 				} finally {
@@ -453,8 +452,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 				postState()
 			}
 			try {
-				if (scope) await state.storage._runAlarmAttempt(undefined, () => scope.run(() => runWithExecutionContext(new ExecutionContext(), dispatch)))
-				else await state.storage._runAlarmAttempt(undefined, dispatch)
+				if (scope) await scope.run(() => runWithExecutionContext(new ExecutionContext(), dispatch))
+				else await dispatch()
 				scope?.finishHandler()
 			} catch (e) {
 				scope?.finishHandler({ kind: 'error', error: e })

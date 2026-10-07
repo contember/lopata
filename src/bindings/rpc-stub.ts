@@ -108,8 +108,6 @@ const stubCache = new WeakMap<object, object>()
 export interface RpcExecutionScope {
 	run<T>(callback: () => T): T
 	retain?(): RpcLease
-	/** Wrap caller-facing promises outside run() so interruption cannot settle the actual call. */
-	awaitResult?<T>(pending: Promise<T>): Promise<T>
 }
 const scopedStubCaches = new WeakMap<RpcExecutionScope, WeakMap<object, object>>()
 interface RpcStubOwner {
@@ -125,10 +123,6 @@ const rpcDisposers = new WeakMap<object, () => void>()
 
 function withinScope<T>(scope: RpcExecutionScope | undefined, callback: () => T): T {
 	return scope ? scope.run(callback) : callback()
-}
-
-function awaitScopedResult<T>(scope: RpcExecutionScope | undefined, pending: Promise<T>): Promise<T> {
-	return scope?.awaitResult ? scope.awaitResult(pending) : pending
 }
 
 /**
@@ -168,17 +162,14 @@ function createRpcStubUncached(target: object, scope?: RpcExecutionScope): objec
 
 			if (typeof member === 'function') {
 				const rpcCallable = async (...args: unknown[]) =>
-					awaitScopedResult(
-						scope,
-						withinScope(execution, async () => {
-							warnInvalidRpcArgs(args, prop)
-							const result: unknown = await Reflect.apply(member, target, args)
-							return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
-						}),
-					)
+					withinScope(execution, async () => {
+						warnInvalidRpcArgs(args, prop)
+						const result: unknown = await Reflect.apply(member, target, args)
+						return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
+					})
 				Object.defineProperty(rpcCallable, 'then', {
 					get() {
-						const pending = awaitScopedResult(scope, withinScope(execution, async () => createRpcFunctionStub(member, target, scope)))
+						const pending = withinScope(execution, async () => createRpcFunctionStub(member, target, scope))
 						return pending.then.bind(pending)
 					},
 				})
@@ -191,13 +182,10 @@ function createRpcStubUncached(target: object, scope?: RpcExecutionScope): objec
 			Object.defineProperty(rpcCallable, 'then', {
 				get() {
 					// Promise assimilation reads `then` synchronously, before invoking it in a microtask.
-					const pending = awaitScopedResult(
-						scope,
-						withinScope(execution, async () => {
-							const result = await member
-							return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
-						}),
-					)
+					const pending = withinScope(execution, async () => {
+						const result = await member
+						return withinScope(scope, () => wrapRpcReturnValue(result, prop, scope))
+					})
 					return pending.then.bind(pending)
 				},
 			})
@@ -222,14 +210,11 @@ export function createRpcFunctionStub(fn: Function, thisArg?: object, scope?: Rp
 	const lease = scope?.retain?.()
 	const execution = lease ?? scope
 	const stub = async (...args: unknown[]) =>
-		awaitScopedResult(
-			scope,
-			withinScope(execution, async () => {
-				warnInvalidRpcArgs(args, fn.name || '<anonymous>')
-				const result: unknown = await Reflect.apply(fn, thisArg, args)
-				return withinScope(scope, () => wrapRpcReturnValue(result, fn.name || '<anonymous>', scope))
-			}),
-		)
+		withinScope(execution, async () => {
+			warnInvalidRpcArgs(args, fn.name || '<anonymous>')
+			const result: unknown = await Reflect.apply(fn, thisArg, args)
+			return withinScope(scope, () => wrapRpcReturnValue(result, fn.name || '<anonymous>', scope))
+		})
 
 	Object.defineProperty(stub, Symbol.dispose, {
 		value: lease ? () => lease.dispose() : noopDispose,
@@ -353,7 +338,6 @@ export function wrapRpcReturnValue(value: unknown, context: string, scope?: RpcE
 function forwardingScope(receiver: RpcExecutionScope, retain: () => RpcLease, origin: RpcExecutionScope | undefined): RpcExecutionScope {
 	const scope: RpcExecutionScope = {
 		run: callback => withinScope(receiver, () => withinScope(origin, callback)),
-		awaitResult: pending => awaitScopedResult(receiver, awaitScopedResult(origin, pending)),
 		retain() {
 			const receivingLease = retain()
 			let originatingLease: RpcLease | undefined

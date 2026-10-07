@@ -1,5 +1,4 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CompatibilitySelection } from '../compatibility'
@@ -7,10 +6,10 @@ import { legacyCompatibility } from '../compatibility-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { getActiveInvocation } from '../tracing/invocation'
-import { persistError, setSpanStatus, startSpan, startSyncSpan } from '../tracing/span'
+import { persistError, startSpan, startSyncSpan } from '../tracing/span'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
-import type { DOAbortPolicy, DOAlarmMutationOwnership, DOExecutor, DOExecutorFactory } from './do-executor'
+import type { DOAbortPolicy, DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { mayHaveMultipleStatements, splitStatements } from './sql-split'
 import { CFWebSocket } from './websocket-pair'
@@ -93,24 +92,6 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 // Shared across all SqliteDurableObjectStorage instances using the same Database connection.
 // Prevents overlapping BEGIN/COMMIT blocks from concurrent requests.
 const dbTxnLocks = new WeakMap<Database, Promise<void>>()
-const transactionAlarmNotifications = new WeakMap<Database, (() => void)[]>()
-const alarmAttemptContext = new AsyncLocalStorage<{ storage: SqliteDurableObjectStorage; attemptId: number | undefined }>()
-
-function alarmRevision(db: Database, namespace: string, id: string): number {
-	// Legacy persisted alarms have no ledger record until their first mutation.
-	return db.query<{ revision: number }, [string, string]>(
-		'SELECT revision FROM do_alarm_revisions WHERE namespace = ? AND id = ?',
-	).get(namespace, id)?.revision ?? 0
-}
-
-function advanceAlarmRevision(db: Database, namespace: string, id: string): number {
-	const row = db.query<{ revision: number }, [string, string]>(`
-		INSERT INTO do_alarm_revisions (namespace, id, revision) VALUES (?, ?, 1)
-		ON CONFLICT(namespace, id) DO UPDATE SET revision = revision + 1 RETURNING revision
-	`).get(namespace, id)
-	if (!row) throw new Error('Alarm revision update returned no row')
-	return row.revision
-}
 
 async function acquireDbTxnLock(db: Database): Promise<() => void> {
 	let unlock!: () => void
@@ -133,14 +114,13 @@ export class SqlStorage {
 	private _namespace: string
 	private _id: string
 
-	constructor(dbPath: string | null, namespace: string, id: string, private checkAlive: () => void = () => {}) {
+	constructor(dbPath: string | null, namespace: string, id: string) {
 		this._dbPath = dbPath
 		this._namespace = namespace
 		this._id = id
 	}
 
 	private _getDb(): Database {
-		this.checkAlive()
 		if (!this._db) {
 			if (this._dbPath) {
 				const dir = this._dbPath.substring(0, this._dbPath.lastIndexOf('/'))
@@ -160,7 +140,6 @@ export class SqlStorage {
 	}
 
 	exec(query: string, ...bindings: SQLQueryBindings[]): SqlStorageCursor {
-		this.checkAlive()
 		return startSyncSpan(
 			{
 				name: 'do_sql.exec',
@@ -254,7 +233,6 @@ export class SqlStorage {
 	}
 
 	get databaseSize(): number {
-		this.checkAlive()
 		if (!this._dbPath) {
 			const db = this._getDb()
 			const row = db.query('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number } | null
@@ -265,11 +243,6 @@ export class SqlStorage {
 		} catch {
 			return 0
 		}
-	}
-
-	/** @internal The SQL connection belongs only to this object. */
-	_abort(): void {
-		if (this._db?.inTransaction) this._db.run('ROLLBACK')
 	}
 }
 
@@ -321,14 +294,13 @@ export class SyncKV {
 	private namespace: string
 	private id: string
 
-	constructor(db: Database, namespace: string, id: string, private checkAlive: () => void = () => {}) {
+	constructor(db: Database, namespace: string, id: string) {
 		this.db = db
 		this.namespace = namespace
 		this.id = id
 	}
 
 	get(key: string): unknown {
-		this.checkAlive()
 		const row = this.db
 			.query('SELECT value FROM do_storage WHERE namespace = ? AND id = ? AND key = ?')
 			.get(this.namespace, this.id, key) as { value: string } | null
@@ -337,16 +309,12 @@ export class SyncKV {
 	}
 
 	put(key: string, value: unknown): void {
-		this.checkAlive()
-		const serialized = JSON.stringify(value)
-		this.checkAlive()
 		this.db
 			.query('INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)')
-			.run(this.namespace, this.id, key, serialized)
+			.run(this.namespace, this.id, key, JSON.stringify(value))
 	}
 
 	delete(key: string): boolean {
-		this.checkAlive()
 		const existing = this.db
 			.query('SELECT 1 FROM do_storage WHERE namespace = ? AND id = ? AND key = ?')
 			.get(this.namespace, this.id, key)
@@ -359,7 +327,6 @@ export class SyncKV {
 	*list(
 		options?: { prefix?: string; start?: string; startAfter?: string; end?: string; limit?: number; reverse?: boolean },
 	): Iterable<[string, unknown]> {
-		this.checkAlive()
 		const prefix = options?.prefix ?? ''
 		const limit = options?.limit ?? 1000
 		const reverse = options?.reverse ?? false
@@ -392,7 +359,6 @@ export class SyncKV {
 
 		const rows = this.db.query(sql).all(...params) as { key: string; value: string }[]
 		for (const row of rows) {
-			this.checkAlive()
 			yield [row.key, JSON.parse(row.value)]
 		}
 	}
@@ -405,17 +371,6 @@ export class SqliteDurableObjectStorage {
 	private _sql: SqlStorage | null = null
 	private _dataDir: string | null = null
 	private _kv: SyncKV | null = null
-	private abortError?: Error
-
-	/** @internal Fences previously captured KV/SQL handles as well as this storage object. */
-	_abort(error: Error): void {
-		this.abortError ??= error
-		this._sql?._abort()
-	}
-
-	private checkAlive = (): void => {
-		if (this.abortError) throw this.abortError
-	}
 
 	constructor(db: Database, namespace: string, id: string, dataDir?: string, private compatibility = legacyCompatibility) {
 		this.db = db
@@ -425,20 +380,18 @@ export class SqliteDurableObjectStorage {
 	}
 
 	get kv(): SyncKV {
-		this.checkAlive()
 		if (!this._kv) {
-			this._kv = new SyncKV(this.db, this.namespace, this.id, this.checkAlive)
+			this._kv = new SyncKV(this.db, this.namespace, this.id)
 		}
 		return this._kv
 	}
 
 	get sql(): SqlStorage {
-		this.checkAlive()
 		if (!this._sql) {
 			const dbPath = this._dataDir
 				? join(this._dataDir, 'do-sql', this.namespace, `${this.id}.sqlite`)
 				: null
-			this._sql = new SqlStorage(dbPath, this.namespace, this.id, this.checkAlive)
+			this._sql = new SqlStorage(dbPath, this.namespace, this.id)
 		}
 		return this._sql
 	}
@@ -446,7 +399,6 @@ export class SqliteDurableObjectStorage {
 	async get<T = unknown>(key: string, options?: StorageOptions): Promise<T | undefined>
 	async get<T = unknown>(keys: string[], options?: StorageOptions): Promise<Map<string, T>>
 	async get<T = unknown>(keyOrKeys: string | string[], _options?: StorageOptions): Promise<T | undefined | Map<string, T>> {
-		this.checkAlive()
 		if (Array.isArray(keyOrKeys)) {
 			if (keyOrKeys.length === 0) return new Map<string, T>()
 			const placeholders = keyOrKeys.map(() => '?').join(', ')
@@ -469,13 +421,10 @@ export class SqliteDurableObjectStorage {
 	async put(key: string, value: unknown, options?: StorageOptions): Promise<void>
 	async put(entries: Record<string, unknown>, options?: StorageOptions): Promise<void>
 	async put(keyOrEntries: string | Record<string, unknown>, valueOrOptions?: unknown, _options?: StorageOptions): Promise<void> {
-		this.checkAlive()
 		if (typeof keyOrEntries === 'string') {
-			const serialized = JSON.stringify(valueOrOptions)
-			this.checkAlive()
 			this.db
 				.query('INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)')
-				.run(this.namespace, this.id, keyOrEntries, serialized)
+				.run(this.namespace, this.id, keyOrEntries, JSON.stringify(valueOrOptions))
 		} else {
 			const stmt = this.db.query(
 				'INSERT OR REPLACE INTO do_storage (namespace, id, key, value) VALUES (?, ?, ?, ?)',
@@ -483,9 +432,7 @@ export class SqliteDurableObjectStorage {
 			this.db.run('SAVEPOINT put_batch')
 			try {
 				for (const [k, v] of Object.entries(keyOrEntries)) {
-					const serialized = JSON.stringify(v)
-					this.checkAlive()
-					stmt.run(this.namespace, this.id, k, serialized)
+					stmt.run(this.namespace, this.id, k, JSON.stringify(v))
 				}
 				this.db.run('RELEASE put_batch')
 			} catch (e) {
@@ -499,7 +446,6 @@ export class SqliteDurableObjectStorage {
 	async delete(key: string, options?: StorageOptions): Promise<boolean>
 	async delete(keys: string[], options?: StorageOptions): Promise<number>
 	async delete(keyOrKeys: string | string[], _options?: StorageOptions): Promise<boolean | number> {
-		this.checkAlive()
 		if (Array.isArray(keyOrKeys)) {
 			if (keyOrKeys.length === 0) return 0
 			// Count existing keys first
@@ -523,18 +469,16 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async deleteAll(_options?: StorageOptions): Promise<void> {
-		this.checkAlive()
 		// Shared-connection transactions must not roll back deletion after its scheduler cancellation has escaped.
 		if (this.db.inTransaction) throw new Error('Cannot call deleteAll() within a transaction')
 		const deleteAlarm = this.compatibility.deleteAllDeletesAlarm === 'enabled'
-		const revision = this.db.transaction(() => {
+		this.db.transaction(() => {
 			this.db.query('DELETE FROM do_storage WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
 			if (deleteAlarm) {
 				this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
-				return advanceAlarmRevision(this.db, this.namespace, this.id)
 			}
 		})()
-		if (revision !== undefined) this.notifyAlarm(null, revision)
+		if (deleteAlarm) this._onAlarmSet?.(null)
 	}
 
 	/** @internal Retained state follows the owning executor's hot-reloaded configuration. */
@@ -545,7 +489,6 @@ export class SqliteDurableObjectStorage {
 	async list(
 		options?: { prefix?: string; start?: string; startAfter?: string; end?: string; limit?: number; reverse?: boolean },
 	): Promise<Map<string, unknown>> {
-		this.checkAlive()
 		const prefix = options?.prefix ?? ''
 		const limit = options?.limit ?? 1000
 		const reverse = options?.reverse ?? false
@@ -586,30 +529,20 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async sync(): Promise<void> {
-		this.checkAlive()
 		// No-op in dev — in production this flushes the write buffer
 	}
 
 	async transaction<T>(closure: (txn: SqliteDurableObjectStorage) => Promise<T>): Promise<T> {
-		this.checkAlive()
 		const unlock = await acquireDbTxnLock(this.db)
 		try {
-			this.checkAlive()
 			this.db.run('BEGIN')
-			const notifications: (() => void)[] = []
-			transactionAlarmNotifications.set(this.db, notifications)
 			try {
 				const result = await closure(this)
-				this.checkAlive()
 				this.db.run('COMMIT')
-				transactionAlarmNotifications.delete(this.db)
-				for (const notify of notifications.values()) notify()
 				return result
 			} catch (e) {
-				if (this.db.inTransaction) this.db.run('ROLLBACK')
+				this.db.run('ROLLBACK')
 				throw e
-			} finally {
-				transactionAlarmNotifications.delete(this.db)
 			}
 		} finally {
 			unlock()
@@ -617,41 +550,27 @@ export class SqliteDurableObjectStorage {
 	}
 
 	transactionSync<T>(callback: () => T): T {
-		this.checkAlive()
 		this.db.run('BEGIN IMMEDIATE')
-		const notifications: (() => void)[] = []
-		transactionAlarmNotifications.set(this.db, notifications)
 		try {
 			const result = callback()
-			this.checkAlive()
 			this.db.run('COMMIT')
-			transactionAlarmNotifications.delete(this.db)
-			for (const notify of notifications.values()) notify()
 			return result
 		} catch (e) {
-			if (this.db.inTransaction) this.db.run('ROLLBACK')
+			this.db.run('ROLLBACK')
 			throw e
-		} finally {
-			transactionAlarmNotifications.delete(this.db)
 		}
 	}
 
 	// --- Alarm methods ---
 
-	private _onAlarmSet?: (scheduledTime: number | null, revision: number, ownership: DOAlarmMutationOwnership) => void
-
-	/** @internal Each dispatch clears inherited ownership; only the alarm handler enters its attempt. */
-	_runAlarmAttempt<T>(attemptId: number | undefined, callback: () => T): T {
-		return alarmAttemptContext.run({ storage: this, attemptId }, callback)
-	}
+	private _onAlarmSet?: (scheduledTime: number | null) => void
 
 	/** @internal Register callback for when alarm is set/deleted */
-	_setAlarmCallback(cb: (scheduledTime: number | null, revision: number, ownership: DOAlarmMutationOwnership) => void) {
+	_setAlarmCallback(cb: (scheduledTime: number | null) => void) {
 		this._onAlarmSet = cb
 	}
 
 	async getAlarm(_options?: StorageOptions): Promise<number | null> {
-		this.checkAlive()
 		const row = this.db
 			.query('SELECT alarm_time FROM do_alarms WHERE namespace = ? AND id = ?')
 			.get(this.namespace, this.id) as { alarm_time: number } | null
@@ -659,34 +578,18 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async setAlarm(scheduledTime: number | Date, _options?: StorageOptions): Promise<void> {
-		this.checkAlive()
 		const time = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime
-		const revision = this.db.transaction(() => {
-			this.db.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)').run(this.namespace, this.id, time)
-			return advanceAlarmRevision(this.db, this.namespace, this.id)
-		})()
-		this.notifyAlarm(time, revision)
+		this.db
+			.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)')
+			.run(this.namespace, this.id, time)
+		this._onAlarmSet?.(time)
 	}
 
 	async deleteAlarm(_options?: StorageOptions): Promise<void> {
-		this.checkAlive()
-		const revision = this.db.transaction(() => {
-			this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
-			return advanceAlarmRevision(this.db, this.namespace, this.id)
-		})()
-		this.notifyAlarm(null, revision)
-	}
-
-	private notifyAlarm(time: number | null, revision: number): void {
-		const notifications = transactionAlarmNotifications.get(this.db)
-		const context = alarmAttemptContext.getStore()
-		const ownership: DOAlarmMutationOwnership = {
-			previousRevision: revision - 1,
-			attemptId: context?.storage === this ? context.attemptId : undefined,
-		}
-		const notify = () => this._onAlarmSet?.(time, revision, ownership)
-		if (notifications) notifications.push(notify)
-		else notify()
+		this.db
+			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
+			.run(this.namespace, this.id)
+		this._onAlarmSet?.(null)
 	}
 }
 
@@ -744,7 +647,7 @@ export class DurableObjectStateImpl {
 	private _abortPolicy?: DOAbortPolicy
 	private _onAbort?: (policy: DOAbortPolicy) => void
 
-	/** @internal Container executors retain their existing cleanup-first lifecycle. */
+	/** @internal Container executors keep the eviction-only abort lifecycle. */
 	_setAbortCallback(callback: (policy: DOAbortPolicy) => void): void {
 		this._onAbort = callback
 	}
@@ -831,11 +734,7 @@ export class DurableObjectStateImpl {
 		this._abortReason = reason ?? 'Durable Object reset by abort()'
 		if (!this._onAbort) return
 		this._abortPolicy = { reason: this._abortReason, retryAlarm: options?.retryAlarm ?? true }
-		try {
-			this.storage._abort(new Error(this._abortReason))
-		} finally {
-			this._onAbort(this._abortPolicy)
-		}
+		this._onAbort(this._abortPolicy)
 		throw new Error(this._abortReason)
 	}
 
@@ -1015,7 +914,6 @@ const _externalClassSentinel = class ExternalDurableObject {
 
 export class DurableObjectNamespaceImpl {
 	private _executors = new Map<string, DOExecutor>()
-	private executorOwners = new Map<string, object>()
 	/** In-flight disposals per id (container DOs only). A respawn for the same id
 	 *  chains its first command on this so a fresh `docker run` doesn't race the
 	 *  old container's teardown. */
@@ -1035,10 +933,8 @@ export class DurableObjectNamespaceImpl {
 	private db: Database
 	private namespaceName: string
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
-	private runningAlarms = new Map<string, Promise<void>>()
-	private activeAlarmAttempts = new Map<string, { id: number; revision: number; superseded: boolean }>()
-	private nextAlarmAttempt = 1
-	private alarmEpoch = 0
+	/** Running alarm attempts by id; `mutated` is set when the alarm is set or deleted during the attempt. */
+	private runningAlarms = new Map<string, { mutated: boolean }>()
 	private dataDir: string | undefined
 	private limits: DurableObjectLimits | undefined
 	private _lastActivity = new Map<string, number>()
@@ -1080,13 +976,11 @@ export class DurableObjectNamespaceImpl {
 		generationId?: number,
 		compatibility = legacyCompatibility,
 	) {
-		this.clearAlarmTimers()
 		for (const [idStr, executor] of this._executors) {
 			if (executor.activeWebSocketCount() > 0 && executor.reloadClass) {
 				// Hot-swap: reuse state + WebSocket connections, create new instance with new code
 				executor.reloadClass(cls, env, compatibility)
 			} else {
-				this.executorOwners.delete(idStr)
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
@@ -1109,8 +1003,6 @@ export class DurableObjectNamespaceImpl {
 	 * need the JS class on main (e.g. `WorkerExecutorFactory`).
 	 */
 	_setExternalClass(className: string, env: Record<string, unknown>, generationId?: number) {
-		this.clearAlarmTimers()
-		this.executorOwners.clear()
 		// Thread-mode executors (the only kind that lands here) can't hot-swap their
 		// class — the class lives in a Bun Worker and the only reload mechanism is
 		// terminate + respawn, which is what `dispose()` does. Active WebSockets are
@@ -1170,65 +1062,35 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	/** @internal Schedule a timer for an alarm */
-	private _scheduleAlarmTimer(idStr: string, scheduledTime: number, revision = alarmRevision(this.db, this.namespaceName, idStr), retryCount = 0) {
+	private _scheduleAlarmTimer(idStr: string, scheduledTime: number) {
 		// Clear any existing timer for this instance
 		const existing = this.alarmTimers.get(idStr)
 		if (existing) clearTimeout(existing)
 
 		const delay = Math.max(0, scheduledTime - this.clock.now())
 		const timer = setTimeout(() => {
-			if (this.alarmTimers.get(idStr) !== timer) return
 			this.alarmTimers.delete(idStr)
-			void this._fireAlarm(idStr, retryCount, revision, scheduledTime)
+			this._fireAlarm(idStr, 0)
 		}, delay)
 		this.alarmTimers.set(idStr, timer)
 	}
 
 	/** @internal Fire the alarm handler on a DO instance */
-	private _fireAlarm(idStr: string, retryCount: number, revision?: number, scheduledTime?: number): Promise<void> {
-		const epoch = this.alarmEpoch
-		const previous = this.runningAlarms.get(idStr) ?? Promise.resolve()
-		const running = previous.catch(() => {}).then(() => this._runAlarm(idStr, retryCount, epoch, revision, scheduledTime))
-		this.runningAlarms.set(idStr, running)
-		void running.finally(() => {
-			if (this.runningAlarms.get(idStr) === running) this.runningAlarms.delete(idStr)
-		}).catch(() => {})
-		return running
-	}
-
-	private async _runAlarm(idStr: string, retryCount: number, epoch: number, expectedRevision?: number, scheduledTime?: number): Promise<void> {
-		if (epoch !== this.alarmEpoch) return
-		const executor = await this._getReadyExecutor(idStr)
+	private async _fireAlarm(idStr: string, retryCount: number): Promise<void> {
+		const executor = this._getOrCreateExecutor(idStr)
 		if (!executor) return
-		if (epoch !== this.alarmEpoch) return
-		const unlockClaim = await acquireDbTxnLock(this.db)
-		let revision: number | undefined
-		try {
-			if (epoch !== this.alarmEpoch) return
-			revision = this.db.transaction(() => {
-				const current = alarmRevision(this.db, this.namespaceName, idStr)
-				if (expectedRevision !== undefined && current !== expectedRevision) return undefined
-				if (scheduledTime !== undefined) {
-					const row = this.db.query<{ alarm_time: number }, [string, string]>(
-						'SELECT alarm_time FROM do_alarms WHERE namespace = ? AND id = ?',
-					).get(this.namespaceName, idStr)
-					if (row?.alarm_time !== scheduledTime) return undefined
-				}
-				this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespaceName, idStr)
-				return current
-			})()
-		} finally {
-			unlockClaim()
-		}
-		if (revision === undefined) return
 
 		this._lastActivity.set(idStr, this.clock.now())
-		const attempt = { id: this.nextAlarmAttempt++, revision, superseded: false }
-		this.activeAlarmAttempts.set(idStr, attempt)
-		let retryExpectedRevision = revision
 
+		// Delete alarm from DB before calling handler (matching CF behavior)
+		this.db
+			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
+			.run(this.namespaceName, idStr)
+
+		const attempt = { mutated: false }
+		this.runningAlarms.set(idStr, attempt)
 		try {
-			const result = await startSpan({
+			await startSpan({
 				name: `do.alarm ${this.namespaceName}`,
 				kind: 'server',
 				attributes: {
@@ -1237,62 +1099,44 @@ export class DurableObjectNamespaceImpl {
 					'do.alarm.retryCount': retryCount,
 					...(this._generationId != null ? { 'lopata.generation_id': this._generationId } : {}),
 				},
-			}, async () => {
-				const outcome = await executor.executeAlarm(retryCount, attempt.id)
-				if (outcome?.type === 'aborted') setSpanStatus('error', outcome.policy.reason)
-				return outcome
-			})
-			if (result?.type !== 'aborted') return
-			await executor.whenStopped?.()
-			if (!result.policy.retryAlarm || attempt.superseded) return
-			retryExpectedRevision = attempt.revision
+			}, () => executor.executeAlarm(retryCount))
 		} catch (e) {
 			persistError(e, 'alarm')
+			if (executor.getAbortPolicy?.()?.retryAlarm === false) return
+			// A replacement or deletion made during the attempt wins over its retry.
+			if (attempt.mutated) return
+			if (retryCount < MAX_ALARM_RETRIES) {
+				// Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s
+				const backoffMs = Math.pow(2, retryCount) * 1000
+				const retryTime = this.clock.now() + backoffMs
+				// Re-persist alarm for retry
+				this.db
+					.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)')
+					.run(this.namespaceName, idStr, retryTime)
+				const timer = setTimeout(() => {
+					this.alarmTimers.delete(idStr)
+					this._fireAlarm(idStr, retryCount + 1)
+				}, backoffMs)
+				this.alarmTimers.set(idStr, timer)
+			}
+			// After max retries, alarm is discarded
 		} finally {
-			if (this.activeAlarmAttempts.get(idStr) === attempt) this.activeAlarmAttempts.delete(idStr)
+			if (this.runningAlarms.get(idStr) === attempt) this.runningAlarms.delete(idStr)
 		}
-		if (epoch !== this.alarmEpoch || retryCount >= MAX_ALARM_RETRIES) return
-		const retryTime = this.clock.now() + Math.pow(2, retryCount) * 1000
-		const unlockRetry = await acquireDbTxnLock(this.db)
-		let retryRevision: number | undefined
-		try {
-			if (epoch !== this.alarmEpoch) return
-			retryRevision = this.db.transaction(() => {
-				if (alarmRevision(this.db, this.namespaceName, idStr) !== retryExpectedRevision) return undefined
-				this.db.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)').run(this.namespaceName, idStr, retryTime)
-				return advanceAlarmRevision(this.db, this.namespaceName, idStr)
-			})()
-		} finally {
-			unlockRetry()
-		}
-		if (retryRevision !== undefined) this._scheduleAlarmTimer(idStr, retryTime, retryRevision, retryCount + 1)
 	}
 
-	private _getReadyExecutor(idStr: string): DOExecutor | null | Promise<DOExecutor | null> {
-		const existing = this._executors.get(idStr)
-		if (existing?.getAbortPolicy?.() && existing.whenStopped) {
-			return this._replaceAbortedExecutor(idStr, existing, existing.whenStopped())
-		}
-		return this._getOrCreateExecutor(idStr)
-	}
-
-	private async _replaceAbortedExecutor(idStr: string, existing: DOExecutor, stopped: Promise<void>): Promise<DOExecutor | null> {
-		await stopped
-		if (this._executors.get(idStr) === existing) {
-			await this._disposeExecutor(idStr, existing)
-			if (this._executors.get(idStr) === existing) this._executors.delete(idStr)
-		}
-		return this._getOrCreateExecutor(idStr)
+	private _markAlarmMutated(idStr: string): void {
+		const attempt = this.runningAlarms.get(idStr)
+		if (attempt) attempt.mutated = true
 	}
 
 	/** @internal Get or create a DO executor by id string */
 	private _getOrCreateExecutor(idStr: string, doId?: DurableObjectIdImpl): DOExecutor | null {
 		const existing = this._executors.get(idStr)
 		if (existing) {
-			if (existing.getAbortPolicy?.() && existing.whenStopped) return existing
-			// A crashed worker leaves a dead executor behind; drop it so the access
-			// below recreates a fresh one instead of posting to a terminated Worker.
-			if (!existing.isDisposed?.()) return existing
+			// A crashed or aborted instance is dropped so the access below
+			// recreates a fresh one instead of posting to a dead executor.
+			if (!existing.isDisposed?.() && !existing.isAborted()) return existing
 			this._disposeExecutor(idStr, existing)
 			this._executors.delete(idStr)
 			this._lastActivity.delete(idStr)
@@ -1308,8 +1152,6 @@ export class DurableObjectNamespaceImpl {
 			.query('INSERT OR IGNORE INTO do_instances (namespace, id, name) VALUES (?, ?, ?)')
 			.run(this.namespaceName, idStr, id.name ?? null)
 
-		const owner = {}
-		this.executorOwners.set(idStr, owner)
 		const executor = this._getFactory().create({
 			compatibility: this._compatibility,
 			id,
@@ -1323,16 +1165,14 @@ export class DurableObjectNamespaceImpl {
 			// Serialize a respawn behind the prior executor's container teardown
 			// (container DOs only — see `_disposing`).
 			_priorDisposal: this._containerConfig ? this._disposing.get(idStr) : undefined,
-			onAlarmSet: (time, revision, ownership) => {
-				if (this.executorOwners.get(idStr) !== owner) return
-				this.recordAlarmMutation(idStr, time, revision, ownership)
-				if (alarmRevision(this.db, this.namespaceName, idStr) !== revision) return
+			onAlarmSet: (time) => {
+				this._markAlarmMutated(idStr)
 				if (time === null) {
 					const t = this.alarmTimers.get(idStr)
 					if (t) clearTimeout(t)
 					this.alarmTimers.delete(idStr)
 				} else {
-					this._scheduleAlarmTimer(idStr, time, revision)
+					this._scheduleAlarmTimer(idStr, time)
 				}
 			},
 		})
@@ -1340,18 +1180,6 @@ export class DurableObjectNamespaceImpl {
 		this._executors.set(idStr, executor)
 		this._lastActivity.set(idStr, this.clock.now())
 		return executor
-	}
-
-	private recordAlarmMutation(idStr: string, time: number | null, revision: number, ownership: DOAlarmMutationOwnership): void {
-		const attempt = this.activeAlarmAttempts.get(idStr)
-		if (!attempt || attempt.superseded || revision <= attempt.revision) return
-		if (revision > alarmRevision(this.db, this.namespaceName, idStr)) return
-		if (time === null && ownership.attemptId === attempt.id && ownership.previousRevision === attempt.revision) {
-			attempt.revision = revision
-		} else {
-			// Once superseded, an attempt's later own deletion cannot revive it.
-			attempt.superseded = true
-		}
 	}
 
 	/**
@@ -1362,7 +1190,6 @@ export class DurableObjectNamespaceImpl {
 	 * tracking (dispose is fast and there's no shared Docker name to collide on).
 	 */
 	private _disposeExecutor(idStr: string, executor: DOExecutor): Promise<void> {
-		if (this._executors.get(idStr) === executor) this.executorOwners.delete(idStr)
 		const p = executor.dispose().catch(() => {})
 		if (this._containerConfig) {
 			this._disposing.set(idStr, p)
@@ -1416,7 +1243,6 @@ export class DurableObjectNamespaceImpl {
 		for (const [idStr, lastActivity] of this._lastActivity) {
 			const executor = this._executors.get(idStr)
 			if (!executor) continue
-			if (executor.getAbortPolicy?.() && executor.isActive()) continue
 			// Drop dead executors (crashed Worker) immediately so they don't linger.
 			if (executor.isDisposed?.()) {
 				this._disposeExecutor(idStr, executor)
@@ -1445,7 +1271,6 @@ export class DurableObjectNamespaceImpl {
 
 	/** @internal Clear all in-memory alarm timers (alarms persist in DB for new generation to restore) */
 	clearAlarmTimers(): void {
-		this.alarmEpoch++
 		for (const timer of this.alarmTimers.values()) clearTimeout(timer)
 		this.alarmTimers.clear()
 	}
@@ -1467,7 +1292,6 @@ export class DurableObjectNamespaceImpl {
 		// forced).
 		for (const [idStr, executor] of this._executors) {
 			if (options?.force || executor.activeWebSocketCount() === 0) {
-				this.executorOwners.delete(idStr)
 				executor.dispose().catch(() => {})
 				this._executors.delete(idStr)
 				this._lastActivity.delete(idStr)
@@ -1549,7 +1373,7 @@ export class DurableObjectNamespaceImpl {
 		const existing = this.alarmTimers.get(idStr)
 		if (existing) clearTimeout(existing)
 		this.alarmTimers.delete(idStr)
-		return this._fireAlarm(idStr, 0, alarmRevision(this.db, this.namespaceName, idStr))
+		return this._fireAlarm(idStr, 0)
 	}
 
 	/** @internal Fire all alarms whose scheduled time is <= clock.now(). Returns an array of promises. */
@@ -1565,7 +1389,7 @@ export class DurableObjectNamespaceImpl {
 				const existing = this.alarmTimers.get(row.id)
 				if (existing) clearTimeout(existing)
 				this.alarmTimers.delete(row.id)
-				results.push(this._fireAlarm(row.id, 0, alarmRevision(this.db, this.namespaceName, row.id), row.alarm_time))
+				results.push(this._fireAlarm(row.id, 0))
 			}
 		}
 		return results
@@ -1573,26 +1397,18 @@ export class DurableObjectNamespaceImpl {
 
 	/** @internal Cancel a scheduled alarm without firing it */
 	cancelAlarm(idStr: string): void {
-		const revision = this.db.transaction(() => {
-			this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespaceName, idStr)
-			return advanceAlarmRevision(this.db, this.namespaceName, idStr)
-		})()
-		const cancel = () => {
-			this.recordAlarmMutation(idStr, null, revision, { previousRevision: revision - 1 })
-			if (alarmRevision(this.db, this.namespaceName, idStr) !== revision) return
-			const timer = this.alarmTimers.get(idStr)
-			if (timer) clearTimeout(timer)
-			this.alarmTimers.delete(idStr)
-		}
-		const notifications = transactionAlarmNotifications.get(this.db)
-		if (notifications) notifications.push(cancel)
-		else cancel()
+		this._markAlarmMutated(idStr)
+		const timer = this.alarmTimers.get(idStr)
+		if (timer) clearTimeout(timer)
+		this.alarmTimers.delete(idStr)
+		this.db
+			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
+			.run(this.namespaceName, idStr)
 	}
 
 	/** @internal Delete a DO instance and all its data */
 	deleteInstance(idStr: string): void {
 		this.cancelAlarm(idStr)
-		this.executorOwners.delete(idStr)
 
 		const executor = this._executors.get(idStr)
 		if (executor) {
@@ -1683,9 +1499,7 @@ export class DurableObjectNamespaceImpl {
 				// stub.fetch() — calls the DO's fetch() handler
 				if (prop === 'fetch') {
 					return async (input: Request | string | URL, init?: RequestInit) => {
-						const ready = self._getReadyExecutor(idStr)
-						const executor = ready instanceof Promise ? await ready : ready
-						if (!executor) throw new Error('Durable Object class is not wired')
+						const executor = self._getOrCreateExecutor(idStr, id)!
 						self._lastActivity.set(idStr, self.clock.now())
 						const request = input instanceof Request ? input : new Request(input instanceof URL ? input.href : input, init)
 						return await executor.executeFetch(request)
@@ -1693,10 +1507,8 @@ export class DurableObjectNamespaceImpl {
 				}
 
 				// RPC: return a callable that also acts as a thenable for property access
-				const rpcCallable = async (...args: unknown[]) => {
-					const ready = self._getReadyExecutor(idStr)
-					const executor = ready instanceof Promise ? await ready : ready
-					if (!executor) throw new Error('Durable Object class is not wired')
+				const rpcCallable = (...args: unknown[]) => {
+					const executor = self._getOrCreateExecutor(idStr, id)!
 					self._lastActivity.set(idStr, self.clock.now())
 					return executor.executeRpc(String(prop), args).then((r) => wrapRpcReturnValue(r, String(prop)))
 				}
@@ -1706,13 +1518,9 @@ export class DurableObjectNamespaceImpl {
 					onFulfilled?: ((value: unknown) => unknown) | null,
 					onRejected?: ((reason: unknown) => unknown) | null,
 				) => {
-					const promise = (async () => {
-						const ready = self._getReadyExecutor(idStr)
-						const executor = ready instanceof Promise ? await ready : ready
-						if (!executor) throw new Error('Durable Object class is not wired')
-						self._lastActivity.set(idStr, self.clock.now())
-						return executor.executeRpcGet(String(prop)).then((r) => wrapRpcReturnValue(r, String(prop)))
-					})()
+					const executor = self._getOrCreateExecutor(idStr, id)!
+					self._lastActivity.set(idStr, self.clock.now())
+					const promise = executor.executeRpcGet(String(prop)).then((r) => wrapRpcReturnValue(r, String(prop)))
 					return promise.then(onFulfilled, onRejected)
 				}
 
