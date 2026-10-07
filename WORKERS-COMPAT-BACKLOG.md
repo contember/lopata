@@ -1,6 +1,8 @@
 # Workers compatibility follow-up backlog
 
-Planning snapshot: October 5, 2026. **Implementation of the full backlog and publication of separate PRs are approved. Concrete architecture and persistence designs still require approval before implementation.** Track execution, PRs, and open decisions in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md). Priorities favor startup failures, incorrect results, and lost durable state before product breadth.
+Planning snapshot: October 5, 2026. **Execution scope narrowed on October 7: finish the implemented PR stack and make it merge-ready. The remaining inventory below is not an active implementation mandate.** Track execution, PRs, and open decisions in [WORKERS-COMPAT-PROGRESS.md](WORKERS-COMPAT-PROGRESS.md).
+
+The current work ends with the bounded F08c1 close-event correction. Transport replacement, new runtime/backend infrastructure, broad conformance work and the remaining feature tracks are deferred. In particular, manual WebSocket close / `allowHalfOpen` remains a documented transport limitation. Future work should select concrete missing APIs within the existing architecture rather than treating complete hosted parity as a merge requirement. The already implemented persistence and lifecycle contracts remain intact.
 
 **Scope update:** the user explicitly excluded new Free/Paid plan selection and plan-derived limit enforcement. Preserve existing local limits and defaults; do not add automatic retention. References to hosted plan limits below remain research context, not implementation requirements. Explicit configuration support and schedules still require their own concrete contracts.
 
