@@ -1,4 +1,5 @@
 import { binaryProbe } from './binary-probe'
+import { attachCloseProbe, closeObservations } from './close-probe'
 import { compatibilityProbe } from './compatibility-probe'
 
 export { EchoHibernationDO } from './echo-do-hibernation'
@@ -17,6 +18,7 @@ export default {
 
 		// Plain worker WebSocket — echo
 		if (url.pathname === '/ws/plain') {
+			if (url.searchParams.has('close-observations')) return closeObservations(url.searchParams.get('close-observations') ?? '')
 			if (request.headers.get('Upgrade') !== 'websocket') {
 				return new Response('Expected websocket', { status: 426 })
 			}
@@ -24,9 +26,15 @@ export default {
 			const [client, server] = Object.values(pair)
 			if (!url.searchParams.has('binary-probe')) server.binaryType = 'arraybuffer'
 			server.accept()
+			const closeToken = url.searchParams.get('close-probe')
+			if (closeToken) attachCloseProbe(server, closeToken)
 
 			server.addEventListener('message', (event: MessageEvent) => {
 				const data = event.data
+				if (data === 'probe-server-close') {
+					server.close(4000, 'server probe')
+					return
+				}
 				if (url.searchParams.has('binary-probe')) {
 					void binaryProbe(server, data)
 					return

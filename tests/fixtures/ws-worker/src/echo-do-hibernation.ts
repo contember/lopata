@@ -1,10 +1,12 @@
 import { DurableObject } from 'cloudflare:workers'
 import { binaryProbe } from './binary-probe'
+import { closeObservations, recordClose } from './close-probe'
 import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoHibernationDO extends DurableObject {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
+		if (url.searchParams.has('close-observations')) return closeObservations(url.searchParams.get('close-observations') ?? '')
 		const tag = url.searchParams.get('tag')
 
 		if (url.pathname.endsWith('/queued-binary')) {
@@ -62,6 +64,8 @@ export class EchoHibernationDO extends DurableObject {
 		const pair = new WebSocketPair()
 		const [client, server] = Object.values(pair)
 		if (url.searchParams.has('binary-probe')) server.serializeAttachment({ binaryProbe: true })
+		const closeToken = url.searchParams.get('close-probe')
+		if (closeToken) server.serializeAttachment({ closeToken })
 		const tags = tag ? [tag] : []
 		this.ctx.acceptWebSocket(server, tags)
 
@@ -100,6 +104,10 @@ export class EchoHibernationDO extends DurableObject {
 	}
 
 	async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+		const attachment: unknown = ws.deserializeAttachment()
+		if (attachment && typeof attachment === 'object' && 'closeToken' in attachment && typeof attachment.closeToken === 'string') {
+			void recordClose(attachment.closeToken, 'hibernation', ws.readyState, code, reason)
+		}
 		// Must call ws.close() to complete the close handshake
 		ws.close(code, reason)
 	}

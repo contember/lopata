@@ -202,9 +202,63 @@ function cleanup() {
 
 // ─── Test suites ────────────────────────────────────────────────────────
 
-function defineWebSocketTests(getPort: () => number) {
+function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite') {
 	const base = () => `ws://localhost:${getPort()}`
 	const httpBase = () => `http://localhost:${getPort()}`
+
+	async function waitForCloseObservations(path: string, token: string, count: number): Promise<unknown> {
+		const deadline = Date.now() + 3000
+		while (Date.now() < deadline) {
+			const response = await fetch(`${httpBase()}${path}?close-observations=${token}`)
+			const observations: unknown = await response.json()
+			if (Array.isArray(observations) && observations.length >= count) return observations
+			await new Promise(resolve => setTimeout(resolve, 10))
+		}
+		throw new Error('Timed out waiting for socket close observations')
+	}
+
+	for (const path of ['/ws/plain', '/ws/do-standard/close-state']) {
+		for (const initiator of ['client', 'server']) {
+			test(`automatic close state and single owner-scoped delivery: ${path}, ${initiator}`, async () => {
+				const token = `${mode}-${initiator}-${path.split('/')[2]}`
+				const client = await connectWS(`${base()}${path}?close-probe=${token}`)
+				const closed = client.waitForClose()
+				const code = initiator === 'client' ? 1000 : 4000
+				const reason = initiator === 'client' ? 'client probe' : 'server probe'
+				if (initiator === 'client') client.close(code, reason)
+				else client.send('probe-server-close')
+				expect(await closed).toEqual({ code, reason })
+				expect(await waitForCloseObservations(path, token, 2)).toEqual(['listener', 'property'].map(kind => ({
+					kind,
+					state: 3,
+					code,
+					reason,
+					modern: true,
+					afterModern: true,
+					sameEvent: true,
+				})))
+			})
+		}
+	}
+
+	test('hibernation retains its existing close callback state and delivery', async () => {
+		const path = '/ws/do-hibernation/close-state'
+		const token = `${mode}-hibernation`
+		const client = await connectWS(`${base()}${path}?close-probe=${token}`)
+		const closed = client.waitForClose()
+		client.close(1000, 'hibernation probe')
+		await closed
+		const states = mode === 'standalone' ? [3] : [1, 3]
+		expect(await waitForCloseObservations(path, token, states.length)).toEqual(states.map(state => ({
+			kind: 'hibernation',
+			state,
+			code: 1000,
+			reason: 'hibernation probe',
+			modern: true,
+			afterModern: true,
+			sameEvent: true,
+		})))
+	})
 
 	test('hibernation acceptance wires raw delivery before flushing queued binary messages', async () => {
 		const response = await fetch(`${httpBase()}/ws/do-hibernation/queued/queued-binary`)
@@ -495,7 +549,7 @@ describe('WebSocket E2E — standalone', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(() => PORT)
+	defineWebSocketTests(() => PORT, 'standalone')
 })
 
 // ─── Vite mode ──────────────────────────────────────────────────────────
@@ -515,5 +569,5 @@ describe('WebSocket E2E — vite', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(() => PORT)
+	defineWebSocketTests(() => PORT, 'vite')
 })

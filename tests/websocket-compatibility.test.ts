@@ -130,6 +130,95 @@ function expectReasonError(callback: () => void): void {
 	expect(error).toMatchObject({ name: 'SyntaxError' })
 }
 
+describe('selected automatic close-event state', () => {
+	const cases: { name: string; input: CompatibilityInput; state: number }[] = [
+		{ name: 'before threshold retains existing state', input: { date: '2026-04-06' }, state: CFWebSocket.OPEN },
+		{ name: 'at threshold', input: { date: '2026-04-07' }, state: CFWebSocket.CLOSED },
+		{ name: 'enable overrides date', input: { date: '2026-04-06', flags: ['web_socket_auto_reply_to_close'] }, state: CFWebSocket.CLOSED },
+		{ name: 'disable overrides date', input: { date: '2026-04-07', flags: ['web_socket_manual_reply_to_close'] }, state: CFWebSocket.OPEN },
+		{ name: 'no-date enable', input: { flags: ['web_socket_auto_reply_to_close'] }, state: CFWebSocket.CLOSED },
+		{ name: 'no-date disable retains existing state', input: { flags: ['web_socket_manual_reply_to_close'] }, state: CFWebSocket.OPEN },
+		{ name: 'legacy local retains existing state', input: {}, state: CFWebSocket.OPEN },
+	]
+	for (const { name, input, state } of cases) {
+		test(name, () => {
+			const pair = runWithCompatibility(resolveCompatibility(input), () => new WebSocketPair())
+			pair[0].accept()
+			pair[1].accept()
+			const states: number[] = []
+			pair[1].addEventListener('close', () => states.push(pair[1].readyState))
+			pair[1].onclose = () => states.push(pair[1].readyState)
+			pair[0].close(1000, 'peer close')
+			expect(states).toEqual([state, state])
+			expect(pair[0].readyState).toBe(CFWebSocket.CLOSED)
+			expect(pair[1].readyState).toBe(CFWebSocket.CLOSED)
+		})
+	}
+
+	test('queued close is CLOSED before both callbacks, once, in the captured owner scope', async () => {
+		const owner = resolveCompatibility({ date: '2026-04-07', flags: ['webcrypto_modern_algorithms'] })
+		const socket = runWithCompatibility(owner, () => new CFWebSocket())
+		const events: Event[] = []
+		const continuations: Promise<void>[] = []
+		const onClose = (event: Event) => {
+			events.push(event)
+			expect(socket.readyState).toBe(CFWebSocket.CLOSED)
+			expect(getActiveCompatibility()).toBe(owner)
+			socket.close(1000, 'nested close')
+			continuations.push((async () => {
+				await Promise.resolve()
+				expect(typeof crypto.subtle.encapsulateBits).toBe('function')
+				expect(getActiveCompatibility()).toBe(owner)
+			})())
+		}
+		runWithCompatibility(legacyCompatibility, () => {
+			socket.addEventListener('close', onClose)
+			socket.onclose = onClose
+			socket.dispatchOrQueue({ type: 'close', code: 1000, reason: 'queued', wasClean: true })
+			expect(events).toHaveLength(0)
+			socket.accept()
+			socket.close()
+			expect(getActiveCompatibility()).toBe(legacyCompatibility)
+		})
+		await Promise.all(continuations)
+		expect(events).toHaveLength(2)
+		expect(events[0]).toBe(events[1])
+	})
+
+	test('hibernation preserves existing close state while raw transport peers still use automatic selection', () => {
+		const selected = resolveCompatibility({ date: '2026-04-07' })
+		for (const hibernation of [false, true]) {
+			const pair = runWithCompatibility(selected, () => new WebSocketPair())
+			if (hibernation) pair[1]._useHibernationDelivery()
+			else pair[1]._useRawBinaryDelivery()
+			pair[0].accept()
+			pair[1].accept()
+			const states: number[] = []
+			pair[1].onclose = () => states.push(pair[1].readyState)
+			pair[0].close()
+			expect(states).toEqual([hibernation ? CFWebSocket.OPEN : CFWebSocket.CLOSED])
+		}
+	})
+
+	test('server close and a synchronous transport close echo deliver one event', () => {
+		const owner = resolveCompatibility({ date: '2026-04-07' })
+		const pair = runWithCompatibility(owner, () => new WebSocketPair())
+		pair[0].accept()
+		pair[1].accept()
+		pair[0].onclose = event => {
+			pair[1].dispatchOrQueue({ type: 'close', code: event.code, reason: event.reason, wasClean: true })
+		}
+		const events: CloseEvent[] = []
+		pair[1].onclose = event => events.push(event)
+		pair[1].close(4000, 'server close')
+		pair[1].dispatchOrQueue({ type: 'close', code: 4000, reason: 'server close', wasClean: true })
+		expect(events).toHaveLength(1)
+		expect(events[0]?.code).toBe(4000)
+		expect(events[0]?.reason).toBe('server close')
+		expect(pair[1].readyState).toBe(CFWebSocket.CLOSED)
+	})
+})
+
 describe('selected WebSocket close reason', () => {
 	const cases: { name: string; input: CompatibilityInput; enabled: boolean }[] = [
 		{ name: 'before threshold', input: { date: '2026-03-02' }, enabled: false },

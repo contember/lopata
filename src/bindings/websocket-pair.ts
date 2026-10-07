@@ -50,6 +50,8 @@ export class CFWebSocket extends EventTarget {
 	declare binaryType?: string
 	private binaryTypeValue: 'blob' | 'arraybuffer' = this.compatibility.websocketStandardBinaryType === 'enabled' ? 'blob' : 'arraybuffer'
 	private rawBinaryDelivery = false
+	private hibernationDelivery = false
+	private automaticCloseDelivered = false
 
 	constructor() {
 		super()
@@ -69,6 +71,12 @@ export class CFWebSocket extends EventTarget {
 	/** @internal Transport and hibernation consumers must opt in before accept() flushes queued messages. */
 	_useRawBinaryDelivery(): void {
 		this.rawBinaryDelivery = true
+	}
+
+	/** @internal Hibernation close callbacks retain their existing state independently of ordinary socket selection. */
+	_useHibernationDelivery(): void {
+		this.hibernationDelivery = true
+		this._useRawBinaryDelivery()
 	}
 
 	/** @internal */ _peer: CFWebSocket | null = null
@@ -200,6 +208,12 @@ export class CFWebSocket extends EventTarget {
 				break
 			}
 			case 'close': {
+				if (!this.hibernationDelivery && this.compatibility.websocketAutoReplyToClose === 'enabled') {
+					// A transport can synchronously echo close while close() is notifying its peer.
+					if (this.automaticCloseDelivered) return
+					this.automaticCloseDelivered = true
+					this.readyState = CLOSED
+				}
 				const ce = new CloseEvent('close', {
 					code: evt.code,
 					reason: evt.reason,

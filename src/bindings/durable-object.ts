@@ -884,7 +884,7 @@ export class DurableObjectStateImpl {
 			throw new Error(`Exceeded max concurrent WebSocket connections (${this._limits.maxConcurrentWebSockets})`)
 		}
 
-		if (ws instanceof CFWebSocket) ws._useRawBinaryDelivery()
+		if (ws instanceof CFWebSocket) ws._useHibernationDelivery()
 
 		const entry: AcceptedWebSocket = { ws, tags: tagList, autoResponseTimestamp: null }
 		this._acceptedWebSockets.add(entry)
