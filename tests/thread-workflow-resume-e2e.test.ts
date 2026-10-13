@@ -81,6 +81,25 @@ class OutputReader {
 	}
 }
 
+/**
+ * Open a streamed response and keep reading it in the background, so it pins its generation for as
+ * long as the test wants. Reading only the first chunk is not enough: since Bun 1.4.3 the fetch
+ * client closes the connection of a streamed response nobody is reading, the server sees the client
+ * go away and cancels the body, and the generation the test meant to pin turns idle mid-step.
+ */
+async function holdStream(url: string, signal: AbortSignal): Promise<void> {
+	const response = await fetch(url, { signal })
+	const reader = response.body!.getReader()
+	await reader.read() // 'open': the stream is registered
+	void (async () => {
+		try {
+			while (!(await reader.read()).done) {}
+		} catch {
+			// Aborted by the test.
+		}
+	})()
+}
+
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
@@ -137,8 +156,7 @@ describe('Workflow resume vs overlapping reload grace windows', () => {
 		// (Abort the request to release it — cancelling just the body reader
 		// doesn't close the HTTP connection, so the server would keep streaming.)
 		const sse1Abort = new AbortController()
-		const sse1 = await fetch(`${base}/sse`, { signal: sse1Abort.signal })
-		await sse1.body!.getReader().read() // 'open' — the stream is registered
+		await holdStream(`${base}/sse`, sse1Abort.signal)
 
 		// Start the slow workflow on generation 1 (step holds for ~5s).
 		const id = await (await fetch(`${base}/start?ms=5000`)).text()
@@ -156,8 +174,7 @@ describe('Workflow resume vs overlapping reload grace windows', () => {
 		// reload B while `this.active` is still generation 2 itself, masking
 		// the race this test exists for.
 		const sse2Abort = new AbortController()
-		const sse2 = await fetch(`${base}/sse`, { signal: sse2Abort.signal })
-		await sse2.body!.getReader().read()
+		await holdStream(`${base}/sse`, sse2Abort.signal)
 
 		// Reload B → generation 3 active; generations 1 AND 2 are now in
 		// overlapping grace windows.
