@@ -21,7 +21,7 @@ Lopata takes a different approach: it implements all Cloudflare bindings nativel
 
 ## Features
 
-- **All major bindings** — KV, R2, D1, Durable Objects (with SQL API and WebSocket Hibernation), Workflows, Queues, Cache, Service Bindings, Static Assets, Images, Hyperdrive, Analytics Engine, Browser Rendering, Containers, Scheduled (Cron), Email
+- **All major bindings** — KV, R2, D1, Durable Objects (with SQL API and WebSocket Hibernation), Workflows, Queues, Cache, Service Bindings, Static Assets, Images, Hyperdrive, Analytics Engine, Rate Limiting, Browser Rendering, Containers, Scheduled (Cron), Email
 - **Persistent local state** — data lives in `.lopata/` (SQLite + filesystem), survives restarts
 - **Dashboard** — browse bindings, inspect data, view request traces in real-time
 - **Vite plugin** — integrates with React Router and other Vite-based frameworks
@@ -345,6 +345,7 @@ The built-in dashboard is available at `/__dashboard` and provides:
 | **Hyperdrive**        | TCP via `Bun.connect()`      | Passthrough |
 | **Workers AI**        | Proxies to Cloudflare API    | Passthrough |
 | **Analytics Engine**  | SQLite                       | Full        |
+| **Rate Limiting**     | SQLite (fixed window)        | Full        |
 | **Browser Rendering** | Local Puppeteer              | Full        |
 | **Containers**        | Docker                       | Full        |
 | **Send Email**        | SQLite (captured)            | Full        |

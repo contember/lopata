@@ -24,6 +24,7 @@ import { ImagesBinding } from './images'
 import { SqliteKVNamespace } from './kv'
 import { MediaBinding } from './media'
 import { FileR2Bucket } from './r2'
+import { SqliteRateLimiter } from './rate-limit'
 import { StaticAssets } from './static-assets'
 import { VpcNetworkBinding } from './vpc-network'
 import { WorkerLoaderBinding } from './worker-loader'
@@ -141,6 +142,15 @@ export function addStatelessBindings(env: Record<string, unknown>, opts: Statele
 			type: 'analytics_engine',
 			name: ae.binding,
 			methods: ['writeDataPoint'],
+		})
+	}
+
+	for (const rl of config.ratelimits ?? []) {
+		log(`Rate limit: ${rl.name} (${rl.simple.limit} per ${rl.simple.period}s)`)
+		env[rl.name] = instrumentBinding(new SqliteRateLimiter(db, rl.namespace_id, rl.simple.limit, rl.simple.period), {
+			type: 'ratelimit',
+			name: rl.name,
+			methods: ['limit'],
 		})
 	}
 

@@ -311,6 +311,16 @@ export function runMigrations(db: Database): void {
 			PRIMARY KEY (app_id, flag_key)
 		)
 	`)
+
+	db.run(`
+		CREATE TABLE IF NOT EXISTS rate_limits (
+			namespace_id TEXT NOT NULL,
+			key TEXT NOT NULL,
+			window INTEGER NOT NULL,
+			count INTEGER NOT NULL,
+			PRIMARY KEY (namespace_id, key, window)
+		)
+	`)
 }
 
 /** Returns the path to the .lopata data directory. */
