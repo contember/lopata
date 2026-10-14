@@ -24,7 +24,7 @@ import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { EmailMessage } from './email'
 import { SqliteQueueProducer } from './queue'
-import { makeBindingProxy } from './rpc-stub'
+import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
 
@@ -74,7 +74,7 @@ function makeRpcProxy(
 }
 
 function makeEnvBindingProxy(binding: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
-	return makeRpcProxy({ binding }, rpc, envWsBridge)
+	return makeRpcProxy({ binding }, rpc, envWsBridge, { [FETCHER_BRAND]: true })
 }
 
 function makeDoEnvStubProxy(

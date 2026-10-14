@@ -11,7 +11,7 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
-import { makeBindingProxy } from '../bindings/rpc-stub'
+import { FETCHER_BRAND, makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
 import { addStatelessBindings, type BrowserConfig } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
@@ -229,6 +229,7 @@ function makeServiceBindingProxy(bindingName: string, rpc: RpcClient, envWsBridg
 		connect: () => {
 			throw serviceBindingConnectError(bindingName)
 		},
+		[FETCHER_BRAND]: true,
 	})
 }
 
