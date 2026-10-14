@@ -640,9 +640,9 @@
 
 ### 5.8 Transactions
 
-- ✅ `storage.transactionSync(callback)` — synchronous transaction (BEGIN IMMEDIATE)
-- ✅ `storage.transaction(callback)` — async transaction with BEGIN/COMMIT/ROLLBACK
-- ⚠️ Transaction object: get, put, delete, deleteAll, list, rollback — simplified (uses same storage)
+- ✅ `storage.transactionSync(callback)` — savepoint over the DO's KV and SQL data; nests; a throw rolls back
+- ✅ `storage.transaction(callback)` — savepoint over KV and SQL data; nests; a throw or `txn.rollback()` rolls back
+- ✅ Transaction object: get, put, delete, list, getAlarm, setAlarm, deleteAlarm, rollback; deleteAll throws (as in workerd)
 - ✅ Implicit transactions: multiple writes without await are auto-coalesced
 
 ### 5.9 storage.sync()
