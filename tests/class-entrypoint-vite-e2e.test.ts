@@ -103,6 +103,11 @@ describe('Class-based entrypoint E2E — vite', () => {
 		expect(await state()).toMatchObject({ greeting: 'ahoj', ticks: 0 })
 	})
 
+	test('ctx.exports and the imported exports reach a named entrypoint with props', async () => {
+		const res = await fetch(`http://localhost:${PORT}/exports`)
+		expect(await res.json()).toEqual({ viaCtx: 'hello ctx', viaImport: 'hello import' })
+	})
+
 	test('the dashboard cron trigger reaches scheduled() on the prototype', async () => {
 		const { status, body } = await rpc('scheduled.trigger', { cron: CRON })
 		expect(status).toBe(200)

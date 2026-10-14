@@ -12,6 +12,17 @@ import { warnInvalidRpcArgs, warnInvalidRpcReturn } from '../rpc-validate'
 // Brand symbol shared across plugin.ts and vite-plugin/modules-plugin.ts
 export const RPC_TARGET_BRAND = Symbol.for('lopata.RpcTarget')
 
+/** Static brand on the `WorkerEntrypoint` base classes (Bun plugin and Vite shim); subclasses inherit it. */
+export const WORKER_ENTRYPOINT_BRAND = Symbol.for('lopata.WorkerEntrypoint')
+
+/** Answered `true` by proxies that behave as a workerd `Fetcher` (service bindings and
+ *  their loopback/loader equivalents) — the stubs workerd lets a Worker Loader `env` carry. */
+export const FETCHER_BRAND = Symbol.for('lopata.Fetcher')
+
+export function isFetcher(value: unknown): value is Record<string | symbol, unknown> {
+	return (typeof value === 'object' || typeof value === 'function') && value !== null && Reflect.get(value, FETCHER_BRAND) === true
+}
+
 export function isRpcTarget(value: unknown): boolean {
 	return (
 		value !== null

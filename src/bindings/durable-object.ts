@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { persistError, startSpan, startSyncSpan } from '../tracing/span'
+import { globalExports } from '../worker-exports'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
@@ -834,6 +835,11 @@ export class DurableObjectStateImpl {
 	/** @internal Get the DO instance via resolver */
 	_resolveInstance(): DurableObjectBase | null {
 		return this._instanceResolver?.() ?? null
+	}
+
+	/** `ctx.exports` — loopback bindings to this worker's own exports. */
+	get exports(): Record<string, unknown> {
+		return globalExports
 	}
 
 	waitUntil(_promise: Promise<unknown>) {

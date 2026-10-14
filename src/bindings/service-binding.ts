@@ -12,7 +12,7 @@ import { ExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext, runWithContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
-import { createRpcFunctionStub, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
+import { createRpcFunctionStub, FETCHER_BRAND, NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
 import { assetsOnlyRejection } from './static-assets'
 
 type WorkerModule = Record<string, unknown>
@@ -203,8 +203,7 @@ export class ServiceBinding {
 		return new Proxy({} as Record<string, unknown>, {
 			get(_obj, prop: string | symbol) {
 				if (typeof prop === 'symbol') {
-					if (NON_RPC_PROPS.has(prop)) return undefined
-					return undefined
+					return prop === FETCHER_BRAND ? true : undefined
 				}
 
 				if (prop === 'fetch') {

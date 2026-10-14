@@ -37,6 +37,8 @@ declare module 'cloudflare:workers' {
 
 	export const env: Record<string, any>
 
+	export const exports: Record<string, any>
+
 	export function waitUntil(promise: Promise<unknown>): void
 
 	export interface Span {

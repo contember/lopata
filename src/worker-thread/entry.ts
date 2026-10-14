@@ -2,6 +2,7 @@
 
 import './request-clone-fix' // global Request shim — must load before user code
 import { ForwardableEmailMessage } from '../bindings/email'
+import { buildLoopbackExports, durableObjectNamespaceBindings } from '../bindings/loopback-exports'
 import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
@@ -9,6 +10,7 @@ import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
+import { setGlobalExports } from '../worker-exports'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
 import type {
 	ParentSpanContext,
@@ -218,6 +220,7 @@ async function initRuntime(init: WorkerInitConfig) {
 
 	const workerModule = await import(init.modulePath)
 	const defaultExport = workerModule.default
+	setGlobalExports(buildLoopbackExports(workerModule, env, durableObjectNamespaceBindings(init.config)))
 
 	// Introspect DO + container classes for `alarm()` so main's
 	// `DurableObjectNamespaceImpl.hasAlarmHandler()` returns the right value in

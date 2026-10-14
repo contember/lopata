@@ -44,6 +44,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	// Lazy-loaded runtime functions
 	let wireClassRefs: Function
 	let setGlobalEnv: Function
+	let publishLoopbackExports: (workerModule: Record<string, unknown>) => void
 	let ExecutionContext: new() => any
 	let runWithExecutionContext: <T>(ctx: any, fn: () => T) => T
 
@@ -118,6 +119,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					viteGenerations.set(currentGenerationId, { id: currentGenerationId, createdAt: Date.now(), state: 'active' })
 					wireClassRefs(registry, workerModule, env, workerRegistry, currentGenerationId)
 					setGlobalEnv(env)
+					publishLoopbackExports(workerModule)
 					console.log(`[lopata:vite] Worker module (re)loaded, classes wired (generation ${currentGenerationId})`)
 					// Schedule cleanup of old generation after successful reload
 					if (viteGenerations.has(previousGenId)) {
@@ -392,9 +394,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			const s3Mod = await import('../s3/proxy.ts')
 			const emailMod = await import('../bindings/email.ts')
 			const dbMod = await import('../db.ts')
+			const workerExportsMod = await import('../worker-exports.ts')
+			const loopbackExportsMod = await import('../bindings/loopback-exports.ts')
 
 			wireClassRefs = envMod.wireClassRefs
 			setGlobalEnv = envMod.setGlobalEnv
+			publishLoopbackExports = (workerModule) => {
+				workerExportsMod.setGlobalExports(
+					loopbackExportsMod.buildLoopbackExports(workerModule, env, loopbackExportsMod.durableObjectNamespaceBindings(config)),
+				)
+			}
+			// The modules-plugin `exports` proxy reads this, bridging the Vite SSR runner ↔ native module graphs.
+			Reflect.set(globalThis, '__lopata_exports', workerExportsMod.globalExports)
 			ExecutionContext = ecMod.ExecutionContext
 			runWithExecutionContext = ecMod.runWithExecutionContext
 			startSpan = spanMod.startSpan

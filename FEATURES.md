@@ -30,7 +30,6 @@
 
 | Priority | Feature       | Notes                                  |
 | -------- | ------------- | -------------------------------------- |
-| Low      | `ctx.exports` | Loopback bindings (enable_ctx_exports) |
 | Very low | Tail handler  | Hard to simulate locally               |
 | Very low | Secrets Store | `[[secrets_store_secrets]]`, open beta |
 
@@ -135,7 +134,7 @@
 - ✅ `ctx.waitUntil(promise)` — extend Worker lifetime past response
 - ✅ `ctx.passThroughOnException()` — fail open to origin on error (no-op in dev)
 - ✅ `ctx.props` — arbitrary JSON from Service Bindings
-- ❌ `ctx.exports` — loopback bindings for exports (enable_ctx_exports flag)
+- ✅ `ctx.exports` / `import { exports } from "cloudflare:workers"` — loopbacks for the default export and named `WorkerEntrypoint`s (`exports.Name({ props })`), plus namespaces of configured Durable Object classes; also on a DO's `ctx`. Not gated on `enable_ctx_exports`; DO facet classes are not provided
 - ✅ `waitUntil()` standalone import from `cloudflare:workers`
 - ✅ `ctx.tracing.enterSpan()` / `import { tracing } from "cloudflare:workers"` — custom trace spans (`span.setAttribute`, `span.isTraced`)
 

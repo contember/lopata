@@ -5,6 +5,7 @@
  */
 
 import { logIfRejected } from '../execution-context'
+import { globalExports } from '../worker-exports'
 import type { WorkerMessage } from './protocol'
 
 // Worker-thread-global wait-until id sequence. Ids never cross thread
@@ -36,6 +37,11 @@ export class WorkerExecutionContext {
 	constructor(post: (msg: WorkerMessage) => void, props?: Record<string, unknown>) {
 		this._post = post
 		this.props = props ?? {}
+	}
+
+	/** `ctx.exports` — loopback bindings to this worker's own exports. */
+	get exports(): Record<string, unknown> {
+		return globalExports
 	}
 
 	waitUntil(promise: Promise<unknown>): void {
