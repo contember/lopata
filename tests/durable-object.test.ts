@@ -236,6 +236,13 @@ describe('SqlStorage.exec', () => {
 		expect(cursor.rowsWritten).toBe(0)
 	})
 
+	test('an ArrayBuffer binds as a BLOB (workerd parity)', () => {
+		sql.exec('CREATE TABLE blobs (data BLOB)')
+		sql.exec('INSERT INTO blobs (data) VALUES (?)', new Uint8Array([1, 2, 3]).buffer)
+		const [row] = sql.exec('SELECT data FROM blobs').toArray()
+		expect(row?.data).toEqual(new Uint8Array([1, 2, 3]))
+	})
+
 	test('plain INSERT returns no rows but reports rowsWritten', () => {
 		const cursor = sql.exec('INSERT INTO t (name) VALUES (?)', 'alice')
 		expect(cursor.toArray()).toEqual([])
