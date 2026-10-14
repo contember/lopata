@@ -1,0 +1,16 @@
+{
+	"name": "thread-loopback-loader-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "HOST", "class_name": "Host" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Host"] }
+	],
+	"worker_loaders": [
+		{ "binding": "LOADER" }
+	]
+}

@@ -30,7 +30,6 @@
 
 | Priority | Feature       | Notes                                  |
 | -------- | ------------- | -------------------------------------- |
-| Low      | `ctx.exports` | Loopback bindings (enable_ctx_exports) |
 | Very low | Tail handler  | Hard to simulate locally               |
 | Very low | Secrets Store | `[[secrets_store_secrets]]`, open beta |
 
@@ -135,7 +134,7 @@
 - ✅ `ctx.waitUntil(promise)` — extend Worker lifetime past response
 - ✅ `ctx.passThroughOnException()` — fail open to origin on error (no-op in dev)
 - ✅ `ctx.props` — arbitrary JSON from Service Bindings
-- ❌ `ctx.exports` — loopback bindings for exports (enable_ctx_exports flag)
+- ✅ `ctx.exports` / `import { exports } from "cloudflare:workers"` — loopbacks for the default export and named `WorkerEntrypoint`s (`exports.Name({ props })`), plus namespaces of configured Durable Object classes; also on a DO's `ctx`. Not gated on `enable_ctx_exports`; DO facet classes are not provided
 - ✅ `waitUntil()` standalone import from `cloudflare:workers`
 - ✅ `ctx.tracing.enterSpan()` / `import { tracing } from "cloudflare:workers"` — custom trace spans (`span.setAttribute`, `span.isTraced`)
 
@@ -640,9 +639,9 @@
 
 ### 5.8 Transactions
 
-- ✅ `storage.transactionSync(callback)` — synchronous transaction (BEGIN IMMEDIATE)
-- ✅ `storage.transaction(callback)` — async transaction with BEGIN/COMMIT/ROLLBACK
-- ⚠️ Transaction object: get, put, delete, deleteAll, list, rollback — simplified (uses same storage)
+- ✅ `storage.transactionSync(callback)` — savepoint over the DO's KV and SQL data; nests; a throw rolls back
+- ✅ `storage.transaction(callback)` — savepoint over KV and SQL data; nests; a throw or `txn.rollback()` rolls back
+- ✅ Transaction object: get, put, delete, list, getAlarm, setAlarm, deleteAlarm, rollback; deleteAll throws (as in workerd)
 - ✅ Implicit transactions: multiple writes without await are auto-coalesced
 
 ### 5.9 storage.sync()

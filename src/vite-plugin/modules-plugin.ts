@@ -56,7 +56,17 @@ export const env = new Proxy({}, {
     if (target && prop in target) return { configurable: true, enumerable: true, value: target[prop] };
   },
 });
+export const exports = new Proxy({}, {
+  get(_, prop) { return globalThis.__lopata_exports?.[prop]; },
+  has(_, prop) { return prop in (globalThis.__lopata_exports ?? {}); },
+  ownKeys() { return Object.keys(globalThis.__lopata_exports ?? {}); },
+  getOwnPropertyDescriptor(_, prop) {
+    const target = globalThis.__lopata_exports;
+    if (target && prop in target) return { configurable: true, enumerable: true, value: target[prop] };
+  },
+});
 export class WorkerEntrypoint {
+  static [Symbol.for("lopata.WorkerEntrypoint")] = true;
   constructor(ctx, env) {
     this.ctx = ctx;
     this.env = env;

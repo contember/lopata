@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { SqliteCacheStorage } from '../bindings/cache'
 import type { DurableObjectNamespaceImpl } from '../bindings/durable-object'
 import { ForwardableEmailMessage } from '../bindings/email'
+import { buildLoopbackExports } from '../bindings/loopback-exports'
 import { createScheduledController } from '../bindings/scheduled'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
 import {
@@ -15,6 +16,7 @@ import {
 } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { setGlobalExports } from '../worker-exports'
 import { TestClock } from './clock'
 import { TestDurableObjectNamespace } from './durable-object'
 import { buildTestEnv, configToBindings } from './env-builder'
@@ -116,6 +118,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 
 	// Set globalEnv so `import { env } from 'cloudflare:workers'` works
 	setGlobalEnv(env)
+	setGlobalExports(buildLoopbackExports(workerModule, env, registry.durableObjects))
 
 	// --- Handler dispatch helpers ---
 
@@ -265,6 +268,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 		}
 		// Clean up global state
 		setGlobalEnv({})
+		setGlobalExports({})
 		testCachesRef.current = null
 		fetchMock.reset()
 	}

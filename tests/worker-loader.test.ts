@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { buildLoopbackExports } from '../src/bindings/loopback-exports'
+import { createServiceBinding } from '../src/bindings/service-binding'
 import { WorkerLoaderBinding } from '../src/bindings/worker-loader'
 
 let tmpDir: string
@@ -224,5 +227,122 @@ describe('WorkerLoaderBinding.get()', () => {
 		const resp2 = await stub.getEntrypoint().fetch('http://loader/')
 		expect(await resp2.text()).toBe('lazy ok')
 		expect(calls).toBe(1)
+	})
+})
+
+describe('Worker Loader env', () => {
+	const ECHO_ENV_MAIN = `
+export default {
+	async fetch(request, env) {
+		return Response.json({
+			isMap: env.DATA.tags instanceof Map,
+			tag: env.DATA.tags.get('a'),
+			isDate: env.DATA.at instanceof Date,
+			bytes: Array.from(env.DATA.bytes),
+			list: env.DATA.list,
+		})
+	},
+}
+`
+
+	class Api extends WorkerEntrypoint {
+		greet(name: string): string {
+			return `${this.ctx.props.prefix ?? 'hi'} ${name}`
+		}
+
+		fail(): never {
+			throw new Error('host failure')
+		}
+
+		async fetch(request: Request): Promise<Response> {
+			return new Response(`api ${request.method} ${new URL(request.url).pathname} ${await request.text()}`)
+		}
+	}
+
+	function serviceBindingTo(module: Record<string, unknown>, entrypoint?: string): Record<string, unknown> {
+		const binding = createServiceBinding('api', entrypoint)
+		const wire = binding._wire
+		if (typeof wire !== 'function') throw new Error('service binding has no _wire')
+		wire(module, {})
+		return binding
+	}
+
+	function loadWithEnv(env: Record<string, unknown>, main = ECHO_ENV_MAIN) {
+		return track(loader.load({ compatibilityDate: '2026-03-01', mainModule: 'main.js', modules: { 'main.js': main }, env }))
+	}
+
+	test('structured-clonable values keep their types', async () => {
+		const stub = loadWithEnv({
+			DATA: { tags: new Map([['a', 1]]), at: new Date(0), bytes: new Uint8Array([1, 2]), list: [1, { nested: true }] },
+		})
+		const resp = await stub.getEntrypoint().fetch('http://loader/')
+		expect(await resp.json()).toEqual({ isMap: true, tag: 1, isDate: true, bytes: [1, 2], list: [1, { nested: true }] })
+	})
+
+	test('a service binding in env is callable from the dynamic worker', async () => {
+		const stub = loadWithEnv(
+			{ API: serviceBindingTo({ Api }, 'Api') },
+			`export default {
+				async fetch(request, env) {
+					const greeting = await env.API.greet('dynamic')
+					const fetched = await (await env.API.fetch('http://api/path', { method: 'POST', body: 'payload' })).text()
+					let error
+					try { await env.API.fail() } catch (e) { error = e.message }
+					return Response.json({ greeting, fetched, error })
+				},
+			}`,
+		)
+		const resp = await stub.getEntrypoint().fetch('http://loader/')
+		expect(await resp.json()).toEqual({ greeting: 'hi dynamic', fetched: 'api POST /path payload', error: 'host failure' })
+	})
+
+	test('a ctx.exports loopback specialized with props carries them into the host entrypoint', async () => {
+		const exports = buildLoopbackExports({ Api }, {}, [])
+		const loopback = exports.Api
+		if (typeof loopback !== 'function') throw new Error('expected a loopback stub')
+		const stub = loadWithEnv(
+			{ HOST: loopback({ props: { prefix: 'tenant-1' } }) },
+			`export default { async fetch(request, env) { return new Response(await env.HOST.greet('x')) } }`,
+		)
+		const resp = await stub.getEntrypoint().fetch('http://loader/')
+		expect(await resp.text()).toBe('tenant-1 x')
+	})
+
+	test('an unspecialized ctx.exports loopback is rejected', () => {
+		const exports = buildLoopbackExports({ Api }, {}, [])
+		expect(() => loadWithEnv({ HOST: exports.Api })).toThrow('env.HOST')
+	})
+
+	test('functions, class instances and non-Fetcher stubs are rejected with a DataCloneError naming the path', () => {
+		class Settings {}
+		const doStubLike = new Proxy({}, {})
+		const cases: [Record<string, unknown>, string][] = [
+			[{ fn: () => 1 }, 'env.fn'],
+			[{ nested: { settings: new Settings() } }, 'env.nested.settings'],
+			[{ list: [1, doStubLike] }, 'env.list[1]'],
+		]
+		for (const [env, path] of cases) {
+			let error: unknown
+			try {
+				loadWithEnv(env)
+			} catch (e) {
+				error = e
+			}
+			if (!(error instanceof DOMException)) throw new Error(`expected a DOMException for ${path}`)
+			expect(error.name).toBe('DataCloneError')
+			expect(error.message).toContain(path)
+		}
+	})
+
+	test('get() rejects an invalid env on first use', async () => {
+		const stub = track(
+			loader.get('bad-env', () => ({
+				compatibilityDate: '2026-03-01',
+				mainModule: 'main.js',
+				modules: { 'main.js': ECHO_ENV_MAIN },
+				env: { fn: () => 1 },
+			})),
+		)
+		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('env.fn')
 	})
 })

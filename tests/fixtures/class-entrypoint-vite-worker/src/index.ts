@@ -1,4 +1,4 @@
-import { WorkerEntrypoint } from 'cloudflare:workers'
+import { exports, WorkerEntrypoint } from 'cloudflare:workers'
 
 // The class-based entrypoint shape: handlers live on the prototype, and env/ctx arrive
 // through the constructor rather than the argument list. `this.env.GREETING` and the
@@ -12,6 +12,13 @@ let waitUntilRan = false
 // already past its own constructor. Kept last in the test file, since nothing recovers.
 let constructorShouldThrow = false
 
+/** Reached through `ctx.exports` loopbacks. */
+export class Greeter extends WorkerEntrypoint {
+	hello(): string {
+		return `hello ${this.ctx.props.name}`
+	}
+}
+
 export default class extends WorkerEntrypoint<{ GREETING: string }> {
 	constructor(ctx: any, env: any) {
 		super(ctx, env)
@@ -22,6 +29,12 @@ export default class extends WorkerEntrypoint<{ GREETING: string }> {
 		const url = new URL(request.url)
 		if (url.pathname === '/state') {
 			return Response.json({ greeting: this.env.GREETING, ticks, mails, waitUntilRan })
+		}
+		if (url.pathname === '/exports') {
+			return Response.json({
+				viaCtx: await this.ctx.exports.Greeter({ props: { name: 'ctx' } }).hello(),
+				viaImport: await exports.Greeter({ props: { name: 'import' } }).hello(),
+			})
 		}
 		if (url.pathname === '/arm-constructor-throw') {
 			constructorShouldThrow = true

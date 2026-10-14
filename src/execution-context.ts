@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { tracing } from './tracing/span'
+import { globalExports } from './worker-exports'
 
 const storage = new AsyncLocalStorage<ExecutionContext>()
 
@@ -28,6 +29,11 @@ export class ExecutionContext {
 
 	constructor(props?: Record<string, unknown>) {
 		this.props = props ?? {}
+	}
+
+	/** `ctx.exports` — loopback bindings to this worker's own exports. */
+	get exports(): Record<string, unknown> {
+		return globalExports
 	}
 
 	waitUntil(promise: Promise<unknown>): void {

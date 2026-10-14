@@ -3,11 +3,13 @@ import { ContainerBase, getContainer, getRandom } from './bindings/container'
 import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/durable-object'
 import { EmailMessage } from './bindings/email'
 import type { ImageTransformOptions, OutputOptions } from './bindings/images'
+import { WORKER_ENTRYPOINT_BRAND } from './bindings/rpc-stub'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
 import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
 import { tracing } from './tracing/span'
+import { globalExports } from './worker-exports'
 
 /**
  * Registers virtual modules for `cloudflare:workers`, `cloudflare:workflows`,
@@ -22,6 +24,7 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 				DurableObject: DurableObjectBase,
 				WorkflowEntrypoint: WorkflowEntrypointBase,
 				WorkerEntrypoint: class WorkerEntrypoint {
+					static readonly [WORKER_ENTRYPOINT_BRAND] = true
 					protected ctx: unknown
 					protected env: unknown
 					constructor(ctx: unknown, env: unknown) {
@@ -38,6 +41,7 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 					}
 				},
 				env: globalEnv,
+				exports: globalExports,
 				waitUntil(promise: Promise<unknown>): void {
 					const ctx = getActiveExecutionContext()
 					if (ctx) {

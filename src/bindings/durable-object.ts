@@ -1,9 +1,11 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
 import { persistError, startSpan, startSyncSpan } from '../tracing/span'
+import { globalExports } from '../worker-exports'
 import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOExecutor, DOExecutorFactory } from './do-executor'
@@ -86,7 +88,8 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 
 // --- DB-level transaction mutex ---
 // Shared across all SqliteDurableObjectStorage instances using the same Database connection.
-// Prevents overlapping BEGIN/COMMIT blocks from concurrent requests.
+// Savepoints on one connection must be released in LIFO order, so an async transaction()
+// waits for any unrelated one still open on the same connection.
 const dbTxnLocks = new WeakMap<Database, Promise<void>>()
 
 async function acquireDbTxnLock(db: Database): Promise<() => void> {
@@ -116,7 +119,8 @@ export class SqlStorage {
 		this._id = id
 	}
 
-	private _getDb(): Database {
+	/** @internal The object's own SQLite database, opened on first use. */
+	_getDb(): Database {
 		if (!this._db) {
 			if (this._dbPath) {
 				const dir = this._dbPath.substring(0, this._dbPath.lastIndexOf('/'))
@@ -516,38 +520,67 @@ export class SqliteDurableObjectStorage {
 		// No-op in dev — in production this flushes the write buffer
 	}
 
-	async transaction<T>(closure: (txn: SqliteDurableObjectStorage) => Promise<T>): Promise<T> {
-		const unlock = await acquireDbTxnLock(this.db)
+	/**
+	 * Like workerd's SQLite-backed storage: the closure runs inside a savepoint, a
+	 * transaction() started from inside it nests as a further savepoint, and a thrown
+	 * error or `txn.rollback()` undoes KV, SQL and alarm writes made in it.
+	 */
+	async transaction<T>(closure: (txn: DurableObjectTransaction) => Promise<T>): Promise<T> {
+		const outer = openAsyncTransactions.getStore() ?? []
+		const nested = outer.some(frame => frame.active && frame.db === this.db)
+		const unlock = nested ? null : await acquireDbTxnLock(this.db)
+		const frame: AsyncTransactionFrame = { db: this.db, active: true }
 		try {
-			this.db.run('BEGIN')
+			const savepoint = this._openSavepoint()
+			const txn = new DurableObjectTransaction(this, () => this._rollback(savepoint))
+			let result: T
 			try {
-				const result = await closure(this)
-				this.db.run('COMMIT')
-				return result
+				result = await openAsyncTransactions.run([...outer, frame], () => closure(txn))
 			} catch (e) {
-				this.db.run('ROLLBACK')
+				txn.rollback()
 				throw e
 			}
+			if (!txn.rolledBack) savepoint.release()
+			return result
 		} finally {
-			unlock()
+			frame.active = false
+			unlock?.()
 		}
 	}
 
+	/** Runs `callback` in a savepoint; nested calls nest, and a throw rolls back KV, SQL and alarm writes. */
 	transactionSync<T>(callback: () => T): T {
-		this.db.run('BEGIN IMMEDIATE')
+		const savepoint = this._openSavepoint()
+		let result: T
 		try {
-			const result = callback()
-			this.db.run('COMMIT')
-			return result
+			result = callback()
 		} catch (e) {
-			this.db.run('ROLLBACK')
+			this._rollback(savepoint)
 			throw e
+		}
+		savepoint.release()
+		return result
+	}
+
+	/** workerd keeps KV, SQL and the alarm in one database; here they live in two, so a savepoint spans both. */
+	private _openSavepoint(): StorageSavepoint {
+		return new StorageSavepoint([this.db, this.sql._getDb()], this._alarmVersion)
+	}
+
+	private _rollback(savepoint: StorageSavepoint): void {
+		savepoint.rollback()
+		// The alarm scheduler was told about the rolled-back setAlarm()/deleteAlarm() — resync it.
+		if (savepoint.alarmVersion !== this._alarmVersion) {
+			this._alarmVersion++
+			this._onAlarmSet?.(this._readAlarm())
 		}
 	}
 
 	// --- Alarm methods ---
 
 	private _onAlarmSet?: (scheduledTime: number | null) => void
+	/** Bumped on every alarm write, so a rollback knows whether the scheduler needs a resync. */
+	private _alarmVersion = 0
 
 	/** @internal Register callback for when alarm is set/deleted */
 	_setAlarmCallback(cb: (scheduledTime: number | null) => void) {
@@ -555,6 +588,10 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async getAlarm(_options?: StorageOptions): Promise<number | null> {
+		return this._readAlarm()
+	}
+
+	private _readAlarm(): number | null {
 		const row = this.db
 			.query('SELECT alarm_time FROM do_alarms WHERE namespace = ? AND id = ?')
 			.get(this.namespace, this.id) as { alarm_time: number } | null
@@ -566,6 +603,7 @@ export class SqliteDurableObjectStorage {
 		this.db
 			.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)')
 			.run(this.namespace, this.id, time)
+		this._alarmVersion++
 		this._onAlarmSet?.(time)
 	}
 
@@ -573,7 +611,102 @@ export class SqliteDurableObjectStorage {
 		this.db
 			.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?')
 			.run(this.namespace, this.id)
+		this._alarmVersion++
 		this._onAlarmSet?.(null)
+	}
+}
+
+/** A savepoint opened on several connections at once, released or rolled back together. */
+class StorageSavepoint {
+	private static nextId = 0
+	private readonly name = `lopata_do_txn_${StorageSavepoint.nextId++}`
+
+	constructor(private readonly dbs: Database[], readonly alarmVersion: number) {
+		for (const db of dbs) db.run(`SAVEPOINT ${this.name}`)
+	}
+
+	release(): void {
+		for (const db of this.dbs) db.run(`RELEASE ${this.name}`)
+	}
+
+	rollback(): void {
+		for (const db of this.dbs) {
+			db.run(`ROLLBACK TO ${this.name}`)
+			db.run(`RELEASE ${this.name}`)
+		}
+	}
+}
+
+interface AsyncTransactionFrame {
+	db: Database
+	/** Cleared when the transaction ends, so work the closure left running doesn't count as nested. */
+	active: boolean
+}
+
+/** The async transactions open in the current async call chain, outermost first. */
+const openAsyncTransactions = new AsyncLocalStorage<AsyncTransactionFrame[]>()
+
+/** The `txn` handed to a `storage.transaction()` closure (workerd's `DurableObjectTransaction`). */
+export class DurableObjectTransaction {
+	private _rolledBack = false
+
+	constructor(private readonly storage: SqliteDurableObjectStorage, private readonly rollbackSavepoint: () => void) {}
+
+	get rolledBack(): boolean {
+		return this._rolledBack
+	}
+
+	/** Undo every write made in this transaction; later operations on `txn` throw. */
+	rollback(): void {
+		if (this._rolledBack) return
+		this._rolledBack = true
+		this.rollbackSavepoint()
+	}
+
+	private _live(op: string): SqliteDurableObjectStorage {
+		if (this._rolledBack) throw new Error(`Cannot ${op} on rolled back transaction`)
+		return this.storage
+	}
+
+	async get<T = unknown>(key: string, options?: StorageOptions): Promise<T | undefined>
+	async get<T = unknown>(keys: string[], options?: StorageOptions): Promise<Map<string, T>>
+	async get<T = unknown>(keyOrKeys: string | string[], options?: StorageOptions): Promise<T | undefined | Map<string, T>> {
+		const storage = this._live('get')
+		return Array.isArray(keyOrKeys) ? storage.get<T>(keyOrKeys, options) : storage.get<T>(keyOrKeys, options)
+	}
+
+	async put(key: string, value: unknown, options?: StorageOptions): Promise<void>
+	async put(entries: Record<string, unknown>, options?: StorageOptions): Promise<void>
+	async put(keyOrEntries: string | Record<string, unknown>, valueOrOptions?: unknown, options?: StorageOptions): Promise<void> {
+		const storage = this._live('put')
+		return typeof keyOrEntries === 'string' ? storage.put(keyOrEntries, valueOrOptions, options) : storage.put(keyOrEntries, options)
+	}
+
+	async delete(key: string, options?: StorageOptions): Promise<boolean>
+	async delete(keys: string[], options?: StorageOptions): Promise<number>
+	async delete(keyOrKeys: string | string[], options?: StorageOptions): Promise<boolean | number> {
+		const storage = this._live('delete')
+		return Array.isArray(keyOrKeys) ? storage.delete(keyOrKeys, options) : storage.delete(keyOrKeys, options)
+	}
+
+	deleteAll(): never {
+		throw new Error('Cannot call deleteAll() within a transaction')
+	}
+
+	async list(options?: Parameters<SqliteDurableObjectStorage['list']>[0]): Promise<Map<string, unknown>> {
+		return this._live('list').list(options)
+	}
+
+	async getAlarm(options?: StorageOptions): Promise<number | null> {
+		return this._live('getAlarm').getAlarm(options)
+	}
+
+	async setAlarm(scheduledTime: number | Date, options?: StorageOptions): Promise<void> {
+		return this._live('setAlarm').setAlarm(scheduledTime, options)
+	}
+
+	async deleteAlarm(options?: StorageOptions): Promise<void> {
+		return this._live('deleteAlarm').deleteAlarm(options)
 	}
 }
 
@@ -702,6 +835,11 @@ export class DurableObjectStateImpl {
 	/** @internal Get the DO instance via resolver */
 	_resolveInstance(): DurableObjectBase | null {
 		return this._instanceResolver?.() ?? null
+	}
+
+	/** `ctx.exports` — loopback bindings to this worker's own exports. */
+	get exports(): Record<string, unknown> {
+		return globalExports
 	}
 
 	waitUntil(_promise: Promise<unknown>) {

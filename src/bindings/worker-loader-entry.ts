@@ -12,7 +12,10 @@
  * access behave identically to the parent.
  */
 
+import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
+import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
+import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 declare var self: Worker
 
@@ -34,8 +37,8 @@ export type LoaderResult =
 	| { type: 'rpc-call'; value: unknown }
 	| { type: 'error'; message: string; stack?: string; name?: string }
 
-export type MainToWorker = { type: 'init'; data: LoaderInitMessage } | { type: 'command'; id: number; command: LoaderCommand }
-export type WorkerToMain = { type: 'need-init' } | { type: 'ready' } | { type: 'result'; id: number; result: LoaderResult }
+export type MainToWorker = { type: 'init'; data: LoaderInitMessage } | { type: 'command'; id: number; command: LoaderCommand } | LoaderEnvReply
+export type WorkerToMain = { type: 'need-init' } | { type: 'ready' } | { type: 'result'; id: number; result: LoaderResult } | LoaderEnvRequest
 
 let loadedModule: Record<string, unknown> | null = null
 let loaderEnv: unknown = {}
@@ -43,6 +46,10 @@ let networkBlocked = false
 
 self.onmessage = async (event: MessageEvent<MainToWorker>) => {
 	const msg = event.data
+	if (msg.type === 'env-result') {
+		settleEnvRequest(msg)
+		return
+	}
 	if (msg.type === 'init') {
 		try {
 			await init(msg.data)
@@ -67,8 +74,72 @@ self.onmessage = async (event: MessageEvent<MainToWorker>) => {
 
 self.postMessage({ type: 'need-init' } satisfies WorkerToMain)
 
+interface PendingEnvRequest {
+	resolve: (result: LoaderEnvResult) => void
+}
+
+const pendingEnvRequests = new Map<number, PendingEnvRequest>()
+let nextEnvRequestId = 1
+
+function requestHost(build: (id: number) => LoaderEnvRequest): Promise<LoaderEnvResult> {
+	const id = nextEnvRequestId++
+	return new Promise(resolve => {
+		pendingEnvRequests.set(id, { resolve })
+		self.postMessage(build(id) satisfies WorkerToMain)
+	})
+}
+
+function settleEnvRequest(reply: LoaderEnvReply): void {
+	const pending = pendingEnvRequests.get(reply.id)
+	if (!pending) return
+	pendingEnvRequests.delete(reply.id)
+	pending.resolve(reply.result)
+}
+
+function unwrapValue(result: LoaderEnvResult): unknown {
+	if (result.type === 'error') throw deserializeError(result.error)
+	if (result.type !== 'value') throw new Error(`Unexpected env reply "${result.type}"`)
+	return result.value
+}
+
+/** Stub for a Fetcher the host kept: every fetch, call and property read goes back to the host. */
+function makeHostFetcher(slot: number): Record<string, unknown> {
+	return makeBindingProxy(
+		{
+			fetch: async (input, init) => {
+				const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init)
+				const body = request.body ? await request.arrayBuffer() : null
+				const result = await requestHost(id => ({
+					type: 'env-fetch',
+					id,
+					slot,
+					request: { url: request.url, method: request.method, headers: Array.from(request.headers.entries()), body },
+				}))
+				if (result.type === 'error') throw deserializeError(result.error)
+				if (result.type !== 'response') throw new Error(`Unexpected env reply "${result.type}"`)
+				return new Response(result.body, { status: result.status, statusText: result.statusText, headers: result.headers })
+			},
+			call: async (method, args) => unwrapValue(await requestHost(id => ({ type: 'env-call', id, slot, method, args }))),
+			getProperty: async property => unwrapValue(await requestHost(id => ({ type: 'env-get', id, slot, property }))),
+		},
+		{ [FETCHER_BRAND]: true },
+	)
+}
+
+function decodeEnv(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(decodeEnv)
+	if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) return value
+	const slot: unknown = Reflect.get(value, ENV_FETCHER_KEY)
+	if (typeof slot === 'number') return makeHostFetcher(slot)
+	const out: Record<string, unknown> = {}
+	for (const [key, entry] of Object.entries(value)) {
+		out[key] = decodeEnv(entry)
+	}
+	return out
+}
+
 async function init(data: LoaderInitMessage): Promise<void> {
-	loaderEnv = data.env ?? {}
+	loaderEnv = decodeEnv(data.env ?? {})
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {
 		const originalFetch = globalThis.fetch

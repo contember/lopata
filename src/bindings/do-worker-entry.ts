@@ -102,6 +102,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	// Import user's worker module
 	const workerModule = await import(workerConfig.modulePath)
+	const { buildLoopbackExports, durableObjectNamespaceBindings } = await import('./loopback-exports')
+	const { setGlobalExports } = await import('../worker-exports')
+	setGlobalExports(buildLoopbackExports(workerModule, env, durableObjectNamespaceBindings(config)))
 
 	// Create this DO's instance
 	const id = new DurableObjectIdImpl(workerConfig.idStr, workerConfig.idName)

@@ -1984,6 +1984,110 @@ describe('transactionSync', () => {
 	})
 })
 
+describe('transactions on the DO SQL database', () => {
+	let storage: SqliteDurableObjectStorage
+
+	beforeEach(() => {
+		storage = new SqliteDurableObjectStorage(db, 'NS', 'txn', mkdtempSync(join(tmpdir(), 'do-txn-')))
+		storage.sql.exec('CREATE TABLE files (path TEXT PRIMARY KEY)')
+	})
+
+	function paths(): unknown[] {
+		return storage.sql.exec('SELECT path FROM files ORDER BY path').toArray().map(row => row.path)
+	}
+
+	test('transactionSync rolls back sql writes when the callback throws', () => {
+		expect(() =>
+			storage.transactionSync(() => {
+				storage.sql.exec('INSERT INTO files VALUES (?)', 'a')
+				storage.kv.put('k', 'v')
+				throw new Error('boom')
+			})
+		).toThrow('boom')
+		expect(paths()).toEqual([])
+		expect(storage.kv.get('k')).toBeUndefined()
+	})
+
+	test('nested transactionSync rolls back only the level that threw', () => {
+		storage.transactionSync(() => {
+			storage.sql.exec('INSERT INTO files VALUES (?)', 'outer')
+			expect(() =>
+				storage.transactionSync(() => {
+					storage.sql.exec('INSERT INTO files VALUES (?)', 'inner')
+					throw new Error('inner')
+				})
+			).toThrow('inner')
+			storage.transactionSync(() => {
+				storage.sql.exec('INSERT INTO files VALUES (?)', 'inner-ok')
+			})
+		})
+		expect(paths()).toEqual(['inner-ok', 'outer'])
+	})
+
+	test('an outer failure also undoes committed inner levels', () => {
+		expect(() =>
+			storage.transactionSync(() => {
+				storage.transactionSync(() => storage.sql.exec('INSERT INTO files VALUES (?)', 'inner'))
+				throw new Error('outer')
+			})
+		).toThrow('outer')
+		expect(paths()).toEqual([])
+	})
+
+	test('async transaction() covers sql writes and rolls back on a thrown error', async () => {
+		await expect(storage.transaction(async () => {
+			storage.sql.exec('INSERT INTO files VALUES (?)', 'a')
+			await Promise.resolve()
+			throw new Error('boom')
+		})).rejects.toThrow('boom')
+		expect(paths()).toEqual([])
+	})
+
+	test('async transaction() nests, and transactionSync nests inside it', async () => {
+		await storage.transaction(async (outer) => {
+			await outer.put('k', 1)
+			await expect(storage.transaction(async () => {
+				storage.sql.exec('INSERT INTO files VALUES (?)', 'dropped')
+				throw new Error('inner')
+			})).rejects.toThrow('inner')
+			storage.transactionSync(() => storage.sql.exec('INSERT INTO files VALUES (?)', 'kept'))
+		})
+		expect(paths()).toEqual(['kept'])
+		expect(await storage.get<number>('k')).toBe(1)
+	})
+
+	test('txn.rollback() discards the writes, and the rolled-back txn refuses further operations', async () => {
+		const result = await storage.transaction(async (txn) => {
+			await txn.put('k', 'v')
+			storage.sql.exec('INSERT INTO files VALUES (?)', 'a')
+			txn.rollback()
+			await expect(txn.get('k')).rejects.toThrow('Cannot get on rolled back transaction')
+			return 'done'
+		})
+		expect(result).toBe('done')
+		expect(await storage.get('k')).toBeUndefined()
+		expect(paths()).toEqual([])
+	})
+
+	test('txn.deleteAll() throws, as in workerd', async () => {
+		await storage.transaction(async (txn) => {
+			expect(() => txn.deleteAll()).toThrow('Cannot call deleteAll() within a transaction')
+		})
+	})
+
+	test('a rolled-back setAlarm() resyncs the alarm scheduler', () => {
+		const notified: (number | null)[] = []
+		storage._setAlarmCallback(time => notified.push(time))
+		expect(() =>
+			storage.transactionSync(() => {
+				void storage.setAlarm(5000)
+				throw new Error('boom')
+			})
+		).toThrow('boom')
+		expect(notified).toEqual([5000, null])
+	})
+})
+
 describe('Executor crash recovery', () => {
 	// Fake executor whose backing "worker" we can declare dead via `isDisposed()`,
 	// to exercise the namespace's recreate-on-next-access path without a real
