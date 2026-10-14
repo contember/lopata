@@ -139,7 +139,9 @@ export class SqlStorage {
 		return this._db
 	}
 
-	exec(query: string, ...bindings: SQLQueryBindings[]): SqlStorageCursor {
+	exec(query: string, ...values: (SQLQueryBindings | ArrayBuffer)[]): SqlStorageCursor {
+		// workerd binds an ArrayBuffer as a BLOB; bun:sqlite only takes typed arrays.
+		const bindings = values.map(value => (value instanceof ArrayBuffer ? new Uint8Array(value) : value))
 		return startSyncSpan(
 			{
 				name: 'do_sql.exec',
