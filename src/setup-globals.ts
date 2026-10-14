@@ -6,6 +6,9 @@ import { HTMLRewriter } from './bindings/html-rewriter'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
+// The Vite plugin and the CLI run the main worker and its in-process Durable Objects in this
+// process, so they need the shim the worker threads load in their entries.
+import './worker-thread/request-clone-fix'
 
 let initialized = false
 

@@ -16,8 +16,8 @@
  * forwarded, not buffered). Every other construction form delegates to the native
  * constructor unchanged.
  *
- * TODO: remove once the upstream Bun bug is fixed — delete this file and its two
- * side-effect imports (entry.ts, do-worker-entry.ts); the e2e test
+ * TODO: remove once the upstream Bun bug is fixed — delete this file and its three
+ * side-effect imports (entry.ts, do-worker-entry.ts, setup-globals.ts); the e2e test
  * `a re-wrapped incoming request body survives the worker → DO hop` guards the
  * removal. Track: https://github.com/oven-sh/bun/issues (clone hang on stream body).
  */
@@ -25,6 +25,11 @@
 const Native: typeof Request = globalThis.Request
 
 class LopataRequest extends Native {
+	// Requests built before the install, or by the runtime (`Bun.serve`), are native; they are Requests all the same.
+	static override [Symbol.hasInstance](value: unknown): boolean {
+		return value instanceof Native
+	}
+
 	constructor(input: Request | string | URL, init?: RequestInit) {
 		// Only special-case `new Request(request, init)` where the source carries a
 		// (stream) body and `init` does NOT supply its own `body` — the form Bun
