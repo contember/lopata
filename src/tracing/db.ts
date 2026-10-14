@@ -12,11 +12,19 @@ export function getTracingDatabase(): Database {
 
 	mkdirSync(DATA_DIR, { recursive: true })
 
-	instance = new Database(DB_PATH, { create: true })
-	instance.run('PRAGMA journal_mode=WAL')
-	instance.run('PRAGMA busy_timeout=5000')
-	runTracingMigrations(instance)
+	instance = openTracingDatabase(DB_PATH)
 	return instance
+}
+
+export function openTracingDatabase(path: string): Database {
+	const db = new Database(path, { create: true })
+	db.run('PRAGMA journal_mode=WAL')
+	// Every span is two autocommits (start, end), and a traced DO runs one per SQL statement.
+	// FULL would fsync each of them; a trace lost to a power cut is not worth that.
+	db.run('PRAGMA synchronous=NORMAL')
+	db.run('PRAGMA busy_timeout=5000')
+	runTracingMigrations(db)
+	return db
 }
 
 export function runTracingMigrations(db: Database): void {
