@@ -277,7 +277,9 @@ export default {
 }
 ```
 
-Wildcard patterns like `*.localhost` match any subdomain. Requests matching a host pattern are routed to that worker regardless of path-based routes.
+Wildcard patterns like `*.localhost` match any subdomain. A `*` inside the first label (`preview-*.localhost`) matches within that label only. A pattern starting with `!` excludes the hosts it matches, so `['*.localhost', '!dev-*.localhost']` takes every subdomain except the `dev-` ones. Requests matching a host pattern are routed to that worker regardless of path-based routes.
+
+A worker's wrangler `routes` are matched by path only: the domain and `zone_name` are dropped, because local hostnames differ from production zones. When two workers' zones overlap only locally, give the route's worker `hosts` to scope its routes.
 
 ## Vite plugin
 

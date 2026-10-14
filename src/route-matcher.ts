@@ -66,7 +66,10 @@ export function extractHostname(hostHeader: string): string {
 	return hostHeader.split(':')[0] ?? ''
 }
 
-/** Match a hostname against a host pattern. Supports exact match and `*.domain` wildcards. */
+/**
+ * Match a hostname against a host pattern. Supports exact match, `*.domain` (any subdomain, at any
+ * depth) and a `*` inside the first label (`preview-*.example.com`, that label only).
+ */
 export function matchHost(hostname: string, pattern: string): boolean {
 	if (pattern === hostname) return true
 	if (pattern.startsWith('*.')) {
@@ -74,7 +77,32 @@ export function matchHost(hostname: string, pattern: string): boolean {
 		// Must have a subdomain — bare hostname doesn't match *.localhost
 		return hostname.endsWith(suffix) && hostname.length > suffix.length
 	}
-	return false
+	const dot = pattern.indexOf('.')
+	const firstLabel = dot === -1 ? pattern : pattern.slice(0, dot)
+	if (!firstLabel.includes('*')) return false
+	const rest = dot === -1 ? '' : pattern.slice(dot)
+	const label = firstLabel.split('*').map(escapeRegExp).join('[^.]*')
+	return new RegExp(`^${label}${escapeRegExp(rest)}$`).test(hostname)
+}
+
+/**
+ * Match a hostname against a worker's host patterns: at least one pattern matches, and no
+ * `!`-prefixed exclusion does (`['*.localhost', '!dev-*.localhost']`).
+ */
+export function matchHostPatterns(hostname: string, patterns: readonly string[]): boolean {
+	let included = false
+	for (const pattern of patterns) {
+		if (pattern.startsWith('!')) {
+			if (matchHost(hostname, pattern.slice(1))) return false
+		} else if (!included && matchHost(hostname, pattern)) {
+			included = true
+		}
+	}
+	return included
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** Check if host patterns contain any wildcard entries (e.g. `*.localhost`). */
@@ -196,7 +224,7 @@ export class RouteDispatcher {
 		for (const entry of this.routes) {
 			// If route has host constraints, skip unless hostname matches one of them
 			if (entry.hostPatterns) {
-				if (hostname === undefined || !entry.hostPatterns.some(hp => matchHost(hostname, hp))) continue
+				if (hostname === undefined || !matchHostPatterns(hostname, entry.hostPatterns)) continue
 			}
 			if (matchRoute(pathname, entry.pattern)) {
 				return entry.manager

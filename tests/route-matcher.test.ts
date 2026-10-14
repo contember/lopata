@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { extractPathPattern, matchHost, matchRoute, RouteDispatcher } from '../src/route-matcher'
+import { extractPathPattern, matchHost, matchHostPatterns, matchRoute, RouteDispatcher } from '../src/route-matcher'
 
 describe('extractPathPattern', () => {
 	test('strips domain from route pattern', () => {
@@ -166,12 +166,43 @@ describe('matchHost', () => {
 	test('non-wildcard pattern does not match subdomains', () => {
 		expect(matchHost('sub.localhost', 'localhost')).toBe(false)
 	})
+
+	test('a wildcard inside the first label matches that label only', () => {
+		expect(matchHost('dev-site-abc.app.localhost', 'dev-*.app.localhost')).toBe(true)
+		expect(matchHost('dev-.app.localhost', 'dev-*.app.localhost')).toBe(true)
+		expect(matchHost('site-abc.app.localhost', 'dev-*.app.localhost')).toBe(false)
+		expect(matchHost('dev-a.b.app.localhost', 'dev-*.app.localhost')).toBe(false)
+		expect(matchHost('dev-a.appxlocalhost', 'dev-*.app.localhost')).toBe(false)
+	})
+})
+
+describe('matchHostPatterns', () => {
+	test('an exclusion wins over a matching pattern', () => {
+		const patterns = ['*.localhost', '!dev-*.app.localhost']
+		expect(matchHostPatterns('site-abc.app.localhost', patterns)).toBe(true)
+		expect(matchHostPatterns('admin.localhost', patterns)).toBe(true)
+		expect(matchHostPatterns('dev-abc.app.localhost', patterns)).toBe(false)
+	})
+
+	test('exclusions alone match nothing', () => {
+		expect(matchHostPatterns('a.localhost', ['!b.localhost'])).toBe(false)
+	})
 })
 
 describe('RouteDispatcher', () => {
 	function mockManager(name: string) {
 		return { _name: name } as any
 	}
+
+	test('an excluded host falls through a path route to the next match', () => {
+		const fallback = mockManager('main')
+		const dispatcher = new RouteDispatcher(fallback)
+		const siteApi = mockManager('site-api')
+		dispatcher.addRoutes({ routes: ['*/_api/*'] } as any, siteApi, 'site-api', ['*.localhost', '!dev-*.localhost'])
+
+		expect(dispatcher.resolve('/_api/form', 'site-a.localhost')).toBe(siteApi)
+		expect(dispatcher.resolve('/_api/form', 'dev-a.localhost')).toBe(fallback)
+	})
 
 	test('more specific routes should match first (segment depth over string length)', () => {
 		const fallback = mockManager('main')
