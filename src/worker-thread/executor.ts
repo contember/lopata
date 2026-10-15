@@ -8,6 +8,7 @@
  */
 
 import { dirname, resolve } from 'node:path'
+import type { BrowserConfig } from '../bindings/browser'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
@@ -48,7 +49,7 @@ export interface WorkerThreadExecutorOptions {
 	config: WranglerConfig
 	baseDir: string
 	workerName?: string
-	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	browserConfig?: BrowserConfig
 	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
 	artifactsBaseUrl?: string
 	/** Main-thread env holding the stateful binding instances the worker calls into via RPC. */

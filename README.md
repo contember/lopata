@@ -305,6 +305,7 @@ export default defineConfig({
 			auxiliaryWorkers: [ // Optional, for multi-worker
 				{ configPath: './workers/auth/wrangler.jsonc' },
 			],
+			browser: { headless: true }, // Optional, Browser Run config (same as in lopata.config.ts)
 		}),
 		reactRouter(),
 	],
@@ -357,9 +358,8 @@ Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
 ### Browser Run
 
 A `browser` binding gives the Worker the Browser Run API. Each session is a local headless Chrome
-that lopata launches through `puppeteer` (install it as a dev dependency), or the browser at
-`browser.wsEndpoint` from `lopata.config.ts`. A connection's `webSocket` Fetcher upgrades to a
-WebSocket that speaks raw CDP:
+that lopata launches through `puppeteer` (install it as a dev dependency), or an external Chrome.
+A connection's `webSocket` Fetcher upgrades to a WebSocket that speaks raw CDP:
 
 ```ts
 const { sessionId, webSocket } = await env.BROWSER.launch({ keepAlive: 60_000 })
@@ -383,7 +383,22 @@ await env.BROWSER.closeSession(sessionId)
 
 - Sessions live in the lopata process: they survive a reload, and every worker and Durable Object sees the same sessions.
 - The `outboundByHost`, `guardrails` and `recording` options throw "not supported locally". `location` and `liveViewUrlExpiresInMs` are ignored.
-- With `browser.wsEndpoint` all sessions share that browser, and `closeSession()` leaves it running.
+
+Configure the browser with `browser` in `lopata.config.ts`, or with the `browser` option of the Vite plugin:
+
+| Option           | Meaning                                                                                        |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| `headless`       | Headless mode for the Chrome lopata launches (default `true`)                                  |
+| `executablePath` | Chrome executable for the Chrome lopata launches (default: puppeteer's Chrome)                 |
+| `wsEndpoint`     | Browser-level CDP WebSocket URL of an external Chrome (`ws://host:9222/devtools/browser/<id>`) |
+| `httpEndpoint`   | HTTP DevTools endpoint of an external Chrome (`http://chrome:9222`, puppeteer's `browserURL`)  |
+
+- With `wsEndpoint` or `httpEndpoint` all sessions share that browser, and `closeSession()` leaves it running. Set only one of them.
+- `httpEndpoint` suits a Chrome in another container: the WebSocket URL contains an id that changes on every Chrome restart.
+  Each session start reads it from `<httpEndpoint>/json/version`, and lopata connects to the configured host and port even
+  when Chrome reports its own (behind a port forward). `/json/list` uses the same host.
+- Chrome answers DevTools requests only when their `Host` header is an IP address or `localhost`. For an endpoint with a
+  hostname (`chrome`), lopata sends `Host: localhost:<port>`.
 - `@cloudflare/puppeteer` keeps working: `puppeteer.launch(env.BROWSER)` returns a local puppeteer `Browser`.
 
 ## Local data
