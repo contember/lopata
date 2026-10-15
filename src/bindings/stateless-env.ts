@@ -4,7 +4,7 @@
  * (`src/worker-thread/thread-env.ts`) and the DO worker (`do-worker-env.ts`). On Cloudflare a
  * DO's env equals the worker's env; keeping one list here stops the builders drifting apart.
  *
- * Stateful bindings (DO namespaces, queues, workflows, service bindings, email) differ per
+ * Stateful bindings (DO namespaces, queues, workflows, service bindings, email, browser) differ per
  * builder, because each thread reaches them differently, and stay in the builders.
  */
 
@@ -16,7 +16,6 @@ import { AiBinding } from './ai'
 import { AiSearchNamespaceBinding } from './ai-search'
 import { SqliteAnalyticsEngine } from './analytics-engine'
 import { ArtifactsBinding } from './artifacts'
-import { BrowserBinding } from './browser'
 import { openD1Database } from './d1'
 import { FlagshipBinding } from './flagship'
 import { HyperdriveBinding } from './hyperdrive'
@@ -29,12 +28,6 @@ import { StaticAssets } from './static-assets'
 import { VpcNetworkBinding } from './vpc-network'
 import { WorkerLoaderBinding } from './worker-loader'
 
-export interface BrowserConfig {
-	wsEndpoint?: string
-	executablePath?: string
-	headless?: boolean
-}
-
 export interface StatelessEnvOptions {
 	config: WranglerConfig
 	db: Database
@@ -42,7 +35,6 @@ export interface StatelessEnvOptions {
 	dataDir: string
 	/** The worker's base dir; `assets.directory` resolves against it. */
 	baseDir: string
-	browserConfig?: BrowserConfig
 	/** Base URL of main's Artifacts git endpoint (`/__artifacts/git`). */
 	artifactsBaseUrl?: string
 	/** Main builds the StaticAssets itself (it also auto-serves them) and passes it in. */
@@ -69,7 +61,7 @@ export function createStaticAssets(config: WranglerConfig, baseDir: string): Sta
 
 /** Add every stateless binding the config declares to `env`. Vars must already be in `env`. */
 export function addStatelessBindings(env: Record<string, unknown>, opts: StatelessEnvOptions): void {
-	const { config, db, dataDir, baseDir, browserConfig, artifactsBaseUrl } = opts
+	const { config, db, dataDir, baseDir, artifactsBaseUrl } = opts
 	const log = opts.log ?? (() => {})
 
 	for (const kv of config.kv_namespaces ?? []) {
@@ -114,15 +106,6 @@ export function addStatelessBindings(env: Record<string, unknown>, opts: Statele
 	for (const hd of config.hyperdrive ?? []) {
 		log(`Hyperdrive: ${hd.binding}`)
 		env[hd.binding] = new HyperdriveBinding(hd.localConnectionString ?? '')
-	}
-
-	if (config.browser) {
-		log(`Browser binding: ${config.browser.binding}`)
-		env[config.browser.binding] = instrumentBinding(new BrowserBinding(browserConfig ?? {}), {
-			type: 'browser',
-			name: config.browser.binding,
-			methods: ['launch', 'connect', 'sessions'],
-		})
 	}
 
 	const { accountId, apiToken } = cloudflareCredentials(env)

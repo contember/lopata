@@ -19,6 +19,7 @@ import type { BindingTarget, ParentSpanContext, SerializedResponse, WorkflowCont
 import { RpcClient } from '../worker-thread/rpc-shared'
 import { tagCloneable } from '../worker-thread/rpc-shared'
 import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
+import { type BrowserConfig, createBrowserRunMethods, createRemoteBrowserRunBackend } from './browser'
 import type { DOWorkerRuntimeOptions } from './do-executor'
 import type { DOMainMessage } from './do-executor-worker'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
@@ -75,6 +76,20 @@ function makeRpcProxy(
 
 function makeEnvBindingProxy(binding: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
 	return makeRpcProxy({ binding }, rpc, envWsBridge, { [FETCHER_BRAND]: true })
+}
+
+function makeBrowserRunProxy(
+	bindingName: string,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<DOMainMessage>,
+	browserConfig: BrowserConfig,
+): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	const backend = createRemoteBrowserRunBackend(
+		(method, args) => rpc.call(target, method, args),
+		async request => buildBridgedFetchResponse(await rpc.callFetch(target, request), rpc, envWsBridge),
+	)
+	return makeRpcProxy(target, rpc, envWsBridge, createBrowserRunMethods(backend, browserConfig))
 }
 
 function makeDoEnvStubProxy(
@@ -199,7 +214,11 @@ export function buildWorkerEnv(
 		env[wf.binding] = makeWorkflowEnvProxy(wf.binding, rpc, envWsBridge)
 	}
 
-	addStatelessBindings(env, { config, db, dataDir, baseDir, browserConfig: runtime.browserConfig, artifactsBaseUrl: runtime.artifactsBaseUrl })
+	if (config.browser) {
+		env[config.browser.binding] = makeBrowserRunProxy(config.browser.binding, rpc, envWsBridge, runtime.browserConfig ?? {})
+	}
+
+	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl: runtime.artifactsBaseUrl })
 
 	return { db, env }
 }

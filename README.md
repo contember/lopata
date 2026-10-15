@@ -21,7 +21,7 @@ Lopata takes a different approach: it implements all Cloudflare bindings nativel
 
 ## Features
 
-- **All major bindings** — KV, R2, D1, Durable Objects (with SQL API and WebSocket Hibernation), Workflows, Queues, Cache, Service Bindings, Static Assets, Images, Hyperdrive, Analytics Engine, Rate Limiting, Browser Rendering, Containers, Scheduled (Cron), Email
+- **All major bindings** — KV, R2, D1, Durable Objects (with SQL API and WebSocket Hibernation), Workflows, Queues, Cache, Service Bindings, Static Assets, Images, Hyperdrive, Analytics Engine, Rate Limiting, Browser Run, Containers, Scheduled (Cron), Email
 - **Persistent local state** — data lives in `.lopata/` (SQLite + filesystem), survives restarts
 - **Dashboard** — browse bindings, inspect data, view request traces in real-time
 - **Vite plugin** — integrates with React Router and other Vite-based frameworks
@@ -208,7 +208,7 @@ export default defineConfig({
 	// Optional settings:
 	cron: true, // Enable real cron scheduling
 	isolation: 'dev', // 'dev' (in-process) or 'isolated' (worker threads)
-	browser: { // Browser Rendering config
+	browser: { // Browser Run config, see below
 		headless: true,
 	},
 	// Extra directories outside the worker's own source tree that should also
@@ -331,28 +331,60 @@ The built-in dashboard is available at `/__dashboard` and provides:
 
 ## Supported bindings
 
-| Binding               | Storage                      | Coverage    |
-| --------------------- | ---------------------------- | ----------- |
-| **KV**                | SQLite                       | 100%        |
-| **R2**                | Filesystem (`.lopata/r2/`)   | ~95%        |
-| **D1**                | SQLite files (`.lopata/d1/`) | ~90%        |
-| **Durable Objects**   | SQLite (KV + SQL API)        | ~90%        |
-| **Workflows**         | SQLite                       | 100%        |
-| **Queues**            | SQLite                       | ~90%        |
-| **Cache API**         | SQLite                       | 100%        |
-| **Static Assets**     | Filesystem                   | ~90%        |
-| **Service Bindings**  | In-process                   | ~85%        |
-| **Scheduled (Cron)**  | In-memory timer              | 100%        |
-| **Images**            | Sharp                        | ~80%        |
-| **Hyperdrive**        | TCP via `Bun.connect()`      | Passthrough |
-| **Workers AI**        | Proxies to Cloudflare API    | Passthrough |
-| **Analytics Engine**  | SQLite                       | Full        |
-| **Rate Limiting**     | SQLite (fixed window)        | Full        |
-| **Browser Rendering** | Local Puppeteer              | Full        |
-| **Containers**        | Docker                       | Full        |
-| **Send Email**        | SQLite (captured)            | Full        |
+| Binding              | Storage                      | Coverage    |
+| -------------------- | ---------------------------- | ----------- |
+| **KV**               | SQLite                       | 100%        |
+| **R2**               | Filesystem (`.lopata/r2/`)   | ~95%        |
+| **D1**               | SQLite files (`.lopata/d1/`) | ~90%        |
+| **Durable Objects**  | SQLite (KV + SQL API)        | ~90%        |
+| **Workflows**        | SQLite                       | 100%        |
+| **Queues**           | SQLite                       | ~90%        |
+| **Cache API**        | SQLite                       | 100%        |
+| **Static Assets**    | Filesystem                   | ~90%        |
+| **Service Bindings** | In-process                   | ~85%        |
+| **Scheduled (Cron)** | In-memory timer              | 100%        |
+| **Images**           | Sharp                        | ~80%        |
+| **Hyperdrive**       | TCP via `Bun.connect()`      | Passthrough |
+| **Workers AI**       | Proxies to Cloudflare API    | Passthrough |
+| **Analytics Engine** | SQLite                       | Full        |
+| **Rate Limiting**    | SQLite (fixed window)        | Full        |
+| **Browser Run**      | Local Chrome via Puppeteer   | Partial     |
+| **Containers**       | Docker                       | Full        |
+| **Send Email**       | SQLite (captured)            | Full        |
 
 Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
+
+### Browser Run
+
+A `browser` binding gives the Worker the Browser Run API. Each session is a local headless Chrome
+that lopata launches through `puppeteer` (install it as a dev dependency), or the browser at
+`browser.wsEndpoint` from `lopata.config.ts`. A connection's `webSocket` Fetcher upgrades to a
+WebSocket that speaks raw CDP:
+
+```ts
+const { sessionId, webSocket } = await env.BROWSER.launch({ keepAlive: 60_000 })
+const response = await webSocket.fetch('https://browser-binding.invalid', {
+	headers: { Upgrade: 'websocket' },
+})
+const socket = response.webSocket!
+socket.accept()
+socket.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }))
+// ...
+await env.BROWSER.closeSession(sessionId)
+```
+
+| Method                                                                    | Locally                                                                                                                         |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `acquire()`, `launch()`                                                   | Launches a browser. `keepAlive` (default 60 s) closes a session that receives no CDP command. `targets: true` lists its targets |
+| `connectSession(sessionId, { targetId? })`                                | Browser-level CDP endpoint, or `/devtools/page/<targetId>` with a `targetId`                                                    |
+| `getSession()`, `listSessions()`, `history()`                             | Active sessions; `history()` also lists closed ones with `NormalClosure` / `BrowserIdle`                                        |
+| `closeSession()`                                                          | Closes the sockets and the browser, returns `{ status: 'closed' }`                                                              |
+| `quickAction()`, `getLiveView()`, `limits()`, `devtools.*`, raw `fetch()` | Throw "not supported locally"                                                                                                   |
+
+- Sessions live in the lopata process: they survive a reload, and every worker and Durable Object sees the same sessions.
+- The `outboundByHost`, `guardrails` and `recording` options throw "not supported locally". `location` and `liveViewUrlExpiresInMs` are ignored.
+- With `browser.wsEndpoint` all sessions share that browser, and `closeSession()` leaves it running.
+- `@cloudflare/puppeteer` keeps working: `puppeteer.launch(env.BROWSER)` returns a local puppeteer `Browser`.
 
 ## Local data
 

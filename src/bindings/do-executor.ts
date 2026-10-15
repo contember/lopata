@@ -1,8 +1,8 @@
 import type { Database } from 'bun:sqlite'
 import type { WranglerConfig } from '../config'
+import type { BrowserConfig } from './browser'
 import type { ContainerConfig } from './container'
 import type { DurableObjectBase, DurableObjectIdImpl, DurableObjectLimits } from './durable-object'
-import type { BrowserConfig } from './stateless-env'
 
 /** Settings main gives the worker thread's env, passed to DO workers so their env matches. */
 export interface DOWorkerRuntimeOptions {
