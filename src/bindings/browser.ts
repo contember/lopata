@@ -92,8 +92,15 @@ export interface BrowserRunCloseSessionResult {
 }
 
 const DEFAULT_KEEP_ALIVE_MS = 60_000
-const NORMAL_CLOSURE = { closeReason: 1, closeReasonText: 'NormalClosure' }
-const BROWSER_IDLE = { closeReason: 2, closeReasonText: 'BrowserIdle' }
+
+interface CloseReason {
+	closeReason?: number
+	closeReasonText: string
+}
+const NORMAL_CLOSURE: CloseReason = { closeReason: 1, closeReasonText: 'NormalClosure' }
+const BROWSER_IDLE: CloseReason = { closeReason: 2, closeReasonText: 'BrowserIdle' }
+/** Cloudflare documents this reason by name only; its numeric code is not published. */
+const CHROMIUM_CRASHED: CloseReason = { closeReasonText: 'ChromiumCrashed' }
 
 /** Carry the connection's session (and page target) from its Fetcher to `fetch()` on the main-side binding. */
 const SESSION_HEADER = 'x-lopata-browser-run-session'
@@ -238,11 +245,18 @@ class ActiveBrowserRunSession {
 	private readonly upstreams = new Set<WebSocket>()
 	private idleTimer: ReturnType<typeof setTimeout> | undefined
 
+	/**
+	 * `browserSocket` is a browser-level CDP connection lopata keeps for the session's lifetime: it closes when the
+	 * browser exits, crashes or restarts, and then the session ends with it.
+	 */
 	constructor(
 		readonly browser: LocalBrowser,
+		private readonly browserSocket: WebSocket,
 		private readonly keepAliveMs: number,
 		private readonly onIdle: () => void,
+		onBrowserGone: () => void,
 	) {
+		browserSocket.addEventListener('close', onBrowserGone)
 		this.touch()
 	}
 
@@ -285,6 +299,7 @@ class ActiveBrowserRunSession {
 	async close(): Promise<void> {
 		clearTimeout(this.idleTimer)
 		for (const upstream of this.upstreams) upstream.close()
+		this.browserSocket.close()
 		await this.browser.close()
 	}
 
@@ -306,10 +321,22 @@ export class BrowserRunSessions {
 	private readonly closed: BrowserRunSession[] = []
 
 	async acquire(config: BrowserConfig, options: BrowserRunAcquireOptions): Promise<BrowserRunAcquireResult> {
+		const keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE_MS
 		const browser = await startBrowser(config)
-		const session: ActiveBrowserRunSession = new ActiveBrowserRunSession(browser, options.keepAlive ?? DEFAULT_KEEP_ALIVE_MS, () => {
-			this.close(session.sessionId, BROWSER_IDLE).catch(error => console.warn(`[lopata] Closing idle Browser Run session failed:`, error))
+		const browserSocket = await openUpstream(browser.cdpEndpoint).catch(async error => {
+			await browser.close()
+			throw error
 		})
+		const endSession = (reason: CloseReason, label: string) => () => {
+			this.close(session.sessionId, reason).catch(error => console.warn(`[lopata] Closing ${label} Browser Run session failed:`, error))
+		}
+		const session: ActiveBrowserRunSession = new ActiveBrowserRunSession(
+			browser,
+			browserSocket,
+			keepAlive,
+			endSession(BROWSER_IDLE, 'idle'),
+			endSession(CHROMIUM_CRASHED, 'a crashed'),
+		)
 		this.active.set(session.sessionId, session)
 		if (!options.targets) return { sessionId: session.sessionId }
 		return { sessionId: session.sessionId, targets: await listTargets(browser.cdpEndpoint) }
@@ -329,7 +356,7 @@ export class BrowserRunSessions {
 		return paginate(sessions, options)
 	}
 
-	async close(sessionId: string, reason: { closeReason: number; closeReasonText: string } = NORMAL_CLOSURE): Promise<BrowserRunCloseSessionResult> {
+	async close(sessionId: string, reason: CloseReason = NORMAL_CLOSURE): Promise<BrowserRunCloseSessionResult> {
 		const session = this.active.get(sessionId)
 		if (!session) {
 			if (this.closed.some(closed => closed.sessionId === sessionId)) return { status: 'closed' }
