@@ -21,6 +21,13 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 	throw new Error(`Server ${url} did not become ready in ${timeoutMs}ms`)
 }
 
+/** Fetch a fixture route; a failure reports the worker's error page instead of a bare status code. */
+async function get(url: string): Promise<Response> {
+	const res = await fetch(url)
+	if (res.status !== 200) throw new Error(`GET ${url} returned ${res.status}: ${await res.text()}`)
+	return res
+}
+
 function cleanup() {
 	rmSync(resolve(FIXTURE_DIR, '.lopata'), { recursive: true, force: true })
 }
@@ -46,8 +53,7 @@ describe.skipIf(!hasChrome)('Browser Run binding over raw CDP (worker-thread run
 	})
 
 	test('launch() opens a browser-level CDP socket that drives a page; getSession() is null after closeSession()', async () => {
-		const res = await fetch(`${base}/cdp`)
-		expect(res.status).toBe(200)
+		const res = await get(`${base}/cdp`)
 		expect(await res.json()).toEqual({
 			product: expect.stringContaining('Chrome'),
 			title: 'Hello from lopata',
@@ -59,20 +65,17 @@ describe.skipIf(!hasChrome)('Browser Run binding over raw CDP (worker-thread run
 	}, 30_000)
 
 	test('connectSession() with a targetId opens that page target', async () => {
-		const res = await fetch(`${base}/cdp-target`)
-		expect(res.status).toBe(200)
+		const res = await get(`${base}/cdp-target`)
 		expect(await res.json()).toEqual({ targetsListed: true, title: 'Hello from lopata', listed: true })
 	}, 30_000)
 
 	test('a Durable Object thread sees and connects to a session the worker acquired', async () => {
-		const res = await fetch(`${base}/do-shared`)
-		expect(res.status).toBe(200)
+		const res = await get(`${base}/do-shared`)
 		expect(await res.json()).toEqual({ found: true, product: expect.stringContaining('Chrome') })
 	}, 30_000)
 
 	test('the legacy @cloudflare/puppeteer shim still launches a puppeteer Browser', async () => {
-		const res = await fetch(`${base}/puppeteer`)
-		expect(res.status).toBe(200)
+		const res = await get(`${base}/puppeteer`)
 		expect(await res.text()).toBe('Hello from lopata')
 	}, 30_000)
 })

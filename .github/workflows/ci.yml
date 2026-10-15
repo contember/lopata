@@ -26,5 +26,9 @@ jobs:
       - name: Type check
         run: bun run typecheck
 
+      - name: Let Chrome use its sandbox
+        # Ubuntu 23.10+ restricts unprivileged user namespaces through AppArmor; the Browser Run tests launch headless Chrome
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+
       - name: Test
         run: bun test tests/
