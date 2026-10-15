@@ -1,0 +1,14 @@
+{
+	"name": "browser-run-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"browser": { "binding": "BROWSER" },
+	"durable_objects": {
+		"bindings": [
+			{ "name": "INSPECTOR", "class_name": "SessionInspector" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["SessionInspector"] }
+	]
+}

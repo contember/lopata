@@ -1,4 +1,4 @@
-import type { BrowserBinding } from './bindings/browser'
+import { PUPPETEER_SHIM, type PuppeteerShimHost } from './bindings/browser'
 import { ContainerBase, getContainer, getRandom } from './bindings/container'
 import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/durable-object'
 import { EmailMessage } from './bindings/email'
@@ -93,9 +93,9 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 		return {
 			exports: {
 				default: {
-					launch: (endpoint: BrowserBinding, opts?: { keep_alive?: number }) => endpoint.launch(opts),
-					connect: (endpoint: BrowserBinding, sessionId: string) => endpoint.connect(sessionId),
-					sessions: (endpoint: BrowserBinding) => endpoint.sessions(),
+					launch: (endpoint: PuppeteerShimHost, opts?: { keep_alive?: number }) => endpoint[PUPPETEER_SHIM].launch(opts),
+					connect: (endpoint: PuppeteerShimHost, sessionId: string) => endpoint[PUPPETEER_SHIM].connect(sessionId),
+					sessions: (endpoint: PuppeteerShimHost) => endpoint[PUPPETEER_SHIM].sessions(),
 				},
 				ActiveSession: {} as any, // type-only re-export placeholder
 			},

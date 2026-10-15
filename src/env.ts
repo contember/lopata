@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { type BrowserConfig, createBrowserRunBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
 import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
 import { DockerManager } from './bindings/container-docker'
@@ -126,7 +127,7 @@ export function buildEnv(
 	config: WranglerConfig,
 	devVarsDir?: string,
 	executorFactory?: DOExecutorFactory,
-	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean },
+	browserConfig?: BrowserConfig,
 	existingNamespaces?: Map<string, DurableObjectNamespaceImpl>,
 	baseUrls?: { artifacts?: string },
 ): { env: Record<string, unknown>; registry: ClassRegistry } {
@@ -246,6 +247,16 @@ export function buildEnv(
 		)
 	}
 
+	// Browser Run sessions live in main; worker threads reach them over RPC
+	if (config.browser) {
+		console.log(`[lopata] Browser binding: ${config.browser.binding}`)
+		env[config.browser.binding] = instrumentBinding(createBrowserRunBinding(browserConfig ?? {}), {
+			type: 'browser',
+			name: config.browser.binding,
+			methods: ['acquire', 'launch', 'connectSession', 'getSession', 'listSessions', 'history', 'closeSession'],
+		})
+	}
+
 	// Containers — create DO namespaces for container classes
 	const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name))
 	for (const container of config.containers ?? []) {
@@ -297,7 +308,6 @@ export function buildEnv(
 		db,
 		dataDir: getDataDir(),
 		baseDir: devVarsDir ?? process.cwd(),
-		browserConfig,
 		artifactsBaseUrl: baseUrls?.artifacts,
 		staticAssets: registry.staticAssets ?? undefined,
 		log: (message) => console.log(`[lopata] ${message}`),

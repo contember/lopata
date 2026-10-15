@@ -27,9 +27,9 @@ export interface LopataConfig {
 		/** Model to use (default: "anthropic/claude-haiku-4.5") */
 		model?: string
 	}
-	/** Browser Rendering binding config for local dev */
+	/** Browser Run binding config for local dev */
 	browser?: {
-		/** WS endpoint of an existing Chrome instance. If set, uses puppeteer-core connect(). */
+		/** WS endpoint of an existing Chrome instance. If set, every session uses it (`@cloudflare/puppeteer` via puppeteer-core connect()). */
 		wsEndpoint?: string
 		/** Path to Chrome executable (only used when spawning without wsEndpoint). */
 		executablePath?: string

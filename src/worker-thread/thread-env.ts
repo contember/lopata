@@ -9,11 +9,12 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
+import { type BrowserConfig, createBrowserRunMethods, createRemoteBrowserRunBackend } from '../bindings/browser'
 import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
 import { FETCHER_BRAND, makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
-import { addStatelessBindings, type BrowserConfig } from '../bindings/stateless-env'
+import { addStatelessBindings } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
@@ -102,7 +103,11 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 		workflows.push({ bindingName: wf.binding, className: wf.class_name, binding })
 	}
 
-	addStatelessBindings(env, { config, db, dataDir, baseDir, browserConfig, artifactsBaseUrl })
+	if (config.browser) {
+		env[config.browser.binding] = makeBrowserRunProxy(config.browser.binding, rpc, envWsBridge, browserConfig ?? {})
+	}
+
+	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl })
 
 	return { env, db, workflows }
 }
@@ -231,6 +236,20 @@ function makeServiceBindingProxy(bindingName: string, rpc: RpcClient, envWsBridg
 		},
 		[FETCHER_BRAND]: true,
 	})
+}
+
+function makeBrowserRunProxy(
+	bindingName: string,
+	rpc: RpcClient,
+	envWsBridge: WsGuestBridge<WorkerMessage>,
+	browserConfig: BrowserConfig,
+): Record<string, unknown> {
+	const target: BindingTarget = { binding: bindingName }
+	const backend = createRemoteBrowserRunBackend(
+		(method, args) => rpc.call(target, method, args),
+		request => proxyFetch(target, rpc, envWsBridge, request),
+	)
+	return makeRpcProxy(target, rpc, envWsBridge, createBrowserRunMethods(backend, browserConfig))
 }
 
 function makeSendEmailProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
