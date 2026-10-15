@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import type { BrowserConfig } from './bindings/browser'
 
 export interface LopataConfig {
 	/** Path to the main worker's wrangler config (HTTP entrypoint) */
@@ -28,14 +29,7 @@ export interface LopataConfig {
 		model?: string
 	}
 	/** Browser Run binding config for local dev */
-	browser?: {
-		/** WS endpoint of an existing Chrome instance. If set, every session uses it (`@cloudflare/puppeteer` via puppeteer-core connect()). */
-		wsEndpoint?: string
-		/** Path to Chrome executable (only used when spawning without wsEndpoint). */
-		executablePath?: string
-		/** Headless mode (default: true, only used when spawning). */
-		headless?: boolean
-	}
+	browser?: BrowserConfig
 	/**
 	 * Additional directories to watch for changes that should trigger a main worker reload.
 	 *

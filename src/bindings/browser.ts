@@ -3,8 +3,8 @@
  *
  * Sessions live in the main process (`browserRunSessions`): they outlive a worker reload and every
  * worker and Durable Object thread sees the same sessions, like the account-wide sessions on
- * Cloudflare. Each session is a local headless Chrome launched through puppeteer, or the browser at
- * the configured `browser.wsEndpoint`. A connection's `webSocket` Fetcher upgrades to a WebSocket
+ * Cloudflare. Each session is a local headless Chrome launched through puppeteer, or the external
+ * browser at `browser.wsEndpoint` / `browser.httpEndpoint`. A connection's `webSocket` Fetcher upgrades to a WebSocket
  * bridged to that browser's CDP endpoint, so main also sees the traffic that keeps a session alive.
  *
  * Worker threads reach the sessions over the binding RPC channel (`createRemoteBrowserRunBackend`).
@@ -12,11 +12,17 @@
  * returns a live puppeteer Browser that cannot cross threads.
  */
 
+import { isIP } from 'node:net'
 import { type CFWebSocket, type ResponseWithWebSocket, WebSocketPair } from './websocket-pair'
 
 export interface BrowserConfig {
-	/** WS endpoint of an existing Chrome. Every session then shares that browser. */
+	/** Browser-level CDP WebSocket URL of an external Chrome. Every session then shares that browser. */
 	wsEndpoint?: string
+	/**
+	 * HTTP DevTools endpoint of an external Chrome (puppeteer's `browserURL`), e.g. `http://chrome:9222`.
+	 * Each session start reads the WebSocket URL from `/json/version`, so a Chrome restart is picked up.
+	 */
+	httpEndpoint?: string
 	/** Chrome executable for the browsers lopata launches itself. */
 	executablePath?: string
 	/** Headless mode for the browsers lopata launches itself (default: true). */
@@ -152,10 +158,42 @@ interface LocalBrowser {
 	close(): Promise<void>
 }
 
+/** Chrome refuses DevTools requests whose Host is not an IP address or localhost, so a hostname endpoint sends `localhost`. */
+function devtoolsHeaders(url: string): Record<string, string> {
+	const { hostname, port } = new URL(url)
+	if (hostname === 'localhost' || isIP(hostname.replace(/^\[|\]$/g, '')) !== 0) return {}
+	return { Host: port ? `localhost:${port}` : 'localhost' }
+}
+
+/** Resolve the browser-level WebSocket URL through `/json/version`, addressed at `httpEndpoint`'s host. */
+async function resolveWsEndpoint(httpEndpoint: string): Promise<string> {
+	const versionUrl = new URL('/json/version', httpEndpoint)
+	const response = await fetch(versionUrl, { headers: devtoolsHeaders(httpEndpoint) })
+	if (!response.ok) throw new Error(`Reading ${versionUrl} failed: HTTP ${response.status} ${await response.text()}`)
+	const version: unknown = await response.json()
+	if (!isRecord(version) || typeof version.webSocketDebuggerUrl !== 'string') {
+		throw new Error(`${versionUrl} has no webSocketDebuggerUrl: ${JSON.stringify(version)}`)
+	}
+	// Behind a port forward Chrome reports its own host and port; connect through the configured one instead.
+	const wsEndpoint = new URL(version.webSocketDebuggerUrl)
+	const configured = new URL(httpEndpoint)
+	wsEndpoint.protocol = configured.protocol === 'https:' ? 'wss:' : 'ws:'
+	wsEndpoint.host = configured.host
+	return wsEndpoint.toString()
+}
+
+/** The browser-level CDP WebSocket URL of the configured external Chrome, or undefined when lopata launches its own. */
+async function externalWsEndpoint(config: BrowserConfig): Promise<string | undefined> {
+	if (config.wsEndpoint && config.httpEndpoint) throw new Error('Set either browser.wsEndpoint or browser.httpEndpoint, not both')
+	if (config.httpEndpoint) return resolveWsEndpoint(config.httpEndpoint)
+	return config.wsEndpoint
+}
+
 async function startBrowser(config: BrowserConfig): Promise<LocalBrowser> {
-	if (config.wsEndpoint) {
+	const external = await externalWsEndpoint(config)
+	if (external) {
 		// A shared external browser: closing one session must not close it for the others.
-		return { cdpEndpoint: config.wsEndpoint, close: async () => {} }
+		return { cdpEndpoint: external, close: async () => {} }
 	}
 	const puppeteer = await import('puppeteer')
 	const browser = await puppeteer.default.launch({
@@ -175,13 +213,13 @@ async function listTargets(cdpEndpoint: string): Promise<BrowserRunDevToolsTarge
 	const url = new URL(cdpEndpoint)
 	url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:'
 	url.pathname = '/json/list'
-	const response = await fetch(url)
+	const response = await fetch(url, { headers: devtoolsHeaders(cdpEndpoint) })
 	if (!response.ok) throw new Error(`Listing DevTools targets failed: HTTP ${response.status}`)
 	return parseDevToolsTargets(await response.json())
 }
 
 async function openUpstream(url: string): Promise<WebSocket> {
-	const socket = new WebSocket(url)
+	const socket = new WebSocket(url, { headers: devtoolsHeaders(url) })
 	socket.binaryType = 'arraybuffer'
 	await new Promise<void>((resolve, reject) => {
 		socket.addEventListener('open', () => resolve(), { once: true })
@@ -359,16 +397,17 @@ export interface ActiveSession {
 
 /** Runs the legacy `@cloudflare/puppeteer` flow in the calling thread with real puppeteer / puppeteer-core. */
 export class PuppeteerShim {
-	/** Managed browser instance (when launched locally, not via wsEndpoint). */
+	/** Managed browser instance (when launched locally, not via an external endpoint). */
 	private _browser: any = null
 
 	constructor(private config: BrowserConfig) {}
 
 	/** Launch a new browser and return a puppeteer Browser instance. */
 	async launch(opts?: { keep_alive?: number }): Promise<any> {
-		if (this.config.wsEndpoint) {
+		const external = await externalWsEndpoint(this.config)
+		if (external) {
 			const puppeteer = await import('puppeteer-core')
-			this._browser = await puppeteer.default.connect({ browserWSEndpoint: this.config.wsEndpoint })
+			this._browser = await puppeteer.default.connect({ browserWSEndpoint: external, headers: devtoolsHeaders(external) })
 			return this._browser
 		}
 		const puppeteer = await import('puppeteer')
@@ -381,15 +420,16 @@ export class PuppeteerShim {
 
 	/** Connect to an existing browser session by sessionId. */
 	async connect(sessionId: string): Promise<any> {
-		if (this.config.wsEndpoint) {
+		const external = await externalWsEndpoint(this.config)
+		if (external) {
 			const puppeteer = await import('puppeteer-core')
-			return puppeteer.default.connect({ browserWSEndpoint: this.config.wsEndpoint })
+			return puppeteer.default.connect({ browserWSEndpoint: external, headers: devtoolsHeaders(external) })
 		}
-		// In local dev without wsEndpoint, return the existing managed browser if available
+		// In local dev without an external endpoint, return the existing managed browser if available
 		if (this._browser?.isConnected()) {
 			return this._browser
 		}
-		throw new Error('connect() requires wsEndpoint in browser config, or launch() first')
+		throw new Error('connect() requires browser.wsEndpoint or browser.httpEndpoint, or launch() first')
 	}
 
 	/** List active sessions (stub — local dev has at most one). */

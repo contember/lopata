@@ -6,6 +6,7 @@
  * terminate + respawn.
  */
 
+import type { BrowserConfig } from '../bindings/browser'
 import type { WranglerConfig } from '../config'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
@@ -151,7 +152,7 @@ export interface WorkerInitConfig {
 	 *  for span attribution + error attribution; mirrors `Generation.workerName`. */
 	workerName?: string
 	/** Browser Rendering local dev config (Chrome wsEndpoint or executable path). */
-	browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+	browserConfig?: BrowserConfig
 	/** Base URL for the Artifacts git remote (main's `/__artifacts/git` endpoint). */
 	artifactsBaseUrl?: string
 }

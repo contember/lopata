@@ -1,4 +1,5 @@
 import path from 'node:path'
+import type { BrowserConfig } from './bindings/browser'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import type { WranglerConfig } from './config'
 import { buildEnv, wireServiceBindings } from './env'
@@ -37,7 +38,7 @@ export class GenerationManager {
 	readonly isMain: boolean
 	readonly cronEnabled: boolean
 	readonly executorFactory: DOExecutorFactory | undefined
-	readonly browserConfig: { wsEndpoint?: string; executablePath?: string; headless?: boolean } | undefined
+	readonly browserConfig: BrowserConfig | undefined
 	readonly baseUrls: { artifacts?: string } | undefined
 	/** @internal Path to the wrangler config file (DO worker threads re-load it). */
 	_configPath: string = ''
@@ -52,7 +53,7 @@ export class GenerationManager {
 			cron?: boolean
 			executorFactory?: DOExecutorFactory
 			configPath?: string
-			browserConfig?: { wsEndpoint?: string; executablePath?: string; headless?: boolean }
+			browserConfig?: BrowserConfig
 			baseUrls?: { artifacts?: string }
 		},
 	) {
