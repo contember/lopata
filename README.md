@@ -373,27 +373,39 @@ socket.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' }))
 await env.BROWSER.closeSession(sessionId)
 ```
 
-| Method                                                                    | Locally                                                                                                                         |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `acquire()`, `launch()`                                                   | Launches a browser. `keepAlive` (default 60 s) closes a session that receives no CDP command. `targets: true` lists its targets |
-| `connectSession(sessionId, { targetId? })`                                | Browser-level CDP endpoint, or `/devtools/page/<targetId>` with a `targetId`                                                    |
-| `getSession()`, `listSessions()`, `history()`                             | Active sessions; `history()` also lists closed ones with `NormalClosure` / `BrowserIdle`                                        |
-| `closeSession()`                                                          | Closes the sockets and the browser, returns `{ status: 'closed' }`                                                              |
-| `quickAction()`, `getLiveView()`, `limits()`, `devtools.*`, raw `fetch()` | Throw "not supported locally"                                                                                                   |
+| Method                                                                    | Locally                                                                                                                                        |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `acquire()`, `launch()`                                                   | Launches a browser. `keepAlive` (default 60 s, 10 s – 20 min) closes a session that receives no CDP command. `targets: true` lists its targets |
+| `connectSession(sessionId, { targetId? })`                                | Browser-level CDP endpoint, or `/devtools/page/<targetId>` with a `targetId`                                                                   |
+| `getSession()`, `listSessions()`, `history()`                             | Active sessions; `history()` also lists closed ones with `NormalClosure`, `BrowserIdle` or `ChromiumCrashed`                                   |
+| `closeSession()`                                                          | Closes the sockets and the browser, returns `{ status: 'closed' }`                                                                             |
+| `quickAction()`, `getLiveView()`, `limits()`, `devtools.*`, raw `fetch()` | Throw "not supported locally"                                                                                                                  |
 
 - Sessions live in the lopata process: they survive a reload, and every worker and Durable Object sees the same sessions.
+- A session ends with its browser. When the Chrome exits, crashes or restarts, the session leaves `listSessions()`,
+  `getSession()` returns `null`, its CDP sockets close, and `history()` records it as `ChromiumCrashed`.
+- `acquire()` and `launch()` reject like Cloudflare, with an error that has a `status`: `400` for a `keepAlive` outside
+  10 s – 20 min, `429` beyond 200 concurrent sessions or 3 new sessions per second (the Workers Paid limits). The message
+  reads `Unable to create new browser: code: <status>: message: <reason>`.
 - The `outboundByHost`, `guardrails` and `recording` options throw "not supported locally". `location` and `liveViewUrlExpiresInMs` are ignored.
 
 Configure the browser with `browser` in `lopata.config.ts`, or with the `browser` option of the Vite plugin:
 
-| Option           | Meaning                                                                                        |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| `headless`       | Headless mode for the Chrome lopata launches (default `true`)                                  |
-| `executablePath` | Chrome executable for the Chrome lopata launches (default: puppeteer's Chrome)                 |
-| `wsEndpoint`     | Browser-level CDP WebSocket URL of an external Chrome (`ws://host:9222/devtools/browser/<id>`) |
-| `httpEndpoint`   | HTTP DevTools endpoint of an external Chrome (`http://chrome:9222`, puppeteer's `browserURL`)  |
+| Option                  | Meaning                                                                                             |
+| ----------------------- | --------------------------------------------------------------------------------------------------- |
+| `headless`              | Headless mode for the Chrome lopata launches (default `true`)                                       |
+| `executablePath`        | Chrome executable for the Chrome lopata launches (default: puppeteer's Chrome)                      |
+| `wsEndpoint`            | Browser-level CDP WebSocket URL of an external Chrome (`ws://host:9222/devtools/browser/<id>`)      |
+| `httpEndpoint`          | HTTP DevTools endpoint of an external Chrome (`http://chrome:9222`, puppeteer's `browserURL`)       |
+| `maxConcurrentSessions` | Concurrent sessions allowed (default `200`)                                                         |
+| `newSessionsPerSecond`  | New sessions allowed per second (default `3`)                                                       |
+| `minKeepAlive`          | Lopata only, for tests: the smallest `keepAlive` accepted in ms (default `10000`, as on Cloudflare) |
 
-- With `wsEndpoint` or `httpEndpoint` all sessions share that browser, and `closeSession()` leaves it running. Set only one of them.
+- With `wsEndpoint` or `httpEndpoint` all sessions share one Chrome, and `closeSession()` leaves it running. Set only one of them.
+  On Cloudflare each session is its own browser. Here the sessions see each other's targets (`Target.getTargets`,
+  `/json/list`) and share the default browser context: cookies, storage and cache. Open each page in its own browser
+  context (`Target.createBrowserContext`, then `Target.createTarget` with that `browserContextId`) and dispose of the
+  context when done, so that sessions stay apart.
 - `httpEndpoint` suits a Chrome in another container: the WebSocket URL contains an id that changes on every Chrome restart.
   Each session start reads it from `<httpEndpoint>/json/version`, and lopata connects to the configured host and port even
   when Chrome reports its own (behind a port forward). `/json/list` uses the same host.
