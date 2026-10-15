@@ -45,6 +45,17 @@ async function waitUntilClosed(binding: Binding, sessionId: string): Promise<voi
 	throw new Error(`Session ${sessionId} is still active`)
 }
 
+describe('Browser Run acquire limits', () => {
+	test('keepAlive outside 10 s – 20 min is rejected with status 400', async () => {
+		const binding = createBrowserRunBinding({}, new BrowserRunSessions())
+		await expect(binding.acquire({ keepAlive: 5_000 })).rejects.toMatchObject({
+			status: 400,
+			message: 'Unable to create new browser: code: 400: message: keepAlive must be between 10000 and 1200000 ms, got 5000',
+		})
+		await expect(binding.acquire({ keepAlive: 1_200_001 })).rejects.toMatchObject({ status: 400 })
+	})
+})
+
 describe.skipIf(!hasChrome)('Browser Run sessions on an external Chrome', () => {
 	const port = freePort()
 	let chrome: Browser
@@ -56,6 +67,30 @@ describe.skipIf(!hasChrome)('Browser Run sessions on an external Chrome', () => 
 
 	afterAll(async () => {
 		await chrome.close()
+	})
+
+	test('more concurrent sessions than maxConcurrentSessions are rejected with status 429', async () => {
+		const sessions = new BrowserRunSessions()
+		const binding = createBrowserRunBinding({ ...config, maxConcurrentSessions: 1 }, sessions)
+		const { sessionId } = await binding.acquire()
+		await expect(binding.acquire()).rejects.toMatchObject({
+			status: 429,
+			message: 'Unable to create new browser: code: 429: message: Browser instance limit reached: 1 concurrent sessions',
+		})
+		await binding.closeSession(sessionId)
+		await binding.closeSession((await binding.acquire()).sessionId)
+	})
+
+	test('more new sessions per second than newSessionsPerSecond are rejected with status 429', async () => {
+		const sessions = new BrowserRunSessions()
+		const binding = createBrowserRunBinding({ ...config, newSessionsPerSecond: 2 }, sessions)
+		await binding.acquire()
+		await binding.acquire()
+		await expect(binding.acquire()).rejects.toMatchObject({
+			status: 429,
+			message: 'Unable to create new browser: code: 429: message: Rate limit exceeded: 2 new browser sessions per second',
+		})
+		for (const session of await binding.listSessions()) await binding.closeSession(session.sessionId)
 	})
 
 	test('a restarted Chrome ends its sessions as ChromiumCrashed; a new session uses the new Chrome', async () => {

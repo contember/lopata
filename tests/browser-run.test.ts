@@ -30,7 +30,8 @@ describe('Browser Run binding', () => {
 
 	test.skipIf(!hasChrome)('a session that receives no CDP command for keepAlive closes as BrowserIdle', async () => {
 		sessions = new BrowserRunSessions()
-		const browser = createBrowserRunBinding({}, sessions)
+		// minKeepAlive lowers the Cloudflare minimum (10 s) so the idle close happens within the test
+		const browser = createBrowserRunBinding({ minKeepAlive: 100 }, sessions)
 		const { sessionId } = await browser.acquire({ keepAlive: 300 })
 		expect(await browser.listSessions()).toEqual([expect.objectContaining({ sessionId })])
 
