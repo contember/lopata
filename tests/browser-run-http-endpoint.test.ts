@@ -118,16 +118,20 @@ describe.skipIf(!hasChrome)('Browser Run binding with browser.httpEndpoint', () 
 		forward.targetPort = chrome.port
 		expect(await versionOf()).toContain('Chrome')
 
+		// Per session: the browser-level socket lopata keeps to notice the browser exit, then the Worker's CDP socket
 		const browserPaths = forward.requests.filter(request => request.startsWith('/devtools/browser/'))
-		expect(browserPaths).toHaveLength(2)
-		expect(browserPaths[1]).not.toBe(firstBrowserPath)
+		expect(browserPaths).toHaveLength(4)
+		expect(browserPaths[2]).not.toBe(firstBrowserPath)
+		const browserSocket = expect.stringMatching(new RegExp(`^/devtools/browser/\\S+ ${host}$`))
 		expect(forward.requests).toEqual([
 			`/json/version ${host}`,
+			browserSocket,
 			`/json/list ${host}`,
-			expect.stringMatching(new RegExp(`^/devtools/browser/\\S+ ${host}$`)),
+			browserSocket,
 			`/json/version ${host}`,
+			browserSocket,
 			`/json/list ${host}`,
-			expect.stringMatching(new RegExp(`^/devtools/browser/\\S+ ${host}$`)),
+			browserSocket,
 		])
 	}, 30_000)
 

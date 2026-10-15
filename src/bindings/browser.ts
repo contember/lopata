@@ -27,6 +27,15 @@ export interface BrowserConfig {
 	executablePath?: string
 	/** Headless mode for the browsers lopata launches itself (default: true). */
 	headless?: boolean
+	/** Concurrent sessions allowed (default 200, the Cloudflare Workers Paid limit). */
+	maxConcurrentSessions?: number
+	/** New sessions allowed per second (default 3, the Cloudflare Workers Paid limit). */
+	newSessionsPerSecond?: number
+	/**
+	 * Lopata-only, for tests that wait for an idle close: the smallest `keepAlive` accepted, in ms.
+	 * Default 10 000, the Cloudflare minimum.
+	 */
+	minKeepAlive?: number
 }
 
 export interface BrowserRunAcquireOptions {
@@ -92,8 +101,30 @@ export interface BrowserRunCloseSessionResult {
 }
 
 const DEFAULT_KEEP_ALIVE_MS = 60_000
-const NORMAL_CLOSURE = { closeReason: 1, closeReasonText: 'NormalClosure' }
-const BROWSER_IDLE = { closeReason: 2, closeReasonText: 'BrowserIdle' }
+const MIN_KEEP_ALIVE_MS = 10_000
+const MAX_KEEP_ALIVE_MS = 20 * 60_000
+const DEFAULT_MAX_CONCURRENT_SESSIONS = 200
+const DEFAULT_NEW_SESSIONS_PER_SECOND = 3
+
+interface CloseReason {
+	closeReason?: number
+	closeReasonText: string
+}
+const NORMAL_CLOSURE: CloseReason = { closeReason: 1, closeReasonText: 'NormalClosure' }
+const BROWSER_IDLE: CloseReason = { closeReason: 2, closeReasonText: 'BrowserIdle' }
+/** Cloudflare documents this reason by name only; its numeric code is not published. */
+const CHROMIUM_CRASHED: CloseReason = { closeReasonText: 'ChromiumCrashed' }
+
+/** A rejected acquire, with the HTTP status Cloudflare answers with (400, 429) and its error text. */
+export class BrowserRunError extends Error {
+	constructor(
+		readonly status: number,
+		reason: string,
+	) {
+		super(`Unable to create new browser: code: ${status}: message: ${reason}`)
+		this.name = 'BrowserRunError'
+	}
+}
 
 /** Carry the connection's session (and page target) from its Fetcher to `fetch()` on the main-side binding. */
 const SESSION_HEADER = 'x-lopata-browser-run-session'
@@ -238,11 +269,18 @@ class ActiveBrowserRunSession {
 	private readonly upstreams = new Set<WebSocket>()
 	private idleTimer: ReturnType<typeof setTimeout> | undefined
 
+	/**
+	 * `browserSocket` is a browser-level CDP connection lopata keeps for the session's lifetime: it closes when the
+	 * browser exits, crashes or restarts, and then the session ends with it.
+	 */
 	constructor(
 		readonly browser: LocalBrowser,
+		private readonly browserSocket: WebSocket,
 		private readonly keepAliveMs: number,
 		private readonly onIdle: () => void,
+		onBrowserGone: () => void,
 	) {
+		browserSocket.addEventListener('close', onBrowserGone)
 		this.touch()
 	}
 
@@ -285,6 +323,7 @@ class ActiveBrowserRunSession {
 	async close(): Promise<void> {
 		clearTimeout(this.idleTimer)
 		for (const upstream of this.upstreams) upstream.close()
+		this.browserSocket.close()
 		await this.browser.close()
 	}
 
@@ -304,15 +343,59 @@ class ActiveBrowserRunSession {
 export class BrowserRunSessions {
 	private readonly active = new Map<string, ActiveBrowserRunSession>()
 	private readonly closed: BrowserRunSession[] = []
+	/** Sessions whose browser is still starting; they count against the concurrency limit. */
+	private starting = 0
+	/** Start times of the sessions acquired within the last second. */
+	private recentStarts: number[] = []
 
 	async acquire(config: BrowserConfig, options: BrowserRunAcquireOptions): Promise<BrowserRunAcquireResult> {
-		const browser = await startBrowser(config)
-		const session: ActiveBrowserRunSession = new ActiveBrowserRunSession(browser, options.keepAlive ?? DEFAULT_KEEP_ALIVE_MS, () => {
-			this.close(session.sessionId, BROWSER_IDLE).catch(error => console.warn(`[lopata] Closing idle Browser Run session failed:`, error))
-		})
+		const keepAlive = this.checkAcquireLimits(config, options)
+		this.starting++
+		let browser: LocalBrowser
+		let browserSocket: WebSocket
+		try {
+			browser = await startBrowser(config)
+			browserSocket = await openUpstream(browser.cdpEndpoint).catch(async error => {
+				await browser.close()
+				throw error
+			})
+		} finally {
+			this.starting--
+		}
+		const endSession = (reason: CloseReason, label: string) => () => {
+			this.close(session.sessionId, reason).catch(error => console.warn(`[lopata] Closing ${label} Browser Run session failed:`, error))
+		}
+		const session: ActiveBrowserRunSession = new ActiveBrowserRunSession(
+			browser,
+			browserSocket,
+			keepAlive,
+			endSession(BROWSER_IDLE, 'idle'),
+			endSession(CHROMIUM_CRASHED, 'a crashed'),
+		)
 		this.active.set(session.sessionId, session)
 		if (!options.targets) return { sessionId: session.sessionId }
 		return { sessionId: session.sessionId, targets: await listTargets(browser.cdpEndpoint) }
+	}
+
+	/** Reject an acquire Cloudflare would reject; returns the session's keepAlive. */
+	private checkAcquireLimits(config: BrowserConfig, options: BrowserRunAcquireOptions): number {
+		const keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE_MS
+		const minKeepAlive = config.minKeepAlive ?? MIN_KEEP_ALIVE_MS
+		if (!(keepAlive >= minKeepAlive && keepAlive <= MAX_KEEP_ALIVE_MS)) {
+			throw new BrowserRunError(400, `keepAlive must be between ${minKeepAlive} and ${MAX_KEEP_ALIVE_MS} ms, got ${keepAlive}`)
+		}
+		const maxConcurrent = config.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS
+		if (this.active.size + this.starting >= maxConcurrent) {
+			throw new BrowserRunError(429, `Browser instance limit reached: ${maxConcurrent} concurrent sessions`)
+		}
+		const now = Date.now()
+		this.recentStarts = this.recentStarts.filter(start => now - start < 1_000)
+		const perSecond = config.newSessionsPerSecond ?? DEFAULT_NEW_SESSIONS_PER_SECOND
+		if (this.recentStarts.length >= perSecond) {
+			throw new BrowserRunError(429, `Rate limit exceeded: ${perSecond} new browser sessions per second`)
+		}
+		this.recentStarts.push(now)
+		return keepAlive
 	}
 
 	get(sessionId: string): BrowserRunSession | null {
@@ -329,7 +412,7 @@ export class BrowserRunSessions {
 		return paginate(sessions, options)
 	}
 
-	async close(sessionId: string, reason: { closeReason: number; closeReasonText: string } = NORMAL_CLOSURE): Promise<BrowserRunCloseSessionResult> {
+	async close(sessionId: string, reason: CloseReason = NORMAL_CLOSURE): Promise<BrowserRunCloseSessionResult> {
 		const session = this.active.get(sessionId)
 		if (!session) {
 			if (this.closed.some(closed => closed.sessionId === sessionId)) return { status: 'closed' }
