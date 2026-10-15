@@ -1,4 +1,5 @@
 import type { Plugin } from 'vite'
+import type { BrowserConfig } from '../bindings/browser.ts'
 import { configPlugin } from './config-plugin.ts'
 import { devServerPlugin } from './dev-server-plugin.ts'
 import { globalsPlugin } from './globals-plugin.ts'
@@ -21,6 +22,8 @@ export interface LopataPluginConfig {
 	 * don't rely on Vite transforms; author them as plain Bun-resolvable modules.
 	 */
 	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
+	/** Browser Run binding config, the same as `browser` in lopata.config.ts. */
+	browser?: BrowserConfig
 }
 
 /**
@@ -47,6 +50,7 @@ export function lopata(config?: LopataPluginConfig): Plugin[] {
 			envName,
 			hosts: config?.hosts,
 			auxiliaryWorkers: config?.auxiliaryWorkers,
+			browser: config?.browser,
 		}),
 		reactRouterPlugin(),
 	]

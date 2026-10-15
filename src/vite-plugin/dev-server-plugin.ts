@@ -2,6 +2,7 @@ import { randomUUIDv7 } from 'bun'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { dirname, resolve } from 'node:path'
 import type { Plugin, ViteDevServer } from 'vite'
+import type { BrowserConfig } from '../bindings/browser.ts'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
 import { FileWatcher } from '../file-watcher.ts'
@@ -14,6 +15,7 @@ interface DevServerPluginOptions {
 	envName: string
 	hosts?: string[]
 	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
+	browser?: BrowserConfig
 }
 
 /**
@@ -441,7 +443,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			}
 
 			// 2. Build env with bindings
-			const built = envMod.buildEnv(config, projectRoot)
+			const built = envMod.buildEnv(config, projectRoot, undefined, options.browser)
 			env = built.env
 			registry = built.registry
 
@@ -570,6 +572,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 						workerName,
 						workerRegistry,
 						isMain: false,
+						browserConfig: options.browser,
 					})
 					workerRegistry.register(workerName, auxManager)
 
