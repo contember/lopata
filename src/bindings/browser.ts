@@ -335,9 +335,10 @@ export class BrowserRunSessions {
 			if (this.closed.some(closed => closed.sessionId === sessionId)) return { status: 'closed' }
 			throw new Error(`Browser Run session "${sessionId}" not found`)
 		}
+		// The session ends for every caller when it leaves `active`, not once Chrome finishes shutting down.
 		this.active.delete(sessionId)
-		await session.close()
 		this.closed.push({ ...session.describe(), endTime: Date.now(), ...reason })
+		await session.close()
 		return { status: 'closed' }
 	}
 
