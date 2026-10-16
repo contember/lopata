@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { localDurableObjectBindings } from '../../config'
 import { getDatabase, getDataDir } from '../../db'
 import { generateSqlFromPrompt } from '../generate-sql'
 import type { D1Table, DoDetail, DoInstance, DoNamespace, HandlerContext, OkResponse, QueryResult } from '../types'
@@ -14,7 +15,7 @@ export const handlers = {
 		).all()
 		const rowMap = new Map(rows.map(r => [r.namespace, r]))
 		for (const config of getAllConfigs(ctx)) {
-			for (const b of config.durable_objects?.bindings ?? []) {
+			for (const b of localDurableObjectBindings(config)) {
 				if (!rowMap.has(b.class_name)) {
 					rows.push({ namespace: b.class_name, count: 0 })
 				}

@@ -18,6 +18,7 @@ function makeExecutor(over: Partial<Record<Counters, () => number>> = {}): Worke
 
 const emptyRegistry: ClassRegistry = {
 	durableObjects: [],
+	crossScriptDurableObjects: [],
 	workflows: [],
 	containers: [],
 	queueConsumers: [],

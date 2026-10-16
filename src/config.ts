@@ -18,7 +18,7 @@ export interface WranglerConfig {
 	kv_namespaces?: { binding: string; id: string }[]
 	r2_buckets?: { binding: string; bucket_name: string }[]
 	durable_objects?: {
-		bindings: { name: string; class_name: string }[]
+		bindings: DurableObjectBindingConfig[]
 	}
 	workflows?: { name: string; binding: string; class_name: string; limits?: Partial<WorkflowLimits> }[]
 	d1_databases?: { binding: string; database_name: string; database_id: string; migrations_dir?: string }[]
@@ -100,7 +100,37 @@ export interface WranglerConfig {
 		renamed_classes?: { from: string; to: string }[]
 		deleted_classes?: string[]
 	}[]
+	/** Module rules: which non-JS imports load as Text, Data or CompiledWasm modules. */
+	rules?: ModuleRule[]
 	env?: Record<string, Partial<Omit<WranglerConfig, 'env'>>>
+}
+
+export interface DurableObjectBindingConfig {
+	name: string
+	class_name: string
+	/** The worker that hosts the class, when it is not this worker. */
+	script_name?: string
+}
+
+export type ModuleRuleType = 'ESModule' | 'CommonJS' | 'CompiledWasm' | 'Text' | 'Data' | 'PythonModule' | 'PythonRequirement'
+
+export interface ModuleRule {
+	type: ModuleRuleType
+	globs: string[]
+	fallthrough?: boolean
+}
+
+/** True when another worker hosts the binding's class. That worker owns the namespace and its storage. */
+export function isCrossScriptBinding(
+	binding: DurableObjectBindingConfig,
+	config: WranglerConfig,
+): binding is DurableObjectBindingConfig & { script_name: string } {
+	return binding.script_name !== undefined && binding.script_name !== config.name
+}
+
+/** The `durable_objects` bindings whose class this worker exports and hosts. */
+export function localDurableObjectBindings(config: WranglerConfig): DurableObjectBindingConfig[] {
+	return (config.durable_objects?.bindings ?? []).filter(binding => !isCrossScriptBinding(binding, config))
 }
 
 /**

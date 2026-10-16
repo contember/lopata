@@ -149,6 +149,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				cron: lopataConfig.cron,
 				executorFactory: await makeExecutorFactory(),
 				configPath: workerDef.config,
+				browserConfig: lopataConfig.browser,
 				baseUrls,
 			})
 			registry.register(workerDef.name, auxManager)

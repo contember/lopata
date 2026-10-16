@@ -11,7 +11,7 @@
  * storage are too: workerd exposes them as facet classes, which lopata does not support.
  */
 
-import type { WranglerConfig } from '../config'
+import { localDurableObjectBindings, type WranglerConfig } from '../config'
 import { FETCHER_BRAND, WORKER_ENTRYPOINT_BRAND } from './rpc-stub'
 import { ServiceBinding } from './service-binding'
 
@@ -28,9 +28,9 @@ export interface DurableObjectNamespaceBinding {
 	bindingName: string
 }
 
-/** The namespaces a wrangler config declares: `durable_objects` bindings plus container classes. */
+/** The namespaces a worker hosts: its own `durable_objects` bindings plus container classes. */
 export function durableObjectNamespaceBindings(config: WranglerConfig): DurableObjectNamespaceBinding[] {
-	const bindings = (config.durable_objects?.bindings ?? []).map(b => ({ className: b.class_name, bindingName: b.name }))
+	const bindings = localDurableObjectBindings(config).map(b => ({ className: b.class_name, bindingName: b.name }))
 	for (const container of config.containers ?? []) {
 		if (bindings.some(b => b.className === container.class_name)) continue
 		bindings.push({ className: container.class_name, bindingName: container.name ?? container.class_name })

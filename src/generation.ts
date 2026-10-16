@@ -1,4 +1,5 @@
 import { randomUUIDv7, type Server } from 'bun'
+import type { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
 import { assetsOnlyRejection, canServeAssets } from './bindings/static-assets'
@@ -12,6 +13,8 @@ import type { WorkerThreadExecutor } from './worker-thread/executor'
 
 export interface ClassRegistry {
 	durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[]
+	/** Bindings to classes another worker hosts — that worker's `durableObjects` owns the namespace. */
+	crossScriptDurableObjects: { bindingName: string; scriptName: string; className: string; namespace: CrossScriptDurableObjectNamespace }[]
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 	containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[]
 	queueConsumers: {

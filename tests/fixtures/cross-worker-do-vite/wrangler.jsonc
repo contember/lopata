@@ -1,0 +1,14 @@
+{
+	"name": "ledger",
+	"main": "../cross-worker-do/ledger/src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "LEDGER", "class_name": "Ledger" },
+			{ "name": "MAILBOX", "class_name": "Mailbox", "script_name": "mailbox" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Ledger"] }
+	]
+}

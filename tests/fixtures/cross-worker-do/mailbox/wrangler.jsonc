@@ -1,0 +1,19 @@
+{
+	"name": "mailbox",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"routes": ["example.com/mailbox/*"],
+	"rules": [
+		{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
+		{ "type": "Data", "globs": ["**/*.dat"] }
+	],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "MAILBOX", "class_name": "Mailbox" },
+			{ "name": "LEDGER", "class_name": "Ledger", "script_name": "ledger" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Mailbox"] }
+	]
+}

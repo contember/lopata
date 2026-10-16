@@ -534,6 +534,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				reload() {
 					return Promise.reject(new Error('Main worker uses Vite HMR — save a file to trigger reload'))
 				},
+				// The module loads on its first request. An auxiliary worker calling a Durable
+				// Object class it hosts (script_name) may come first, so it loads the module here.
+				async whenLoaded() {
+					await ensureWorkerModule()
+				},
 				stop(id: number) {
 					const record = viteGenerations.get(id)
 					if (record) {
@@ -551,6 +556,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 				const { WorkerRegistry } = await import('../worker-registry.ts')
 				const { GenerationManager } = await import('../generation-manager.ts')
+				const { WorkerExecutorFactory } = await import('../bindings/do-executor-worker.ts')
 
 				workerRegistry = new WorkerRegistry()
 				workerRegistry.register(config.name, mainAdapter as any, true) // Dashboard adapter
@@ -568,10 +574,14 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 					// universal model) loaded via native Bun import — NOT through Vite's
 					// SSR/transform pipeline like the main worker. See `auxiliaryWorkers`
 					// in index.ts: author them as plain Bun-resolvable modules.
+					// Each aux worker gets its own DO executor factory: it carries that worker's
+					// module and config, which its Durable Object threads import.
 					const auxManager = new GenerationManager(auxConfig, auxBaseDir, {
 						workerName,
 						workerRegistry,
 						isMain: false,
+						executorFactory: new WorkerExecutorFactory(),
+						configPath: auxConfigPath,
 						browserConfig: options.browser,
 					})
 					workerRegistry.register(workerName, auxManager)

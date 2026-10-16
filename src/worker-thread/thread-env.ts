@@ -17,7 +17,7 @@ import { serviceBindingConnectError } from '../bindings/service-binding'
 import { addStatelessBindings } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { SqliteWorkflowBinding } from '../bindings/workflow'
-import type { WranglerConfig } from '../config'
+import { localDurableObjectBindings, type WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { resolveVars } from '../env'
 import { warnCrossThreadRpcArgs, warnInvalidRpcArgs } from '../rpc-validate'
@@ -86,7 +86,7 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 	// Container DOs whose class isn't already declared under `durable_objects`
 	// — main's `buildEnv` synthesises a DO namespace for them, so we need the
 	// matching proxy in the worker env or the binding is missing at runtime.
-	const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name))
+	const doClassNames = new Set(localDurableObjectBindings(config).map(b => b.class_name))
 	for (const container of config.containers ?? []) {
 		if (doClassNames.has(container.class_name)) continue
 		const bindingName = container.name ?? container.class_name

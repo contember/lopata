@@ -1,4 +1,4 @@
-import type { WranglerConfig } from '../../config'
+import { isCrossScriptBinding, type WranglerConfig } from '../../config'
 import type { HandlerContext, WorkerBinding, WorkerInfo } from '../types'
 
 function extractBindings(config: WranglerConfig): WorkerBinding[] {
@@ -14,7 +14,8 @@ function extractBindings(config: WranglerConfig): WorkerBinding[] {
 		bindings.push({ type: 'd1', name: db.binding, target: db.database_name, href: `#/d1/${encodeURIComponent(db.database_name)}` })
 	}
 	for (const b of config.durable_objects?.bindings ?? []) {
-		bindings.push({ type: 'do', name: b.name, target: b.class_name, href: `#/do/${encodeURIComponent(b.class_name)}` })
+		const target = isCrossScriptBinding(b, config) ? `${b.script_name}#${b.class_name}` : b.class_name
+		bindings.push({ type: 'do', name: b.name, target, href: `#/do/${encodeURIComponent(b.class_name)}` })
 	}
 	for (const p of config.queues?.producers ?? []) {
 		bindings.push({ type: 'queue', name: p.binding, target: p.queue, href: `#/queue/${encodeURIComponent(p.queue)}` })

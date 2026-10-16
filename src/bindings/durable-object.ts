@@ -1001,7 +1001,7 @@ export class DurableObjectNamespaceImpl {
 	 *  chains its first command on this so a fresh `docker run` doesn't race the
 	 *  old container's teardown. */
 	private _disposing = new Map<string, Promise<void>>()
-	private _stubs = new Map<string, unknown>()
+	private _stubs = new Map<string, Record<string, unknown>>()
 	private _knownIds = new Map<string, DurableObjectIdImpl>()
 	private _class?: new(ctx: DurableObjectStateImpl, env: unknown) => DurableObjectBase
 	private _externalClassName?: string
@@ -1518,11 +1518,11 @@ export class DurableObjectNamespaceImpl {
 		return new DurableObjectIdImpl(id)
 	}
 
-	getByName(name: string): unknown {
+	getByName(name: string): Record<string, unknown> {
 		return this.get(this.idFromName(name))
 	}
 
-	get(id: DurableObjectIdImpl): unknown {
+	get(id: DurableObjectIdImpl): Record<string, unknown> {
 		const idStr = id.toString()
 		// Cache by `${idStr}:${name ?? ''}` so a nameless `idFromString(hash)` and a
 		// named `idFromName(...)` resolving to the same hash get distinct stubs —

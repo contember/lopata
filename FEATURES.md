@@ -328,6 +328,17 @@
 
 > **Note:** Worker limits are production deployment constraints. Not enforced in local dev (matching wrangler dev behavior).
 
+### 1.21 Module Rules (wrangler `rules`)
+
+- ✅ `Text` → string, `Data` → ArrayBuffer, `CompiledWasm` → WebAssembly.Module (default export)
+- ✅ Default rules: `**/*.txt`, `**/*.html`, `**/*.sql` (Text), `**/*.bin` (Data), `**/*.wasm`, `**/*.wasm?module` (CompiledWasm)
+- ✅ `fallthrough` — a rule replaces later rules of its type unless `fallthrough: true`; an import only a replaced rule matches fails
+- ✅ Globs as wrangler compiles them (`*` crosses `/`), matched against the imported file's absolute path
+- ✅ Workers lopata loads itself (CLI workers, Vite auxiliary workers) and their Durable Objects
+- ⚠️ Vite plugin main worker — imports go through Vite, not the rules
+- 🟰 `ESModule`, `CommonJS` — loaded by Bun
+- ❌ `PythonModule`, `PythonRequirement`
+
 ---
 
 ## 2. KV (Key-Value Storage)
@@ -706,7 +717,9 @@
 
 - ✅ `[durable_objects].bindings` — name, class_name
 - ✅ `[[migrations]]` — tag, new_sqlite_classes, new_classes
-- ❌ script_name, environment — cross-Worker DOs not supported
+- ✅ script_name — a class another worker in `lopata.config.ts` (or a Vite auxiliary worker) hosts; same instances
+  from every worker, RPC and `fetch()` in both directions, cycles; the hosting worker must also bind the class
+- ❌ environment — ignored; every worker runs with the `--env` lopata was started with
 - ✅ renamed_classes, deleted_classes — migration ops (renames storage rows + do-sql dirs)
 - ❌ transferred_classes — cross-Worker DO transfer not supported
 
