@@ -2,7 +2,7 @@ import path from 'node:path'
 import type { BrowserConfig } from './bindings/browser'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import type { WranglerConfig } from './config'
-import { buildEnv, wireServiceBindings } from './env'
+import { buildEnv, wireCrossWorkerBindings } from './env'
 import { Generation, type GenerationInfo } from './generation'
 import type { WorkerRegistry } from './worker-registry'
 import { type WorkerReadyInfo, WorkerThreadExecutor } from './worker-thread/executor'
@@ -86,6 +86,14 @@ export class GenerationManager {
 	}
 
 	/**
+	 * Settles once the first load has finished, so a call from another worker that arrives
+	 * while this one is still starting waits for it. Rejects with the error of a failed first load.
+	 */
+	async whenLoaded(): Promise<void> {
+		if (this.active === null && this._reloading) await this._reloading
+	}
+
+	/**
 	 * Create a new generation by importing the worker module fresh.
 	 * Serialized: if called while already reloading, queues one reload.
 	 */
@@ -127,7 +135,7 @@ export class GenerationManager {
 		// RPCs into them. Stateless ones duplicate in the thread. Static assets
 		// stay main-side for the auto-serve fallback.
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
-		wireServiceBindings(registry, {}, env, this.workerRegistry)
+		wireCrossWorkerBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
 			modulePath: this.workerPath,
@@ -221,7 +229,7 @@ export class GenerationManager {
 	 */
 	private async _doReloadAssetsOnly(): Promise<Generation> {
 		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
-		wireServiceBindings(registry, {}, env, this.workerRegistry)
+		wireCrossWorkerBindings(registry, {}, env, this.workerRegistry)
 
 		const genId = this.nextGenId++
 		const gen = new Generation(genId, env, registry, this.config, null, this.workerName, this.cronEnabled)

@@ -1,3 +1,4 @@
+import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { hasScript } from './config'
 import type { GenerationManager } from './generation-manager'
 import type { WorkerThreadExecutor } from './worker-thread/executor'
@@ -72,6 +73,34 @@ export class WorkerRegistry {
 			throw new Error(`Worker "${workerName}" has no script and no static assets to serve`)
 		}
 		throw new Error(`Worker "${workerName}" generation has neither a thread executor nor a workerModule`)
+	}
+
+	/**
+	 * The namespace that worker `scriptName` hosts for `className`, for a `durable_objects`
+	 * binding with `script_name`. Waits for the worker's first load. Resolved per call, so a
+	 * reloaded host is picked up.
+	 */
+	async resolveDurableObjectNamespace(scriptName: string, className: string): Promise<DurableObjectNamespaceImpl> {
+		const manager = this.managers.get(scriptName)
+		if (!manager) {
+			throw new Error(
+				`Durable Object class "${className}" is bound with script_name "${scriptName}", but lopata runs no worker named "${scriptName}" `
+					+ `(workers: ${[...this.managers.keys()].join(', ')})`,
+			)
+		}
+		await manager.whenLoaded()
+		const gen = manager.active
+		if (!gen) {
+			throw new Error(`Worker "${scriptName}" has no active generation (failed to load?), so its Durable Object class "${className}" is unavailable`)
+		}
+		const entry = gen.registry.durableObjects.find(d => d.className === className)
+		if (!entry) {
+			throw new Error(
+				`Worker "${scriptName}" hosts no Durable Object namespace for class "${className}". `
+					+ `Declare a durable_objects binding for "${className}" (without script_name) in that worker's wrangler config.`,
+			)
+		}
+		return entry.namespace
 	}
 
 	/** List all registered managers (for dashboard) */

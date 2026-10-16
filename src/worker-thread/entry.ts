@@ -6,6 +6,7 @@ import { buildLoopbackExports, durableObjectNamespaceBindings } from '../binding
 import { createScheduledController } from '../bindings/scheduled'
 import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { localDurableObjectBindings } from '../config'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
 import { registerModuleRules } from '../module-rules'
@@ -236,7 +237,7 @@ async function initRuntime(init: WorkerInitConfig) {
 			| undefined
 		doAlarmHandlers[className] = typeof cls?.prototype?.alarm === 'function'
 	}
-	for (const binding of init.config.durable_objects?.bindings ?? []) {
+	for (const binding of localDurableObjectBindings(init.config)) {
 		collectAlarmHandler(binding.class_name)
 	}
 	for (const container of init.config.containers ?? []) {

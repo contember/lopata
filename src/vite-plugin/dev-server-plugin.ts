@@ -534,6 +534,11 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				reload() {
 					return Promise.reject(new Error('Main worker uses Vite HMR — save a file to trigger reload'))
 				},
+				// The module loads on its first request. An auxiliary worker calling a Durable
+				// Object class it hosts (script_name) may come first, so it loads the module here.
+				async whenLoaded() {
+					await ensureWorkerModule()
+				},
 				stop(id: number) {
 					const record = viteGenerations.get(id)
 					if (record) {

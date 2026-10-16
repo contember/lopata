@@ -1,0 +1,16 @@
+{
+	"name": "ledger",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "LEDGER", "class_name": "Ledger" },
+			{ "name": "MAILBOX", "class_name": "Mailbox", "script_name": "mailbox" },
+			{ "name": "MISSING_WORKER", "class_name": "Ghost", "script_name": "nowhere" },
+			{ "name": "MISSING_CLASS", "class_name": "Phantom", "script_name": "mailbox" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Ledger"] }
+	]
+}

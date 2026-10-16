@@ -4,6 +4,7 @@ import { type BrowserConfig, createBrowserRunBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
 import { containerLabels, registerContainer, unregisterContainer } from './bindings/container-cleanup'
 import { DockerManager } from './bindings/container-docker'
+import { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DOExecutorFactory } from './bindings/do-executor'
 import { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { SendEmailBinding } from './bindings/email'
@@ -12,7 +13,7 @@ import { createServiceBinding } from './bindings/service-binding'
 import { addStatelessBindings, createStaticAssets } from './bindings/stateless-env'
 import type { StaticAssets } from './bindings/static-assets'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
-import type { WranglerConfig } from './config'
+import { isCrossScriptBinding, localDurableObjectBindings, type WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
 import { instrumentBinding, instrumentDONamespace, instrumentServiceBinding } from './tracing/instrument'
 import type { ResolvedTarget, WorkerRegistry } from './worker-registry'
@@ -68,6 +69,7 @@ interface ServiceBindingEntry {
 
 interface ClassRegistry {
 	durableObjects: { bindingName: string; className: string; namespace: DurableObjectNamespaceImpl }[]
+	crossScriptDurableObjects: { bindingName: string; scriptName: string; className: string; namespace: CrossScriptDurableObjectNamespace }[]
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 	containers: { className: string; image: string; maxInstances?: number; namespace: DurableObjectNamespaceImpl }[]
 	queueConsumers: ConsumerConfig[]
@@ -132,7 +134,15 @@ export function buildEnv(
 	baseUrls?: { artifacts?: string },
 ): { env: Record<string, unknown>; registry: ClassRegistry } {
 	const env: Record<string, unknown> = {}
-	const registry: ClassRegistry = { durableObjects: [], workflows: [], containers: [], queueConsumers: [], serviceBindings: [], staticAssets: null }
+	const registry: ClassRegistry = {
+		durableObjects: [],
+		crossScriptDurableObjects: [],
+		workflows: [],
+		containers: [],
+		queueConsumers: [],
+		serviceBindings: [],
+		staticAssets: null,
+	}
 
 	Object.assign(env, resolveVars(config, devVarsDir))
 
@@ -174,6 +184,18 @@ export function buildEnv(
 
 	// Durable Objects
 	for (const doBinding of config.durable_objects?.bindings ?? []) {
+		if (isCrossScriptBinding(doBinding, config)) {
+			console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name} (hosted by ${doBinding.script_name})`)
+			const namespace = new CrossScriptDurableObjectNamespace(doBinding.name, doBinding.script_name, doBinding.class_name)
+			env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name)
+			registry.crossScriptDurableObjects.push({
+				bindingName: doBinding.name,
+				scriptName: doBinding.script_name,
+				className: doBinding.class_name,
+				namespace,
+			})
+			continue
+		}
 		console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
 		const existing = existingNamespaces?.get(doBinding.class_name)
 		const namespace = existing ?? new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory)
@@ -258,7 +280,7 @@ export function buildEnv(
 	}
 
 	// Containers — create DO namespaces for container classes
-	const doClassNames = new Set((config.durable_objects?.bindings ?? []).map(b => b.class_name))
+	const doClassNames = new Set(localDurableObjectBindings(config).map(b => b.class_name))
 	for (const container of config.containers ?? []) {
 		// Skip if this class is already defined as a DO binding (avoid double-creating)
 		if (doClassNames.has(container.class_name)) {
@@ -352,15 +374,15 @@ export function wireClassRefs(
 		console.log(`[lopata] Wired container config: ${entry.className} (image: ${entry.image})`)
 	}
 
-	wireServiceBindings(registry, workerModule, env, workerRegistry)
+	wireCrossWorkerBindings(registry, workerModule, env, workerRegistry)
 }
 
 /**
- * Service-binding wiring extracted so thread-mode generations (which skip
- * `wireClassRefs` entirely — DO/Workflow classes live in the worker) can
- * still resolve cross-worker fetches through the registry.
+ * Wires the bindings that resolve through the worker registry: service bindings and
+ * Durable Object bindings with `script_name`. Extracted so thread-mode generations (which
+ * skip `wireClassRefs` entirely — DO/Workflow classes live in the worker) wire them too.
  */
-export function wireServiceBindings(
+export function wireCrossWorkerBindings(
 	registry: ClassRegistry,
 	workerModule: Record<string, unknown>,
 	env: Record<string, unknown>,
@@ -377,5 +399,11 @@ export function wireServiceBindings(
 			wire(() => ({ kind: 'in-process', workerModule, env }))
 		}
 		console.log(`[lopata] Wired service binding: ${entry.bindingName} -> ${entry.serviceName}${entry.entrypoint ? ` (${entry.entrypoint})` : ''}`)
+	}
+
+	// Without a registry no other worker runs, so the binding stays unwired and its first use says so.
+	if (!workerRegistry) return
+	for (const entry of registry.crossScriptDurableObjects) {
+		entry.namespace._wire(() => workerRegistry.resolveDurableObjectNamespace(entry.scriptName, entry.className))
 	}
 }
