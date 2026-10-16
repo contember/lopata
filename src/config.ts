@@ -100,7 +100,17 @@ export interface WranglerConfig {
 		renamed_classes?: { from: string; to: string }[]
 		deleted_classes?: string[]
 	}[]
+	/** Module rules: which non-JS imports load as Text, Data or CompiledWasm modules. */
+	rules?: ModuleRule[]
 	env?: Record<string, Partial<Omit<WranglerConfig, 'env'>>>
+}
+
+export type ModuleRuleType = 'ESModule' | 'CommonJS' | 'CompiledWasm' | 'Text' | 'Data' | 'PythonModule' | 'PythonRequirement'
+
+export interface ModuleRule {
+	type: ModuleRuleType
+	globs: string[]
+	fallthrough?: boolean
 }
 
 /**

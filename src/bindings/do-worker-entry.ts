@@ -7,6 +7,7 @@
 
 import '../worker-thread/request-clone-fix' // global Request shim — must load before DO code
 import { dirname } from 'node:path'
+import { registerModuleRules } from '../module-rules'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
@@ -69,6 +70,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// (WITHOUT --env overrides) when no parsed config was threaded through — e.g.
 	// the standalone test factory.
 	const config = workerConfig.wranglerConfig ?? await (await import('../config')).loadConfig(workerConfig.configPath)
+	registerModuleRules(config.rules)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
 	const envRpc = createDoEnvRpc(msg => postMessage(msg))

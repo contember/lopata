@@ -8,6 +8,7 @@ import { resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { getDatabase } from '../db'
 import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { registerModuleRules } from '../module-rules'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { setGlobalExports } from '../worker-exports'
@@ -165,6 +166,7 @@ async function initRuntime(init: WorkerInitConfig) {
 	// Plugin import must run before user code so Bun.plugin().module() intercepts
 	// `cloudflare:workers` etc. and `globalThis.caches` is patched in.
 	const plugin = await import('../plugin')
+	registerModuleRules(init.config.rules)
 
 	// Route all tracing operations through main so the dashboard's subscribers fire.
 	setTraceStoreOverride(new RemoteTraceStore(post))
