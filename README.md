@@ -166,6 +166,29 @@ Lopata reads your standard Cloudflare config file, auto-detected in order: `wran
 }
 ```
 
+### Module rules
+
+Imports of non-JavaScript files follow the wrangler `rules` and the wrangler default rules, as in a deployed worker:
+
+| Type           | Default export       | Default globs                       |
+| -------------- | -------------------- | ----------------------------------- |
+| `Text`         | `string`             | `**/*.txt`, `**/*.html`, `**/*.sql` |
+| `Data`         | `ArrayBuffer`        | `**/*.bin`                          |
+| `CompiledWasm` | `WebAssembly.Module` | `**/*.wasm`, `**/*.wasm?module`     |
+
+```jsonc
+{
+	"rules": [
+		{ "type": "Text", "globs": ["**/*.md"], "fallthrough": true }
+	]
+}
+```
+
+A rule replaces the default rule of its type unless it sets `fallthrough: true`; an import that only a replaced rule
+matches fails, as in wrangler. Globs are matched against the absolute path of the imported file. `ESModule` and
+`CommonJS` rules are left to Bun. The rules apply to every worker lopata loads itself: the workers of the CLI and the
+auxiliary workers of the Vite plugin. Under the Vite plugin, the main worker's imports go through Vite.
+
 ### Environment variables and secrets
 
 Variables are loaded in this order (later overrides earlier):
@@ -219,6 +242,37 @@ export default defineConfig({
 ```
 
 Workers can call each other via service bindings configured in their respective `wrangler.jsonc`. Both HTTP (`binding.fetch()`) and RPC (`binding.myMethod()`) modes are supported, including promise pipelining.
+
+Every worker gets the same `browser` config, auxiliary workers and their Durable Objects included.
+
+### Durable Objects across workers
+
+A `durable_objects` binding with `script_name` uses a class that another worker exports and hosts.
+`script_name` names that worker as a service binding's `service` does: the main worker's wrangler `name`, an
+auxiliary worker's `name` in `lopata.config.ts`, or under the Vite plugin its `name` option (default: its wrangler `name`).
+
+```jsonc
+// workers/chat/wrangler.jsonc — hosts the class
+{
+	"name": "chat",
+	"durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ChatRoom" }] },
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChatRoom"] }]
+}
+
+// wrangler.jsonc — the main worker uses it
+{
+	"durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ChatRoom", "script_name": "chat" }] }
+}
+```
+
+- Both bindings reach the same instances: `idFromName()` and `idFromString()` give the same ids in every worker.
+- `stub.fetch()` and RPC methods work in both directions, cycles included (A uses B's class, B uses A's).
+  Values cross as in a Durable Object call within one worker: structured clone, streamed `fetch()` bodies,
+  errors with their `name` and `message`.
+- The hosting worker owns the namespace: its storage, alarms and dashboard entry, and its reload restarts the instances.
+- The hosting worker must declare a `durable_objects` binding for the class itself (without `script_name`).
+- An unknown worker or class fails the first call on the stub with an error that names it. A call made while the
+  hosting worker is still loading waits for it; under the Vite plugin it loads the main worker's module.
 
 ### Assets-only workers
 
