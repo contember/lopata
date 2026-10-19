@@ -440,6 +440,76 @@ describe('HTMLRewriter', () => {
 		})
 	})
 
+	describe('handler errors', () => {
+		test('a throwing handler fails the body read, not transform()', async () => {
+			const result = new HTMLRewriter()
+				.on('p', {
+					element() {
+						throw new Error('handler failed')
+					},
+				})
+				.transform(new Response('<p>x</p>'))
+			await expect(result.text()).rejects.toThrow('handler failed')
+		})
+
+		test('a rejecting async handler fails the body read', async () => {
+			const result = new HTMLRewriter()
+				.on('p', {
+					async element() {
+						await Bun.sleep(1)
+						throw new Error('async handler failed')
+					},
+				})
+				.transform(new Response('<p>x</p>'))
+			await expect(result.text()).rejects.toThrow('async handler failed')
+		})
+
+		test('a rejected async handler leaves no rewriter error behind and stops later handlers', async () => {
+			const unhandled: unknown[] = []
+			const onUnhandled = (reason: unknown) => unhandled.push(reason)
+			process.on('unhandledRejection', onUnhandled)
+			try {
+				const visited: string[] = []
+				const failing = new HTMLRewriter()
+					.on('p', {
+						async element(el) {
+							visited.push(el.getAttribute('id') ?? '')
+							await Bun.sleep(1)
+							throw new Error('first failed')
+						},
+					})
+					.transform(new Response('<p id="1">a</p><p id="2">b</p>'))
+				await expect(failing.text()).rejects.toThrow('first failed')
+
+				const failingEndTag = new HTMLRewriter()
+					.on('i', {
+						element(el) {
+							el.onEndTag(async () => {
+								await Bun.sleep(1)
+								throw new Error('end tag failed')
+							})
+						},
+					})
+					.transform(new Response('<i>x</i>'))
+				await expect(failingEndTag.text()).rejects.toThrow('end tag failed')
+				await Bun.sleep(10)
+
+				expect(visited).toEqual(['1'])
+				expect(unhandled).toEqual([])
+				const output = await rewrite('<p>ok</p>', (rw) =>
+					rw.on('p', {
+						async element(el) {
+							await Bun.sleep(1)
+							el.setAttribute('class', 'after')
+						},
+					}))
+				expect(output).toBe('<p class="after">ok</p>')
+			} finally {
+				process.off('unhandledRejection', onUnhandled)
+			}
+		})
+	})
+
 	describe('transform behavior', () => {
 		test('rewrites a body streamed from a ReadableStream', async () => {
 			const encoder = new TextEncoder()
