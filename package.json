@@ -65,7 +65,6 @@
 		"@types/bun": "latest",
 		"bun-plugin-tailwind": "^0.1.2",
 		"dprint": "^0.51.1",
-		"html-rewriter-wasm": "^0.4.1",
 		"preact": "^10.28.3",
 		"puppeteer": "*",
 		"puppeteer-core": "*",
@@ -76,6 +75,7 @@
 		"wrangler": "^4.67.0"
 	},
 	"dependencies": {
+		"html-rewriter-wasm": "^0.4.1",
 		"smol-toml": "^1.6.0"
 	}
 }

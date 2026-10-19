@@ -1,24 +1,12 @@
-import type { DocumentHandlers, ElementHandlers } from 'html-rewriter-wasm'
+import { HTMLRewriter as LolHtmlRewriter } from 'html-rewriter-wasm'
+import type { DocumentHandlers, Element, ElementHandlers } from 'html-rewriter-wasm'
 
-type RawHTMLRewriterType = new(sink: (chunk: Uint8Array) => void) => {
-	on(selector: string, handler: ElementHandlers): void
-	onDocument(handler: DocumentHandlers): void
-	write(chunk: Uint8Array): Promise<void>
-	end(): Promise<void>
-	free(): void
-}
-
-let RawHTMLRewriter: RawHTMLRewriterType | null = null
-try {
-	;({ HTMLRewriter: RawHTMLRewriter } = await import('html-rewriter-wasm'))
-} catch {
-	// html-rewriter-wasm not installed — passthrough mode
-}
-
-let _warned = false
+type Handler<T> = (arg: T) => void | Promise<void>
 
 /**
- * Cloudflare-compatible HTMLRewriter that wraps html-rewriter-wasm.
+ * Cloudflare-compatible HTMLRewriter on html-rewriter-wasm (lol-html, the engine Cloudflare uses).
+ * The wasm build awaits async handlers without blocking the thread, so a handler can await a
+ * binding call that is answered by another thread.
  * Usage: new HTMLRewriter().on(selector, handler).onDocument(handler).transform(response)
  */
 export class HTMLRewriter {
@@ -45,60 +33,113 @@ export class HTMLRewriter {
 			})
 		}
 
-		if (!RawHTMLRewriter) {
-			if (!_warned) {
-				console.warn('[lopata] html-rewriter-wasm is not installed — HTMLRewriter is a passthrough. Install it: bun add html-rewriter-wasm')
-				_warned = true
-			}
-			return response
-		}
-
+		const reader = response.body.getReader()
 		const elementHandlers = this.elementHandlers
 		const documentHandlers = this.documentHandlers
-
-		const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
-		const writer = writable.getWriter()
-
-		const rewriter = new RawHTMLRewriter((chunk: Uint8Array) => {
-			writer.write(chunk)
-		})
-
-		for (const [selector, handler] of elementHandlers) {
-			rewriter.on(selector, handler)
-		}
-		for (const handler of documentHandlers) {
-			rewriter.onDocument(handler)
-		}
-
 		const encoder = new TextEncoder()
-		const reader = response.body.getReader()
-		;(async () => {
-			try {
-				while (true) {
-					const { done, value } = await reader.read()
-					if (done) break
-					// value can be Uint8Array or string
-					const chunk = typeof value === 'string' ? encoder.encode(value) : value
-					await rewriter.write(chunk)
+
+		const body = new ReadableStream<Uint8Array>({
+			async start(controller) {
+				const rewriter = new LolHtmlRewriter(chunk => controller.enqueue(chunk))
+				const handlerErrors = new HandlerErrors()
+				for (const [selector, handler] of elementHandlers) {
+					rewriter.on(selector, handlerErrors.guardElementHandlers(handler))
 				}
-				await rewriter.end()
-			} catch (err) {
-				await writer.abort(err instanceof Error ? err : new Error(String(err)))
-				return
-			} finally {
-				rewriter.free()
-			}
-			await writer.close()
-		})()
+				for (const handler of documentHandlers) {
+					rewriter.onDocument(handlerErrors.guardDocumentHandlers(handler))
+				}
+
+				try {
+					while (true) {
+						const { done, value } = await reader.read()
+						if (done) break
+						// value can be Uint8Array or string
+						const chunk = typeof value === 'string' ? encoder.encode(value) : value
+						await rewriter.write(chunk)
+						handlerErrors.throwIfFailed()
+					}
+					await rewriter.end()
+					handlerErrors.throwIfFailed()
+					controller.close()
+				} catch (err) {
+					controller.error(err)
+				} finally {
+					rewriter.free()
+				}
+			},
+			cancel(reason) {
+				return reader.cancel(reason)
+			},
+		})
 
 		// Copy headers but remove content-length since streaming transform changes size
 		const headers = new Headers(response.headers)
 		headers.delete('content-length')
 
-		return new Response(readable, {
+		return new Response(body, {
 			status: response.status,
 			statusText: response.statusText,
 			headers,
 		})
+	}
+}
+
+/**
+ * Keeps handler errors away from the wasm rewriter. A rejected async handler leaves the
+ * rewriter mid-call, after which free() throws "recursive use of an object". So the first
+ * error is recorded, later handlers are skipped, and transform() fails the body with it.
+ */
+class HandlerErrors {
+	private failure: { error: unknown } | null = null
+
+	guardElementHandlers(handlers: ElementHandlers): ElementHandlers {
+		const { element, comments, text } = handlers
+		return {
+			element: element && this.guard((el: Element) => {
+				this.guardEndTagHandlers(el)
+				return element.call(handlers, el)
+			}),
+			comments: comments && this.guard(comments.bind(handlers)),
+			text: text && this.guard(text.bind(handlers)),
+		}
+	}
+
+	guardDocumentHandlers(handlers: DocumentHandlers): DocumentHandlers {
+		const { doctype, comments, text, end } = handlers
+		return {
+			doctype: doctype && this.guard(doctype.bind(handlers)),
+			comments: comments && this.guard(comments.bind(handlers)),
+			text: text && this.guard(text.bind(handlers)),
+			end: end && this.guard(end.bind(handlers)),
+		}
+	}
+
+	throwIfFailed(): void {
+		if (this.failure) {
+			throw this.failure.error
+		}
+	}
+
+	private guardEndTagHandlers(el: Element): void {
+		const onEndTag = el.onEndTag.bind(el)
+		el.onEndTag = handler => onEndTag(this.guard(handler.bind(el)))
+	}
+
+	private guard<T>(handler: Handler<T>): Handler<T> {
+		return arg => {
+			if (this.failure) return
+			try {
+				const result = handler(arg)
+				if (result instanceof Promise) {
+					return result.catch(error => this.record(error))
+				}
+			} catch (error) {
+				this.record(error)
+			}
+		}
+	}
+
+	private record(error: unknown): void {
+		this.failure ??= { error }
 	}
 }

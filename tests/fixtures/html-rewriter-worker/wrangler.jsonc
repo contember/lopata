@@ -1,0 +1,13 @@
+{
+	"name": "html-rewriter-worker",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "READER", "class_name": "PageReader" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["PageReader"] }
+	]
+}

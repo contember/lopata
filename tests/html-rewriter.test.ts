@@ -72,6 +72,19 @@ describe('HTMLRewriter', () => {
 			])
 		})
 
+		test('attribute values keep their entities, as in lol-html', async () => {
+			const hrefs: (string | null)[] = []
+			const output = await rewrite('<a href="/search?q=a&amp;b=&quot;c&quot;">x</a>', (rw) =>
+				rw.on('a', {
+					element(el) {
+						hrefs.push(el.getAttribute('href'))
+						el.setAttribute('title', 'say "hi"')
+					},
+				}))
+			expect(hrefs).toEqual(['/search?q=a&amp;b=&quot;c&quot;'])
+			expect(output).toBe('<a href="/search?q=a&amp;b=&quot;c&quot;" title="say &quot;hi&quot;">x</a>')
+		})
+
 		test('setInnerContent with text', async () => {
 			const output = await rewrite('<p>old content</p>', (rw) =>
 				rw.on('p', {
@@ -377,7 +390,162 @@ describe('HTMLRewriter', () => {
 		})
 	})
 
+	describe('async handlers', () => {
+		test('element, end tag, text, comment and document handlers are awaited', async () => {
+			const seen: string[] = []
+			const output = await rewrite('<!DOCTYPE html><p>hi<!-- c --></p>', (rw) =>
+				rw
+					.on('p', {
+						async element(el) {
+							await Bun.sleep(1)
+							el.setAttribute('data-async', 'yes')
+							el.onEndTag(async (end) => {
+								await Bun.sleep(1)
+								end.before('!')
+							})
+						},
+						async text(chunk) {
+							await Bun.sleep(1)
+							if (chunk.text) seen.push(chunk.text)
+						},
+						async comments(comment) {
+							await Bun.sleep(1)
+							comment.text = ' async '
+						},
+					})
+					.onDocument({
+						async doctype(doctype) {
+							await Bun.sleep(1)
+							seen.push(`doctype:${doctype.name}`)
+						},
+						async end(end) {
+							await Bun.sleep(1)
+							end.append('<footer></footer>', { html: true })
+						},
+					}))
+			expect(output).toBe('<!DOCTYPE html><p data-async="yes">hi<!-- async -->!</p><footer></footer>')
+			expect(seen).toEqual(['doctype:html', 'hi'])
+		})
+
+		test('handlers of a class instance keep their this', async () => {
+			class Counter {
+				count = 0
+				element() {
+					this.count++
+				}
+			}
+			const counter = new Counter()
+			await rewrite('<li>a</li><li>b</li>', (rw) => rw.on('li', counter))
+			expect(counter.count).toBe(2)
+		})
+	})
+
+	describe('handler errors', () => {
+		test('a throwing handler fails the body read, not transform()', async () => {
+			const result = new HTMLRewriter()
+				.on('p', {
+					element() {
+						throw new Error('handler failed')
+					},
+				})
+				.transform(new Response('<p>x</p>'))
+			await expect(result.text()).rejects.toThrow('handler failed')
+		})
+
+		test('a rejecting async handler fails the body read', async () => {
+			const result = new HTMLRewriter()
+				.on('p', {
+					async element() {
+						await Bun.sleep(1)
+						throw new Error('async handler failed')
+					},
+				})
+				.transform(new Response('<p>x</p>'))
+			await expect(result.text()).rejects.toThrow('async handler failed')
+		})
+
+		test('a rejected async handler leaves no rewriter error behind and stops later handlers', async () => {
+			const unhandled: unknown[] = []
+			const onUnhandled = (reason: unknown) => unhandled.push(reason)
+			process.on('unhandledRejection', onUnhandled)
+			try {
+				const visited: string[] = []
+				const failing = new HTMLRewriter()
+					.on('p', {
+						async element(el) {
+							visited.push(el.getAttribute('id') ?? '')
+							await Bun.sleep(1)
+							throw new Error('first failed')
+						},
+					})
+					.transform(new Response('<p id="1">a</p><p id="2">b</p>'))
+				await expect(failing.text()).rejects.toThrow('first failed')
+
+				const failingEndTag = new HTMLRewriter()
+					.on('i', {
+						element(el) {
+							el.onEndTag(async () => {
+								await Bun.sleep(1)
+								throw new Error('end tag failed')
+							})
+						},
+					})
+					.transform(new Response('<i>x</i>'))
+				await expect(failingEndTag.text()).rejects.toThrow('end tag failed')
+				await Bun.sleep(10)
+
+				expect(visited).toEqual(['1'])
+				expect(unhandled).toEqual([])
+				const output = await rewrite('<p>ok</p>', (rw) =>
+					rw.on('p', {
+						async element(el) {
+							await Bun.sleep(1)
+							el.setAttribute('class', 'after')
+						},
+					}))
+				expect(output).toBe('<p class="after">ok</p>')
+			} finally {
+				process.off('unhandledRejection', onUnhandled)
+			}
+		})
+	})
+
 	describe('transform behavior', () => {
+		test('rewrites a body streamed from a ReadableStream', async () => {
+			const encoder = new TextEncoder()
+			const parts = ['<ul><li cla', 'ss="a">one</li>', '<li class="b">t', 'wo</li></ul>']
+			const body = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					const part = parts.shift()
+					if (part === undefined) {
+						controller.close()
+						return
+					}
+					await Bun.sleep(1)
+					controller.enqueue(encoder.encode(part))
+				},
+			})
+			const texts: string[] = []
+			const result = new HTMLRewriter()
+				.on('li', {
+					element(el) {
+						el.setAttribute('data-seen', el.getAttribute('class') ?? '')
+					},
+					text(chunk) {
+						texts.push(chunk.text)
+					},
+				})
+				.transform(new Response(body, { headers: { 'content-type': 'text/html' } }))
+
+			expect(await result.text()).toBe('<ul><li class="a" data-seen="a">one</li><li class="b" data-seen="b">two</li></ul>')
+			expect(texts.join('')).toBe('onetwo')
+		})
+
+		test('returns an instance of the global Response', () => {
+			const result = new HTMLRewriter().transform(new Response('<p>x</p>'))
+			expect(result).toBeInstanceOf(Response)
+		})
+
 		test('preserves response status and headers', async () => {
 			const original = new Response('<p>x</p>', {
 				status: 201,
