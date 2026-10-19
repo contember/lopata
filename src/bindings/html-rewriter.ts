@@ -1,21 +1,5 @@
+import { HTMLRewriter as LolHtmlRewriter } from 'html-rewriter-wasm'
 import type { DocumentHandlers, ElementHandlers } from 'html-rewriter-wasm'
-
-type RawHTMLRewriterType = new(sink: (chunk: Uint8Array) => void) => {
-	on(selector: string, handler: ElementHandlers): void
-	onDocument(handler: DocumentHandlers): void
-	write(chunk: Uint8Array): Promise<void>
-	end(): Promise<void>
-	free(): void
-}
-
-let RawHTMLRewriter: RawHTMLRewriterType | null = null
-try {
-	;({ HTMLRewriter: RawHTMLRewriter } = await import('html-rewriter-wasm'))
-} catch {
-	// html-rewriter-wasm not installed — passthrough mode
-}
-
-let _warned = false
 
 /**
  * Cloudflare-compatible HTMLRewriter that wraps html-rewriter-wasm.
@@ -45,21 +29,13 @@ export class HTMLRewriter {
 			})
 		}
 
-		if (!RawHTMLRewriter) {
-			if (!_warned) {
-				console.warn('[lopata] html-rewriter-wasm is not installed — HTMLRewriter is a passthrough. Install it: bun add html-rewriter-wasm')
-				_warned = true
-			}
-			return response
-		}
-
 		const elementHandlers = this.elementHandlers
 		const documentHandlers = this.documentHandlers
 
 		const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
 		const writer = writable.getWriter()
 
-		const rewriter = new RawHTMLRewriter((chunk: Uint8Array) => {
+		const rewriter = new LolHtmlRewriter((chunk: Uint8Array) => {
 			writer.write(chunk)
 		})
 
