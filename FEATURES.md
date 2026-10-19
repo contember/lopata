@@ -223,7 +223,7 @@
 - ✅ Comment: text, removed, before, after, replace, remove
 - ✅ Document: doctype, comments, text, end
 
-> **Note:** HTMLRewriter implemented via `html-rewriter-wasm` package (lol-html WASM build).
+> **Note:** HTMLRewriter runs on `html-rewriter-wasm` (the lol-html engine that Cloudflare uses, built to WASM), which lopata installs as a regular dependency. The output streams, and async handlers can await any binding, including Durable Object calls.
 
 ### 1.13 WebSocket
 
