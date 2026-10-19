@@ -72,6 +72,19 @@ describe('HTMLRewriter', () => {
 			])
 		})
 
+		test('attribute values keep their entities, as in lol-html', async () => {
+			const hrefs: (string | null)[] = []
+			const output = await rewrite('<a href="/search?q=a&amp;b=&quot;c&quot;">x</a>', (rw) =>
+				rw.on('a', {
+					element(el) {
+						hrefs.push(el.getAttribute('href'))
+						el.setAttribute('title', 'say "hi"')
+					},
+				}))
+			expect(hrefs).toEqual(['/search?q=a&amp;b=&quot;c&quot;'])
+			expect(output).toBe('<a href="/search?q=a&amp;b=&quot;c&quot;" title="say &quot;hi&quot;">x</a>')
+		})
+
 		test('setInnerContent with text', async () => {
 			const output = await rewrite('<p>old content</p>', (rw) =>
 				rw.on('p', {
@@ -377,7 +390,92 @@ describe('HTMLRewriter', () => {
 		})
 	})
 
+	describe('async handlers', () => {
+		test('element, end tag, text, comment and document handlers are awaited', async () => {
+			const seen: string[] = []
+			const output = await rewrite('<!DOCTYPE html><p>hi<!-- c --></p>', (rw) =>
+				rw
+					.on('p', {
+						async element(el) {
+							await Bun.sleep(1)
+							el.setAttribute('data-async', 'yes')
+							el.onEndTag(async (end) => {
+								await Bun.sleep(1)
+								end.before('!')
+							})
+						},
+						async text(chunk) {
+							await Bun.sleep(1)
+							if (chunk.text) seen.push(chunk.text)
+						},
+						async comments(comment) {
+							await Bun.sleep(1)
+							comment.text = ' async '
+						},
+					})
+					.onDocument({
+						async doctype(doctype) {
+							await Bun.sleep(1)
+							seen.push(`doctype:${doctype.name}`)
+						},
+						async end(end) {
+							await Bun.sleep(1)
+							end.append('<footer></footer>', { html: true })
+						},
+					}))
+			expect(output).toBe('<!DOCTYPE html><p data-async="yes">hi<!-- async -->!</p><footer></footer>')
+			expect(seen).toEqual(['doctype:html', 'hi'])
+		})
+
+		test('handlers of a class instance keep their this', async () => {
+			class Counter {
+				count = 0
+				element() {
+					this.count++
+				}
+			}
+			const counter = new Counter()
+			await rewrite('<li>a</li><li>b</li>', (rw) => rw.on('li', counter))
+			expect(counter.count).toBe(2)
+		})
+	})
+
 	describe('transform behavior', () => {
+		test('rewrites a body streamed from a ReadableStream', async () => {
+			const encoder = new TextEncoder()
+			const parts = ['<ul><li cla', 'ss="a">one</li>', '<li class="b">t', 'wo</li></ul>']
+			const body = new ReadableStream<Uint8Array>({
+				async pull(controller) {
+					const part = parts.shift()
+					if (part === undefined) {
+						controller.close()
+						return
+					}
+					await Bun.sleep(1)
+					controller.enqueue(encoder.encode(part))
+				},
+			})
+			const texts: string[] = []
+			const result = new HTMLRewriter()
+				.on('li', {
+					element(el) {
+						el.setAttribute('data-seen', el.getAttribute('class') ?? '')
+					},
+					text(chunk) {
+						texts.push(chunk.text)
+					},
+				})
+				.transform(new Response(body, { headers: { 'content-type': 'text/html' } }))
+
+			expect(await result.text()).toBe('<ul><li class="a" data-seen="a">one</li><li class="b" data-seen="b">two</li></ul>')
+			expect(texts.join('')).toBe('onetwo')
+		})
+
+		test('returns an instance of the global Response', () => {
+			const result = new HTMLRewriter().transform(new Response('<p>x</p>'))
+			expect(result).toBeInstanceOf(Response)
+		})
+
 		test('preserves response status and headers', async () => {
 			const original = new Response('<p>x</p>', {
 				status: 201,
