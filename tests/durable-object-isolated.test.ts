@@ -25,6 +25,14 @@ let factory: WorkerExecutorFactory
 let modulePath: string
 let configPath: string
 
+function callIsolatedRpc(stub: unknown, method: string): Promise<unknown> {
+	if (typeof stub !== 'object' || stub === null) throw new Error('Missing Durable Object stub')
+	const fn: unknown = Reflect.get(stub, method)
+	if (typeof fn !== 'function') throw new Error(`Missing RPC method: ${method}`)
+	const result: unknown = Reflect.apply(fn, stub, [])
+	return Promise.resolve(result)
+}
+
 beforeAll(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'lopata-isolated-'))
 	dataDir = join(tempDir, '.lopata')
@@ -409,23 +417,57 @@ describe('Isolated DO — dispose terminates worker', () => {
 	})
 
 	test('dispose rejects in-flight commands', async () => {
-		// Worker thread startup + message passing can be slow in CI
-		const ns = new DurableObjectNamespaceImpl(db, 'TestCounter', dataDir, { evictionTimeoutMs: 0 }, factory)
-		ns._setClass(class {} as any, {})
-
+		const entered = Promise.withResolvers<void>()
+		const release = Promise.withResolvers<void>()
+		const ns = new DurableObjectNamespaceImpl(db, 'EnvCallDO', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setExternalClass('EnvCallDO', {
+			SLOW_SVC: {
+				async ping() {
+					entered.resolve()
+					await release.promise
+					return 'pong'
+				},
+			},
+		})
 		const id = ns.idFromName('dispose-reject-test')
-		const stub = ns.get(id) as any
+		const stub = ns.get(id)
+		const executor = ns._getExecutor(id.toString())
+		if (!executor) throw new Error('Missing executor')
+		try {
+			const pending = callIsolatedRpc(stub, 'callSlowService').then(value => value, (error: unknown) => error)
+			await entered.promise
+			expect(executor.isActive()).toBe(true)
+			await executor.dispose()
+			const rejection = await pending
+			expect(rejection).toBeInstanceOf(Error)
+			if (!(rejection instanceof Error)) throw new Error('Expected disposal rejection')
+			expect(rejection.message).toBe('Worker terminated')
+		} finally {
+			release.resolve()
+			await executor.dispose()
+			ns.destroy({ force: true })
+		}
+	}, 15_000)
 
-		// Get stub working first
-		await stub.getCount()
-
-		// Start a slow operation and immediately dispose
-		const executor = ns._getExecutor(id.toString())!
-		const slowPromise = stub.increment()
-		await executor.dispose()
-
-		// The slow operation should be rejected
-		await expect(slowPromise).rejects.toThrow()
+	test('immediate disposal preserves the rejection contract before command readiness', async () => {
+		const ns = new DurableObjectNamespaceImpl(db, 'TestCounter', dataDir, { evictionTimeoutMs: 0 }, factory)
+		ns._setExternalClass('TestCounter', {})
+		const id = ns.idFromName('dispose-before-ready')
+		const stub = ns.get(id)
+		const executor = ns._getExecutor(id.toString())
+		if (!executor) throw new Error('Missing executor')
+		try {
+			await callIsolatedRpc(stub, 'getCount')
+			const pending = callIsolatedRpc(stub, 'increment').then(value => value, (error: unknown) => error)
+			await executor.dispose()
+			const rejection = await pending
+			expect(rejection).toBeInstanceOf(Error)
+			if (!(rejection instanceof Error)) throw new Error('Expected disposal rejection')
+			expect(rejection.message).toBe('Worker terminated')
+		} finally {
+			await executor.dispose()
+			ns.destroy({ force: true })
+		}
 	}, 15_000)
 })
 
@@ -722,23 +764,31 @@ describe('Isolated DO — hibernation WS count (Finding B)', () => {
 })
 
 describe('Isolated DO — abort & block lifecycle', () => {
-	test('state.abort() marks the executor aborted so the reaper recreates it (CORR-19)', async () => {
+	test('state.abort() rejects its command and recreates the executor on next access (CORR-19)', async () => {
 		const ns = new DurableObjectNamespaceImpl(db, 'AbortDO', dataDir, { evictionTimeoutMs: 0 }, factory)
-		ns._setClass(class {} as any, {})
+		ns._setExternalClass('AbortDO', {})
 
 		const id = ns.idFromName('abort-me')
-		const stub = ns.get(id) as any
-		expect(await stub.ping()).toBe('pong')
+		const stub = ns.get(id)
+		expect(await callIsolatedRpc(stub, 'ping')).toBe('pong')
 
-		const executor = ns._getExecutor(id.toString())!
+		const executor = ns._getExecutor(id.toString())
+		if (!executor) throw new Error('Missing executor')
 		expect(executor.isAborted()).toBe(false)
 
-		await stub.doAbort()
-		// The do-state signal hops to main asynchronously.
-		await new Promise(r => setTimeout(r, 50))
+		const rejection = await callIsolatedRpc(stub, 'doAbort').then(value => value, (error: unknown) => error)
+		expect(rejection).toBeInstanceOf(Error)
+		if (!(rejection instanceof Error)) throw new Error('Expected abort rejection')
+		expect(rejection.message).toBe('boom')
 		expect(executor.isAborted()).toBe(true)
-
+		expect(await callIsolatedRpc(stub, 'ping')).toBe('pong')
+		const replacement = ns._getExecutor(id.toString())
+		if (!replacement) throw new Error('Missing replacement executor')
+		expect(replacement).not.toBe(executor)
+		expect(replacement.isAborted()).toBe(false)
+		await replacement.dispose()
 		await executor.dispose()
+		ns.destroy({ force: true })
 	})
 
 	test('blockConcurrencyWhile marks the executor blocked, then clears (CORR-28)', async () => {

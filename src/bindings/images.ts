@@ -1,6 +1,7 @@
 // Images binding — Sharp-based implementation for local dev
 // Supports resize, rotate, format conversion, quality, draw overlays, and AVIF dimensions.
 
+import type { HeadersInit } from 'bun'
 import type SharpNs from 'sharp'
 
 type ImageFormat = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/avif' | 'image/svg+xml'
@@ -53,6 +54,7 @@ export interface OutputOptions {
 export interface ImageOutputResult {
 	image(): ReadableStream<Uint8Array>
 	contentType(): string
+	response(options?: { headers?: HeadersInit }): Response
 }
 
 // --- Lazy sharp loading ---
@@ -92,6 +94,11 @@ function passthroughResult(buf: Uint8Array, format: string): ImageOutputResult {
 		},
 		contentType(): string {
 			return format
+		},
+		response(options?: { headers?: HeadersInit }): Response {
+			const headers = new Headers(options?.headers)
+			headers.set('content-type', this.contentType())
+			return new Response(this.image(), { headers })
 		},
 	}
 }
@@ -535,7 +542,7 @@ class LazyImageTransformer {
 		const outputBuf = await outputPipeline.toFormat(sharpFmt, formatOpts).toBuffer()
 		const contentType = resolvedMime
 
-		return {
+		const result: ImageOutputResult = {
 			image(): ReadableStream<Uint8Array> {
 				return new ReadableStream({
 					start(controller) {
@@ -547,7 +554,13 @@ class LazyImageTransformer {
 			contentType(): string {
 				return contentType
 			},
+			response(options?: { headers?: HeadersInit }): Response {
+				const headers = new Headers(options?.headers)
+				headers.set('content-type', this.contentType())
+				return new Response(this.image(), { headers })
+			},
 		}
+		return result
 	}
 }
 

@@ -16,6 +16,7 @@ import { randomUUIDv7 } from 'bun'
 import { mkdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { isProxy } from 'node:util/types'
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { serializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { isLoopbackServiceStub } from './loopback-exports'
@@ -94,6 +95,7 @@ export class WorkerStub {
 
 	private async _boot(): Promise<void> {
 		const { code, env } = await this._resolveCode()
+		const compatibility = validateCode(code)
 		mkdirSync(this.workDir, { recursive: true })
 		const mainPath = await writeModules(this.workDir, code.modules, code.mainModule)
 
@@ -115,6 +117,7 @@ export class WorkerStub {
 					mainModulePath: mainPath,
 					env: env.value,
 					globalOutbound: code.globalOutbound === null ? 'block' : 'allow',
+					compatibility,
 				}
 				worker.postMessage({ type: 'init', data: init } satisfies MainToWorker)
 				return
@@ -285,11 +288,13 @@ export class WorkerLoaderBinding {
 	}
 }
 
-function validateCode(code: WorkerCode): void {
+function validateCode(code: WorkerCode): CompatibilitySelection {
 	if (!code.compatibilityDate) throw new Error('WorkerCode.compatibilityDate is required')
+	const compatibility = resolveCompatibility({ date: code.compatibilityDate, flags: code.compatibilityFlags })
 	if (!code.mainModule) throw new Error('WorkerCode.mainModule is required')
 	if (!code.modules || typeof code.modules !== 'object') throw new Error('WorkerCode.modules must be an object')
 	if (!(code.mainModule in code.modules)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
+	return compatibility
 }
 
 /** A loader `env` ready to post: `value` has each Fetcher swapped for a placeholder indexing `fetchers`. */

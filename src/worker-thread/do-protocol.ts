@@ -11,7 +11,9 @@
  * executor/entry implementation logic stays in the bindings layer.
  */
 
+import type { DOAbortPolicy } from '../bindings/do-executor'
 import type {
+	ParentSpanContext,
 	RpcCallRequest,
 	RpcFetchRequest,
 	RpcGetRequest,
@@ -23,6 +25,7 @@ import type {
 	RpcStreamCancel,
 	SerializedError,
 } from './protocol'
+import type { TraceMessage } from './remote-trace-store'
 
 /**
  * DO worker → main: the instance's lifecycle state changed. Main mirrors these
@@ -167,7 +170,7 @@ export interface DoReqStreamAck {
 
 /** Messages from main thread → worker */
 export type DOWorkerMessage =
-	| { type: 'command'; id: number; command: DOCommand }
+	| { type: 'command'; id: number; command: DOCommand; parent?: ParentSpanContext }
 	/** A real client wrote bytes; deliver them to the user's `server` peer inside the DO worker. */
 	| { type: 'fetch-ws-incoming'; wsId: string; data: string | ArrayBuffer }
 	| { type: 'fetch-ws-close-in'; wsId: string; code: number; reason: string; wasClean: boolean }
@@ -192,10 +195,12 @@ export type DOWorkerMessage =
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
+	| TraceMessage
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }
 	| { type: 'alarm-set'; time: number | null }
+	| { type: 'do-abort'; policy: DOAbortPolicy }
 	| DoStateSignal
 	/** The user's `server` peer sent bytes; forward to the real client via the main-side CFWebSocket. */
 	| { type: 'fetch-ws-outgoing'; wsId: string; data: string | ArrayBuffer }

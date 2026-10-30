@@ -21,8 +21,12 @@ registerCloneable('EmailMessage', (raw) => {
 })
 
 export interface EmailAddress {
-	name: string
+	name?: string
 	email: string
+}
+
+export interface EmailSendResult {
+	messageId: string
 }
 
 export type EmailAttachment =
@@ -43,11 +47,11 @@ export type EmailAttachment =
 
 export interface SendEmailBuilder {
 	from: string | EmailAddress
-	to: string | string[]
+	to: string | EmailAddress | (string | EmailAddress)[]
 	subject: string
 	replyTo?: string | EmailAddress
-	cc?: string | string[]
-	bcc?: string | string[]
+	cc?: string | EmailAddress | (string | EmailAddress)[]
+	bcc?: string | EmailAddress | (string | EmailAddress)[]
 	headers?: Record<string, string>
 	text?: string
 	html?: string
@@ -67,7 +71,7 @@ export class SendEmailBinding {
 		this.allowedDestinationAddresses = allowedDestinationAddresses
 	}
 
-	async send(message: EmailMessage | SendEmailBuilder): Promise<void> {
+	async send(message: EmailMessage | SendEmailBuilder): Promise<EmailSendResult> {
 		const normalized = await normalizeMessage(message)
 		for (const recipient of normalized.recipients) {
 			if (this.destinationAddress && recipient !== this.destinationAddress) {
@@ -94,6 +98,7 @@ export class SendEmailBinding {
 				Date.now(),
 			],
 		)
+		return { messageId: id }
 	}
 }
 
@@ -214,7 +219,8 @@ async function resolveRaw(raw: ReadableStream<Uint8Array> | Uint8Array | ArrayBu
 
 function formatAddress(addr: string | EmailAddress): string {
 	if (typeof addr === 'string') return addr
-	const escapedName = addr.name.replace(/"/g, '\\"')
+	if (!addr.name) return addr.email
+	const escapedName = addr.name.replace(/[\\"]/g, '\\$&')
 	return `"${escapedName}" <${addr.email}>`
 }
 
@@ -226,7 +232,7 @@ function extractEmail(addr: string | EmailAddress): string {
 	return addr.email
 }
 
-function toList(v: string | string[]): string[] {
+function toList(v: string | EmailAddress | (string | EmailAddress)[]): (string | EmailAddress)[] {
 	return Array.isArray(v) ? v : [v]
 }
 
@@ -237,13 +243,13 @@ function renderBuilder(b: SendEmailBuilder): NormalizedMessage {
 
 	const headers: Record<string, string> = {
 		From: formatAddress(b.from),
-		To: toAddrs.join(', '),
+		To: toAddrs.map(formatAddress).join(', '),
 		Subject: b.subject,
 		'MIME-Version': '1.0',
 		Date: new Date().toUTCString(),
 		'Message-ID': `<${randomUUIDv7()}@lopata.local>`,
 	}
-	if (ccAddrs.length > 0) headers.Cc = ccAddrs.join(', ')
+	if (ccAddrs.length > 0) headers.Cc = ccAddrs.map(formatAddress).join(', ')
 	if (b.replyTo) headers['Reply-To'] = formatAddress(b.replyTo)
 	if (b.headers) Object.assign(headers, b.headers)
 
@@ -286,7 +292,7 @@ function renderBuilder(b: SendEmailBuilder): NormalizedMessage {
 
 	return {
 		from: formatAddress(b.from),
-		to: toAddrs.join(', '),
+		to: toAddrs.map(formatAddress).join(', '),
 		recipients,
 		raw,
 	}
@@ -330,15 +336,14 @@ function buildAltPart(text: string | undefined, html: string | undefined): Part 
 
 function buildAttachmentPart(att: EmailAttachment): Part {
 	const content = att.content
-	let bytes: Uint8Array
+	let base64: string
 	if (typeof content === 'string') {
-		bytes = new TextEncoder().encode(content)
+		base64 = content
 	} else if (content instanceof ArrayBuffer) {
-		bytes = new Uint8Array(content)
+		base64 = Buffer.from(content).toString('base64')
 	} else {
-		bytes = new Uint8Array(content.buffer, content.byteOffset, content.byteLength)
+		base64 = Buffer.from(content.buffer, content.byteOffset, content.byteLength).toString('base64')
 	}
-	const base64 = Buffer.from(bytes).toString('base64')
 	const chunked = base64.match(/.{1,76}/g)?.join('\r\n') ?? ''
 	const isAttachment = att.disposition === 'attachment'
 	const dispositionHeader = isAttachment

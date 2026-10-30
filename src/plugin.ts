@@ -66,23 +66,8 @@ for (const method of consoleMethods) {
 }
 
 // ─── Fetch instrumentation ───────────────────────────────────────────
-// Creates a tracing span for every outgoing fetch and captures request/response bodies.
+// Creates a tracing span for every outgoing fetch and captures HTTP metadata.
 // Also captures call-site stacks for async stack reconstruction (see stitchAsyncStack).
-
-const MAX_BODY_CAPTURE = 128 * 1024 // 128 KB
-const TEXT_TYPES = [
-	'application/json',
-	'text/',
-	'application/xml',
-	'application/javascript',
-	'application/x-www-form-urlencoded',
-	'application/graphql',
-]
-
-function isTextContent(ct: string | null): boolean {
-	if (!ct) return true // no content-type → assume text
-	return TEXT_TYPES.some(t => ct.includes(t))
-}
 
 function headersToRecord(h: Headers): Record<string, string | string[]> {
 	const obj: Record<string, string | string[]> = {}
@@ -95,27 +80,6 @@ function headersToRecord(h: Headers): Record<string, string | string[]> {
 		obj['set-cookie'] = setCookie
 	}
 	return obj
-}
-
-async function readBodyLimited(r: Request | Response): Promise<string | null> {
-	if (!r.body) return null
-	const ct = r.headers.get('content-type')
-	const cl = r.headers.get('content-length')
-	const size = cl ? parseInt(cl, 10) : null
-	if (!isTextContent(ct)) {
-		return size != null ? `[binary ${ct}: ${size} bytes]` : `[binary: ${ct ?? 'unknown'}]`
-	}
-	if (size != null && size > MAX_BODY_CAPTURE) {
-		return `[body too large: ${size} bytes]`
-	}
-	try {
-		const text = await r.text()
-		return text.length > MAX_BODY_CAPTURE
-			? text.slice(0, MAX_BODY_CAPTURE) + '… [truncated]'
-			: text || null
-	} catch {
-		return null
-	}
 }
 
 /** Apply cf.image transform to a fetch response */
@@ -215,7 +179,6 @@ globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 	}
 
 	const request = new Request(input, init)
-	const fetchRequest = request.clone()
 	const url = request.url
 	const method = request.method
 	let pathname: string
@@ -234,11 +197,7 @@ globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 			'http.request.headers': headersToRecord(request.headers),
 		},
 	}, async () => {
-		// Capture request body (from the original — fetchRequest is sent to the network)
-		const reqBody = await readBodyLimited(request)
-		if (reqBody) setSpanAttribute('http.request.body', reqBody)
-
-		let response = await _originalFetch(fetchRequest as globalThis.Request)
+		let response = await _originalFetch(request)
 
 		// Apply cf.image transform if present
 		if (cfImageOpts) {
@@ -247,10 +206,6 @@ globalThis.fetch = ((input: any, init?: any): Promise<Response> => {
 
 		setSpanAttribute('http.status_code', response.status)
 		setSpanAttribute('http.response.headers', headersToRecord(response.headers))
-
-		// Capture response body from a clone (caller keeps the original stream)
-		const resBody = await readBodyLimited(response.clone() as Response)
-		if (resBody) setSpanAttribute('http.response.body', resBody)
 
 		return response
 	})

@@ -467,6 +467,8 @@ Configure the browser with `browser` in `lopata.config.ts`, or with the `browser
   hostname (`chrome`), lopata sends `Host: localhost:<port>`.
 - `@cloudflare/puppeteer` keeps working: `puppeteer.launch(env.BROWSER)` returns a local puppeteer `Browser`.
 
+See [FEATURES.md](FEATURES.md) for the full feature list and [recently added Cloudflare features](FEATURES.md#recently-added-cloudflare-features) for their local behavior and limitations.
+
 ## Local data
 
 All persistent state is stored in `.lopata/` in your project directory:
