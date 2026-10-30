@@ -1,0 +1,12 @@
+name = "workflow-occurrences-worker"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+[[workflows]]
+name = "occurrences"
+binding = "OCCURRENCES"
+class_name = "OccurrenceWorkflow"
+
+[[durable_objects.bindings]]
+name = "CONTROLLER"
+class_name = "OccurrenceController"

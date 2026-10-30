@@ -46,7 +46,7 @@ interface WSClient {
 }
 
 async function startStandaloneServer(port: number): Promise<Subprocess> {
-	const proc = Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(port)], {
+	const proc = Bun.spawn([process.execPath, CLI_PATH, 'dev', '--port', String(port)], {
 		cwd: FIXTURE_DIR,
 		stdout: 'pipe',
 		stderr: 'pipe',
@@ -202,9 +202,110 @@ function cleanup() {
 
 // ─── Test suites ────────────────────────────────────────────────────────
 
-function defineWebSocketTests(getPort: () => number) {
+function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite') {
 	const base = () => `ws://localhost:${getPort()}`
 	const httpBase = () => `http://localhost:${getPort()}`
+
+	async function waitForCloseObservations(path: string, token: string, count: number): Promise<unknown> {
+		const deadline = Date.now() + 3000
+		while (Date.now() < deadline) {
+			const response = await fetch(`${httpBase()}${path}?close-observations=${token}`)
+			const observations: unknown = await response.json()
+			if (Array.isArray(observations) && observations.length >= count) return observations
+			await new Promise(resolve => setTimeout(resolve, 10))
+		}
+		throw new Error('Timed out waiting for socket close observations')
+	}
+
+	for (const path of ['/ws/plain', '/ws/do-standard/close-state']) {
+		for (const initiator of ['client', 'server']) {
+			test(`automatic close state and single owner-scoped delivery: ${path}, ${initiator}`, async () => {
+				const token = `${mode}-${initiator}-${path.split('/')[2]}`
+				const client = await connectWS(`${base()}${path}?close-probe=${token}`)
+				const closed = client.waitForClose()
+				const code = initiator === 'client' ? 1000 : 4000
+				const reason = initiator === 'client' ? 'client probe' : 'server probe'
+				if (initiator === 'client') client.close(code, reason)
+				else client.send('probe-server-close')
+				expect(await closed).toEqual({ code, reason })
+				expect(await waitForCloseObservations(path, token, 2)).toEqual(['listener', 'property'].map(kind => ({
+					kind,
+					state: 3,
+					code,
+					reason,
+					sameEvent: true,
+				})))
+			})
+		}
+	}
+
+	test('hibernation retains its existing close callback state and delivery', async () => {
+		const path = '/ws/do-hibernation/close-state'
+		const token = `${mode}-hibernation`
+		const client = await connectWS(`${base()}${path}?close-probe=${token}`)
+		const closed = client.waitForClose()
+		client.close(1000, 'hibernation probe')
+		await closed
+		const states = mode === 'standalone' ? [3] : [1, 3]
+		expect(await waitForCloseObservations(path, token, states.length)).toEqual(states.map(state => ({
+			kind: 'hibernation',
+			state,
+			code: 1000,
+			reason: 'hibernation probe',
+			sameEvent: true,
+		})))
+	})
+
+	test('hibernation acceptance wires raw delivery before flushing queued binary messages', async () => {
+		const response = await fetch(`${httpBase()}/ws/do-hibernation/queued/queued-binary`)
+		expect(await response.json()).toEqual({ kind: 'arraybuffer', binaryType: 'blob', mime: null, bytes: [4, 5, 6] })
+	})
+
+	for (const path of ['/ws/plain', '/ws/do-standard/binary', '/ws/do-hibernation/binary']) {
+		test(`binary delivery and transport bytes: ${path}`, async () => {
+			const client = await connectWS(`${base()}${path}?binary-probe`)
+			async function report() {
+				const message = await client.waitForMessage()
+				if (typeof message !== 'string') throw new Error('Expected JSON binary report')
+				return JSON.parse(message)
+			}
+			try {
+				for (const selection of ['default', 'arraybuffer', 'blob']) {
+					if (selection !== 'default') {
+						client.send(`type:${selection}`)
+						expect(await report()).toEqual({ text: `type:${selection}`, binaryType: selection })
+					}
+					const type = selection === 'default' ? 'blob' : selection
+					const kind = path.includes('hibernation') ? 'arraybuffer' : type
+					for (const bytes of [new Uint8Array([1, 2, 3]), new Uint8Array(0)]) {
+						client.send(bytes.buffer)
+						expect(await report()).toEqual({ kind, binaryType: type, mime: kind === 'blob' ? '' : null, bytes: [...bytes] })
+						const echo = await client.waitForMessage()
+						if (!(echo instanceof ArrayBuffer)) throw new Error('Expected binary network echo')
+						expect([...new Uint8Array(echo)]).toEqual([...bytes])
+					}
+				}
+				client.send('unchanged text')
+				expect(await report()).toEqual({ text: 'unchanged text', binaryType: 'blob' })
+			} finally {
+				client.close()
+			}
+		})
+	}
+
+	for (const path of ['/ws/plain', '/ws/do-standard/compatibility', '/ws/do-hibernation/compatibility']) {
+		test(`selected close validation and callback ownership: ${path}`, async () => {
+			const clients = await Promise.all([connectWS(`${base()}${path}`), connectWS(`${base()}${path}`)])
+			await Promise.all(clients.map(async client => {
+				const closed = client.waitForClose()
+				client.send('compatibility-probe')
+				const message = await client.waitForMessage()
+				if (typeof message !== 'string') throw new Error('Expected JSON probe result')
+				expect(JSON.parse(message)).toEqual({ name: 'SyntaxError', unchanged: true, nested: 'SyntaxError' })
+				expect(await closed).toEqual({ code: 1000, reason: '€'.repeat(41) })
+			}))
+		})
+	}
 
 	describe('Plain worker WebSocket', () => {
 		test('upgrade establishes connection', async () => {
@@ -444,7 +545,7 @@ describe('WebSocket E2E — standalone', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(() => PORT)
+	defineWebSocketTests(() => PORT, 'standalone')
 })
 
 // ─── Vite mode ──────────────────────────────────────────────────────────
@@ -464,5 +565,5 @@ describe('WebSocket E2E — vite', () => {
 		cleanup()
 	})
 
-	defineWebSocketTests(() => PORT)
+	defineWebSocketTests(() => PORT, 'vite')
 })

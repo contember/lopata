@@ -12,8 +12,11 @@
  * access behave identically to the parent.
  */
 
+import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { initializeIsolateCompatibility } from '../compatibility-context'
 import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
+import { patchGlobalCrypto } from './crypto-extras'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
 import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
@@ -24,6 +27,7 @@ export interface LoaderInitMessage {
 	mainModulePath: string
 	env: unknown
 	globalOutbound: 'allow' | 'block'
+	compatibility: CompatibilitySelection
 }
 
 export type LoaderCommand =
@@ -139,6 +143,9 @@ function decodeEnv(value: unknown): unknown {
 }
 
 async function init(data: LoaderInitMessage): Promise<void> {
+	const compatibility = resolveCompatibility({ date: data.compatibility.date ?? undefined, flags: data.compatibility.flags })
+	initializeIsolateCompatibility(compatibility)
+	patchGlobalCrypto()
 	loaderEnv = decodeEnv(data.env ?? {})
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {

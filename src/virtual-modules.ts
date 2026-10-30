@@ -5,6 +5,7 @@ import { EmailMessage } from './bindings/email'
 import type { ImageTransformOptions, OutputOptions } from './bindings/images'
 import { WORKER_ENTRYPOINT_BRAND } from './bindings/rpc-stub'
 import { WebSocketPair } from './bindings/websocket-pair'
+import { cache } from './bindings/worker-cache'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
 import { globalEnv } from './env'
 import { getActiveExecutionContext } from './execution-context'
@@ -49,6 +50,7 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 					}
 				},
 				tracing,
+				cache,
 			},
 			loader: 'object',
 		}

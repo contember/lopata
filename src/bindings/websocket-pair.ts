@@ -6,6 +6,8 @@
  * Events are buffered until accept() is called.
  */
 
+import { getActiveCompatibility, runWithCompatibility } from '../compatibility-context'
+
 export type WSEventType = 'message' | 'close' | 'error' | 'open'
 
 export interface WSEvent {
@@ -18,6 +20,10 @@ export interface WSEvent {
 
 /** Response with optional CF `webSocket` property — used by upgrade flows. */
 export type ResponseWithWebSocket = Response & { webSocket?: CFWebSocket }
+
+export function copyWebSocketBytes(data: ArrayBufferView): ArrayBuffer {
+	return new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer
+}
 
 const CONNECTING = 0
 const OPEN = 1
@@ -40,6 +46,38 @@ export class CFWebSocket extends EventTarget {
 	readonly CLOSED = CLOSED
 
 	readyState: number = CONNECTING
+	private readonly compatibility = getActiveCompatibility()
+	declare binaryType?: string
+	private binaryTypeValue: 'blob' | 'arraybuffer' = this.compatibility.websocketStandardBinaryType === 'enabled' ? 'blob' : 'arraybuffer'
+	private rawBinaryDelivery = false
+	private hibernationDelivery = false
+	private automaticCloseDelivered = false
+
+	constructor() {
+		super()
+		if (this.compatibility.websocketStandardBinaryType !== 'legacy-local') {
+			Object.defineProperty(this, 'binaryType', {
+				configurable: true,
+				enumerable: true,
+				get: () => this.binaryTypeValue,
+				set: (value: unknown) => {
+					const type = `${value}`
+					if (type === 'blob' || type === 'arraybuffer') this.binaryTypeValue = type
+				},
+			})
+		}
+	}
+
+	/** @internal Transport and hibernation consumers must opt in before accept() flushes queued messages. */
+	_useRawBinaryDelivery(): void {
+		this.rawBinaryDelivery = true
+	}
+
+	/** @internal Hibernation close callbacks retain their existing state independently of ordinary socket selection. */
+	_useHibernationDelivery(): void {
+		this.hibernationDelivery = true
+		this._useRawBinaryDelivery()
+	}
 
 	/** @internal */ _peer: CFWebSocket | null = null
 	/** @internal */ _accepted = false
@@ -95,7 +133,7 @@ export class CFWebSocket extends EventTarget {
 		// Normalize ArrayBufferView to ArrayBuffer
 		let data: string | ArrayBuffer
 		if (ArrayBuffer.isView(message)) {
-			data = (message.buffer as ArrayBuffer).slice(message.byteOffset, message.byteOffset + message.byteLength)
+			data = copyWebSocketBytes(message)
 		} else {
 			data = message
 		}
@@ -109,6 +147,9 @@ export class CFWebSocket extends EventTarget {
 	}
 
 	close(code?: number, reason?: string): void {
+		if (this.compatibility.websocketCloseReasonByteLimit === 'enabled' && new TextEncoder().encode(reason ?? '').byteLength > 123) {
+			throw new DOMException('WebSocket close reason must not be longer than 123 bytes when UTF-8 encoded.', 'SyntaxError')
+		}
 		if (this.readyState === CLOSED || this.readyState === CLOSING) return
 
 		this.readyState = CLOSING
@@ -152,14 +193,27 @@ export class CFWebSocket extends EventTarget {
 
 	/** @internal */
 	_dispatchWSEvent(evt: WSEvent): void {
+		runWithCompatibility(this.compatibility, () => this.dispatchWSEvent(evt))
+	}
+
+	private dispatchWSEvent(evt: WSEvent): void {
 		switch (evt.type) {
 			case 'message': {
-				const me = new MessageEvent('message', { data: evt.data })
+				const data = evt.data instanceof ArrayBuffer && !this.rawBinaryDelivery && this.binaryTypeValue === 'blob'
+					? new Blob([evt.data])
+					: evt.data
+				const me = new MessageEvent('message', { data })
 				this.dispatchEvent(me)
 				this.onmessage?.(me)
 				break
 			}
 			case 'close': {
+				if (!this.hibernationDelivery && this.compatibility.websocketAutoReplyToClose === 'enabled') {
+					// A transport can synchronously echo close while close() is notifying its peer.
+					if (this.automaticCloseDelivered) return
+					this.automaticCloseDelivered = true
+					this.readyState = CLOSED
+				}
 				const ce = new CloseEvent('close', {
 					code: evt.code,
 					reason: evt.reason,

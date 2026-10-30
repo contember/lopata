@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks'
+import type { WorkflowStepKey } from '../../bindings/workflow-store'
 import { Breadcrumb, CodeBlock, EmptyState, Modal, PageHeader, RefreshButton, ServiceInfo, StatusBadge, Table, TableLink } from '../components'
 import { formatTime } from '../lib'
 import { useMutation, useQuery } from '../rpc/hooks'
@@ -369,9 +370,9 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 		location.hash = `#/workflows/${encodeURIComponent(name)}/${encodeURIComponent(newId)}`
 	}
 
-	const handleRestartFromStep = async (stepName: string) => {
-		if (!confirm(`Restart from step "${stepName}"? This step and all subsequent steps will re-execute.`)) return
-		await restartFromStep.mutate({ name, id, fromStep: stepName })
+	const handleRestartFromStep = async (from: WorkflowStepKey) => {
+		if (!confirm(`Restart from ${from.type} "${from.name}" #${from.count}? This step and all subsequent steps will re-execute.`)) return
+		await restartFromStep.mutate({ name, id, from })
 		refetch()
 	}
 
@@ -431,13 +432,23 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 							rows={[
 								...data.steps.map(s => {
 									const row = [
-										<span class="font-mono text-xs font-medium">{s.step_name}</span>,
+										<span class="font-mono text-xs font-medium">{s.step_name} {s.key ? `${s.key.type} #${s.key.count}` : '(unresolved legacy)'}</span>,
 										s.output ? <pre class="text-xs max-w-md truncate font-mono">{s.output}</pre> : '\u2014',
-										formatTime(s.completed_at),
+										s.completed_at === null ? '—' : formatTime(s.completed_at),
 									]
 									if (isTerminal) {
 										row.push(
-											<ActionButton onClick={() => handleRestartFromStep(s.step_name)} label="Restart from here" color="blue" />,
+											s.key
+												? (
+													<ActionButton
+														onClick={() => {
+															if (s.key) handleRestartFromStep(s.key)
+														}}
+														label="Restart from here"
+														color="blue"
+													/>
+												)
+												: <span class="text-xs text-text-muted">Replay must resolve legacy identity/order before targeted restart</span>,
 										)
 									}
 									return row
@@ -466,6 +477,7 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 									const row = [
 										<span class="font-mono text-xs font-medium">
 											{a.step_name}
+											{a.key ? ` ${a.key.type} #${a.key.count}` : ' (unresolved legacy)'}
 											<span class="ml-2 text-amber-600 dark:text-amber-400 text-[10px] font-semibold uppercase">retrying ({a.failed_attempts}x failed)</span>
 										</span>,
 										errorContent,
@@ -480,6 +492,14 @@ function WorkflowInstanceDetail({ name, id }: { name: string; id: string }) {
 						/>
 					)}
 			</div>
+
+			{data.legacy.length > 0 && (
+				<div class="mb-6 bg-panel rounded-lg border border-border p-5">
+					<h3 class="text-sm font-semibold text-ink mb-3">Unresolved legacy records</h3>
+					<p class="text-xs text-text-muted mb-3">Replay must resolve legacy identity and order before precise restart.</p>
+					<CodeBlock>{JSON.stringify(data.legacy, null, 2)}</CodeBlock>
+				</div>
+			)}
 
 			{data.events.length > 0 && (
 				<div>

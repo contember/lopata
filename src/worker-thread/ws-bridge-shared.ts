@@ -107,6 +107,7 @@ export class WsHostBridge<O> {
 	 */
 	register(wsId: string): CFWebSocket {
 		const cfSocket = new CFWebSocket()
+		cfSocket._useRawBinaryDelivery()
 		const peer = new BridgeWebSocketPeer(wsId, this._post, this._envelopes, id => this._forget(id))
 		cfSocket._peer = peer
 		peer._peer = cfSocket
@@ -147,6 +148,7 @@ export class WsHostBridge<O> {
 	 * adopted socket itself.
 	 */
 	adoptExisting(ws: CFWebSocket, options: { bridgeEvents?: boolean } = {}): string {
+		ws._useRawBinaryDelivery()
 		const wsId = generateId(8)
 		this._sockets.set(wsId, ws)
 		if (options.bridgeEvents) {
@@ -388,6 +390,7 @@ export class WsGuestBridge<O> {
 		this._sockets.set(wsId, { userPeer, closed: false })
 
 		const wasPreAccepted = shipped._accepted
+		shipped._useRawBinaryDelivery()
 
 		shipped.addEventListener('message', (ev: Event) => {
 			const data = (ev as MessageEvent).data

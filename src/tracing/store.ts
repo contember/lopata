@@ -26,16 +26,12 @@ export function safeStringify(value: unknown): string {
 
 const TRACE_CAP = 10_000
 const PRUNE_BATCH = 100
-const STALE_SPAN_TTL_MS = 10 * 60 * 1000 // 10 minutes
-const STALE_CLEANUP_INTERVAL_MS = 60 * 1000 // run every minute
 
 export class TraceStore {
 	private db: Database
 	private listeners = new Set<Listener>()
-	private startTimeCache = new Map<string, number>()
 	private rootSpanCount: number
 
-	private staleCleanupTimer: ReturnType<typeof setInterval>
 	private insertSpanStmt
 	private endSpanStmt
 	private getSpanStmt
@@ -75,10 +71,6 @@ export class TraceStore {
 			'SELECT COUNT(*) as cnt FROM spans WHERE parent_span_id IS NULL',
 		).get()?.cnt ?? 0
 
-		// Periodically evict stale entries from startTimeCache (spans that never ended)
-		this.staleCleanupTimer = setInterval(() => this.evictStaleSpans(), STALE_CLEANUP_INTERVAL_MS)
-		this.staleCleanupTimer.unref()
-
 		// Startup cleanup: end any spans left dangling from a previous crashed/killed session
 		this.db.run(`
 			UPDATE spans
@@ -88,7 +80,6 @@ export class TraceStore {
 	}
 
 	insertSpan(span: SpanData): void {
-		this.startTimeCache.set(span.spanId, span.startTime)
 		this.insertSpanStmt.run(
 			span.spanId,
 			span.traceId,
@@ -111,12 +102,13 @@ export class TraceStore {
 	}
 
 	endSpan(spanId: string, endTime: number, status: 'ok' | 'error', statusMessage?: string): void {
-		const startTime = this.startTimeCache.get(spanId)
-		if (startTime === undefined) return
+		const row = this.db.prepare<{ start_time: number; end_time: number | null }, [string]>(
+			'SELECT start_time, end_time FROM spans WHERE span_id = ?',
+		).get(spanId)
+		if (!row || row.end_time !== null) return
 
-		const durationMs = endTime - startTime
+		const durationMs = endTime - row.start_time
 		this.endSpanStmt.run(endTime, durationMs, status, statusMessage ?? null, spanId)
-		this.startTimeCache.delete(spanId)
 
 		const span = this.rowToSpan(this.getSpanStmt.get(spanId))
 		if (span) {
@@ -373,12 +365,10 @@ export class TraceStore {
 	}
 
 	close(): void {
-		clearInterval(this.staleCleanupTimer)
 		const now = Date.now()
-		for (const spanId of this.startTimeCache.keys()) {
-			this.endSpan(spanId, now, 'error', 'Server shutdown')
+		for (const row of this.db.prepare<{ span_id: string }, []>('SELECT span_id FROM spans WHERE end_time IS NULL').all()) {
+			this.endSpan(row.span_id, now, 'error', 'Server shutdown')
 		}
-		this.startTimeCache.clear()
 		this.db.close()
 		defaultStore = null
 	}
@@ -387,7 +377,6 @@ export class TraceStore {
 		this.db.run('DELETE FROM span_events')
 		this.db.run('DELETE FROM spans')
 		this.rootSpanCount = 0
-		this.startTimeCache.clear()
 	}
 
 	// ─── Error persistence ──────────────────────────────────────────────
@@ -538,15 +527,6 @@ export class TraceStore {
 		}
 	}
 
-	private evictStaleSpans(): void {
-		const cutoff = Date.now() - STALE_SPAN_TTL_MS
-		for (const [spanId, startTime] of this.startTimeCache) {
-			if (startTime < cutoff) {
-				this.startTimeCache.delete(spanId)
-			}
-		}
-	}
-
 	private broadcast(event: TraceEvent): void {
 		for (const listener of this.listeners) {
 			try {
@@ -609,10 +589,18 @@ function parseCursor(cursor?: string): { time: number; id: string } {
 }
 
 let defaultStore: TraceStore | null = null
-let overrideStore: TraceStore | null = null
+export type TraceWriter = Pick<
+	TraceStore,
+	'insertSpan' | 'endSpan' | 'setSpanStatus' | 'getSpanStatus' | 'updateAttributes' | 'addEvent' | 'insertError'
+>
+
+let overrideStore: TraceWriter | null = null
+
+export function getTraceWriter(): TraceWriter {
+	return overrideStore ?? getTraceStore()
+}
 
 export function getTraceStore(): TraceStore {
-	if (overrideStore) return overrideStore
 	if (!defaultStore) {
 		defaultStore = new TraceStore()
 	}
@@ -629,8 +617,6 @@ export function setTraceStore(store: TraceStore | null): void {
  * install a forwarding store. **Do not call from main** — that mutes the
  * dashboard subscribers attached to the real store.
  */
-export function setTraceStoreOverride(
-	store: Pick<TraceStore, 'insertSpan' | 'endSpan' | 'setSpanStatus' | 'getSpanStatus' | 'updateAttributes' | 'addEvent' | 'insertError'> | null,
-): void {
-	overrideStore = store as TraceStore | null
+export function setTraceStoreOverride(store: TraceWriter | null): void {
+	overrideStore = store
 }

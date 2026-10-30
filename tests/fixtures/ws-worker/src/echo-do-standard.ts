@@ -1,10 +1,14 @@
 import { DurableObject } from 'cloudflare:workers'
+import { binaryProbe } from './binary-probe'
+import { attachCloseProbe, closeObservations } from './close-probe'
+import { compatibilityProbe } from './compatibility-probe'
 
 export class EchoStandardDO extends DurableObject {
 	connections: WebSocket[] = []
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
+		if (url.searchParams.has('close-observations')) return closeObservations(url.searchParams.get('close-observations') ?? '')
 
 		// Broadcast endpoint (HTTP POST) — sends a message to all connected WS clients
 		if (url.pathname.endsWith('/broadcast') && request.method === 'POST') {
@@ -22,11 +26,26 @@ export class EchoStandardDO extends DurableObject {
 
 		const pair = new WebSocketPair()
 		const [client, server] = Object.values(pair)
+		if (!url.searchParams.has('binary-probe')) server.binaryType = 'arraybuffer'
 		server.accept()
+		const closeToken = url.searchParams.get('close-probe')
+		if (closeToken) attachCloseProbe(server, closeToken)
 		this.connections.push(server)
 
 		server.addEventListener('message', (event: MessageEvent) => {
 			const data = event.data
+			if (data === 'probe-server-close') {
+				server.close(4000, 'server probe')
+				return
+			}
+			if (url.searchParams.has('binary-probe')) {
+				void binaryProbe(server, data)
+				return
+			}
+			if (data === 'compatibility-probe') {
+				void compatibilityProbe(server)
+				return
+			}
 			if (typeof data === 'string') {
 				server.send(`echo:${data}`)
 			} else {
