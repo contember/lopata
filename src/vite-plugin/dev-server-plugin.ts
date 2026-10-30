@@ -1120,7 +1120,6 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')
 }
 
-/** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
 /** The server side of a `ws` connection, as far as the worker upgrade path uses it. */
 interface UpgradedSocket {
 	on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): void
@@ -1139,7 +1138,10 @@ interface HeldClient {
 	release(): void
 }
 
-/** Bytes a client may send while the worker decides; beyond that the socket closes with 1009 (message too big). */
+/**
+ * Bytes a client may send while the worker decides; beyond that the socket closes with 1009 (message too big).
+ * A worker that still accepts sees that close replayed, with the server's reason.
+ */
 const MAX_HELD_BYTES = 1024 * 1024
 
 /**
@@ -1174,6 +1176,7 @@ function holdClient(ws: UpgradedSocket): HeldClient {
 	return client
 }
 
+/** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
 function bridgeCfWebSocket(cfSocket: CFWebSocket, ws: any): void {
 	cfSocket._useRawBinaryDelivery()
 	// CF → real WS
