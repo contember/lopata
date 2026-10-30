@@ -10,6 +10,9 @@ interface Env {
 	ECHO_HIBERNATION: DurableObjectNamespace
 }
 
+/** Closes the `/ws/plain-async` worker saw, by `?id=`, so a test can check a close sent during the wait arrives. */
+const asyncClosesSeen = new Map<string, { code: number; reason: string }>()
+
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const url = new URL(request.url)
@@ -66,6 +69,38 @@ export default {
 				server.send(`echo:${event.data}`)
 			})
 			return new Response(null, { status: 101, webSocket: client } as any)
+		}
+
+		// A worker that has to look something up before it can answer — an auth check, a DB read, an
+		// RPC to another service. The await crosses a macrotask, which the dev server has to survive.
+		if (url.pathname === '/ws/plain-async') {
+			if (request.headers.get('Upgrade') !== 'websocket') {
+				return new Response('Expected websocket', { status: 426 })
+			}
+			// Long enough that frames the client sends right after `open` arrive before the 101.
+			await new Promise(resolve => setTimeout(resolve, 100))
+			const pair = new WebSocketPair()
+			const [client, server] = Object.values(pair)
+			server.binaryType = 'arraybuffer'
+			server.accept()
+			server.addEventListener('message', (event: MessageEvent) => {
+				server.send(typeof event.data === 'string' ? `echo:${event.data}` : event.data)
+			})
+			server.addEventListener('close', (event: CloseEvent) => {
+				const id = url.searchParams.get('id')
+				if (id) asyncClosesSeen.set(id, { code: event.code, reason: event.reason })
+			})
+			return new Response(null, { status: 101, webSocket: client } as any)
+		}
+
+		if (url.pathname === '/ws/plain-async/close-seen') {
+			return Response.json(asyncClosesSeen.get(url.searchParams.get('id') ?? '') ?? null)
+		}
+
+		// A worker that awaits and then refuses — the upgrade must not turn into an open socket.
+		if (url.pathname === '/ws/plain-async-reject') {
+			await new Promise(resolve => setTimeout(resolve, 100))
+			return new Response('Nope', { status: 403 })
 		}
 
 		// Plain WS with server-initiated close

@@ -997,22 +997,52 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 		})
 	}
 
-	async function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
+	/**
+	 * Complete the handshake before asking the worker: bun >= 1.4's `ws` can no longer finish it once the
+	 * event loop has turned, so nothing may await before `handleUpgrade`. A refusal closes the open socket.
+	 */
+	function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
+		let request: Request
+		try {
+			request = nodeReqToRequest(req)
+		} catch (err) {
+			console.error('[lopata:vite] Invalid WebSocket upgrade request:', err)
+			socket.destroy()
+			return
+		}
+		try {
+			wss.handleUpgrade(req, socket, head, (ws: UpgradedSocket) => {
+				void bridgeWorkerWebSocket(holdClient(ws), req, request)
+			})
+		} catch (err) {
+			console.error('[lopata:vite] Worker WebSocket handshake failed:', err)
+			socket.destroy()
+		}
+	}
+
+	async function bridgeWorkerWebSocket(client: HeldClient, req: IncomingMessage, request: Request) {
+		const { ws } = client
+		const refuse = (why: string) => {
+			client.release()
+			try {
+				ws.close(1011, why.slice(0, 123))
+			} catch {}
+		}
+
 		try {
 			const { CFWebSocket } = await import('../bindings/websocket-pair.ts')
-
-			const request = nodeReqToRequest(req)
 			const parsedUrl = new URL(request.url)
 
 			// Aux worker dispatch for WebSocket: host-based first, then route-based
 			const resolved = resolveAuxWorker(req, req.url ?? '/')
+			let response: Response & { webSocket?: InstanceType<typeof CFWebSocket> }
 			if (resolved) {
 				const gen = resolved.manager.active
 				if (!gen) {
-					socket.destroy()
+					refuse('worker not running')
 					return
 				}
-				const response = await (startSpan as Function)({
+				response = await (startSpan as Function)({
 					name: `WS ${parsedUrl.pathname}`,
 					kind: 'server',
 					attributes: {
@@ -1024,40 +1054,39 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				}, async () => {
 					return gen.callFetch(request, null) as Promise<Response & { webSocket?: InstanceType<typeof CFWebSocket> }>
 				}) as Response & { webSocket?: InstanceType<typeof CFWebSocket> }
-				const cfSocket = response.webSocket
-				if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
-					socket.destroy()
+			} else {
+				await ensureWorkerModule()
+				try {
+					response = await runWorkerEvent({
+						name: `WS ${parsedUrl.pathname}`,
+						kind: 'server',
+						attributes: { 'http.url': request.url, 'lopata.websocket': true, 'lopata.generation_id': currentGenerationId },
+					}, async ctx => {
+						if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
+						return workerDispatcher.fetch(request, 'default', undefined, ctx)
+					})
+				} catch (err) {
+					if (!(err instanceof MissingFetchHandlerError && err.entrypoint === 'default')) throw err
+					refuse('worker has no fetch handler')
 					return
 				}
-				wss.handleUpgrade(req, socket, head, (ws: any) => {
-					bridgeCfWebSocket(cfSocket, ws)
-				})
-				return
 			}
 
-			await ensureWorkerModule()
-			const response = await runWorkerEvent({
-				name: `WS ${parsedUrl.pathname}`,
-				kind: 'server',
-				attributes: { 'http.url': request.url, 'lopata.websocket': true, 'lopata.generation_id': currentGenerationId },
-			}, async ctx => {
-				if (!workerDispatcher) throw new Error('Worker dispatcher is not initialized')
-				return workerDispatcher.fetch(request, 'default', undefined, ctx)
-			})
-
-			const cfSocket = (response as Response & { webSocket?: InstanceType<typeof CFWebSocket> }).webSocket
+			const cfSocket = response.webSocket
 			if (response.status !== 101 || !cfSocket || !(cfSocket instanceof CFWebSocket)) {
-				socket.destroy()
+				refuse(`worker did not upgrade (${response.status})`)
 				return
 			}
 
-			// Complete the upgrade and bridge
-			wss.handleUpgrade(req, socket, head, (ws: any) => {
-				bridgeCfWebSocket(cfSocket, ws)
-			})
+			client.release()
+			bridgeCfWebSocket(cfSocket, ws)
+			for (const [data, isBinary] of client.held) ws.emit('message', data, isBinary)
+			if (client.closed) ws.emit('close', client.closed[0], client.closed[1])
 		} catch (err) {
 			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
-			socket.destroy()
+			// No `socket.destroy()` here: the handshake already handed the socket to `ws`, and
+			// cutting it now would truncate the close frame the client is owed.
+			refuse('worker error')
 		}
 	}
 }
@@ -1089,6 +1118,62 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 	if (filtered.length === 0) return
 
 	err.stack += '\n    --- async ---\n' + filtered.join('\n')
+}
+
+/** The server side of a `ws` connection, as far as the worker upgrade path uses it. */
+interface UpgradedSocket {
+	on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): void
+	on(event: 'close', listener: (code: number, reason: Buffer) => void): void
+	off(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): void
+	off(event: 'close', listener: (code: number, reason: Buffer) => void): void
+	emit(event: 'message', data: Buffer, isBinary: boolean): boolean
+	emit(event: 'close', code: number, reason: Buffer): boolean
+	close(code: number, reason: string): void
+}
+
+interface HeldClient {
+	ws: UpgradedSocket
+	held: Array<[Buffer, boolean]>
+	closed: [number, Buffer] | null
+	release(): void
+}
+
+/**
+ * Bytes a client may send while the worker decides; beyond that the socket closes with 1009 (message too big).
+ * A worker that still accepts sees that close replayed, with the server's reason.
+ */
+const MAX_HELD_BYTES = 1024 * 1024
+
+/**
+ * Hold what the client sends until the worker has answered. Attached in the `handleUpgrade` callback so no
+ * frame can arrive before it; replaying through `emit` keeps the translation in `bridgeCfWebSocket`.
+ */
+function holdClient(ws: UpgradedSocket): HeldClient {
+	let heldBytes = 0
+	const client: HeldClient = {
+		ws,
+		held: [],
+		closed: null,
+		release() {
+			ws.off('message', holdMessage)
+			ws.off('close', holdClose)
+		},
+	}
+	const holdMessage = (data: Buffer, isBinary: boolean) => {
+		if (heldBytes > MAX_HELD_BYTES) return
+		heldBytes += data.byteLength
+		if (heldBytes > MAX_HELD_BYTES) {
+			ws.close(1009, 'too much data before the worker accepted the WebSocket')
+			return
+		}
+		client.held.push([data, isBinary])
+	}
+	const holdClose = (code: number, reason: Buffer) => {
+		client.closed = [code, reason]
+	}
+	ws.on('message', holdMessage)
+	ws.on('close', holdClose)
+	return client
 }
 
 /** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
