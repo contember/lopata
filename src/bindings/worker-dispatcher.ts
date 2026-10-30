@@ -31,6 +31,12 @@ export function toRequest(input: Request | string | URL, init?: RequestInit): Re
 	return new Request(input instanceof URL ? input.href : input, init)
 }
 
+export class MissingFetchHandlerError extends Error {
+	constructor(readonly entrypoint: string) {
+		super(`Entrypoint "${entrypoint}" does not export a fetch handler`)
+	}
+}
+
 type ContextFactory = (props?: Record<string, unknown>) => DispatchExecutionContext
 const dispatchers = new WeakMap<object, WeakMap<object, WorkerDispatcher>>()
 
@@ -91,7 +97,7 @@ export class WorkerDispatcher {
 		return runWithExecutionContext(ctx, async () => {
 			const handler = resolveEntrypointHandler(this.module[entrypoint], 'fetch', ctx, this.env)
 			if (!handler && entrypoint === 'default' && this.legacyFetch) return this.legacyFetch(request, ctx)
-			if (!handler) throw new Error(`Entrypoint "${entrypoint}" does not export a fetch handler`)
+			if (!handler) throw new MissingFetchHandlerError(entrypoint)
 			const response = await handler(request, this.env, ctx)
 			if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
 			return response

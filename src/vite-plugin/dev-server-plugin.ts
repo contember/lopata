@@ -5,7 +5,7 @@ import type { Plugin, ViteDevServer } from 'vite'
 import type { BrowserConfig } from '../bindings/browser.ts'
 import { createScheduledController } from '../bindings/scheduled.ts'
 import { type CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair.ts'
-import { WorkerDispatcher } from '../bindings/worker-dispatcher.ts'
+import { MissingFetchHandlerError, WorkerDispatcher } from '../bindings/worker-dispatcher.ts'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context.ts'
 import { resolveCompatibility } from '../compatibility.ts'
 import { type EntrypointHandlerName, resolveEntrypointHandler } from '../entrypoint-handler.ts'
@@ -221,7 +221,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 
 					return resp
 				} catch (err) {
-					if (err instanceof Error && err.message === 'Entrypoint "default" does not export a fetch handler') return NO_FETCH_HANDLER
+					if (err instanceof MissingFetchHandlerError && err.entrypoint === 'default') return NO_FETCH_HANDLER
 					if (isHmrRaceError(err)) {
 						currentModule = null
 						throw err
@@ -445,9 +445,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 			getDatabase = dbMod.getDatabase
 			globalThis.__lopata_tracing = spanMod.tracing
 			globalThis.__lopata_waitUntil = promise => {
-				const ctx = getActiveExecutionContext()
-				if (!ctx) throw new Error('waitUntil() requires an active Worker execution context')
-				ctx.waitUntil(promise)
+				getActiveExecutionContext()?.waitUntil(promise)
 			}
 
 			// 1. Load wrangler config
