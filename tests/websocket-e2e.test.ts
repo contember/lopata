@@ -349,6 +349,19 @@ function defineWebSocketTests(getPort: () => number, mode: 'standalone' | 'vite'
 			client.close()
 		})
 
+		test('frames sent while the worker decides arrive in order, text and binary', async () => {
+			const client = await connectWS(`${base()}/ws/plain-async`)
+			for (const n of [1, 2, 3]) client.send(`m${n}`)
+			client.send(new Uint8Array([9, 8, 7]).buffer)
+			client.send('m4')
+			expect(await client.waitForMessage()).toBe('echo:m1')
+			expect(await client.waitForMessage()).toBe('echo:m2')
+			expect(await client.waitForMessage()).toBe('echo:m3')
+			expect([...new Uint8Array(await client.waitForMessage() as ArrayBuffer)]).toEqual([9, 8, 7])
+			expect(await client.waitForMessage()).toBe('echo:m4')
+			client.close()
+		})
+
 		test('close from client', async () => {
 			const client = await connectWS(`${base()}/ws/plain`)
 			const closePromise = client.waitForClose()
@@ -583,11 +596,32 @@ describe('WebSocket E2E — vite', () => {
 	// refusal has to still read as a refusal rather than as a connection that works.
 	test('a worker that awaits and then refuses does not leave a usable socket', async () => {
 		const client = await connectWS(`ws://localhost:${PORT}/ws/plain-async-reject`, 5_000)
-			.catch(() => null)
-		if (client) {
-			const ev = await client.waitForClose(5_000)
-			expect(ev.code).toBe(1011)
-			expect(ev.reason).toContain('403')
+		const ev = await client.waitForClose(5_000)
+		expect(ev.code).toBe(1011)
+		expect(ev.reason).toContain('403')
+	})
+
+	test('an upgrade with an unparseable Host does not take the dev server down', async () => {
+		const socket = await Bun.connect({ hostname: 'localhost', port: PORT, socket: { data() {} } })
+		socket.write(
+			'GET /ws/plain HTTP/1.1\r\nHost: [\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+				+ 'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n',
+		)
+		await Bun.sleep(100)
+		socket.end()
+		expect((await fetch(`http://localhost:${PORT}/ws/plain`)).status).toBe(426)
+	})
+
+	test('a close sent while the worker decides reaches the worker', async () => {
+		const client = await connectWS(`ws://localhost:${PORT}/ws/plain-async?id=early-close`)
+		const closed = client.waitForClose(5_000)
+		client.close(4001, 'bye early')
+		await closed
+		let seen: unknown = null
+		for (let i = 0; i < 50 && seen === null; i++) {
+			await Bun.sleep(20)
+			seen = await (await fetch(`http://localhost:${PORT}/ws/plain-async/close-seen?id=early-close`)).json()
 		}
+		expect(seen).toMatchObject({ code: 4001 })
 	})
 })

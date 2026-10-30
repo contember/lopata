@@ -998,56 +998,32 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 	}
 
 	/**
-	 * Complete the handshake, then ask the worker whether it wanted the connection.
-	 *
-	 * That order is forced. Only the worker's fetch() can say whether this is an upgrade, and any
-	 * worker that reads a session, checks a token or asks a DO first answers a turn of the event
-	 * loop later — by which point bun >= 1.4 can no longer finish the handshake: `handleUpgrade`
-	 * throws out of its own abort path and the client is left with a connection that never opens.
-	 *
-	 * So nothing may await before `handleUpgrade` below. What the client says during the wait is
-	 * held and replayed once the bridge is wired, so a client that talks immediately after `open`
-	 * loses nothing.
-	 *
-	 * The cost is that a worker which refuses now closes an open socket instead of failing the
-	 * handshake. The close carries the status it refused with.
+	 * Complete the handshake before asking the worker: bun >= 1.4's `ws` can no longer finish it once the
+	 * event loop has turned, so nothing may await before `handleUpgrade`. A refusal closes the open socket.
 	 */
 	function handleWorkerWebSocketUpgrade(wss: any, req: IncomingMessage, socket: any, head: Buffer) {
-		const request = nodeReqToRequest(req)
-		const client = new Promise<any>((resolve, reject) => {
-			try {
-				wss.handleUpgrade(req, socket, head, resolve)
-			} catch (err) {
-				reject(err)
-			}
-		})
-		void bridgeWorkerWebSocket(client, req, socket, request)
-	}
-
-	async function bridgeWorkerWebSocket(client: Promise<any>, req: IncomingMessage, socket: any, request: Request) {
-		let ws: any
+		let request: Request
 		try {
-			ws = await client
+			request = nodeReqToRequest(req)
 		} catch (err) {
-			console.error('[lopata:vite] Worker WebSocket handshake failed:', err)
+			console.error('[lopata:vite] Invalid WebSocket upgrade request:', err)
 			socket.destroy()
 			return
 		}
-
-		// Hold what arrives before the bridge exists. Replaying through `emit` keeps the translation
-		// in one place — `bridgeCfWebSocket` — instead of a second copy here.
-		const held: Array<[Buffer, boolean]> = []
-		let closed: [number, Buffer] | null = null
-		const holdMessage = (data: Buffer, isBinary: boolean) => void held.push([data, isBinary])
-		const holdClose = (code: number, reason: Buffer) => void (closed = [code, reason])
-		ws.on('message', holdMessage)
-		ws.on('close', holdClose)
-		const release = () => {
-			ws.off('message', holdMessage)
-			ws.off('close', holdClose)
+		try {
+			wss.handleUpgrade(req, socket, head, (ws: UpgradedSocket) => {
+				void bridgeWorkerWebSocket(holdClient(ws), req, request)
+			})
+		} catch (err) {
+			console.error('[lopata:vite] Worker WebSocket handshake failed:', err)
+			socket.destroy()
 		}
+	}
+
+	async function bridgeWorkerWebSocket(client: HeldClient, req: IncomingMessage, request: Request) {
+		const { ws } = client
 		const refuse = (why: string) => {
-			release()
+			client.release()
 			try {
 				ws.close(1011, why.slice(0, 123))
 			} catch {}
@@ -1102,10 +1078,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				return
 			}
 
-			release()
+			client.release()
 			bridgeCfWebSocket(cfSocket, ws)
-			for (const [data, isBinary] of held) ws.emit('message', data, isBinary)
-			if (closed) ws.emit('close', closed[0], closed[1])
+			for (const [data, isBinary] of client.held) ws.emit('message', data, isBinary)
+			if (client.closed) ws.emit('close', client.closed[0], client.closed[1])
 		} catch (err) {
 			console.error('[lopata:vite] Worker WebSocket upgrade failed:', err)
 			// No `socket.destroy()` here: the handshake already handed the socket to `ws`, and
@@ -1145,6 +1121,59 @@ function stitchAsyncStack(err: Error, callerError: Error | null): void {
 }
 
 /** Bridge a CFWebSocket (from worker response) to a real ws WebSocket. */
+/** The server side of a `ws` connection, as far as the worker upgrade path uses it. */
+interface UpgradedSocket {
+	on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): void
+	on(event: 'close', listener: (code: number, reason: Buffer) => void): void
+	off(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): void
+	off(event: 'close', listener: (code: number, reason: Buffer) => void): void
+	emit(event: 'message', data: Buffer, isBinary: boolean): boolean
+	emit(event: 'close', code: number, reason: Buffer): boolean
+	close(code: number, reason: string): void
+}
+
+interface HeldClient {
+	ws: UpgradedSocket
+	held: Array<[Buffer, boolean]>
+	closed: [number, Buffer] | null
+	release(): void
+}
+
+/** Bytes a client may send while the worker decides; beyond that the socket closes with 1009 (message too big). */
+const MAX_HELD_BYTES = 1024 * 1024
+
+/**
+ * Hold what the client sends until the worker has answered. Attached in the `handleUpgrade` callback so no
+ * frame can arrive before it; replaying through `emit` keeps the translation in `bridgeCfWebSocket`.
+ */
+function holdClient(ws: UpgradedSocket): HeldClient {
+	let heldBytes = 0
+	const client: HeldClient = {
+		ws,
+		held: [],
+		closed: null,
+		release() {
+			ws.off('message', holdMessage)
+			ws.off('close', holdClose)
+		},
+	}
+	const holdMessage = (data: Buffer, isBinary: boolean) => {
+		if (heldBytes > MAX_HELD_BYTES) return
+		heldBytes += data.byteLength
+		if (heldBytes > MAX_HELD_BYTES) {
+			ws.close(1009, 'too much data before the worker accepted the WebSocket')
+			return
+		}
+		client.held.push([data, isBinary])
+	}
+	const holdClose = (code: number, reason: Buffer) => {
+		client.closed = [code, reason]
+	}
+	ws.on('message', holdMessage)
+	ws.on('close', holdClose)
+	return client
+}
+
 function bridgeCfWebSocket(cfSocket: CFWebSocket, ws: any): void {
 	cfSocket._useRawBinaryDelivery()
 	// CF → real WS
