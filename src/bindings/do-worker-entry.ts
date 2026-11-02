@@ -12,11 +12,13 @@ import { initializeIsolateCompatibility } from '../compatibility-context'
 import { registerModuleRules } from '../module-rules'
 import { runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
+import { serveNestedWorkerDisposal } from '../worker-thread/nested-workers'
 import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
+import { disposeWorkerStubs } from './worker-loader'
 
 declare var self: Worker
 
@@ -56,6 +58,8 @@ self.onmessage = async (event: MessageEvent) => {
 		)
 	}
 }
+
+serveNestedWorkerDisposal(self, message => postMessage(message satisfies DOMainMessage))
 
 // Signal that we're alive and waiting for config
 postMessage({ type: 'need-init' })
@@ -133,6 +137,8 @@ async function initWorker(workerConfig: WorkerConfig) {
 	})
 	if (!config.containers?.some(container => container.class_name === workerConfig.namespaceName)) {
 		state._setAbortCallback(policy => {
+			// Main terminates this thread on abort without asking it to dispose its dynamic workers.
+			disposeWorkerStubs()
 			postMessage({ type: 'do-abort', policy } satisfies DOMainMessage)
 		})
 	}

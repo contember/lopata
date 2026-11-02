@@ -18,6 +18,7 @@ import type {
 	DOResult,
 	DOWorkerMessage,
 } from '../worker-thread/do-protocol'
+import { terminateWorkerThread } from '../worker-thread/nested-workers'
 import type { BindingTarget, RpcReply } from '../worker-thread/protocol'
 import { deserializeError } from '../worker-thread/protocol'
 import { applyTraceMessage, isTraceMessage } from '../worker-thread/remote-trace-store'
@@ -71,6 +72,7 @@ export class WorkerExecutor implements DOExecutor {
 	private _pending = new Map<number, PendingCommand>()
 	private _nextId = 1
 	private _disposed = false
+	private _hasNestedWorkers = false
 	/** Swallowed copy of `_priorDisposal`, created lazily on the first command.
 	 *  Shared so CONCURRENT first commands all await the prior container's
 	 *  teardown — a boolean gate would let the second racer skip straight to
@@ -192,6 +194,9 @@ export class WorkerExecutor implements DOExecutor {
 			if (this._rpcChannel.handle(msg)) return
 
 			switch (msg.type) {
+				case 'nested-workers-spawned':
+					this._hasNestedWorkers = true
+					break
 				case 'need-init':
 					// Worker is alive, send configuration
 					worker.postMessage({
@@ -242,6 +247,8 @@ export class WorkerExecutor implements DOExecutor {
 					// Terminating the thread rejects pending commands and rolls back its open SQLite transaction.
 					this._abortPolicy = msg.policy
 					this._aborted = true
+					// The thread disposed its dynamic workers before reporting the abort; terminate it at once.
+					this._hasNestedWorkers = false
 					this._teardown(new Error(msg.policy.reason))
 					break
 
@@ -582,7 +589,7 @@ export class WorkerExecutor implements DOExecutor {
 		if (this._disposed) return
 		this._disposed = true
 		if (this._worker) {
-			this._worker.terminate()
+			terminateWorkerThread(this._worker, this._hasNestedWorkers)
 			this._worker = null
 		}
 		this._readyReject?.(error)

@@ -6,10 +6,10 @@
  * supplied code with its own module graph. Isolation is "fuzzy" — worker
  * threads share the process with the parent but have separate heaps.
  *
- * Modules are written to `.lopata/worker-loader/<stub-id>/` before the Worker
- * imports the entry point. This keeps the implementation simple at the cost
- * of not supporting languages Bun can't execute directly (CF's `py`, Rust,
- * etc. are rejected in v1).
+ * Modules are written to a random `.lopata/worker-loader/<uuid>/` directory per
+ * stub before the Worker imports the entry point; a `get()` id is only a cache
+ * key. This keeps the implementation simple at the cost of not supporting
+ * languages Bun can't execute directly (CF's `py`, Rust, etc. are rejected in v1).
  */
 
 import { randomUUIDv7 } from 'bun'
@@ -58,8 +58,26 @@ interface ResolvedCode {
 	env: EncodedLoaderEnv
 }
 
+/**
+ * Stubs of this thread that may own a Worker or a module directory. Bun keeps a nested Worker
+ * running after its parent thread is terminated, so the owning thread disposes them first.
+ */
+const liveStubs = new Set<WorkerStub>()
+let onFirstSpawn: (() => void) | null = null
+let spawned = false
+
+/** Call `listener` once, when this thread spawns its first dynamic worker. */
+export function onWorkerStubSpawn(listener: () => void): void {
+	onFirstSpawn = listener
+	if (spawned) listener()
+}
+
+/** Dispose every stub this thread created: terminate their Workers and remove their module directories. */
+export function disposeWorkerStubs(): void {
+	for (const stub of [...liveStubs]) stub.dispose()
+}
+
 export class WorkerStub {
-	private readonly id: string
 	private readonly codeSource: CodeSource
 	private _resolved: ResolvedCode | null = null
 	private readonly workDir: string
@@ -70,10 +88,9 @@ export class WorkerStub {
 	private _disposed = false
 	private _disposeTimer: Timer | null = null
 
-	constructor(id: string, code: CodeSource, baseDir: string) {
-		this.id = id
+	constructor(code: CodeSource, baseDir: string) {
 		this.codeSource = code
-		this.workDir = join(baseDir, id)
+		this.workDir = join(baseDir, randomUUIDv7())
 		if (typeof code !== 'function') {
 			this._resolved = { code, env: encodeLoaderEnv(code.env) }
 		}
@@ -94,13 +111,29 @@ export class WorkerStub {
 	}
 
 	private async _boot(): Promise<void> {
-		const { code, env } = await this._resolveCode()
-		const compatibility = validateCode(code)
-		mkdirSync(this.workDir, { recursive: true })
-		const mainPath = await writeModules(this.workDir, code.modules, code.mainModule)
+		liveStubs.add(this)
+		try {
+			const { code, env } = await this._resolveCode()
+			const compatibility = validateCode(code)
+			this._assertNotDisposed()
+			mkdirSync(this.workDir, { recursive: true })
+			const mainPath = await writeModules(this.workDir, code.modules, code.mainModule)
+			this._assertNotDisposed()
+			await this._spawn(mainPath, env, code.globalOutbound === null ? 'block' : 'allow', compatibility)
+		} catch (err) {
+			// Leave nothing behind from a partial materialization or a failed init; the failure stays cached, as on Cloudflare.
+			this._release()
+			throw err
+		}
+	}
 
+	private _spawn(mainPath: string, env: EncodedLoaderEnv, globalOutbound: 'allow' | 'block', compatibility: CompatibilitySelection): Promise<void> {
 		const worker = new Worker(WORKER_ENTRY_PATH)
 		this._worker = worker
+		if (!spawned) {
+			spawned = true
+			onFirstSpawn?.()
+		}
 
 		let readyResolve: () => void
 		let readyReject: (err: Error) => void
@@ -116,7 +149,7 @@ export class WorkerStub {
 					type: 'init',
 					mainModulePath: mainPath,
 					env: env.value,
-					globalOutbound: code.globalOutbound === null ? 'block' : 'allow',
+					globalOutbound,
 					compatibility,
 				}
 				worker.postMessage({ type: 'init', data: init } satisfies MainToWorker)
@@ -157,7 +190,25 @@ export class WorkerStub {
 			this._pending.clear()
 		}
 
-		await ready
+		return ready
+	}
+
+	private _assertNotDisposed(): void {
+		if (this._disposed) throw new Error('WorkerStub has been disposed')
+	}
+
+	/** Terminate the Worker and remove the module directory. */
+	private _release(): void {
+		liveStubs.delete(this)
+		if (this._worker) {
+			try {
+				this._worker.terminate()
+			} catch {}
+			this._worker = null
+		}
+		try {
+			rmSync(this.workDir, { recursive: true, force: true })
+		} catch {}
 	}
 
 	private _send(command: LoaderCommand): Promise<LoaderResult> {
@@ -216,14 +267,7 @@ export class WorkerStub {
 		if (this._disposed) return
 		this._disposed = true
 		if (this._disposeTimer) clearTimeout(this._disposeTimer)
-		if (this._worker) {
-			try {
-				this._worker.terminate()
-			} catch {}
-		}
-		try {
-			rmSync(this.workDir, { recursive: true, force: true })
-		} catch {}
+		this._release()
 	}
 }
 
@@ -267,8 +311,7 @@ export class WorkerLoaderBinding {
 
 	load(code: WorkerCode): WorkerStub {
 		validateCode(code)
-		const id = randomUUIDv7()
-		return new WorkerStub(id, code, this.baseDir)
+		return new WorkerStub(code, this.baseDir)
 	}
 
 	get(id: string, getCodeCallback: () => Promise<WorkerCode> | WorkerCode): WorkerStub {
@@ -277,7 +320,7 @@ export class WorkerLoaderBinding {
 		// Defer invoking the callback until the stub is first used — matches
 		// Cloudflare's behavior (get() returns synchronously, code resolution
 		// happens lazily on first fetch/rpc call).
-		const stub = new WorkerStub(id, getCodeCallback, this.baseDir)
+		const stub = new WorkerStub(getCodeCallback, this.baseDir)
 		this.cache.set(id, stub)
 		return stub
 	}
@@ -293,8 +336,19 @@ function validateCode(code: WorkerCode): CompatibilitySelection {
 	const compatibility = resolveCompatibility({ date: code.compatibilityDate, flags: code.compatibilityFlags })
 	if (!code.mainModule) throw new Error('WorkerCode.mainModule is required')
 	if (!code.modules || typeof code.modules !== 'object') throw new Error('WorkerCode.modules must be an object')
-	if (!(code.mainModule in code.modules)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
+	for (const name of Object.keys(code.modules)) validateModuleName(name)
+	if (!Object.hasOwn(code.modules, code.mainModule)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
 	return compatibility
+}
+
+/** Module names become paths under the stub directory, so each must stay inside it. */
+function validateModuleName(name: string): void {
+	const segments = name.split('/')
+	if (name.includes('\\') || name.includes('\0') || segments.some(segment => segment === '' || segment === '.' || segment === '..')) {
+		throw new TypeError(
+			`Invalid module name ${JSON.stringify(name)}: use a relative path of non-empty segments without ".", "..", backslashes or NUL characters`,
+		)
+	}
 }
 
 /** A loader `env` ready to post: `value` has each Fetcher swapped for a placeholder indexing `fetchers`. */

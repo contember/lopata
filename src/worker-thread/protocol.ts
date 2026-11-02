@@ -13,6 +13,7 @@ import type { WranglerConfig } from '../config'
 export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
+import type { DisposeNestedWorkersCommand, NestedWorkersMessage } from './nested-workers'
 
 /** Parent span context handed to the worker so its spans nest under main's server span. */
 export interface ParentSpanContext {
@@ -483,10 +484,12 @@ export type WorkerCommand =
 	// fires — user code listening on `request.signal` (SSE / long-poll cleanup)
 	// gets the same hook it would in-process.
 	| { type: 'fetch-abort'; id: number }
+	| DisposeNestedWorkersCommand
 
 /** Worker → main */
 export type WorkerMessage =
 	| { type: 'need-init' }
+	| NestedWorkersMessage
 	/**
 	 * Sent after the user module imports successfully.
 	 *
