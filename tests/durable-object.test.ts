@@ -579,9 +579,9 @@ describe('DurableObjectNamespace', () => {
 		expect(id1.toString()).not.toBe(id2.toString())
 	})
 
-	test('idFromString wraps raw id', () => {
-		const id = ns.idFromString('raw-id-hex')
-		expect(id.toString()).toBe('raw-id-hex')
+	test('idFromString wraps a hex id', () => {
+		const id = ns.idFromString('ab'.repeat(32))
+		expect(id.toString()).toBe('ab'.repeat(32))
 		expect(id.name).toBeUndefined()
 	})
 

@@ -1,4 +1,4 @@
-import { DurableObjectIdImpl, type DurableObjectNamespaceImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
+import { durableObjectIdFromString, DurableObjectIdImpl, type DurableObjectNamespaceImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { makeBindingProxy } from './rpc-stub'
 
 type HostStub = Record<string, unknown>
@@ -44,7 +44,7 @@ export class CrossScriptDurableObjectNamespace {
 	}
 
 	idFromString(id: string): DurableObjectIdImpl {
-		return new DurableObjectIdImpl(id)
+		return durableObjectIdFromString(id)
 	}
 
 	get(id: DurableObjectIdImpl): HostStub {

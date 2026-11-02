@@ -10,7 +10,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { type BrowserConfig, createBrowserRunMethods, createRemoteBrowserRunBackend } from '../bindings/browser'
-import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
+import { durableObjectIdFromString, DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
 import { FETCHER_BRAND, makeBindingProxy } from '../bindings/rpc-stub'
 import { serviceBindingConnectError } from '../bindings/service-binding'
@@ -205,7 +205,7 @@ function makeDOStubProxy(
 function makeDONamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): Record<string, unknown> {
 	const stubs = new Map<string, unknown>()
 	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
-	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
+	const idFromString = durableObjectIdFromString
 	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
 	const get = (id: DurableObjectIdImpl) => {
 		const idStr = id.toString()

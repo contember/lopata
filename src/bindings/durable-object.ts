@@ -778,9 +778,18 @@ export function hashIdFromName(name: string): string {
 	return hasher.digest('hex')
 }
 
-/** Random 128-bit id matching CF's `newUniqueId` hex shape. */
+/** Random id in the 64-hex-digit shape of Cloudflare's `newUniqueId`. */
 export function randomUniqueIdHex(): string {
-	return crypto.randomUUID().replace(/-/g, '')
+	return Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex')
+}
+
+/**
+ * `idFromString`: accept only hex ids, as workerd does, so an id can never act as a path.
+ * Lopata 0.31 and older minted 32-digit ids from `newUniqueId()`; those still parse.
+ */
+export function durableObjectIdFromString(id: string): DurableObjectIdImpl {
+	if (!/^(?:[0-9a-f]{64}|[0-9a-f]{32})$/i.test(id)) throw new TypeError('Invalid Durable Object ID: must be 64 hex digits')
+	return new DurableObjectIdImpl(id.toLowerCase())
 }
 
 // --- State ---
@@ -1609,7 +1618,7 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	idFromString(id: string): DurableObjectIdImpl {
-		return new DurableObjectIdImpl(id)
+		return durableObjectIdFromString(id)
 	}
 
 	getByName(name: string): Record<string, unknown> {
