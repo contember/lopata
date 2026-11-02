@@ -369,6 +369,25 @@ describe('ContainerBase', () => {
 		expect(instance.pingEndpoint).toBe('/')
 	})
 
+	test('schedule takes a number as a delay in seconds and a Date as an absolute time', async () => {
+		const id = new DurableObjectIdImpl('test-id')
+		const state = new DurableObjectStateImpl(id, db, 'TestContainer', dataDir)
+		const instance = new ContainerBase(state, {})
+
+		const before = Date.now()
+		await instance.schedule(30, 'tick')
+		const delayed = await state.storage.getAlarm()
+		expect(delayed).toBeGreaterThanOrEqual(before + 30_000)
+		expect(delayed).toBeLessThanOrEqual(Date.now() + 30_000)
+
+		await instance.schedule(0, 'tick')
+		expect(await state.storage.getAlarm()).toBeGreaterThanOrEqual(before)
+
+		const at = new Date(before + 3_600_000)
+		await instance.schedule(at, 'tick')
+		expect(await state.storage.getAlarm()).toBe(at.getTime())
+	})
+
 	test('getState returns stopped when no runtime', async () => {
 		const id = new DurableObjectIdImpl('test-id')
 		const state = new DurableObjectStateImpl(id, db, 'TestContainer', dataDir)
