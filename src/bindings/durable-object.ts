@@ -1010,6 +1010,8 @@ export class DurableObjectBase {
 // --- Alarm scheduling ---
 
 const MAX_ALARM_RETRIES = 6
+/** setTimeout overflows to 1 ms above a signed 32-bit delay. */
+const MAX_TIMER_DELAY = 2 ** 31 - 1
 
 // Properties handled specially on the stub (not forwarded as RPC)
 const STUB_PROPS = new Set(['id', 'name', 'fetch'])
@@ -1184,6 +1186,11 @@ export class DurableObjectNamespaceImpl {
 		if (existing) clearTimeout(existing)
 
 		const delay = Math.max(0, scheduledTime - this.clock.now())
+		// A far alarm waits in capped hops; each hop re-arms against the clock until the target is in range.
+		if (delay > MAX_TIMER_DELAY) {
+			this.alarmTimers.set(idStr, setTimeout(() => this._scheduleAlarmTimer(idStr, scheduledTime), MAX_TIMER_DELAY))
+			return
+		}
 		const timer = setTimeout(() => {
 			this.alarmTimers.delete(idStr)
 			this._fireAlarm(idStr, 0)

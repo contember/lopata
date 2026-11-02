@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite'
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -937,6 +937,79 @@ describe('DurableObject Alarms', () => {
 			await new Promise((r) => setTimeout(r, 50))
 
 			expect(fired).toBe(true)
+		})
+
+		describe('beyond the 32-bit setTimeout limit', () => {
+			const MAX_TIMER_DELAY = 2 ** 31 - 1
+			const THIRTY_DAYS = 30 * 86_400_000
+
+			beforeEach(() => {
+				jest.useFakeTimers()
+			})
+			afterEach(() => {
+				jest.useRealTimers()
+			})
+
+			async function advance(ms: number) {
+				jest.advanceTimersByTime(ms)
+				// Let the async alarm handler run to completion.
+				for (let i = 0; i < 20; i++) await Promise.resolve()
+			}
+
+			test('far-future alarm fires at its scheduled time, not immediately', async () => {
+				const firedAt: number[] = []
+				class AlarmDO extends DurableObjectBase {
+					async alarm() {
+						firedAt.push(Date.now())
+					}
+				}
+				const ns = new DurableObjectNamespaceImpl(db, 'AlarmFar', undefined, { evictionTimeoutMs: 0 })
+				ns._setClass(AlarmDO, {})
+				const id = ns.idFromName('test')
+				ns.get(id)
+				const instance = ns._getInstance(id.toString())!
+				const scheduledTime = Date.now() + THIRTY_DAYS
+				await instance.ctx.storage.setAlarm(scheduledTime)
+
+				await advance(1)
+				expect(firedAt).toEqual([])
+				await advance(MAX_TIMER_DELAY)
+				expect(firedAt).toEqual([])
+				expect(await instance.ctx.storage.getAlarm()).toBe(scheduledTime)
+
+				await advance(scheduledTime - Date.now() - 1)
+				expect(firedAt).toEqual([])
+				await advance(1)
+				expect(firedAt).toEqual([scheduledTime])
+				expect(await instance.ctx.storage.getAlarm()).toBeNull()
+			})
+
+			test('re-arming a far-future alarm from the handler waits for the new time', async () => {
+				const firedAt: number[] = []
+				class AlarmDO extends DurableObjectBase {
+					async alarm() {
+						firedAt.push(Date.now())
+						if (firedAt.length < 5) await this.ctx.storage.setAlarm(Date.now() + THIRTY_DAYS)
+					}
+				}
+				const ns = new DurableObjectNamespaceImpl(db, 'AlarmFarRearm', undefined, { evictionTimeoutMs: 0 })
+				ns._setClass(AlarmDO, {})
+				const id = ns.idFromName('test')
+				ns.get(id)
+				const instance = ns._getInstance(id.toString())!
+				const start = Date.now()
+				await instance.ctx.storage.setAlarm(start + THIRTY_DAYS)
+
+				await advance(THIRTY_DAYS)
+				expect(firedAt).toEqual([start + THIRTY_DAYS])
+				expect(await instance.ctx.storage.getAlarm()).toBe(start + 2 * THIRTY_DAYS)
+
+				await advance(1000)
+				expect(firedAt).toHaveLength(1)
+
+				await advance(THIRTY_DAYS - 1000)
+				expect(firedAt).toEqual([start + THIRTY_DAYS, start + 2 * THIRTY_DAYS])
+			})
 		})
 
 		test('alarm persists across namespace instances', async () => {
