@@ -64,6 +64,8 @@ export class WorkerStub {
 	private readonly workDir: string
 	private _worker: Worker | null = null
 	private _ready: Promise<void> | null = null
+	/** Rejects the Worker's pending `ready` handshake; set while it is outstanding. */
+	private _rejectReady: ((err: Error) => void) | null = null
 	private _pending = new Map<number, PendingCommand>()
 	private _nextCmdId = 1
 	private _disposed = false
@@ -111,11 +113,12 @@ export class WorkerStub {
 		const worker = new Worker(WORKER_ENTRY_PATH)
 		this._worker = worker
 
-		let readyResolve: () => void
-		let readyReject: (err: Error) => void
-		const ready = new Promise<void>((res, rej) => {
-			readyResolve = res
-			readyReject = rej
+		const { promise: ready, resolve: readyResolve, reject: readyReject } = Promise.withResolvers<void>()
+		this._rejectReady = readyReject
+		void ready.then(() => {
+			this._rejectReady = null
+		}, () => {
+			this._rejectReady = null
 		})
 
 		worker.onmessage = (event: MessageEvent<WorkerToMain>) => {
@@ -193,7 +196,8 @@ export class WorkerStub {
 			this._pending.set(id, { resolve, reject })
 			this._ensureReady()
 				.then(() => {
-					this._worker!.postMessage({ type: 'command', id, command } satisfies MainToWorker)
+					this._assertNotDisposed()
+					this._worker?.postMessage({ type: 'command', id, command } satisfies MainToWorker)
 				})
 				.catch(err => {
 					this._pending.delete(id)
@@ -242,6 +246,10 @@ export class WorkerStub {
 		if (this._disposed) return
 		this._disposed = true
 		if (this._disposeTimer) clearTimeout(this._disposeTimer)
+		const error = new Error('WorkerStub has been disposed')
+		this._rejectReady?.(error)
+		for (const pending of this._pending.values()) pending.reject(error)
+		this._pending.clear()
 		this._release()
 	}
 }

@@ -124,6 +124,25 @@ describe('Worker Loader cleanup', () => {
 		expect(readdirSync(loaderDir)).toEqual([])
 	})
 
+	test('disposing a stub during its init rejects the waiting request', async () => {
+		const loader = new WorkerLoaderBinding(loaderDir)
+		const stub = track(loader.load(code({ 'main.js': `await new Promise(() => {})\n${HELLO}` })))
+		const request = outcome(stub.getEntrypoint().fetch('http://loader/'))
+		await Bun.sleep(200)
+		stub.dispose()
+		expect(await Promise.race([request, Bun.sleep(2000).then(() => 'still pending')])).toBeInstanceOf(Error)
+		expect(readdirSync(loaderDir)).toEqual([])
+	})
+
+	test('disposing a stub rejects its in-flight calls', async () => {
+		const loader = new WorkerLoaderBinding(loaderDir)
+		const stub = track(loader.load(code({ 'main.js': `export default { fetch() { return new Promise(() => {}) } }` })))
+		const request = outcome(stub.getEntrypoint().fetch('http://loader/'))
+		await Bun.sleep(200)
+		stub.dispose()
+		expect(await Promise.race([request, Bun.sleep(2000).then(() => 'still pending')])).toBeInstanceOf(Error)
+	})
+
 	test('disposing a stub while its code callback is pending spawns nothing', async () => {
 		const loader = new WorkerLoaderBinding(loaderDir)
 		const tickFile = join(tmpDir, 'ticks')

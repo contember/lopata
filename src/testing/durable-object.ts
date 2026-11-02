@@ -311,7 +311,7 @@ export class TestDurableObjectNamespace {
 
 	/** Get a DO handle by raw ID string. */
 	getById(idStr: string): TestDurableObjectHandle {
-		const handle = new TestDurableObjectHandle(this.namespace, idStr)
+		const handle = new TestDurableObjectHandle(this.namespace, this.namespace.idFromString(idStr).toString())
 		this.handles.push(handle)
 		return handle
 	}
