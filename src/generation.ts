@@ -133,21 +133,14 @@ export class Generation {
 				// of delegating to ASSETS, so honoring assets-first here is required to
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
+				// When the worker runs first its response is final, 404 included; it
+				// reaches assets only through `env.ASSETS.fetch()`, as on Cloudflare.
 				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
 				if (!workerFirst && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
-					response = await executor.executeFetch(request)
-				} else {
-					response = await executor.executeFetch(request)
-					if (response.status === 404 && servableFromAssets) {
-						// Drop the worker's streaming body so the source pump on the
-						// other side stops — we're discarding this response in favour
-						// of the assets fallback.
-						response.body?.cancel().catch(() => {})
-						return assets.fetch(request)
-					}
 				}
+				response = await executor.executeFetch(request)
 			}
 			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
