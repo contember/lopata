@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test'
+import { parseAssetRouting } from '../src/bindings/static-assets'
 import type { WranglerConfig } from '../src/config'
 import type { ClassRegistry } from '../src/generation'
 import { Generation } from '../src/generation'
@@ -29,7 +30,7 @@ const emptyRegistry: ClassRegistry = {
 const config = { main: 'index.ts' } as unknown as WranglerConfig
 
 function gen(executor: WorkerThreadExecutor): Generation {
-	return new Generation(1, {}, emptyRegistry, config, executor)
+	return new Generation(1, {}, emptyRegistry, config, parseAssetRouting(undefined), executor)
 }
 
 describe('Generation.isIdle()', () => {

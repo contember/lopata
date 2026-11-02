@@ -2,7 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
-import { assetsOnlyRejection, canServeAssets, methodNotAllowed, routeBeforeAssets } from './bindings/static-assets'
+import { type AssetRouting, assetsOnlyRejection, canServeAssets, isAssetMethod, methodNotAllowed, routeBeforeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -48,6 +48,7 @@ export class Generation {
 	readonly env: Record<string, unknown>
 	readonly registry: ClassRegistry
 	readonly config: WranglerConfig
+	readonly assetRouting: AssetRouting
 	readonly workerName: string | undefined
 	readonly cronEnabled: boolean
 	/** null for an assets-only worker — there is no user module to run. */
@@ -61,6 +62,7 @@ export class Generation {
 		env: Record<string, unknown>,
 		registry: ClassRegistry,
 		config: WranglerConfig,
+		assetRouting: AssetRouting,
 		threadExecutor: WorkerThreadExecutor | null,
 		workerName?: string,
 		cronEnabled?: boolean,
@@ -70,6 +72,7 @@ export class Generation {
 		this.env = env
 		this.registry = registry
 		this.config = config
+		this.assetRouting = assetRouting
 		this.workerName = workerName
 		this.cronEnabled = cronEnabled ?? false
 		this.threadExecutor = threadExecutor
@@ -133,13 +136,9 @@ export class Generation {
 				// of delegating to ASSETS, so honoring assets-first here is required to
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
-				// When the worker runs first its response is final, 404 included; it
-				// reaches assets only through `env.ASSETS.fetch()`, as on Cloudflare.
-				const route = routeBeforeAssets(this.config.assets?.run_worker_first, url.pathname)
-				if (route === 'assets') {
-					const method = request.method
-					return method === 'GET' || method === 'HEAD' ? assets.fetch(request) : methodNotAllowed()
-				}
+				// A worker that runs first owns the response, 404 included, as on Cloudflare.
+				const route = routeBeforeAssets(this.assetRouting, url.pathname)
+				if (route === 'assets') return isAssetMethod(request) ? assets.fetch(request) : methodNotAllowed()
 				if (route === 'default' && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
