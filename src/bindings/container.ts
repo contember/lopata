@@ -635,7 +635,8 @@ export class ContainerBase extends DurableObjectBase {
 	 * Schedule a deferred callback via DO alarm.
 	 */
 	async schedule(when: number | Date, _callback: string, _payload?: unknown): Promise<void> {
-		const time = when instanceof Date ? when.getTime() : when
+		// As in @cloudflare/containers, a number is a delay in seconds.
+		const time = when instanceof Date ? when.getTime() : Date.now() + when * 1000
 		await this.ctx.storage.setAlarm(time)
 	}
 

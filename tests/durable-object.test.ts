@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import type { DOExecutor, DOExecutorFactory } from '../src/bindings/do-executor'
 import { InProcessExecutor } from '../src/bindings/do-executor-inprocess'
 import {
@@ -782,6 +783,88 @@ describe('DurableObject Alarms', () => {
 		test('deleteAlarm on non-existent alarm is no-op', async () => {
 			await storage.deleteAlarm() // should not throw
 			expect(await storage.getAlarm()).toBeNull()
+		})
+
+		describe('setAlarm rejects invalid times like workerd', () => {
+			const notADate = "Failed to execute 'setAlarm' on 'DurableObjectStorage': parameter 1 is not of type 'date'."
+			const invalidDate = 'The value cannot be converted because it is not a valid Date.'
+			const notPositive = 'setAlarm() cannot be called with an alarm time <= 0'
+			/** Plain JS callers are not bound by the `number | Date` signature. */
+			type UntypedAlarms = { setAlarm(value: unknown): Promise<void> }
+			const cases: [string, unknown, string][] = [
+				['NaN', Number.NaN, invalidDate],
+				['Infinity', Number.POSITIVE_INFINITY, invalidDate],
+				['-Infinity', Number.NEGATIVE_INFINITY, invalidDate],
+				['invalid Date', new Date(Number.NaN), invalidDate],
+				['numeric string', String(Date.now() + 60000), notADate],
+				['undefined', undefined, notADate],
+				['null', null, notADate],
+				['bigint', BigInt(Date.now() + 60000), notADate],
+				['boxed number', new Number(Date.now() + 60000), notADate],
+				['Date-branded lookalike', Object.create(Date.prototype), notADate],
+				['proxied Date', new Proxy(new Date(Date.now() + 60000), {}), notADate],
+				['first time after 2189', 2 ** 63 / 1e6, "This API doesn't support dates after 2189."],
+				['last time before 1687', -(2 ** 63) / 1e6, "This API doesn't support dates before 1687."],
+				['zero', 0, notPositive],
+				['negative', -1, notPositive],
+				['fraction truncating to zero', 0.9, notPositive],
+			]
+			for (const [name, value, message] of cases) {
+				test(name, async () => {
+					await storage.setAlarm(12345)
+					const notified: (number | null)[] = []
+					storage._setAlarmCallback(time => notified.push(time))
+					const untyped: UntypedAlarms = storage
+					const error = await untyped.setAlarm(value).then(() => null, (e: unknown) => e)
+					expect(error).toBeInstanceOf(TypeError)
+					expect(error).toHaveProperty('message', message)
+					expect(await storage.getAlarm()).toBe(12345)
+					expect(notified).toEqual([])
+				})
+			}
+
+			test('stores whole milliseconds, truncated toward zero', async () => {
+				await storage.setAlarm(12345.9)
+				expect(await storage.getAlarm()).toBe(12345)
+			})
+
+			test('accepts the last time before 2189', async () => {
+				await storage.setAlarm(9_223_372_036_854.773)
+				expect(await storage.getAlarm()).toBe(9_223_372_036_854)
+			})
+
+			test('reads a Date by its internal time value', async () => {
+				class LyingDate extends Date {
+					override getTime() {
+						return 1
+					}
+				}
+				await storage.setAlarm(new LyingDate(12345))
+				expect(await storage.getAlarm()).toBe(12345)
+				await storage.setAlarm(runInNewContext('new Date(23456)'))
+				expect(await storage.getAlarm()).toBe(23456)
+			})
+
+			test('in a transaction, names DurableObjectTransaction', async () => {
+				await storage.transaction(async txn => {
+					const untyped: UntypedAlarms = txn
+					await expect(untyped.setAlarm('soon')).rejects.toThrow(
+						"Failed to execute 'setAlarm' on 'DurableObjectTransaction': parameter 1 is not of type 'date'.",
+					)
+					await expect(txn.setAlarm(Number.NaN)).rejects.toThrow(invalidDate)
+				})
+				expect(await storage.getAlarm()).toBeNull()
+			})
+
+			test('in a rolled-back transaction, the argument is checked first', async () => {
+				await storage.transaction(async txn => {
+					txn.rollback()
+					const untyped: UntypedAlarms = txn
+					await expect(untyped.setAlarm('soon')).rejects.toThrow(
+						"Failed to execute 'setAlarm' on 'DurableObjectTransaction': parameter 1 is not of type 'date'.",
+					)
+				})
+			})
 		})
 
 		test('alarm isolation between instances', async () => {
