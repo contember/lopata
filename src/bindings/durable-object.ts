@@ -2,6 +2,7 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
+import { types } from 'node:util'
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility } from '../compatibility-context'
 import type { Clock } from '../testing/clock'
@@ -378,14 +379,15 @@ const MAX_DATE_NANOS = 2 ** 63
  */
 function parseAlarmTime(value: unknown, owner: 'DurableObjectStorage' | 'DurableObjectTransaction'): number {
 	let millis: number
-	if (value instanceof Date) millis = value.getTime()
+	// V8 IsDate() + ValueOf(): brand-checked, so cross-realm Dates pass and a getTime() override is ignored.
+	if (types.isDate(value)) millis = Date.prototype.getTime.call(value)
 	else if (typeof value === 'number') millis = value
 	else throw new TypeError(`Failed to execute 'setAlarm' on '${owner}': parameter 1 is not of type 'date'.`)
 	if (!Number.isFinite(millis)) throw new TypeError('The value cannot be converted because it is not a valid Date.')
 	const nanos = millis * 1_000_000
 	if (nanos >= MAX_DATE_NANOS) throw new TypeError("This API doesn't support dates after 2189.")
 	if (nanos <= -MAX_DATE_NANOS) throw new TypeError("This API doesn't support dates before 1687.")
-	// kj::Date keeps whole milliseconds, truncated toward zero.
+	// toKjDate truncates to whole milliseconds (static_cast<int64_t>).
 	const time = Math.trunc(millis)
 	if (time <= 0) throw new TypeError('setAlarm() cannot be called with an alarm time <= 0')
 	return time

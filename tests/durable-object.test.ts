@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { runInNewContext } from 'node:vm'
 import type { DOExecutor, DOExecutorFactory } from '../src/bindings/do-executor'
 import { InProcessExecutor } from '../src/bindings/do-executor-inprocess'
 import {
@@ -800,8 +801,10 @@ describe('DurableObject Alarms', () => {
 				['null', null, notADate],
 				['bigint', BigInt(Date.now() + 60000), notADate],
 				['boxed number', new Number(Date.now() + 60000), notADate],
-				['after 2189', 9_223_372_036_855, "This API doesn't support dates after 2189."],
-				['before 1687', -9_223_372_036_855, "This API doesn't support dates before 1687."],
+				['Date-branded lookalike', Object.create(Date.prototype), notADate],
+				['proxied Date', new Proxy(new Date(Date.now() + 60000), {}), notADate],
+				['first time after 2189', 2 ** 63 / 1e6, "This API doesn't support dates after 2189."],
+				['last time before 1687', -(2 ** 63) / 1e6, "This API doesn't support dates before 1687."],
 				['zero', 0, notPositive],
 				['negative', -1, notPositive],
 				['fraction truncating to zero', 0.9, notPositive],
@@ -825,6 +828,23 @@ describe('DurableObject Alarms', () => {
 				expect(await storage.getAlarm()).toBe(12345)
 			})
 
+			test('accepts the last time before 2189', async () => {
+				await storage.setAlarm(9_223_372_036_854.773)
+				expect(await storage.getAlarm()).toBe(9_223_372_036_854)
+			})
+
+			test('reads a Date by its internal time value', async () => {
+				class LyingDate extends Date {
+					override getTime() {
+						return 1
+					}
+				}
+				await storage.setAlarm(new LyingDate(12345))
+				expect(await storage.getAlarm()).toBe(12345)
+				await storage.setAlarm(runInNewContext('new Date(23456)'))
+				expect(await storage.getAlarm()).toBe(23456)
+			})
+
 			test('in a transaction, names DurableObjectTransaction', async () => {
 				await storage.transaction(async txn => {
 					const untyped: UntypedAlarms = txn
@@ -834,6 +854,16 @@ describe('DurableObject Alarms', () => {
 					await expect(txn.setAlarm(Number.NaN)).rejects.toThrow(invalidDate)
 				})
 				expect(await storage.getAlarm()).toBeNull()
+			})
+
+			test('in a rolled-back transaction, the argument is checked first', async () => {
+				await storage.transaction(async txn => {
+					txn.rollback()
+					const untyped: UntypedAlarms = txn
+					await expect(untyped.setAlarm('soon')).rejects.toThrow(
+						"Failed to execute 'setAlarm' on 'DurableObjectTransaction': parameter 1 is not of type 'date'.",
+					)
+				})
 			})
 		})
 
