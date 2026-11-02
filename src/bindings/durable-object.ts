@@ -369,6 +369,28 @@ export class SyncKV {
 	}
 }
 
+/** workerd's kj::Date bounds: the time in nanoseconds must fit a signed 64-bit integer. */
+const MAX_DATE_NANOS = 2 ** 63
+
+/**
+ * Parses a `setAlarm()` argument into whole epoch milliseconds, throwing the same TypeErrors as workerd
+ * (`DateWrapper::tryUnwrap` + `toKjDate`, then the `<= 0` check in `setAlarm`).
+ */
+function parseAlarmTime(value: unknown, owner: 'DurableObjectStorage' | 'DurableObjectTransaction'): number {
+	let millis: number
+	if (value instanceof Date) millis = value.getTime()
+	else if (typeof value === 'number') millis = value
+	else throw new TypeError(`Failed to execute 'setAlarm' on '${owner}': parameter 1 is not of type 'date'.`)
+	if (!Number.isFinite(millis)) throw new TypeError('The value cannot be converted because it is not a valid Date.')
+	const nanos = millis * 1_000_000
+	if (nanos >= MAX_DATE_NANOS) throw new TypeError("This API doesn't support dates after 2189.")
+	if (nanos <= -MAX_DATE_NANOS) throw new TypeError("This API doesn't support dates before 1687.")
+	// kj::Date keeps whole milliseconds, truncated toward zero.
+	const time = Math.trunc(millis)
+	if (time <= 0) throw new TypeError('setAlarm() cannot be called with an alarm time <= 0')
+	return time
+}
+
 export class SqliteDurableObjectStorage {
 	private db: Database
 	private namespace: string
@@ -616,7 +638,7 @@ export class SqliteDurableObjectStorage {
 	}
 
 	async setAlarm(scheduledTime: number | Date, _options?: StorageOptions): Promise<void> {
-		const time = scheduledTime instanceof Date ? scheduledTime.getTime() : scheduledTime
+		const time = parseAlarmTime(scheduledTime, 'DurableObjectStorage')
 		this.db
 			.query('INSERT OR REPLACE INTO do_alarms (namespace, id, alarm_time) VALUES (?, ?, ?)')
 			.run(this.namespace, this.id, time)
@@ -719,7 +741,9 @@ export class DurableObjectTransaction {
 	}
 
 	async setAlarm(scheduledTime: number | Date, options?: StorageOptions): Promise<void> {
-		return this._live('setAlarm').setAlarm(scheduledTime, options)
+		// workerd converts the argument before the method runs, so a bad time wins over a finished transaction.
+		const time = parseAlarmTime(scheduledTime, 'DurableObjectTransaction')
+		return this._live('setAlarm').setAlarm(time, options)
 	}
 
 	async deleteAlarm(options?: StorageOptions): Promise<void> {

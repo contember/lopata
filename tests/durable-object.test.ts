@@ -784,6 +784,59 @@ describe('DurableObject Alarms', () => {
 			expect(await storage.getAlarm()).toBeNull()
 		})
 
+		describe('setAlarm rejects invalid times like workerd', () => {
+			const notADate = "Failed to execute 'setAlarm' on 'DurableObjectStorage': parameter 1 is not of type 'date'."
+			const invalidDate = 'The value cannot be converted because it is not a valid Date.'
+			const notPositive = 'setAlarm() cannot be called with an alarm time <= 0'
+			/** Plain JS callers are not bound by the `number | Date` signature. */
+			type UntypedAlarms = { setAlarm(value: unknown): Promise<void> }
+			const cases: [string, unknown, string][] = [
+				['NaN', Number.NaN, invalidDate],
+				['Infinity', Number.POSITIVE_INFINITY, invalidDate],
+				['-Infinity', Number.NEGATIVE_INFINITY, invalidDate],
+				['invalid Date', new Date(Number.NaN), invalidDate],
+				['numeric string', String(Date.now() + 60000), notADate],
+				['undefined', undefined, notADate],
+				['null', null, notADate],
+				['bigint', BigInt(Date.now() + 60000), notADate],
+				['boxed number', new Number(Date.now() + 60000), notADate],
+				['after 2189', 9_223_372_036_855, "This API doesn't support dates after 2189."],
+				['before 1687', -9_223_372_036_855, "This API doesn't support dates before 1687."],
+				['zero', 0, notPositive],
+				['negative', -1, notPositive],
+				['fraction truncating to zero', 0.9, notPositive],
+			]
+			for (const [name, value, message] of cases) {
+				test(name, async () => {
+					await storage.setAlarm(12345)
+					const notified: (number | null)[] = []
+					storage._setAlarmCallback(time => notified.push(time))
+					const untyped: UntypedAlarms = storage
+					const error = await untyped.setAlarm(value).then(() => null, (e: unknown) => e)
+					expect(error).toBeInstanceOf(TypeError)
+					expect(error).toHaveProperty('message', message)
+					expect(await storage.getAlarm()).toBe(12345)
+					expect(notified).toEqual([])
+				})
+			}
+
+			test('stores whole milliseconds, truncated toward zero', async () => {
+				await storage.setAlarm(12345.9)
+				expect(await storage.getAlarm()).toBe(12345)
+			})
+
+			test('in a transaction, names DurableObjectTransaction', async () => {
+				await storage.transaction(async txn => {
+					const untyped: UntypedAlarms = txn
+					await expect(untyped.setAlarm('soon')).rejects.toThrow(
+						"Failed to execute 'setAlarm' on 'DurableObjectTransaction': parameter 1 is not of type 'date'.",
+					)
+					await expect(txn.setAlarm(Number.NaN)).rejects.toThrow(invalidDate)
+				})
+				expect(await storage.getAlarm()).toBeNull()
+			})
+		})
+
 		test('alarm isolation between instances', async () => {
 			const storage2 = new SqliteDurableObjectStorage(db, 'TestDO', 'instance2')
 			const time1 = Date.now() + 60000
