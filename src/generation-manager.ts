@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { BrowserConfig } from './bindings/browser'
 import type { DOExecutorFactory } from './bindings/do-executor'
+import { type AssetRouting, parseAssetRouting } from './bindings/static-assets'
 import { resolveCompatibility } from './compatibility'
 import type { WranglerConfig } from './config'
 import { buildEnv, wireCrossWorkerBindings } from './env'
@@ -31,6 +32,7 @@ export class GenerationManager {
 	gracePeriodMs = 10_000
 
 	readonly config: WranglerConfig
+	readonly assetRouting: AssetRouting
 	readonly baseDir: string
 	/** Entry module, or null for an assets-only worker (no script to run). */
 	readonly workerPath: string | null
@@ -66,6 +68,7 @@ export class GenerationManager {
 			throw new Error(`Worker "${config.name}" has neither "main" nor "assets" — nothing to serve`)
 		}
 		this.config = config
+		this.assetRouting = parseAssetRouting(config.assets?.run_worker_first)
 		this.baseDir = baseDir
 		// An assets-only worker has no entry module: Cloudflare runs no script for it,
 		// so there is nothing to resolve, spawn or hot-reload.
@@ -195,7 +198,7 @@ export class GenerationManager {
 		}
 
 		const genId = this.nextGenId++
-		const gen = new Generation(genId, env, registry, this.config, executor, this.workerName, this.cronEnabled)
+		const gen = new Generation(genId, env, registry, this.config, this.assetRouting, executor, this.workerName, this.cronEnabled)
 		this.generations.set(genId, gen)
 
 		const oldGenId = this._activeGenId
@@ -234,7 +237,7 @@ export class GenerationManager {
 		wireCrossWorkerBindings(registry, {}, env, this.workerRegistry)
 
 		const genId = this.nextGenId++
-		const gen = new Generation(genId, env, registry, this.config, null, this.workerName, this.cronEnabled)
+		const gen = new Generation(genId, env, registry, this.config, this.assetRouting, null, this.workerName, this.cronEnabled)
 		this.generations.set(genId, gen)
 
 		const oldGenId = this._activeGenId

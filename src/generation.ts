@@ -2,7 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
-import { assetsOnlyRejection, canServeAssets } from './bindings/static-assets'
+import { type AssetRouting, assetsOnlyRejection, canServeAssets, isAssetMethod, methodNotAllowed, routeBeforeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -48,6 +48,7 @@ export class Generation {
 	readonly env: Record<string, unknown>
 	readonly registry: ClassRegistry
 	readonly config: WranglerConfig
+	readonly assetRouting: AssetRouting
 	readonly workerName: string | undefined
 	readonly cronEnabled: boolean
 	/** null for an assets-only worker — there is no user module to run. */
@@ -61,6 +62,7 @@ export class Generation {
 		env: Record<string, unknown>,
 		registry: ClassRegistry,
 		config: WranglerConfig,
+		assetRouting: AssetRouting,
 		threadExecutor: WorkerThreadExecutor | null,
 		workerName?: string,
 		cronEnabled?: boolean,
@@ -70,6 +72,7 @@ export class Generation {
 		this.env = env
 		this.registry = registry
 		this.config = config
+		this.assetRouting = assetRouting
 		this.workerName = workerName
 		this.cronEnabled = cronEnabled ?? false
 		this.threadExecutor = threadExecutor
@@ -133,21 +136,14 @@ export class Generation {
 				// of delegating to ASSETS, so honoring assets-first here is required to
 				// match workerd — otherwise directory-index assets like `/account/`
 				// (served from `/account/index.html`) never reach the asset layer.
-				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				if (!workerFirst && servableFromAssets) {
+				// A worker that runs first owns the response, 404 included, as on Cloudflare.
+				const route = routeBeforeAssets(this.assetRouting, url.pathname)
+				if (route === 'assets') return isAssetMethod(request) ? assets.fetch(request) : methodNotAllowed()
+				if (route === 'default' && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
-					response = await executor.executeFetch(request)
-				} else {
-					response = await executor.executeFetch(request)
-					if (response.status === 404 && servableFromAssets) {
-						// Drop the worker's streaming body so the source pump on the
-						// other side stops — we're discarding this response in favour
-						// of the assets fallback.
-						response.body?.cancel().catch(() => {})
-						return assets.fetch(request)
-					}
 				}
+				response = await executor.executeFetch(request)
 			}
 			const ws = (response as ResponseWithWebSocket).webSocket
 			if (response.status === 101 && ws instanceof CFWebSocket) {
@@ -332,17 +328,4 @@ export class Generation {
 /** Bun HMR + browser well-known probes that shouldn't get spans. */
 function isInfrastructurePath(pathname: string): boolean {
 	return pathname.startsWith('/_bun/') || pathname.startsWith('/.well-known/')
-}
-
-function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {
-	if (config === true) return true
-	if (!config) return false
-	return config.some(pattern => {
-		if (pattern === pathname) return true
-		if (pattern.endsWith('/*')) {
-			const prefix = pattern.slice(0, -1)
-			return pathname.startsWith(prefix) || pathname === pattern.slice(0, -2)
-		}
-		return false
-	})
 }

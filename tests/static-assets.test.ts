@@ -2,7 +2,15 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { matchPattern, matchRedirectPattern, parseHeadersFile, parseRedirects, StaticAssets } from '../src/bindings/static-assets'
+import {
+	matchPattern,
+	matchRedirectPattern,
+	parseAssetRouting,
+	parseHeadersFile,
+	parseRedirects,
+	routeBeforeAssets,
+	StaticAssets,
+} from '../src/bindings/static-assets'
 
 let tmpDir: string
 let assets: StaticAssets
@@ -551,4 +559,38 @@ test('fetch with string input skips conditional-request handling (no If-None-Mat
 	// No request object available => cannot read If-None-Match, but the file must still serve.
 	expect(res.status).toBe(200)
 	expect(res.headers.get('ETag')).toBeTruthy()
+})
+
+function route(runWorkerFirst: boolean | string[] | undefined, pathname: string) {
+	return routeBeforeAssets(parseAssetRouting(runWorkerFirst), pathname)
+}
+
+test('routeBeforeAssets: run_worker_first true sends every path to the worker', () => {
+	expect(route(true, '/index.html')).toBe('worker')
+	expect(route(false, '/api/x')).toBe('default')
+	expect(route(undefined, '/api/x')).toBe('default')
+})
+
+test('routeBeforeAssets: negative rules win over positive ones', () => {
+	const rules = ['/*', '!/static/*']
+	expect(route(rules, '/static/app.js')).toBe('assets')
+	expect(route(rules, '/static/nested/app.js')).toBe('assets')
+	expect(route(rules, '/f/unknown')).toBe('worker')
+})
+
+test('routeBeforeAssets: rules are anchored globs, as in the Cloudflare router', () => {
+	expect(route(['/api/*'], '/api/users/1')).toBe('worker')
+	expect(route(['/api/*'], '/api')).toBe('default')
+	expect(route(['/api/*'], '/v1/api/x')).toBe('default')
+	expect(route(['/*/admin'], '/team/admin')).toBe('worker')
+	expect(route(['/*/admin'], '/team/admin/x')).toBe('default')
+	expect(route(['/a.b'], '/aXb')).toBe('default')
+	expect(route(['/exact'], '/exact')).toBe('worker')
+})
+
+test('parseAssetRouting: rejects rules wrangler rejects on deploy', () => {
+	expect(() => parseAssetRouting([])).toThrow('at least 1 rule')
+	expect(() => parseAssetRouting(['api/*'])).toThrow("'api/*': rules must start with '/' or '!/'")
+	expect(() => parseAssetRouting(['/*', '!static/*'])).toThrow("'!static/*': negative rules must start with '!/'")
+	expect(() => parseAssetRouting(['!/static/*'])).toThrow('Only negative `run_worker_first` rules')
 })

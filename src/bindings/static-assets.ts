@@ -59,7 +59,55 @@ export function isWebSocketUpgrade(request: Request): boolean {
 
 /** Cloudflare only serves static assets for GET/HEAD; everything else belongs to the script. */
 export function canServeAssets(request: Request): boolean {
-	return (request.method === 'GET' || request.method === 'HEAD') && !isWebSocketUpgrade(request)
+	return isAssetMethod(request) && !isWebSocketUpgrade(request)
+}
+
+/** The asset layer answers only GET/HEAD; anything else gets `methodNotAllowed()`. */
+export function isAssetMethod(request: Request): boolean {
+	return request.method === 'GET' || request.method === 'HEAD'
+}
+
+/** `assets.run_worker_first` compiled the way Cloudflare's router evaluates it. */
+export interface AssetRouting {
+	workerFirst: boolean
+	assetRules: RegExp[]
+	workerRules: RegExp[]
+}
+
+/** Validates like wrangler's `parseStaticRouting`, so a config rejected on deploy fails in dev too. */
+export function parseAssetRouting(runWorkerFirst: boolean | string[] | undefined): AssetRouting {
+	if (!Array.isArray(runWorkerFirst)) return { workerFirst: runWorkerFirst === true, assetRules: [], workerRules: [] }
+	if (runWorkerFirst.length === 0) {
+		throw new Error('No `run_worker_first` rules were provided; must provide at least 1 rule.')
+	}
+	const assetRules: RegExp[] = []
+	const workerRules: RegExp[] = []
+	const invalid: string[] = []
+	for (const rule of runWorkerFirst) {
+		if (rule.startsWith('!/')) assetRules.push(globRuleRegExp(rule.slice(1)))
+		else if (rule.startsWith('/')) workerRules.push(globRuleRegExp(rule))
+		else if (rule.startsWith('!')) invalid.push(`'${rule}': negative rules must start with '!/'`)
+		else invalid.push(`'${rule}': rules must start with '/' or '!/'`)
+	}
+	if (invalid.length > 0) throw new Error(`Invalid routes in \`run_worker_first\`:\n${invalid.join('\n')}`)
+	if (workerRules.length === 0) {
+		throw new Error('Only negative `run_worker_first` rules were provided; must provide at least 1 non-negative rule')
+	}
+	return { workerFirst: false, assetRules, workerRules }
+}
+
+/** `worker`: its response is final. `assets`: the worker is not called. `default`: assets first, worker on an asset 404. */
+export function routeBeforeAssets(routing: AssetRouting, pathname: string): 'worker' | 'assets' | 'default' {
+	if (routing.workerFirst) return 'worker'
+	if (routing.assetRules.some(rule => rule.test(pathname))) return 'assets'
+	if (routing.workerRules.some(rule => rule.test(pathname))) return 'worker'
+	return 'default'
+}
+
+/** Cloudflare's static-routing rules are anchored and `*` is the only wildcard. */
+function globRuleRegExp(rule: string): RegExp {
+	const escaped = rule.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+	return new RegExp(`^${escaped.join('.*')}$`)
 }
 
 /**
@@ -75,6 +123,11 @@ export function assetsOnlyRejection(request: Request): Response | null {
 	if (isWebSocketUpgrade(request)) {
 		return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
 	}
+	return methodNotAllowed()
+}
+
+/** The asset layer's answer to any method other than GET/HEAD, as on Cloudflare. */
+export function methodNotAllowed(): Response {
 	return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
 }
 
