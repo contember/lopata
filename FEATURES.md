@@ -1028,7 +1028,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `assets.binding` — binding name in Worker code
 - ✅ `assets.html_handling` — "auto-trailing-slash" (default) | "force-trailing-slash" | "drop-trailing-slash" | "none"
 - ✅ `assets.not_found_handling` — "none" (default) | "single-page-application" | "404-page"
-- ✅ `assets.run_worker_first` — false (default) | true | string[] (glob patterns)
+- ✅ `assets.run_worker_first` — false (default) | true | string[] (`*` globs, `!/` rules exclude paths). A worker that runs first owns the response, 404 included
 
 ### 9.4 HTML Handling Modes
 

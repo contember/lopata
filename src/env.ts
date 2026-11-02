@@ -323,7 +323,14 @@ export function buildEnv(
 	// Static assets: main keeps the instance to auto-serve them even without a binding
 	registry.staticAssets = createStaticAssets(config, devVarsDir ?? process.cwd())
 	if (config.assets && !config.assets.binding) {
-		console.log(`[lopata] Static assets: ${config.assets.directory} (auto-serve)`)
+		if (config.assets.run_worker_first === true && config.main) {
+			console.warn(
+				'[lopata] assets.run_worker_first is true without assets.binding: every request goes to the worker, '
+					+ 'which cannot reach the static assets. Set assets.binding to fetch them from the worker.',
+			)
+		} else {
+			console.log(`[lopata] Static assets: ${config.assets.directory} (auto-serve)`)
+		}
 	}
 
 	addStatelessBindings(env, {

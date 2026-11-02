@@ -2,7 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
-import { assetsOnlyRejection, canServeAssets } from './bindings/static-assets'
+import { assetsOnlyRejection, canServeAssets, methodNotAllowed, routeBeforeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
 import type { WranglerConfig } from './config'
@@ -135,8 +135,12 @@ export class Generation {
 				// (served from `/account/index.html`) never reach the asset layer.
 				// When the worker runs first its response is final, 404 included; it
 				// reaches assets only through `env.ASSETS.fetch()`, as on Cloudflare.
-				const workerFirst = shouldRunWorkerFirst(this.config.assets?.run_worker_first, url.pathname)
-				if (!workerFirst && servableFromAssets) {
+				const route = routeBeforeAssets(this.config.assets?.run_worker_first, url.pathname)
+				if (route === 'assets') {
+					const method = request.method
+					return method === 'GET' || method === 'HEAD' ? assets.fetch(request) : methodNotAllowed()
+				}
+				if (route === 'default' && servableFromAssets) {
 					const assetResponse = await assets.fetch(request)
 					if (assetResponse.status !== 404) return assetResponse
 				}
@@ -325,17 +329,4 @@ export class Generation {
 /** Bun HMR + browser well-known probes that shouldn't get spans. */
 function isInfrastructurePath(pathname: string): boolean {
 	return pathname.startsWith('/_bun/') || pathname.startsWith('/.well-known/')
-}
-
-function shouldRunWorkerFirst(config: boolean | string[] | undefined, pathname: string): boolean {
-	if (config === true) return true
-	if (!config) return false
-	return config.some(pattern => {
-		if (pattern === pathname) return true
-		if (pattern.endsWith('/*')) {
-			const prefix = pattern.slice(0, -1)
-			return pathname.startsWith(prefix) || pathname === pattern.slice(0, -2)
-		}
-		return false
-	})
 }

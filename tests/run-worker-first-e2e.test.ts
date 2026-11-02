@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rmSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/run-worker-first')
+const FIXTURES_DIR = resolve(import.meta.dir, 'fixtures')
 const CLI_PATH = resolve(import.meta.dir, '../src/cli.ts')
 
 async function waitForServer(url: string, timeoutMs: number): Promise<void> {
@@ -19,15 +19,15 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 	throw new Error(`Server ${url} did not become ready in ${timeoutMs}ms`)
 }
 
-function cleanup() {
+function cleanup(fixture: string) {
 	try {
-		rmSync(resolve(FIXTURE_DIR, '.lopata'), { recursive: true, force: true })
+		rmSync(resolve(FIXTURES_DIR, fixture, '.lopata'), { recursive: true, force: true })
 	} catch {}
 }
 
-function spawnDev(port: number): Subprocess {
+function spawnDev(fixture: string, port: number): Subprocess {
 	return Bun.spawn(['bun', CLI_PATH, 'dev', '--port', String(port)], {
-		cwd: FIXTURE_DIR,
+		cwd: resolve(FIXTURES_DIR, fixture),
 		stdout: 'pipe',
 		stderr: 'pipe',
 	})
@@ -39,14 +39,14 @@ describe('run_worker_first: true makes the worker response final', () => {
 	const base = `http://localhost:${PORT}`
 
 	beforeAll(async () => {
-		cleanup()
-		proc = spawnDev(PORT)
+		cleanup('run-worker-first')
+		proc = spawnDev('run-worker-first', PORT)
 		await waitForServer(`${base}/hello.txt`, 15_000)
 	}, 20_000)
 
 	afterAll(() => {
 		proc?.kill()
-		cleanup()
+		cleanup('run-worker-first')
 	})
 
 	test('a worker 404 reaches the client instead of the SPA fallback', async () => {
@@ -63,5 +63,41 @@ describe('run_worker_first: true makes the worker response final', () => {
 		const spaRoute = await fetch(`${base}/some/client-route`)
 		expect(spaRoute.status).toBe(200)
 		expect(await spaRoute.text()).toContain('spa-shell')
+	})
+})
+
+describe('run_worker_first rules route matched paths to the worker and negated ones to assets', () => {
+	let proc: Subprocess
+	const PORT = 18842
+	const base = `http://localhost:${PORT}`
+
+	beforeAll(async () => {
+		cleanup('run-worker-first-rules')
+		proc = spawnDev('run-worker-first-rules', PORT)
+		await waitForServer(`${base}/static/hello.txt`, 15_000)
+	}, 20_000)
+
+	afterAll(() => {
+		proc?.kill()
+		cleanup('run-worker-first-rules')
+	})
+
+	test('a path matched by a positive rule keeps the worker 404', async () => {
+		const res = await fetch(`${base}/f/unknown`)
+		expect(res.status).toBe(404)
+		expect(await res.text()).toBe('worker-not-found')
+	})
+
+	test('a path matched by a negative rule is answered by assets without the worker', async () => {
+		const asset = await fetch(`${base}/static/hello.txt`)
+		expect(asset.status).toBe(200)
+		expect((await asset.text()).trim()).toBe('static-asset')
+
+		const missing = await fetch(`${base}/static/missing.js`)
+		expect(missing.status).toBe(200)
+		expect(await missing.text()).toContain('spa-shell')
+
+		const post = await fetch(`${base}/static/hello.txt`, { method: 'POST' })
+		expect(post.status).toBe(405)
 	})
 })

@@ -63,6 +63,25 @@ export function canServeAssets(request: Request): boolean {
 }
 
 /**
+ * Who answers a request before any asset lookup, per `assets.run_worker_first`:
+ * `worker` (its response is final), `assets` (a `!/` rule; the worker is not called),
+ * or `default` (assets-first, falling through to the worker on an asset 404).
+ * Mirrors Cloudflare's router: negative rules win, rules are anchored and `*` matches any run.
+ */
+export function routeBeforeAssets(runWorkerFirst: boolean | string[] | undefined, pathname: string): 'worker' | 'assets' | 'default' {
+	if (runWorkerFirst === true) return 'worker'
+	if (!Array.isArray(runWorkerFirst)) return 'default'
+	if (runWorkerFirst.some(rule => rule.startsWith('!/') && matchesGlobRule(rule.slice(1), pathname))) return 'assets'
+	if (runWorkerFirst.some(rule => rule.startsWith('/') && matchesGlobRule(rule, pathname))) return 'worker'
+	return 'default'
+}
+
+function matchesGlobRule(rule: string, pathname: string): boolean {
+	const source = rule.split('*').map(part => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')
+	return new RegExp(`^${source}$`).test(pathname)
+}
+
+/**
  * The response an assets-only worker owes a request its asset layer must not answer,
  * or `null` when the request is servable.
  *
@@ -75,6 +94,11 @@ export function assetsOnlyRejection(request: Request): Response | null {
 	if (isWebSocketUpgrade(request)) {
 		return new Response('Worker has no script to accept a WebSocket upgrade', { status: 400 })
 	}
+	return methodNotAllowed()
+}
+
+/** The asset layer's answer to any method other than GET/HEAD, as on Cloudflare. */
+export function methodNotAllowed(): Response {
 	return new Response('Method Not Allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
 }
 

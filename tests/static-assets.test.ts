@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { matchPattern, matchRedirectPattern, parseHeadersFile, parseRedirects, StaticAssets } from '../src/bindings/static-assets'
+import { matchPattern, matchRedirectPattern, parseHeadersFile, parseRedirects, routeBeforeAssets, StaticAssets } from '../src/bindings/static-assets'
 
 let tmpDir: string
 let assets: StaticAssets
@@ -551,4 +551,31 @@ test('fetch with string input skips conditional-request handling (no If-None-Mat
 	// No request object available => cannot read If-None-Match, but the file must still serve.
 	expect(res.status).toBe(200)
 	expect(res.headers.get('ETag')).toBeTruthy()
+})
+
+test('routeBeforeAssets: run_worker_first true sends every path to the worker', () => {
+	expect(routeBeforeAssets(true, '/index.html')).toBe('worker')
+	expect(routeBeforeAssets(false, '/api/x')).toBe('default')
+	expect(routeBeforeAssets(undefined, '/api/x')).toBe('default')
+})
+
+test('routeBeforeAssets: negative rules win over positive ones', () => {
+	const rules = ['/*', '!/static/*']
+	expect(routeBeforeAssets(rules, '/static/app.js')).toBe('assets')
+	expect(routeBeforeAssets(rules, '/static/nested/app.js')).toBe('assets')
+	expect(routeBeforeAssets(rules, '/f/unknown')).toBe('worker')
+})
+
+test('routeBeforeAssets: rules are anchored globs, as in the Cloudflare router', () => {
+	expect(routeBeforeAssets(['/api/*'], '/api/users/1')).toBe('worker')
+	expect(routeBeforeAssets(['/api/*'], '/api')).toBe('default')
+	expect(routeBeforeAssets(['/api/*'], '/v1/api/x')).toBe('default')
+	expect(routeBeforeAssets(['/*/admin'], '/team/admin')).toBe('worker')
+	expect(routeBeforeAssets(['/*/admin'], '/team/admin/x')).toBe('default')
+	expect(routeBeforeAssets(['/a.b'], '/aXb')).toBe('default')
+	expect(routeBeforeAssets(['/exact'], '/exact')).toBe('worker')
+})
+
+test('routeBeforeAssets: rules without a leading slash never match', () => {
+	expect(routeBeforeAssets(['api/*', '!static/*'], '/api/x')).toBe('default')
 })
