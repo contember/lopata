@@ -43,7 +43,7 @@ async function outcome(specifier: string) {
 `
 
 describe('Bun runtime assumptions', () => {
-	test('a nested Worker keeps running after its parent Worker is terminated', () => {
+	test('terminating a Worker also terminates the Workers it spawned', () => {
 		const result = probe({
 			'child.ts': `
 				import { appendFileSync } from 'node:fs'
@@ -64,11 +64,11 @@ describe('Bun runtime assumptions', () => {
 				await Bun.sleep(100)
 				const before = ticks()
 				await Bun.sleep(200)
-				console.log(JSON.stringify({ childStillRunning: ticks() > before }))
+				console.log(JSON.stringify({ started: before > 0, childStillRunning: ticks() > before }))
 				process.exit(0)
 			`,
 		})
-		expect(result).toEqual({ childStillRunning: true })
+		expect(result).toEqual({ started: true, childStillRunning: false })
 	})
 
 	test('runtime plugins are per thread: a module registered in the parent is missing in a Worker', () => {
@@ -187,17 +187,10 @@ describe('Bun runtime assumptions', () => {
 		expect(result).toEqual({ isMap: true, value: 1, isBuffer: true, bytes: [1, 2, 3] })
 	})
 
-	test('structuredClone() rejects a compiled WebAssembly.Module', () => {
+	test('structuredClone() copies a compiled WebAssembly.Module', () => {
 		// The smallest valid module: magic number and version.
 		const module = new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))
-		let error: unknown
-		try {
-			structuredClone(module)
-		} catch (e) {
-			error = e
-		}
-		expect(error).toBeInstanceOf(DOMException)
-		expect(error).toMatchObject({ name: 'DataCloneError' })
+		expect(structuredClone(module)).toBeInstanceOf(WebAssembly.Module)
 	})
 
 	test('Bun.Transpiler#scanImports reports static imports, re-exports, literal import() and require()', () => {

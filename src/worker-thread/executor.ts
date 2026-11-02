@@ -15,7 +15,6 @@ import { type CompatibilitySelection, resolveCompatibility } from '../compatibil
 import type { WranglerConfig } from '../config'
 import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
-import { terminateWorkerThread } from './nested-workers'
 import type {
 	BindingTarget,
 	ParentSpanContext,
@@ -72,7 +71,6 @@ export class WorkerThreadExecutor {
 	private _pendingWorkflowControl = new Map<number, Pending<WorkflowControlResult>>()
 	private _nextId = 1
 	private _disposed = false
-	private _hasNestedWorkers = false
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
@@ -151,7 +149,7 @@ export class WorkerThreadExecutor {
 			// and the thread (with its queue-consumer `setInterval`s, see
 			// `startThreadQueueConsumers`) lives until process exit, polling the shared
 			// SQLite queue forever. Mirrors `WorkerExecutor.onerror` for DO workers.
-			terminateWorkerThread(this._worker, this._hasNestedWorkers)
+			this._worker.terminate()
 			// `event.message` is frequently empty for Bun worker errors — prefer the
 			// real stack when the runtime attaches one so the user gets a usable trace.
 			const detail = event.error?.stack ?? event.message ?? 'unknown'
@@ -198,9 +196,6 @@ export class WorkerThreadExecutor {
 		if (this._disposed) return
 		if (this._rpcChannel.handle(msg)) return
 		switch (msg.type) {
-			case 'nested-workers-spawned':
-				this._hasNestedWorkers = true
-				break
 			case 'need-init':
 				this._send({
 					type: 'init',
@@ -567,7 +562,7 @@ export class WorkerThreadExecutor {
 	dispose(): void {
 		if (this._disposed) return
 		this._disposed = true
-		terminateWorkerThread(this._worker, this._hasNestedWorkers)
+		this._worker.terminate()
 		this._failAll(new Error('Worker thread terminated'))
 	}
 }

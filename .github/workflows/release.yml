@@ -18,7 +18,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          # The worker-thread and Worker Loader runtime depends on Bun behaviour pinned in tests/bun-runtime-assumptions.test.ts.
+          # Worker threads and the Worker Loader depend on Bun behaviour pinned in tests/bun-runtime-assumptions.test.ts.
           bun-version-file: .bun-version
 
       - uses: actions/setup-node@v4

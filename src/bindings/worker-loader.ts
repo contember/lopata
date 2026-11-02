@@ -58,25 +58,6 @@ interface ResolvedCode {
 	env: EncodedLoaderEnv
 }
 
-/**
- * Stubs of this thread that may own a Worker or a module directory. Bun keeps a nested Worker
- * running after its parent thread is terminated, so the owning thread disposes them first.
- */
-const liveStubs = new Set<WorkerStub>()
-let onFirstSpawn: (() => void) | null = null
-let spawned = false
-
-/** Call `listener` once, when this thread spawns its first dynamic worker. */
-export function onWorkerStubSpawn(listener: () => void): void {
-	onFirstSpawn = listener
-	if (spawned) listener()
-}
-
-/** Dispose every stub this thread created: terminate their Workers and remove their module directories. */
-export function disposeWorkerStubs(): void {
-	for (const stub of [...liveStubs]) stub.dispose()
-}
-
 export class WorkerStub {
 	private readonly codeSource: CodeSource
 	private _resolved: ResolvedCode | null = null
@@ -111,7 +92,6 @@ export class WorkerStub {
 	}
 
 	private async _boot(): Promise<void> {
-		liveStubs.add(this)
 		try {
 			const { code, env } = await this._resolveCode()
 			const compatibility = validateCode(code)
@@ -130,10 +110,6 @@ export class WorkerStub {
 	private _spawn(mainPath: string, env: EncodedLoaderEnv, globalOutbound: 'allow' | 'block', compatibility: CompatibilitySelection): Promise<void> {
 		const worker = new Worker(WORKER_ENTRY_PATH)
 		this._worker = worker
-		if (!spawned) {
-			spawned = true
-			onFirstSpawn?.()
-		}
 
 		let readyResolve: () => void
 		let readyReject: (err: Error) => void
@@ -199,7 +175,6 @@ export class WorkerStub {
 
 	/** Terminate the Worker and remove the module directory. */
 	private _release(): void {
-		liveStubs.delete(this)
 		if (this._worker) {
 			try {
 				this._worker.terminate()

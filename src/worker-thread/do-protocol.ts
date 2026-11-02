@@ -12,7 +12,6 @@
  */
 
 import type { DOAbortPolicy } from '../bindings/do-executor'
-import type { DisposeNestedWorkersCommand, NestedWorkersMessage } from './nested-workers'
 import type {
 	ParentSpanContext,
 	RpcCallRequest,
@@ -193,12 +192,10 @@ export type DOWorkerMessage =
 	| DoReqStreamChunk
 	| DoReqStreamEnd
 	| DoReqStreamError
-	| DisposeNestedWorkersCommand
 
 /** Messages from worker → main thread */
 export type DOMainMessage =
 	| TraceMessage
-	| NestedWorkersMessage
 	| { type: 'need-init' }
 	| { type: 'ready' }
 	| { type: 'result'; id: number; result: DOResult }

@@ -10,8 +10,8 @@ import type { WranglerConfig } from '../src/config'
 import { runMigrations } from '../src/db'
 import { WorkerThreadExecutor } from '../src/worker-thread/executor'
 
-// Bun keeps a nested Worker running after its parent thread is terminated, so tearing down the
-// thread that owns a Worker Loader must dispose the dynamic workers it spawned.
+// A dynamic worker is a Worker nested in the thread that owns the loader. Bun terminates nested Workers
+// with their parent (pinned in bun-runtime-assumptions.test.ts); these tests check that end to end.
 
 const FIXTURE = join(import.meta.dir, 'fixtures/loader-owner-worker.ts')
 const CONFIG = {

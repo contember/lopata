@@ -18,7 +18,6 @@ import { getActiveContext, runWithParentContext } from '../tracing/context'
 import { setTraceStoreOverride } from '../tracing/store'
 import { setGlobalExports } from '../worker-exports'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
-import { serveNestedWorkerDisposal } from './nested-workers'
 import type {
 	ParentSpanContext,
 	SerializedResponse,
@@ -43,8 +42,6 @@ declare var self: Worker
 function post(msg: WorkerMessage): void {
 	postMessage(msg)
 }
-
-serveNestedWorkerDisposal(self, post)
 
 /** Outbound response-body pumps for the top-level fetch response (worker →
  *  main). Inbound `stream-cancel` (client disconnected) stops the source. */
