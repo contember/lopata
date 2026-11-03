@@ -6,7 +6,7 @@ import { type CompatibilitySelection, parseCompatibility, resolveCompatibility }
 import { loadConfig } from '../src/config'
 
 interface DatedCase {
-	key: 'deleteAllDeletesAlarm' | 'websocketCloseReasonByteLimit' | 'websocketStandardBinaryType' | 'websocketAutoReplyToClose'
+	key: 'deleteAllDeletesAlarm' | 'websocketCloseReasonByteLimit' | 'websocketStandardBinaryType' | 'websocketAutoReplyToClose' | 'ctxExports'
 	enable: string
 	disable: string
 	before: string
@@ -41,6 +41,13 @@ const datedCases: DatedCase[] = [
 		disable: 'web_socket_manual_reply_to_close',
 		before: '2026-04-06',
 		date: '2026-04-07',
+	},
+	{
+		key: 'ctxExports',
+		enable: 'enable_ctx_exports',
+		disable: 'disable_ctx_exports',
+		before: '2025-11-16',
+		date: '2025-11-17',
 	},
 ]
 

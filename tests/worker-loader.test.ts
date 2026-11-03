@@ -136,7 +136,7 @@ describe('WorkerLoaderBinding.load()', () => {
 				modules: { 'main.js': `export const notDefault = 1` },
 			}),
 		)
-		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow(/no default export/)
+		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Worker has no default entrypoint.')
 	})
 
 	test('validation — missing mainModule in modules map rejected', () => {
@@ -204,7 +204,7 @@ describe('WorkerLoaderBinding.get()', () => {
 		expect(a).not.toBe(b)
 	})
 
-	test('async getCodeCallback is invoked lazily and awaited', async () => {
+	test('async getCodeCallback is invoked when the id is created and awaited', async () => {
 		let calls = 0
 		const stub = loader.get('lazy', async () => {
 			calls++
@@ -216,7 +216,7 @@ describe('WorkerLoaderBinding.get()', () => {
 				modules: { 'main.js': 'export default { fetch() { return new Response("lazy ok") } }' },
 			}
 		})
-		expect(calls).toBe(0) // not yet invoked
+		expect(calls).toBe(1) // invoked by get() itself, before any request
 		stubsToDispose.push(stub)
 
 		const resp = await stub.getEntrypoint().fetch('http://loader/')

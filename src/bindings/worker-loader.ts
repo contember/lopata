@@ -53,13 +53,22 @@ interface PendingCommand {
 
 type CodeSource = WorkerCode | (() => WorkerCode | Promise<WorkerCode>)
 
+/** Fetchers the dynamic worker reaches through placeholders in its env and in entrypoint props, indexed by slot. */
+type FetcherTable = Record<string | symbol, unknown>[]
+
 interface ResolvedCode {
 	code: WorkerCode
-	env: EncodedLoaderEnv
+	env: Record<string, unknown>
+}
+
+export interface EntrypointOptions {
+	props?: Record<string, unknown>
+	limits?: { cpuMs?: number; subRequests?: number }
 }
 
 export class WorkerStub {
 	private readonly codeSource: CodeSource
+	private readonly _fetchers: FetcherTable = []
 	private _resolved: ResolvedCode | null = null
 	private readonly workDir: string
 	private _worker: Worker | null = null
@@ -77,15 +86,20 @@ export class WorkerStub {
 		this.codeSource = code
 		this.workDir = join(baseDir, randomUUIDv7())
 		if (typeof code !== 'function') {
-			this._resolved = { code, env: encodeLoaderEnv(code.env) }
+			this._resolved = { code, env: encodeLoaderEnv(code.env, this._fetchers) }
 		}
+	}
+
+	/** @internal Start loading now, as workerd does; a failure stays cached and surfaces on each request. */
+	_startLoading(): void {
+		this._ensureReady().catch(() => {})
 	}
 
 	private async _resolveCode(): Promise<ResolvedCode> {
 		if (this._resolved) return this._resolved
 		const code = await (this.codeSource as () => WorkerCode | Promise<WorkerCode>)()
 		validateCode(code)
-		this._resolved = { code, env: encodeLoaderEnv(code.env) }
+		this._resolved = { code, env: encodeLoaderEnv(code.env, this._fetchers) }
 		return this._resolved
 	}
 
@@ -111,7 +125,12 @@ export class WorkerStub {
 		}
 	}
 
-	private _spawn(mainPath: string, env: EncodedLoaderEnv, globalOutbound: 'allow' | 'block', compatibility: CompatibilitySelection): Promise<void> {
+	private _spawn(
+		mainPath: string,
+		env: Record<string, unknown>,
+		globalOutbound: 'allow' | 'block',
+		compatibility: CompatibilitySelection,
+	): Promise<void> {
 		const worker = new Worker(WORKER_ENTRY_PATH)
 		this._worker = worker
 
@@ -129,7 +148,7 @@ export class WorkerStub {
 				const init: LoaderInitMessage = {
 					type: 'init',
 					mainModulePath: mainPath,
-					env: env.value,
+					env,
 					globalOutbound,
 					compatibility,
 				}
@@ -141,7 +160,7 @@ export class WorkerStub {
 				return
 			}
 			if (msg.type === 'env-call' || msg.type === 'env-get' || msg.type === 'env-fetch') {
-				void answerEnvRequest(worker, env.fetchers, msg)
+				void answerEnvRequest(worker, this._fetchers, msg)
 				return
 			}
 			if (msg.type === 'result') {
@@ -208,17 +227,20 @@ export class WorkerStub {
 		})
 	}
 
-	getEntrypoint(name?: string): EntrypointProxy {
-		return createEntrypointProxy(this, name)
+	/** Props are validated and snapshotted now, so later changes to the caller's object do not reach the entrypoint. */
+	getEntrypoint(name?: string | null, options?: EntrypointOptions): EntrypointProxy {
+		validateLimits(options?.limits)
+		const props = encodeEnvObject(options?.props ?? {}, 'props', this._fetchers)
+		return createEntrypointProxy(this, { entrypoint: name === null || name === 'default' ? undefined : name, props: structuredClone(props) })
 	}
 
 	/** @internal */
-	async _fetch(entrypoint: string | undefined, request: Request): Promise<Response> {
+	async _fetch(handle: EntrypointHandle, request: Request): Promise<Response> {
 		this._assertNotDisposed()
 		const body = request.body ? await readBodyUntilAborted(request.body, this._disposal.signal) : null
 		const result = await this._send({
 			type: 'fetch',
-			entrypoint,
+			...handle,
 			url: request.url,
 			method: request.method,
 			headers: Array.from(request.headers.entries()),
@@ -233,14 +255,14 @@ export class WorkerStub {
 	}
 
 	/** @internal */
-	async _scheduled(entrypoint: string | undefined, cron: string, scheduledTime: number): Promise<void> {
-		const result = await this._send({ type: 'scheduled', entrypoint, cron, scheduledTime })
+	async _scheduled(handle: EntrypointHandle, cron: string, scheduledTime: number): Promise<void> {
+		const result = await this._send({ type: 'scheduled', ...handle, cron, scheduledTime })
 		if (result.type !== 'scheduled') throw new Error(`Unexpected result type: ${result.type}`)
 	}
 
 	/** @internal */
-	async _rpcCall(entrypoint: string | undefined, method: string, args: unknown[]): Promise<unknown> {
-		const result = await this._send({ type: 'rpc-call', entrypoint, method, args })
+	async _rpcCall(handle: EntrypointHandle, method: string, args: unknown[]): Promise<unknown> {
+		const result = await this._send({ type: 'rpc-call', ...handle, method, args })
 		if (result.type !== 'rpc-call') throw new Error(`Unexpected result type: ${result.type}`)
 		return result.value
 	}
@@ -258,13 +280,19 @@ export class WorkerStub {
 	}
 }
 
+/** What a `getEntrypoint()` handle sends with each invocation: `entrypoint` is undefined for the default export. */
+interface EntrypointHandle {
+	entrypoint: string | undefined
+	props: Record<string, unknown>
+}
+
 export interface EntrypointProxy {
 	fetch(request: Request | string | URL, init?: RequestInit): Promise<Response>
 	scheduled(event: { cron: string; scheduledTime?: number }): Promise<void>
 	[method: string]: unknown
 }
 
-function createEntrypointProxy(stub: WorkerStub, entrypoint?: string): EntrypointProxy {
+function createEntrypointProxy(stub: WorkerStub, handle: EntrypointHandle): EntrypointProxy {
 	const target = Object.create(null) as EntrypointProxy
 	return new Proxy(target, {
 		get(_t, prop: string | symbol) {
@@ -273,16 +301,16 @@ function createEntrypointProxy(stub: WorkerStub, entrypoint?: string): Entrypoin
 			if (prop === 'fetch') {
 				return async (input: Request | string | URL, init?: RequestInit) => {
 					const request = input instanceof Request ? new Request(input, init) : new Request(input.toString(), init)
-					return stub._fetch(entrypoint, request)
+					return stub._fetch(handle, request)
 				}
 			}
 			if (prop === 'scheduled') {
 				return async (event: { cron?: string; scheduledTime?: number }) => {
-					return stub._scheduled(entrypoint, event.cron ?? '* * * * *', event.scheduledTime ?? Date.now())
+					return stub._scheduled(handle, event.cron ?? '* * * * *', event.scheduledTime ?? Date.now())
 				}
 			}
 			if (prop === 'then' || prop === 'catch' || prop === 'finally') return undefined
-			return (...args: unknown[]) => stub._rpcCall(entrypoint, prop, args)
+			return (...args: unknown[]) => stub._rpcCall(handle, prop, args)
 		},
 	}) as EntrypointProxy
 }
@@ -298,17 +326,17 @@ export class WorkerLoaderBinding {
 
 	load(code: WorkerCode): WorkerStub {
 		validateCode(code)
-		return new WorkerStub(code, this.baseDir)
+		const stub = new WorkerStub(code, this.baseDir)
+		stub._startLoading()
+		return stub
 	}
 
 	get(id: string, getCodeCallback: () => Promise<WorkerCode> | WorkerCode): WorkerStub {
 		const existing = this.cache.get(id)
 		if (existing) return existing
-		// Defer invoking the callback until the stub is first used — matches
-		// Cloudflare's behavior (get() returns synchronously, code resolution
-		// happens lazily on first fetch/rpc call).
 		const stub = new WorkerStub(getCodeCallback, this.baseDir)
 		this.cache.set(id, stub)
+		stub._startLoading()
 		return stub
 	}
 
@@ -345,27 +373,35 @@ function validateModuleName(name: string): void {
 	}
 }
 
-/** A loader `env` ready to post: `value` has each Fetcher swapped for a placeholder indexing `fetchers`. */
-interface EncodedLoaderEnv {
-	value: Record<string, unknown>
-	fetchers: Record<string | symbol, unknown>[]
+function validateLimits(limits: EntrypointOptions['limits']): void {
+	if (limits === undefined) return
+	for (const key of ['cpuMs', 'subRequests'] as const) {
+		const value = limits[key]
+		if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+			throw new TypeError(`limits.${key} must be a non-negative number`)
+		}
+	}
 }
 
 /**
  * Validate and encode `env` the way workerd serializes it for a dynamic worker: data that
- * structured clone accepts, plus Fetchers. Anything else — functions, class instances,
- * Durable Object stubs, other bindings — throws a DataCloneError naming the offending path.
+ * structured clone accepts, plus Fetchers, each swapped for a placeholder indexing `fetchers`.
+ * Anything else — functions, class instances, Durable Object stubs, other bindings — throws a
+ * DataCloneError naming the offending path. Entrypoint props follow the same policy.
  */
-function encodeLoaderEnv(env: Record<string, unknown> | undefined): EncodedLoaderEnv {
-	const fetchers: Record<string | symbol, unknown>[] = []
-	const value: Record<string, unknown> = {}
-	for (const [key, entry] of Object.entries(env ?? {})) {
-		value[key] = encodeEnvValue(entry, `env.${key}`, fetchers)
-	}
-	return { value, fetchers }
+function encodeLoaderEnv(env: Record<string, unknown> | undefined, fetchers: FetcherTable): Record<string, unknown> {
+	return encodeEnvObject(env ?? {}, 'env', fetchers)
 }
 
-function encodeEnvValue(value: unknown, path: string, fetchers: Record<string | symbol, unknown>[]): unknown {
+function encodeEnvObject(value: object, path: string, fetchers: FetcherTable): Record<string, unknown> {
+	const out: Record<string, unknown> = {}
+	for (const [key, entry] of Object.entries(value)) {
+		out[key] = encodeEnvValue(entry, `${path}.${key}`, fetchers)
+	}
+	return out
+}
+
+function encodeEnvValue(value: unknown, path: string, fetchers: FetcherTable): unknown {
 	if (isLoopbackServiceStub(value)) {
 		throw envCloneError(path, 'a ctx.exports loopback must be specialized first, e.g. ctx.exports.Name({ props })')
 	}
@@ -381,13 +417,7 @@ function encodeEnvValue(value: unknown, path: string, fetchers: Record<string | 
 	}
 	if (Array.isArray(value)) return value.map((item, index) => encodeEnvValue(item, `${path}[${index}]`, fetchers))
 	const proto = Object.getPrototypeOf(value)
-	if (proto === Object.prototype || proto === null) {
-		const out: Record<string, unknown> = {}
-		for (const [key, entry] of Object.entries(value)) {
-			out[key] = encodeEnvValue(entry, `${path}.${key}`, fetchers)
-		}
-		return out
-	}
+	if (proto === Object.prototype || proto === null) return encodeEnvObject(value, path, fetchers)
 	// Built-ins (Date, Map, ArrayBuffer, …) report their own tag; a user class instance reports
 	// `[object Object]` and workerd refuses it rather than flattening it to a plain object.
 	if (Object.prototype.toString.call(value) === '[object Object]') throw envCloneError(path, 'class instances cannot be serialized')
@@ -404,11 +434,11 @@ function cloneOrThrow(value: unknown, path: string): unknown {
 }
 
 function envCloneError(path: string, reason: string): DOMException {
-	return new DOMException(`Worker Loader env value at ${path} could not be serialized: ${reason}`, 'DataCloneError')
+	return new DOMException(`Worker Loader value at ${path} could not be serialized: ${reason}`, 'DataCloneError')
 }
 
 /** Run a dynamic worker's call on one of its env Fetchers and post the outcome back. */
-async function answerEnvRequest(worker: Worker, fetchers: Record<string | symbol, unknown>[], request: LoaderEnvRequest): Promise<void> {
+async function answerEnvRequest(worker: Worker, fetchers: FetcherTable, request: LoaderEnvRequest): Promise<void> {
 	let result: LoaderEnvResult
 	try {
 		result = await invokeEnvFetcher(fetchers[request.slot], request)
