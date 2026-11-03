@@ -14,7 +14,7 @@
 
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility, runWithCompatibility } from '../compatibility-context'
-import { constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
+import { callEntrypointMethod, constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { registerModuleRules } from '../module-rules'
@@ -275,8 +275,8 @@ async function invoke(module: Record<string, unknown>, cmd: LoaderCommand, ctx: 
 		await requireHandler(entrypoint, 'scheduled')(event, loaderEnv, ctx)
 		return { type: 'scheduled' }
 	}
-	const method = entrypoint[cmd.method]
-	if (typeof method !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
-	const value: unknown = await Reflect.apply(method, entrypoint, cmd.args)
+	const exported = cmd.entrypoint === undefined ? module.default : module[cmd.entrypoint]
+	const missing = () => new Error(`Method "${cmd.method}" is not a function on entrypoint`)
+	const value: unknown = await callEntrypointMethod(exported, entrypoint, cmd.method, cmd.args, loaderEnv, ctx, missing)
 	return { type: 'rpc-call', value }
 }

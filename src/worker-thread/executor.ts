@@ -18,6 +18,7 @@ import { getDatabase, getDataDir } from '../db'
 import { getActiveContext } from '../tracing/context'
 import type {
 	BindingTarget,
+	EntrypointRpcCall,
 	ParentSpanContext,
 	SerializedRequest,
 	SerializedResponse,
@@ -527,8 +528,14 @@ export class WorkerThreadExecutor {
 		return this._sendAndAwait(this._pendingHandlers, (id, parent) => ({ type: 'scheduled', id, cronExpr, scheduledTime, parent }))
 	}
 
-	executeEntrypointRpc(entrypoint: string | undefined, method: string, args: unknown[], props?: Record<string, unknown>): Promise<unknown> {
-		return this._sendAndAwait(this._pendingRpc, (id, parent) => ({ type: 'entrypoint-rpc', id, entrypoint, method, args, props, parent }))
+	executeEntrypointRpc(
+		entrypoint: string | undefined,
+		method: string,
+		args: unknown[],
+		props: Record<string, unknown> | undefined,
+		call: EntrypointRpcCall,
+	): Promise<unknown> {
+		return this._sendAndAwait(this._pendingRpc, (id, parent) => ({ type: 'entrypoint-rpc', id, entrypoint, method, args, props, parent, call }))
 	}
 
 	executeEntrypointPropertyGet(

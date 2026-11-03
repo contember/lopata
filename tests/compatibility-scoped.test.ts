@@ -166,7 +166,7 @@ test('shared module dispatchers and fallback RPC capabilities retain the callee 
 	for (const service of [serviceOn, fallback]) {
 		const method = service.toProxy().capability
 		if (typeof method !== 'function') throw new Error('Expected RPC method')
-		const capability: unknown = await method()
+		const capability: unknown = await method(null)
 		if (typeof capability !== 'function') throw new Error('Expected returned capability')
 		expect(await runWithCompatibility(legacyCompatibility, () => capability())).toBe(true)
 		const dispose: unknown = Reflect.get(capability, Symbol.dispose)

@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
+import { WorkerEntrypoint } from 'cloudflare:workers'
 import { DurableObjectBase, DurableObjectNamespaceImpl, DurableObjectStateImpl } from '../src/bindings/durable-object'
 import { createServiceBinding } from '../src/bindings/service-binding'
 import { runMigrations } from '../src/db'
@@ -19,8 +20,9 @@ beforeEach(() => {
  */
 describe('Error propagation: DO → service binding → worker', () => {
 	// ─── Second worker that throws errors ──────────────────────────
+	// A class entrypoint: workerd only allows one-argument RPC calls on handler objects.
 	const failingWorkerModule: Record<string, unknown> = {
-		default: {
+		default: class extends WorkerEntrypoint {
 			async fetch(request: Request): Promise<Response> {
 				const url = new URL(request.url)
 				if (url.pathname === '/sync-throw') {
@@ -37,21 +39,21 @@ describe('Error propagation: DO → service binding → worker', () => {
 					throw err
 				}
 				return new Response('ok')
-			},
+			}
 
 			async explode(): Promise<string> {
 				throw new Error('RPC explode')
-			},
+			}
 
 			async delayedExplode(): Promise<string> {
 				await new Promise((r) => setTimeout(r, 5))
 				throw new RangeError('async RPC explode')
-			},
+			}
 
 			async nestedFail(): Promise<string> {
 				// Simulate a deeper call chain
 				return await innerCall()
-			},
+			}
 		},
 	}
 

@@ -26,10 +26,15 @@ export default {
 				const result = await env.AUX.greet(name)
 				return Response.json(result)
 			}
+			if (method === 'inspect') {
+				const single = await env.AUX.inspect('one')
+				const twoArgs = await env.AUX.inspect('one', 'two').then(() => 'resolved', (e: Error) => `${e.name}: ${e.message.split('.')[0]}`)
+				return Response.json({ single, twoArgs })
+			}
 			if (method === 'fail-rich') {
 				// Report what actually survived the cross-worker RPC error path.
 				try {
-					await env.AUX.failRich()
+					await env.AUX.failRich('rich failure')
 					return new Response('did not throw', { status: 500 })
 				} catch (e: any) {
 					return Response.json({

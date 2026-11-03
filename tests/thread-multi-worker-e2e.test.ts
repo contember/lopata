@@ -73,6 +73,14 @@ describe('Multi-worker thread mode + cross-thread service bindings', () => {
 		expect(await res.json()).toEqual({ greeting: 'aux greets alice' })
 	})
 
+	test('a handler-object RPC method gets (arg, env, ctx) across the bridge and rejects a second argument', async () => {
+		const res = await fetch(`${base}/aux-rpc/inspect`)
+		expect(await res.json()).toEqual({
+			single: { label: 'one', name: 'aux', ctx: true },
+			twoArgs: 'TypeError: Attempted to call RPC function "inspect" with the wrong number of arguments',
+		})
+	})
+
 	// CORR-2: the entrypoint-rpc-error reply must round-trip through
 	// serializeError/deserializeError — a hand-rolled new Error(message) would
 	// strip custom props (e.code/e.status) and the cause chain, silently

@@ -590,7 +590,7 @@ describe('Integration: Service binding with RpcTarget return', () => {
 		;(proxy._wire as Function)(workerModule, {})
 
 		const getCallback = proxy.getCallback as Function
-		const fn = await getCallback()
+		const fn = await getCallback('multiply')
 		expect(typeof fn).toBe('function')
 		expect(await fn(3, 4)).toBe(12)
 	})

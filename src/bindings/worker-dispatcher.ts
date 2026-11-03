@@ -1,6 +1,6 @@
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
-import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { callEntrypointMethod, resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { createRpcFunctionStub, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
 import type { WorkerCacheApi } from './worker-cache'
@@ -117,8 +117,9 @@ export class WorkerDispatcher {
 			async (ctx, scope) => {
 				const value = this.module[name]
 				const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
-				if (!record(target) || typeof target[method] !== 'function') throw new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
-				return wrapRpcReturnValue(await Reflect.apply(target[method], target, args), method, scope)
+				const missing = () => new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
+				if (!record(target)) throw missing()
+				return wrapRpcReturnValue(await callEntrypointMethod(value, target, method, args, this.env, ctx, missing), method, scope)
 			},
 			props,
 			context,

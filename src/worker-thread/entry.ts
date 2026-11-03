@@ -4,14 +4,14 @@ import './request-clone-fix' // global Request shim — must load before user co
 import { ForwardableEmailMessage } from '../bindings/email'
 import { buildLoopbackExports, durableObjectNamespaceBindings } from '../bindings/loopback-exports'
 import { createScheduledController } from '../bindings/scheduled'
-import { resolveEntrypointTarget } from '../bindings/service-binding'
+import { entrypointExport, resolveEntrypointTarget } from '../bindings/service-binding'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { type DispatchExecutionContext, WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility } from '../compatibility-context'
 import { localDurableObjectBindings, validateWorkerCacheConfig } from '../config'
 import { getDatabase } from '../db'
-import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { callEntrypointMethod, resolveEntrypointHandler } from '../entrypoint-handler'
 import { runWithExecutionContext } from '../execution-context'
 import { registerModuleRules } from '../module-rules'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
@@ -19,6 +19,7 @@ import { setTraceStoreOverride } from '../tracing/store'
 import { setGlobalExports } from '../worker-exports'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
 import type {
+	EntrypointRpcCall,
 	ParentSpanContext,
 	SerializedResponse,
 	WorkerCommand,
@@ -283,16 +284,19 @@ async function initRuntime(init: WorkerInitConfig) {
 		entrypoint: string | undefined,
 		method: string,
 		args: unknown[],
-		props?: Record<string, unknown>,
+		props: Record<string, unknown> | undefined,
+		call: EntrypointRpcCall,
 	): Promise<unknown> => {
 		const ctx = dispatcher.context(props)
 		return runWithExecutionContext(ctx, async () => {
 			const target = resolveEntrypointTarget(workerModule, entrypoint, ctx, env)
-			const member = target?.[method]
-			if (typeof member !== 'function') {
-				throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
+			const missing = () => new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
+			if (call === 'property-function') {
+				const member = target[method]
+				if (typeof member !== 'function') throw missing()
+				return await Reflect.apply(member, target, args)
 			}
-			return await Reflect.apply(member, target, args)
+			return await callEntrypointMethod(entrypointExport(workerModule, entrypoint), target, method, args, env, ctx, missing)
 		})
 	}
 
@@ -429,7 +433,10 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'entrypoint-rpc':
 				try {
-					const value = await runWithParentContext(cmd.parent, () => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props))
+					const value = await runWithParentContext(
+						cmd.parent,
+						() => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props, cmd.call),
+					)
 					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })
