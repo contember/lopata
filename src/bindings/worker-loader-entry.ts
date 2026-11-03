@@ -13,17 +13,17 @@
  */
 
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
-import { initializeIsolateCompatibility } from '../compatibility-context'
+import { initializeIsolateCompatibility, runWithCompatibility } from '../compatibility-context'
 import { constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
 import { setGlobalEnv } from '../env'
-import { ExecutionContext } from '../execution-context'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { registerModuleRules } from '../module-rules'
 import { setGlobalExports } from '../worker-exports'
 import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
-import { buildLoopbackExports } from './loopback-exports'
+import { buildLoopbackExports, isStatelessEntrypointExport } from './loopback-exports'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
-import { isWorkerResponse } from './worker-dispatcher'
+import { type DispatchExecutionContext, isWorkerResponse, WorkerDispatcher } from './worker-dispatcher'
 import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 declare var self: Worker
@@ -55,6 +55,8 @@ export type MainToWorker = { type: 'init'; data: LoaderInitMessage } | { type: '
 export type WorkerToMain = { type: 'need-init' } | { type: 'ready' } | { type: 'result'; id: number; result: LoaderResult } | LoaderEnvRequest
 
 let loadedModule: Record<string, unknown> | null = null
+/** Serves direct invocations and `ctx.exports` loopbacks with this worker's compatibility and context. */
+let dispatcher: WorkerDispatcher | null = null
 let loaderEnv: Record<string, unknown> = {}
 let networkBlocked = false
 let ctxExportsEnabled = false
@@ -175,6 +177,7 @@ async function init(data: LoaderInitMessage): Promise<void> {
 		;(globalThis as unknown as { __lopata_original_fetch?: typeof originalFetch }).__lopata_original_fetch = originalFetch
 	}
 	const workerModule: Record<string, unknown> = await import(data.mainModulePath)
+	dispatcher = new WorkerDispatcher(workerModule, loaderEnv, props => createExecutionContext(props ?? {}), compatibility)
 	setGlobalExports(buildLoopbackExports(workerModule, loaderEnv, []))
 	loadedModule = workerModule
 }
@@ -190,10 +193,14 @@ function createExecutionContext(props: Record<string, unknown>): ExecutionContex
 	return ctx
 }
 
-/** Construct a class entrypoint for this invocation, as workerd does, or return the handler object. */
-function instantiateEntrypoint(name: string | undefined, ctx: ExecutionContext): Record<string, unknown> {
-	if (!loadedModule) throw new Error('Worker not initialized')
-	const exported = name === undefined ? loadedModule.default : Object.hasOwn(loadedModule, name) ? loadedModule[name] : undefined
+/**
+ * Construct a class entrypoint for this invocation, as workerd does, or return the handler object. A named
+ * entrypoint must be a `WorkerEntrypoint` subclass or a handler object; the default export may be any class,
+ * as for every other Lopata worker.
+ */
+function instantiateEntrypoint(module: Record<string, unknown>, name: string | undefined, ctx: DispatchExecutionContext): Record<string, unknown> {
+	const exported = name === undefined ? module.default : Object.hasOwn(module, name) ? module[name] : undefined
+	if (name !== undefined && !isStatelessEntrypointExport(exported)) throw new Error(`Worker has no such entrypoint: ${name}`)
 	if (isClassEntrypoint(exported)) return constructEntrypoint(exported, ctx, loaderEnv)
 	if (isRecord(exported)) return exported
 	throw new Error(name === undefined ? 'Worker has no default entrypoint.' : `Worker has no such entrypoint: ${name}`)
@@ -207,36 +214,42 @@ function requireHandler(instance: Record<string, unknown>, name: EntrypointHandl
 
 async function handleCommand(cmd: LoaderCommand): Promise<LoaderResult> {
 	try {
-		const ctx = createExecutionContext(decodeEnvObject(cmd.props))
-		const entrypoint = instantiateEntrypoint(cmd.entrypoint, ctx)
-		if (cmd.type === 'fetch') {
-			const request = new Request(cmd.url, {
-				method: cmd.method,
-				headers: cmd.headers,
-				body: cmd.body ? cmd.body : null,
-			})
-			const response = await requireHandler(entrypoint, 'fetch')(request, loaderEnv, ctx)
-			if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
-			const buf = await response.arrayBuffer()
-			return {
-				type: 'fetch',
-				status: response.status,
-				statusText: response.statusText,
-				headers: serializeResponseHeaders(response),
-				body: buf.byteLength ? buf : null,
-			}
-		}
-		if (cmd.type === 'scheduled') {
-			const event = { cron: cmd.cron, scheduledTime: cmd.scheduledTime, type: 'scheduled' }
-			await requireHandler(entrypoint, 'scheduled')(event, loaderEnv, ctx)
-			return { type: 'scheduled' }
-		}
-		const method = entrypoint[cmd.method]
-		if (typeof method !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
-		const value: unknown = await Reflect.apply(method, entrypoint, cmd.args)
-		return { type: 'rpc-call', value }
+		if (!dispatcher || !loadedModule) throw new Error('Worker not initialized')
+		const module = loadedModule
+		const ctx = dispatcher.context(decodeEnvObject(cmd.props))
+		return await runWithCompatibility(dispatcher.compatibility, () => runWithExecutionContext(ctx, () => invoke(module, cmd, ctx)))
 	} catch (err) {
 		const error = err instanceof Error ? err : new Error(String(err))
 		return { type: 'error', message: error.message, stack: error.stack, name: error.name }
 	}
+}
+
+async function invoke(module: Record<string, unknown>, cmd: LoaderCommand, ctx: DispatchExecutionContext): Promise<LoaderResult> {
+	const entrypoint = instantiateEntrypoint(module, cmd.entrypoint, ctx)
+	if (cmd.type === 'fetch') {
+		const request = new Request(cmd.url, {
+			method: cmd.method,
+			headers: cmd.headers,
+			body: cmd.body ? cmd.body : null,
+		})
+		const response = await requireHandler(entrypoint, 'fetch')(request, loaderEnv, ctx)
+		if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
+		const buf = await response.arrayBuffer()
+		return {
+			type: 'fetch',
+			status: response.status,
+			statusText: response.statusText,
+			headers: serializeResponseHeaders(response),
+			body: buf.byteLength ? buf : null,
+		}
+	}
+	if (cmd.type === 'scheduled') {
+		const event = { cron: cmd.cron, scheduledTime: cmd.scheduledTime, type: 'scheduled' }
+		await requireHandler(entrypoint, 'scheduled')(event, loaderEnv, ctx)
+		return { type: 'scheduled' }
+	}
+	const method = entrypoint[cmd.method]
+	if (typeof method !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
+	const value: unknown = await Reflect.apply(method, entrypoint, cmd.args)
+	return { type: 'rpc-call', value }
 }

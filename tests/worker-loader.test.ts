@@ -65,8 +65,8 @@ describe('WorkerLoaderBinding.load()', () => {
 				mainModule: 'main.js',
 				modules: {
 					'main.js': `
-						export class Agent {
-							constructor(ctx, env) { this.env = env }
+						import { WorkerEntrypoint } from 'cloudflare:workers'
+						export class Agent extends WorkerEntrypoint {
 							greet(name) { return 'hi ' + name + ' from ' + this.env.WORKER }
 						}
 					`,

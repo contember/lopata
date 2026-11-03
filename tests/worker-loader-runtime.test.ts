@@ -136,15 +136,24 @@ describe('dynamic worker runtime', () => {
 	})
 
 	test('missing entrypoints fail with the workerd messages', async () => {
-		const stub = load(`export const value = 1\nexport function helper() {}`)
+		const stub = load(
+			`import { DurableObject } from 'cloudflare:workers'
+			export const value = 1
+			export function helper() {}
+			export class Plain { hello() { return 'plain' } }
+			export class Counter extends DurableObject { hello() { return 'do' } }`,
+		)
 		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Worker has no default entrypoint.')
-		await expect(stub.getEntrypoint('Nope').fetch('http://loader/')).rejects.toThrow('Worker has no such entrypoint: Nope')
-		await expect(stub.getEntrypoint('toString').fetch('http://loader/')).rejects.toThrow('Worker has no such entrypoint: toString')
+		for (const name of ['Nope', 'toString', 'value', 'helper', 'Plain', 'Counter']) {
+			const entrypoint = stub.getEntrypoint(name)
+			await expect((entrypoint.hello as () => Promise<string>)()).rejects.toThrow(`Worker has no such entrypoint: ${name}`)
+		}
 	})
 
 	test('an entrypoint whose constructor throws fails the call', async () => {
 		const stub = load(
-			`export class Boom { constructor() { throw new Error('constructor failed') } static greet() { return 'static' } }
+			`import { WorkerEntrypoint } from 'cloudflare:workers'
+			export class Boom extends WorkerEntrypoint { constructor(ctx, env) { super(ctx, env); throw new Error('constructor failed') } greet() { return 'hi' } }
 			export default { fetch() { return new Response('ok') } }`,
 		)
 		const boom = stub.getEntrypoint('Boom')
@@ -154,6 +163,26 @@ describe('dynamic worker runtime', () => {
 	test('a handler that is not exported fails with the workerd message', async () => {
 		const stub = load(`export default { scheduled() {} }`)
 		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Handler does not export a fetch() function.')
+	})
+})
+
+describe('dynamic worker background work', () => {
+	test('waitUntil from ctx and from cloudflare:workers belong to the invocation, and a rejection does not take the worker down', async () => {
+		const stub = load(
+			`import { waitUntil } from 'cloudflare:workers'
+			export default {
+				fetch(request, env, ctx) {
+					if (new URL(request.url).pathname === '/second') return new Response('second')
+					ctx.waitUntil(Promise.reject(new Error('context rejection')))
+					waitUntil(Promise.reject(new Error('module rejection')))
+					return new Response('first')
+				},
+			}`,
+		)
+		expect(await text(stub.getEntrypoint().fetch('http://loader/'))).toBe('first')
+		await Bun.sleep(50)
+		const second = Promise.race([text(stub.getEntrypoint().fetch('http://loader/second')), Bun.sleep(2000).then(() => 'still pending')])
+		expect(await second).toBe('second')
 	})
 })
 
@@ -172,6 +201,30 @@ describe('dynamic worker ctx.exports', () => {
 	test("ctx.exports holds loopbacks to the dynamic worker's own entrypoints", async () => {
 		const stub = load(MAIN, { compatibilityDate: '2025-11-17' })
 		expect(await (await stub.getEntrypoint().fetch('http://loader/')).json()).toEqual({ ctxExports: true, greeting: 'hello x' })
+	})
+
+	test("entrypoints reached through a loopback run with the dynamic worker's compatibility and ctx.exports gate", async () => {
+		const main = `import { WorkerEntrypoint, exports } from 'cloudflare:workers'
+			function observe(ctx) {
+				return { binaryType: new WebSocketPair()[0].binaryType, hasExports: ctx.exports !== undefined }
+			}
+			export class Probe extends WorkerEntrypoint {
+				observe() { return observe(this.ctx) }
+			}
+			export default {
+				async fetch(request, env, ctx) {
+					return Response.json({ direct: observe(ctx), loopback: await exports.Probe.observe() })
+				},
+			}`
+		const recent = load(main, { compatibilityDate: '2026-04-07' })
+		const recentResult = await (await recent.getEntrypoint().fetch('http://loader/')).json()
+		expect(recentResult.loopback).toEqual(recentResult.direct)
+		expect(recentResult.direct.hasExports).toBe(true)
+		const old = load(main, { compatibilityDate: '2025-11-16' })
+		const oldResult = await (await old.getEntrypoint().fetch('http://loader/')).json()
+		expect(oldResult.loopback).toEqual(oldResult.direct)
+		expect(oldResult.direct.hasExports).toBe(false)
+		expect(oldResult.direct.binaryType).not.toBe(recentResult.direct.binaryType)
 	})
 
 	test("ctx.exports follows the dynamic worker's compatibility date and flags", async () => {

@@ -406,8 +406,9 @@ function encodeEnvValue(value: unknown, path: string, fetchers: FetcherTable): u
 		throw envCloneError(path, 'a ctx.exports loopback must be specialized first, e.g. ctx.exports.Name({ props })')
 	}
 	if (isFetcher(value)) {
-		const placeholder: EnvFetcherPlaceholder = { [ENV_FETCHER_KEY]: fetchers.length }
-		fetchers.push(value)
+		// One slot per binding, so handles created per request with the same binding do not grow the table.
+		const known = fetchers.indexOf(value)
+		const placeholder: EnvFetcherPlaceholder = { [ENV_FETCHER_KEY]: known === -1 ? fetchers.push(value) - 1 : known }
 		return placeholder
 	}
 	if (typeof value === 'function') throw envCloneError(path, 'functions cannot be serialized')
