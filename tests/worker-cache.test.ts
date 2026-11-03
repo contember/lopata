@@ -12,7 +12,7 @@ const dir = mkdtempSync(join(tmpdir(), 'worker-cache-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 function fetchThroughBackend(request: Request, _env: unknown, ctx: DispatchExecutionContext): Promise<Response> {
-	const binding = ctx.exports.Backend
+	const binding = ctx.exports?.Backend
 	if (typeof binding !== 'function') throw new Error('Missing loopback')
 	const fetch: unknown = Reflect.get(binding, 'fetch')
 	if (typeof fetch !== 'function') throw new Error('Missing loopback fetch')

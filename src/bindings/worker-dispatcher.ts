@@ -8,7 +8,8 @@ import type { WorkerCacheApi } from './worker-cache'
 export interface DispatchExecutionContext {
 	readonly props: Record<string, unknown>
 	readonly cache: WorkerCacheApi
-	readonly exports: Record<string, unknown>
+	/** Undefined in a dynamic worker whose compatibility disables `ctx.exports`. */
+	readonly exports?: Record<string, unknown>
 	waitUntil(promise: Promise<unknown>): void
 	passThroughOnException(): void
 }

@@ -17,6 +17,7 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { isProxy } from 'node:util/types'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
+import { getActiveContext } from '../tracing/context'
 import { serializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { isLoopbackServiceStub } from './loopback-exports'
@@ -210,8 +211,10 @@ export class WorkerStub {
 		} catch {}
 	}
 
-	private _send(command: LoaderCommand): Promise<LoaderResult> {
+	private _send(invocation: LoaderCommand): Promise<LoaderResult> {
 		if (this._disposed) throw new Error('WorkerStub has been disposed')
+		const active = getActiveContext()
+		const command: LoaderCommand = active ? { ...invocation, parent: { traceId: active.traceId, spanId: active.spanId } } : invocation
 		const id = this._nextCmdId++
 		return new Promise((resolve, reject) => {
 			this._pending.set(id, { resolve, reject })
@@ -230,7 +233,7 @@ export class WorkerStub {
 	/** Props are validated and snapshotted now, so later changes to the caller's object do not reach the entrypoint. */
 	getEntrypoint(name?: string | null, options?: EntrypointOptions): EntrypointProxy {
 		validateLimits(options?.limits)
-		const props = encodeEnvObject(options?.props ?? {}, 'props', this._fetchers)
+		const props = encodeEnvRecord(options?.props ?? {}, 'props', this._fetchers)
 		return createEntrypointProxy(this, { entrypoint: name === null || name === 'default' ? undefined : name, props: structuredClone(props) })
 	}
 
@@ -390,12 +393,25 @@ function validateLimits(limits: EntrypointOptions['limits']): void {
  * DataCloneError naming the offending path. Entrypoint props follow the same policy.
  */
 function encodeLoaderEnv(env: Record<string, unknown> | undefined, fetchers: FetcherTable): Record<string, unknown> {
-	return encodeEnvObject(env ?? {}, 'env', fetchers)
+	return encodeEnvRecord(env ?? {}, 'env', fetchers)
+}
+
+/** `env` and props are records: a Map, array or class instance at the top would be flattened by `Object.entries`. */
+function encodeEnvRecord(value: unknown, path: string, fetchers: FetcherTable): Record<string, unknown> {
+	if (typeof value !== 'object' || value === null || isProxy(value) || !isPlainObject(value)) throw envCloneError(path, 'must be a plain object')
+	return encodeEnvObject(value, path, fetchers)
+}
+
+function isPlainObject(value: object): boolean {
+	const proto = Object.getPrototypeOf(value)
+	return proto === Object.prototype || proto === null
 }
 
 function encodeEnvObject(value: object, path: string, fetchers: FetcherTable): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
 	for (const [key, entry] of Object.entries(value)) {
+		// The dynamic thread decodes an object carrying this key into a host Fetcher.
+		if (key === ENV_FETCHER_KEY) throw envCloneError(`${path}.${key}`, 'the key is reserved by Lopata')
 		out[key] = encodeEnvValue(entry, `${path}.${key}`, fetchers)
 	}
 	return out
@@ -417,8 +433,7 @@ function encodeEnvValue(value: unknown, path: string, fetchers: FetcherTable): u
 		throw envCloneError(path, 'only service bindings and ctx.exports loopbacks can be passed; Durable Object stubs and other bindings cannot')
 	}
 	if (Array.isArray(value)) return value.map((item, index) => encodeEnvValue(item, `${path}[${index}]`, fetchers))
-	const proto = Object.getPrototypeOf(value)
-	if (proto === Object.prototype || proto === null) return encodeEnvObject(value, path, fetchers)
+	if (isPlainObject(value)) return encodeEnvObject(value, path, fetchers)
 	// Built-ins (Date, Map, ArrayBuffer, …) report their own tag; a user class instance reports
 	// `[object Object]` and workerd refuses it rather than flattening it to a plain object.
 	if (Object.prototype.toString.call(value) === '[object Object]') throw envCloneError(path, 'class instances cannot be serialized')

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServiceBinding } from '../src/bindings/service-binding'
-import { type WorkerCode, WorkerLoaderBinding, type WorkerStub } from '../src/bindings/worker-loader'
+import { type EntrypointProxy, type WorkerCode, WorkerLoaderBinding, type WorkerStub } from '../src/bindings/worker-loader'
 
 let tmpDir: string
 let loader: WorkerLoaderBinding
@@ -28,6 +28,12 @@ function load(main: string, extra: Partial<WorkerCode> = {}): WorkerStub {
 	const stub = loader.load({ compatibilityDate: '2026-03-01', mainModule: 'main.js', modules: { 'main.js': main }, ...extra })
 	stubs.push(stub)
 	return stub
+}
+
+async function rpc(entrypoint: EntrypointProxy, method: string, ...args: unknown[]): Promise<unknown> {
+	const fn = entrypoint[method]
+	if (typeof fn !== 'function') throw new Error(`Missing RPC method: ${method}`)
+	return Reflect.apply(fn, entrypoint, args)
 }
 
 async function text(response: Promise<Response>): Promise<string> {
@@ -89,8 +95,8 @@ describe('dynamic worker runtime', () => {
 		)
 		const alice = stub.getEntrypoint('Api', { props: { user: 'alice' } })
 		const bob = stub.getEntrypoint('Api', { props: { user: 'bob' } })
-		expect(await (alice.whoami as () => Promise<string>)()).toBe('alice')
-		expect(await (bob.whoami as () => Promise<string>)()).toBe('bob')
+		expect(await rpc(alice, 'whoami')).toBe('alice')
+		expect(await rpc(bob, 'whoami')).toBe('bob')
 	})
 
 	test('props are snapshotted when the handle is created', async () => {
@@ -135,6 +141,25 @@ describe('dynamic worker runtime', () => {
 		expect(() => stub.getEntrypoint(undefined, { limits: { cpuMs: -1 } })).toThrow(TypeError)
 	})
 
+	test('props must be a plain object and must not carry the Fetcher placeholder key', () => {
+		const stub = load(`export default { fetch() { return new Response('ok') } }`)
+		class Session {
+			user = 'alice'
+		}
+		const invalid: unknown[] = [new Map([['user', 'alice']]), new Session(), ['alice'], { x: { __lopata_loader_fetcher: 0 } }]
+		for (const props of invalid) {
+			let error: unknown
+			try {
+				Reflect.apply(stub.getEntrypoint, stub, [undefined, { props }])
+			} catch (e) {
+				error = e
+			}
+			if (!(error instanceof DOMException)) throw new Error(`expected a DOMException for ${String(props)}`)
+			expect(error.name).toBe('DataCloneError')
+			expect(error.message).toContain('Worker Loader value at props')
+		}
+	})
+
 	test('missing entrypoints fail with the workerd messages', async () => {
 		const stub = load(
 			`import { DurableObject } from 'cloudflare:workers'
@@ -146,7 +171,7 @@ describe('dynamic worker runtime', () => {
 		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Worker has no default entrypoint.')
 		for (const name of ['Nope', 'toString', 'value', 'helper', 'Plain', 'Counter']) {
 			const entrypoint = stub.getEntrypoint(name)
-			await expect((entrypoint.hello as () => Promise<string>)()).rejects.toThrow(`Worker has no such entrypoint: ${name}`)
+			await expect(rpc(entrypoint, 'hello')).rejects.toThrow(`Worker has no such entrypoint: ${name}`)
 		}
 	})
 
@@ -157,12 +182,14 @@ describe('dynamic worker runtime', () => {
 			export default { fetch() { return new Response('ok') } }`,
 		)
 		const boom = stub.getEntrypoint('Boom')
-		await expect((boom.greet as () => Promise<string>)()).rejects.toThrow('constructor failed')
+		await expect(rpc(boom, 'greet')).rejects.toThrow('constructor failed')
 	})
 
 	test('a handler that is not exported fails with the workerd message', async () => {
 		const stub = load(`export default { scheduled() {} }`)
 		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Handler does not export a fetch() function.')
+		const fetchOnly = load(`export default { fetch() { return new Response('ok') } }`)
+		await expect(fetchOnly.getEntrypoint().scheduled({ cron: '* * * * *' })).rejects.toThrow(/^Handler does not export a scheduled\(\) function$/)
 	})
 })
 
@@ -223,6 +250,21 @@ describe('dynamic worker ctx.exports', () => {
 		const oldObservation = { binaryType: 'arraybuffer', hasExports: false }
 		expect(await (await old.getEntrypoint().fetch('http://loader/')).json()).toEqual({ direct: oldObservation, loopback: oldObservation })
 	})
+
+	test('each invocation gets its own subrequest budget for loopback calls', async () => {
+		const stub = load(
+			`import { WorkerEntrypoint } from 'cloudflare:workers'
+			export class P extends WorkerEntrypoint { ping() { return 1 } }
+			export default {
+				async fetch(request, env, ctx) {
+					for (let i = 0; i < 600; i++) await ctx.exports.P.ping()
+					return new Response('done')
+				},
+			}`,
+		)
+		expect(await text(stub.getEntrypoint().fetch('http://loader/'))).toBe('done')
+		expect(await text(stub.getEntrypoint().fetch('http://loader/'))).toBe('done')
+	}, 30_000)
 
 	test("ctx.exports follows the dynamic worker's compatibility date and flags", async () => {
 		const old = load(MAIN, { compatibilityDate: '2025-11-16' })

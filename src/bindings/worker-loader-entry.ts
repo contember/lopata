@@ -18,6 +18,7 @@ import { constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, i
 import { setGlobalEnv } from '../env'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { registerModuleRules } from '../module-rules'
+import { generateId, generateTraceId, runWithContext, type SpanContext } from '../tracing/context'
 import { setGlobalExports } from '../worker-exports'
 import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
@@ -36,9 +37,12 @@ export interface LoaderInitMessage {
 	compatibility: CompatibilitySelection
 }
 
-/** `entrypoint` is undefined for the default export; `props` is the handle's encoded snapshot. */
+/**
+ * `entrypoint` is undefined for the default export; `props` is the handle's encoded snapshot;
+ * `parent` is the caller's active span, if any.
+ */
 export type LoaderCommand =
-	& { entrypoint?: string; props: Record<string, unknown> }
+	& { entrypoint?: string; props: Record<string, unknown>; parent?: { traceId: string; spanId: string } }
 	& (
 		| { type: 'fetch'; url: string; method: string; headers: [string, string][]; body: ArrayBuffer | null }
 		| { type: 'scheduled'; cron: string; scheduledTime: number }
@@ -186,7 +190,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null
 }
 
-/** The per-invocation `ctx`; `ctx.exports` exists only when the dynamic worker's compatibility enables it. */
+/**
+ * The per-invocation `ctx`. When the dynamic worker's compatibility disables `ctx.exports`, it reads as
+ * undefined; workerd omits the property, so `'exports' in ctx` still differs.
+ */
 function createExecutionContext(props: Record<string, unknown>): ExecutionContext {
 	const ctx = new ExecutionContext(props)
 	if (!ctxExportsEnabled) Object.defineProperty(ctx, 'exports', { value: undefined })
@@ -206,9 +213,17 @@ function instantiateEntrypoint(module: Record<string, unknown>, name: string | u
 	throw new Error(name === undefined ? 'Worker has no default entrypoint.' : `Worker has no such entrypoint: ${name}`)
 }
 
-function requireHandler(instance: Record<string, unknown>, name: EntrypointHandlerName): (...args: unknown[]) => unknown {
+type LoaderHandlerName = Extract<EntrypointHandlerName, 'fetch' | 'scheduled'>
+
+/** workerd's texts; only the fetch one ends with a period. */
+const MISSING_HANDLER_MESSAGES: Record<LoaderHandlerName, string> = {
+	fetch: 'Handler does not export a fetch() function.',
+	scheduled: 'Handler does not export a scheduled() function',
+}
+
+function requireHandler(instance: Record<string, unknown>, name: LoaderHandlerName): (...args: unknown[]) => unknown {
 	const handler = handlerFromInstance(instance, name)
-	if (!handler) throw new Error(`Handler does not export a ${name}() function.`)
+	if (!handler) throw new Error(MISSING_HANDLER_MESSAGES[name])
 	return handler
 }
 
@@ -216,11 +231,23 @@ async function handleCommand(cmd: LoaderCommand): Promise<LoaderResult> {
 	try {
 		if (!dispatcher || !loadedModule) throw new Error('Worker not initialized')
 		const module = loadedModule
+		const { compatibility } = dispatcher
 		const ctx = dispatcher.context(decodeEnvObject(cmd.props))
-		return await runWithCompatibility(dispatcher.compatibility, () => runWithExecutionContext(ctx, () => invoke(module, cmd, ctx)))
+		const invocation = () => runWithCompatibility(compatibility, () => runWithExecutionContext(ctx, () => invoke(module, cmd, ctx)))
+		return await runWithContext(invocationSpanContext(cmd.parent), invocation)
 	} catch (err) {
 		const error = err instanceof Error ? err : new Error(String(err))
 		return { type: 'error', message: error.message, stack: error.stack, name: error.name }
+	}
+}
+
+/** Each invocation gets its own subrequest budget, as a top-level request does in the other threads. */
+function invocationSpanContext(parent: LoaderCommand['parent']): SpanContext {
+	return {
+		traceId: parent?.traceId ?? generateTraceId(),
+		spanId: parent?.spanId ?? generateId(),
+		fetchStack: { current: null },
+		subrequests: { count: 0 },
 	}
 }
 
