@@ -1084,7 +1084,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `this.env` — access bindings; `this.ctx` — ExecutionContext
 - ❌ protected/private methods not exposed — no visibility enforcement
 - ✅ New instance per invocation (stateless)
-- ✅ Handler-object exports (`export default { method(arg, env, ctx) {} }`): RPC methods are called as `(arg, env, ctx)`; the caller must send exactly one argument and the method may declare at most those three parameters, otherwise a `TypeError` with workerd's text. A function read as a property (`await env.SVC.fn`) keeps the caller's arguments
+- ✅ Handler-object exports (`export default { method(arg, env, ctx) {} }`): only the object's own methods are callable over RPC (an inherited one fails with workerd's "does not implement the method" TypeError), each called as `(arg, env, ctx)`; the caller must send exactly one argument and the method may declare at most those three parameters, otherwise a `TypeError` with workerd's text. A function read as a property (`await env.SVC.fn`) keeps the caller's arguments
 
 ### 10.3 Named Entrypoints
 

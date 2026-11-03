@@ -138,7 +138,7 @@ describe('Service Binding', () => {
 			;(proxy._wire as Function)(workerModule, mockEnv)
 
 			const nonExistent = proxy.nonExistent as Function
-			expect(() => nonExistent()).toThrow('is not a method')
+			expect(() => nonExistent()).toThrow('The RPC receiver does not implement the method "nonExistent".')
 		})
 	})
 

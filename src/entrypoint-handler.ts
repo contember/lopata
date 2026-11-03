@@ -63,23 +63,35 @@ export function handlerFromInstance(
 	return typeof fn === 'function' ? (fn as (...args: unknown[]) => unknown).bind(instance) : null
 }
 
+/** A handler object: an exported object (not a function or an array) whose own methods are its handlers. */
+export function isHandlerObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /**
- * Call an entrypoint's RPC method the way workerd does. A class instance's method gets the caller's
- * arguments. A handler object (`target` is the exported object itself) exposes only its own methods, each
- * called as `(arg, env, ctx)`: the method may declare at most those three parameters and the caller must
+ * Look up and call an entrypoint's RPC method the way workerd does. A class instance's method gets the
+ * caller's arguments, and `missing` reports a name that is not a method. A handler object (`target` is the
+ * exported object itself) exposes only its own properties, checked before the property is read, and each
+ * method is called as `(arg, env, ctx)`: it may declare at most those three parameters and the caller must
  * send exactly one argument.
  */
 export function callEntrypointMethod(
 	exported: unknown,
-	target: object,
+	target: Record<string, unknown>,
 	name: string,
-	method: Function,
 	args: unknown[],
 	env: unknown,
 	ctx: unknown,
+	missing: () => Error,
 ): unknown {
-	if (target !== exported || typeof exported !== 'object' || exported === null) return Reflect.apply(method, target, args)
+	if (target !== exported || !isHandlerObject(exported)) {
+		const method = target[name]
+		if (typeof method !== 'function') throw missing()
+		return Reflect.apply(method, target, args)
+	}
 	if (!Object.hasOwn(target, name)) throw new TypeError(`The RPC receiver does not implement the method "${name}".`)
+	const method = target[name]
+	if (typeof method !== 'function') throw new TypeError(`"${name}" is not a function.`)
 	if (method.length > 3) {
 		throw new TypeError(
 			`Cannot call handler function "${name}" over RPC because it has the wrong number of arguments. A simple function handler can only be called over RPC if it has exactly the arguments (arg, env, ctx), where only the first argument comes from the client. To support multi-argument RPC functions, use class-based syntax (extending WorkerEntrypoint) instead.`,

@@ -24,8 +24,8 @@ export default {
 		label: string,
 		env: Record<string, unknown>,
 		ctx: { waitUntil?: unknown },
-	): Promise<{ label: string; envKeys: boolean; ctx: boolean }> {
-		return { label, envKeys: typeof env === 'object' && env !== null, ctx: typeof ctx?.waitUntil === 'function' }
+	): Promise<{ label: string; name: unknown; ctx: boolean }> {
+		return { label, name: env.AUX_NAME, ctx: typeof ctx?.waitUntil === 'function' }
 	},
 
 	// Throws an error carrying custom props + a cause chain — the caller must

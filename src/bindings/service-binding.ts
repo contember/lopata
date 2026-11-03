@@ -10,7 +10,7 @@
 
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
-import { callEntrypointMethod, constructEntrypoint } from '../entrypoint-handler'
+import { callEntrypointMethod, constructEntrypoint, isHandlerObject } from '../entrypoint-handler'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
@@ -41,8 +41,9 @@ export function serviceBindingConnectError(name: string): Error {
 	return new Error(`Service binding "${name}": connect() (TCP sockets) is not supported in local dev mode`)
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null
+/** The export a binding's `entrypoint` names; an empty or missing name is the default export. */
+export function entrypointExport(workerModule: Record<string, unknown>, entrypoint: string | undefined): unknown {
+	return entrypoint ? workerModule[entrypoint] : workerModule.default
 }
 
 /**
@@ -60,10 +61,10 @@ export function resolveEntrypointTarget(
 	env: unknown,
 ): Record<string, unknown> {
 	if (entrypoint) {
-		const exported = workerModule[entrypoint]
+		const exported = entrypointExport(workerModule, entrypoint)
 		if (typeof exported === 'function') return constructEntrypoint(exported, ctx, env)
 		// A named handler object is served as is, as workerd and the shared dispatcher do.
-		if (isRecord(exported)) return exported
+		if (isHandlerObject(exported)) return exported
 		throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
 	}
 	const def = workerModule.default
@@ -157,7 +158,7 @@ export class ServiceBinding {
 		callback: (
 			target: Record<string, unknown>,
 			scope: RpcExecutionScope,
-			call: (name: string, method: Function, args: unknown[]) => unknown,
+			call: (name: string, args: unknown[], missing: () => Error) => unknown,
 		) => unknown,
 	): Promise<unknown> {
 		return this._invokeFallback(resolved, async (ctx, target) => {
@@ -165,8 +166,8 @@ export class ServiceBinding {
 				run: callback => runWithCompatibility(target.compatibility, () => runWithExecutionContext(ctx, callback)),
 			}
 			const instance = resolveEntrypointTarget(target.workerModule, this._entrypoint, ctx, target.env)
-			const exported = target.workerModule[this._entrypoint ?? 'default']
-			return callback(instance, scope, (name, method, args) => callEntrypointMethod(exported, instance, name, method, args, target.env, ctx))
+			const exported = entrypointExport(target.workerModule, this._entrypoint)
+			return callback(instance, scope, (name, args, missing) => callEntrypointMethod(exported, instance, name, args, target.env, ctx, missing))
 		})
 	}
 
@@ -205,9 +206,9 @@ export class ServiceBinding {
 			if (typeof handler !== 'function') {
 				throw new Error(`Service binding "${this._serviceName}" target has no fetch() handler`)
 			}
-			const def = resolved.workerModule.default
-			const isClass = this._entrypoint || (typeof def === 'function' && def.prototype)
-			const response: unknown = await Reflect.apply(handler, target, isClass ? [request] : [request, resolved.env, ctx])
+			// A constructed class gets env and ctx through its constructor; an exported object or function takes them as arguments.
+			const isInstance = target !== entrypointExport(resolved.workerModule, this._entrypoint)
+			const response: unknown = await Reflect.apply(handler, target, isInstance ? [request] : [request, resolved.env, ctx])
 			if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
 			return response
 		})
@@ -252,7 +253,7 @@ export class ServiceBinding {
 					const resolved = self._resolve()
 					self._checkSubrequestLimit()
 					if (resolved.kind === 'thread') {
-						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props)
+						return resolved.executor.executeEntrypointRpc(self._entrypoint, prop, args, self._props, 'method')
 							.then((r) => wrapRpcReturnValue(r, prop))
 					}
 					if (resolved.kind === 'in-process') {
@@ -260,11 +261,8 @@ export class ServiceBinding {
 						if (dispatcher) return dispatcher.rpc(self._entrypoint, prop, args, self._props)
 					}
 					return self._invokeRpcFallback(resolved, async (target, scope, call) => {
-						const member = target[prop]
-						if (typeof member !== 'function') {
-							throw new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`)
-						}
-						const value: unknown = await call(prop, member, args)
+						const missing = () => new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`)
+						const value: unknown = await call(prop, args, missing)
 						return wrapRpcReturnValue(value, prop, scope)
 					})
 				}

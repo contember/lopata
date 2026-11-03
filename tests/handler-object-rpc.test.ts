@@ -54,17 +54,34 @@ function createModule(): Record<string, unknown> {
 			greet(name: string, env: Env, ctx: ExecutionContext) {
 				return `${String(ctx.props.tenant)}: ${name} x${env.FACTOR}`
 			},
+			fetch(_request: Request, env: Env, ctx: ExecutionContext) {
+				return Response.json({ factor: env.FACTOR, props: ctx.props })
+			},
 		},
 		inherited: Object.assign(
 			Object.create({
 				greet(name: string) {
 					return name
 				},
+				get sideEffect() {
+					getterReads++
+					return () => 'inherited getter'
+				},
 			}),
 			{ fetch: () => new Response('ok') },
 		),
+		// An own getter that removes itself still counts as an own method: ownership is checked before the read.
+		selfDeleting: (selfDeleting = {
+			get once() {
+				delete selfDeleting.once
+				return (arg: string, env: Env) => `${arg} x${env.FACTOR}`
+			},
+		}),
 	}
 }
+
+let getterReads = 0
+let selfDeleting: Record<string, unknown> = {}
 
 async function call(binding: ServiceBinding, method: string, ...args: unknown[]): Promise<unknown> {
 	const fn: unknown = Reflect.get(binding.toProxy(), method)
@@ -119,16 +136,26 @@ describe.each(routes)('handler-object RPC through %s', (_route, bind) => {
 		expect(await call(binding, 'greet', 'Dave')).toBe('a: Dave x12')
 	})
 
-	test('a handler object exposes only its own methods', async () => {
+	test('a handler object exposes only its own methods, checked before the property is read', async () => {
 		const binding = bind(createModule(), { FACTOR: 12 }, 'inherited')
-		let error: unknown
-		try {
-			await call(binding, 'greet', 'Dave')
-		} catch (e) {
-			error = e
+		getterReads = 0
+		for (const method of ['greet', 'sideEffect']) {
+			let error: unknown
+			try {
+				await call(binding, method, 'Dave')
+			} catch (e) {
+				error = e
+			}
+			if (!(error instanceof TypeError)) throw new Error(`expected a TypeError from ${method}`)
+			expect(error.message).toBe(`The RPC receiver does not implement the method "${method}".`)
 		}
-		if (!(error instanceof TypeError)) throw new Error('expected a TypeError')
-		expect(error.message).toBe('The RPC receiver does not implement the method "greet".')
+		expect(getterReads).toBe(0)
+		expect(await call(bind(createModule(), { FACTOR: 12 }, 'selfDeleting'), 'once', 'x')).toBe('x x12')
+	})
+
+	test("a named handler object's fetch gets (request, env, ctx)", async () => {
+		const binding = bind(createModule(), { FACTOR: 12 }, 'alternate')
+		expect(await (await binding.fetch('http://svc/')).json()).toEqual({ factor: 12, props: { tenant: 'a' } })
 	})
 
 	test('a class entrypoint keeps the caller arguments', async () => {
@@ -191,5 +218,20 @@ describe('handler-object RPC through a worker thread', () => {
 		expect(await fn()).toEqual([])
 		expect(await fn('x')).toEqual(['x'])
 		expect(await fn('x', 'y')).toEqual(['x', 'y'])
+	})
+})
+
+describe('handler-object RPC through the in-process fallback, export edge cases', () => {
+	test('an empty entrypoint name serves the default handler object under the same rule', async () => {
+		const binding = new ServiceBinding('svc', '')
+		binding._wire(createModule(), { FACTOR: 12 })
+		expect(await call(binding, 'oneArgOmitCtx', 3)).toBe(37)
+		await expect(call(binding, 'oneArg', 1, 2)).rejects.toThrow(argumentCountError('oneArg'))
+	})
+
+	test('a callable export is not a handler object and keeps the caller arguments', async () => {
+		const binding = new ServiceBinding('svc')
+		binding._wire({ default: Object.assign(() => new Response('ok'), { pair: (...args: unknown[]) => args }) }, { FACTOR: 12 })
+		expect(await call(binding, 'pair', 'x', 'y')).toEqual(['x', 'y'])
 	})
 })

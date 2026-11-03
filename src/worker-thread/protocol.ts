@@ -14,10 +14,10 @@ export type { WorkflowInstanceStatus } from '../bindings/workflow'
 import type { TraceStore } from '../tracing/store'
 import type { SpanData, SpanEventData } from '../tracing/types'
 
-/** Parent span context handed to the worker so its spans nest under main's server span. */
 /** How an entrypoint RPC call is made: as a method of the entrypoint, or on a function read as a property. */
 export type EntrypointRpcCall = 'method' | 'property-function'
 
+/** Parent span context handed to the worker so its spans nest under main's server span. */
 export interface ParentSpanContext {
 	traceId: string
 	spanId: string
@@ -429,7 +429,7 @@ export type WorkerCommand =
 		props?: Record<string, unknown>
 		parent?: ParentSpanContext
 		/** `property-function`: a function read with `await env.SVC.prop`; it gets the caller's arguments as is. */
-		call?: EntrypointRpcCall
+		call: EntrypointRpcCall
 	}
 	// RPC property read on the worker's entrypoint (`await env.SVC.someProp`).
 	// Mirrors `entrypoint-rpc` but reads the property instead of invoking it —

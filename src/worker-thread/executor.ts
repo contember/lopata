@@ -532,8 +532,8 @@ export class WorkerThreadExecutor {
 		entrypoint: string | undefined,
 		method: string,
 		args: unknown[],
-		props?: Record<string, unknown>,
-		call: EntrypointRpcCall = 'method',
+		props: Record<string, unknown> | undefined,
+		call: EntrypointRpcCall,
 	): Promise<unknown> {
 		return this._sendAndAwait(this._pendingRpc, (id, parent) => ({ type: 'entrypoint-rpc', id, entrypoint, method, args, props, parent, call }))
 	}

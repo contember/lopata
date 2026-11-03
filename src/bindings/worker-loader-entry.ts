@@ -275,9 +275,8 @@ async function invoke(module: Record<string, unknown>, cmd: LoaderCommand, ctx: 
 		await requireHandler(entrypoint, 'scheduled')(event, loaderEnv, ctx)
 		return { type: 'scheduled' }
 	}
-	const method = entrypoint[cmd.method]
-	if (typeof method !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
 	const exported = cmd.entrypoint === undefined ? module.default : module[cmd.entrypoint]
-	const value: unknown = await callEntrypointMethod(exported, entrypoint, cmd.method, method, cmd.args, loaderEnv, ctx)
+	const missing = () => new Error(`Method "${cmd.method}" is not a function on entrypoint`)
+	const value: unknown = await callEntrypointMethod(exported, entrypoint, cmd.method, cmd.args, loaderEnv, ctx, missing)
 	return { type: 'rpc-call', value }
 }

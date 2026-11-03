@@ -117,9 +117,9 @@ export class WorkerDispatcher {
 			async (ctx, scope) => {
 				const value = this.module[name]
 				const target: unknown = typeof value === 'function' ? Reflect.construct(value, [ctx, this.env]) : value
-				const member = record(target) ? target[method] : undefined
-				if (!record(target) || typeof member !== 'function') throw new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
-				return wrapRpcReturnValue(await callEntrypointMethod(value, target, method, member, args, this.env, ctx), method, scope)
+				const missing = () => new Error(`Entrypoint "${name}" has no RPC method "${method}"`)
+				if (!record(target)) throw missing()
+				return wrapRpcReturnValue(await callEntrypointMethod(value, target, method, args, this.env, ctx, missing), method, scope)
 			},
 			props,
 			context,
