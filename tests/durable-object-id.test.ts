@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { CrossScriptDurableObjectNamespace } from '../src/bindings/cross-script-durable-object'
 import { buildWorkerEnv } from '../src/bindings/do-worker-env'
-import { DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
+import { DurableObjectBase, DurableObjectIdImpl, DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
 import type { WranglerConfig } from '../src/config'
 import { runMigrations } from '../src/db'
 import type { DOMainMessage } from '../src/worker-thread/do-protocol'
@@ -113,3 +113,15 @@ for (const label of ['main namespace', 'cross-script namespace', 'Durable Object
 		})
 	})
 }
+
+describe('DurableObjectNamespace.get()', () => {
+	test('rejects an id whose string form is not a Durable Object id, before it can become a path', () => {
+		const db = new Database(':memory:')
+		runMigrations(db)
+		const namespace = new DurableObjectNamespaceImpl(db, 'OtherDO', tempDir)
+		namespace._setClass(class extends DurableObjectBase {}, {})
+		const forged = new DurableObjectIdImpl('../../escaped')
+		expect(() => namespace.get(forged)).toThrow(new TypeError('Invalid Durable Object ID: must be 64 hex digits'))
+		expect(() => namespace.get(namespace.idFromName('ok'))).not.toThrow()
+	})
+})

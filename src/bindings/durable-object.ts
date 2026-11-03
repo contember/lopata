@@ -1626,7 +1626,8 @@ export class DurableObjectNamespaceImpl {
 	}
 
 	get(id: DurableObjectIdImpl): Record<string, unknown> {
-		const idStr = id.toString()
+		// Every get() ends here, including ids that threads send over RPC as strings; the id becomes a `do-sql/` path.
+		const idStr = durableObjectIdFromString(String(id)).toString()
 		// Cache by `${idStr}:${name ?? ''}` so a nameless `idFromString(hash)` and a
 		// named `idFromName(...)` resolving to the same hash get distinct stubs —
 		// each preserving its caller's `id.name`. Same id-shape → same cached stub.

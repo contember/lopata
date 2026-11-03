@@ -618,7 +618,7 @@ describe('DurableObjectNamespace', () => {
 
 	test('get throws if class not wired', () => {
 		const ns2 = new DurableObjectNamespaceImpl(db, 'Unwired')
-		const id = new DurableObjectIdImpl('test')
+		const id = ns2.idFromName('test')
 		expect(() => ns2.get(id)).toThrow('not wired')
 	})
 
