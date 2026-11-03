@@ -13,6 +13,7 @@ export interface CompatibilitySelection {
 	readonly websocketCloseReasonByteLimit: CompatibilityMode
 	readonly websocketStandardBinaryType: CompatibilityMode
 	readonly websocketAutoReplyToClose: CompatibilityMode
+	readonly ctxExports: CompatibilityMode
 }
 
 interface CompatibilityRule {
@@ -35,6 +36,7 @@ const rules = {
 		date: '2026-03-17',
 	},
 	websocketAutoReplyToClose: { enable: 'web_socket_auto_reply_to_close', disable: 'web_socket_manual_reply_to_close', date: '2026-04-07' },
+	ctxExports: { enable: 'enable_ctx_exports', disable: 'disable_ctx_exports', date: '2025-11-17' },
 } satisfies Record<string, CompatibilityRule>
 
 function parseDate(value: unknown): string | undefined {
@@ -97,5 +99,6 @@ export function resolveCompatibility(input: CompatibilityInput): CompatibilitySe
 		websocketCloseReasonByteLimit: select(rules.websocketCloseReasonByteLimit),
 		websocketStandardBinaryType: select(rules.websocketStandardBinaryType),
 		websocketAutoReplyToClose: select(rules.websocketAutoReplyToClose),
+		ctxExports: select(rules.ctxExports),
 	})
 }

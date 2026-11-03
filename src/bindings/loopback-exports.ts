@@ -46,7 +46,7 @@ export function buildLoopbackExports(
 	const exports: Record<string, unknown> = {}
 	for (const [name, value] of Object.entries(workerModule)) {
 		const entrypoint = name === 'default' ? undefined : name
-		if (isWorkerEntrypointClass(value) || isHandlerObject(value)) {
+		if (isStatelessEntrypointExport(value)) {
 			exports[name] = createLoopbackServiceStub(name, entrypoint, workerModule, env)
 			continue
 		}
@@ -54,6 +54,11 @@ export function buildLoopbackExports(
 		if (namespace) exports[name] = env[namespace.bindingName]
 	}
 	return exports
+}
+
+/** An export workerd serves as a stateless entrypoint: a `WorkerEntrypoint` subclass or a handler object. */
+export function isStatelessEntrypointExport(value: unknown): boolean {
+	return isWorkerEntrypointClass(value) || isHandlerObject(value)
 }
 
 function isWorkerEntrypointClass(value: unknown): boolean {

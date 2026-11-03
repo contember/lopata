@@ -13,11 +13,18 @@
  */
 
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
-import { initializeIsolateCompatibility } from '../compatibility-context'
+import { initializeIsolateCompatibility, runWithCompatibility } from '../compatibility-context'
+import { constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
+import { setGlobalEnv } from '../env'
+import { ExecutionContext, runWithExecutionContext } from '../execution-context'
+import { registerModuleRules } from '../module-rules'
+import { generateId, generateTraceId, runWithContext, type SpanContext } from '../tracing/context'
+import { setGlobalExports } from '../worker-exports'
 import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
-import { patchGlobalCrypto } from './crypto-extras'
+import { buildLoopbackExports, isStatelessEntrypointExport } from './loopback-exports'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
+import { type DispatchExecutionContext, isWorkerResponse, WorkerDispatcher } from './worker-dispatcher'
 import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 declare var self: Worker
@@ -25,15 +32,22 @@ declare var self: Worker
 export interface LoaderInitMessage {
 	type: 'init'
 	mainModulePath: string
-	env: unknown
+	env: Record<string, unknown>
 	globalOutbound: 'allow' | 'block'
 	compatibility: CompatibilitySelection
 }
 
+/**
+ * `entrypoint` is undefined for the default export; `props` is the handle's encoded snapshot;
+ * `parent` is the caller's active span, if any.
+ */
 export type LoaderCommand =
-	| { type: 'fetch'; entrypoint?: string; url: string; method: string; headers: [string, string][]; body: ArrayBuffer | null }
-	| { type: 'scheduled'; entrypoint?: string; cron: string; scheduledTime: number }
-	| { type: 'rpc-call'; entrypoint?: string; method: string; args: unknown[] }
+	& { entrypoint?: string; props: Record<string, unknown>; parent?: { traceId: string; spanId: string } }
+	& (
+		| { type: 'fetch'; url: string; method: string; headers: [string, string][]; body: ArrayBuffer | null }
+		| { type: 'scheduled'; cron: string; scheduledTime: number }
+		| { type: 'rpc-call'; method: string; args: unknown[] }
+	)
 
 export type LoaderResult =
 	| { type: 'fetch'; status: number; statusText: string; headers: [string, string][]; body: ArrayBuffer | null }
@@ -45,8 +59,11 @@ export type MainToWorker = { type: 'init'; data: LoaderInitMessage } | { type: '
 export type WorkerToMain = { type: 'need-init' } | { type: 'ready' } | { type: 'result'; id: number; result: LoaderResult } | LoaderEnvRequest
 
 let loadedModule: Record<string, unknown> | null = null
-let loaderEnv: unknown = {}
+/** Serves direct invocations and `ctx.exports` loopbacks with this worker's compatibility and context. */
+let dispatcher: WorkerDispatcher | null = null
+let loaderEnv: Record<string, unknown> = {}
 let networkBlocked = false
+let ctxExportsEnabled = false
 
 self.onmessage = async (event: MessageEvent<MainToWorker>) => {
 	const msg = event.data
@@ -130,11 +147,7 @@ function makeHostFetcher(slot: number): Record<string, unknown> {
 	)
 }
 
-function decodeEnv(value: unknown): unknown {
-	if (Array.isArray(value)) return value.map(decodeEnv)
-	if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) return value
-	const slot: unknown = Reflect.get(value, ENV_FETCHER_KEY)
-	if (typeof slot === 'number') return makeHostFetcher(slot)
+function decodeEnvObject(value: object): Record<string, unknown> {
 	const out: Record<string, unknown> = {}
 	for (const [key, entry] of Object.entries(value)) {
 		out[key] = decodeEnv(entry)
@@ -142,11 +155,23 @@ function decodeEnv(value: unknown): unknown {
 	return out
 }
 
+function decodeEnv(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(decodeEnv)
+	if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) return value
+	const slot: unknown = Reflect.get(value, ENV_FETCHER_KEY)
+	if (typeof slot === 'number') return makeHostFetcher(slot)
+	return decodeEnvObject(value)
+}
+
 async function init(data: LoaderInitMessage): Promise<void> {
 	const compatibility = resolveCompatibility({ date: data.compatibility.date ?? undefined, flags: data.compatibility.flags })
 	initializeIsolateCompatibility(compatibility)
-	patchGlobalCrypto()
-	loaderEnv = decodeEnv(data.env ?? {})
+	// Plugins are per thread: `cloudflare:workers`, `caches`, `HTMLRewriter` and `WebSocketPair` must be registered here.
+	await import('../plugin')
+	registerModuleRules(undefined)
+	ctxExportsEnabled = compatibility.ctxExports === 'enabled'
+	loaderEnv = decodeEnvObject(data.env)
+	setGlobalEnv(loaderEnv)
 	networkBlocked = data.globalOutbound === 'block'
 	if (networkBlocked) {
 		const originalFetch = globalThis.fetch
@@ -155,69 +180,103 @@ async function init(data: LoaderInitMessage): Promise<void> {
 		}) as unknown) as typeof globalThis.fetch // Keep reference so any test that stubs fetch is still observable
 		;(globalThis as unknown as { __lopata_original_fetch?: typeof originalFetch }).__lopata_original_fetch = originalFetch
 	}
-	loadedModule = await import(data.mainModulePath) as Record<string, unknown>
+	const workerModule: Record<string, unknown> = await import(data.mainModulePath)
+	dispatcher = new WorkerDispatcher(workerModule, loaderEnv, props => createExecutionContext(props ?? {}), compatibility)
+	setGlobalExports(buildLoopbackExports(workerModule, loaderEnv, []))
+	loadedModule = workerModule
 }
 
-function resolveEntrypoint(name?: string): Record<string, unknown> {
-	if (!loadedModule) throw new Error('Worker not initialized')
-	if (name) {
-		const exp = loadedModule[name]
-		if (!exp) throw new Error(`Entrypoint "${name}" not exported from main module`)
-		// If the export is a class, instantiate it (WorkerEntrypoint-style)
-		if (typeof exp === 'function') {
-			const ctx = { waitUntil() {}, passThroughOnException() {} }
-			try {
-				return new (exp as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, loaderEnv)
-			} catch {
-				return exp as unknown as Record<string, unknown>
-			}
-		}
-		return exp as Record<string, unknown>
-	}
-	const def = loadedModule.default
-	if (!def) throw new Error('Main module has no default export')
-	return def as Record<string, unknown>
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null
+}
+
+/**
+ * The per-invocation `ctx`. When the dynamic worker's compatibility disables `ctx.exports`, it reads as
+ * undefined; workerd omits the property, so `'exports' in ctx` still differs.
+ */
+function createExecutionContext(props: Record<string, unknown>): ExecutionContext {
+	const ctx = new ExecutionContext(props)
+	if (!ctxExportsEnabled) Object.defineProperty(ctx, 'exports', { value: undefined })
+	return ctx
+}
+
+/**
+ * Construct a class entrypoint for this invocation, as workerd does, or return the handler object. A named
+ * entrypoint must be a `WorkerEntrypoint` subclass or a handler object; the default export may be any class,
+ * as for every other Lopata worker.
+ */
+function instantiateEntrypoint(module: Record<string, unknown>, name: string | undefined, ctx: DispatchExecutionContext): Record<string, unknown> {
+	const exported = name === undefined ? module.default : Object.hasOwn(module, name) ? module[name] : undefined
+	if (name !== undefined && !isStatelessEntrypointExport(exported)) throw new Error(`Worker has no such entrypoint: ${name}`)
+	if (isClassEntrypoint(exported)) return constructEntrypoint(exported, ctx, loaderEnv)
+	if (isRecord(exported)) return exported
+	throw new Error(name === undefined ? 'Worker has no default entrypoint.' : `Worker has no such entrypoint: ${name}`)
+}
+
+type LoaderHandlerName = Extract<EntrypointHandlerName, 'fetch' | 'scheduled'>
+
+/** workerd's texts; only the fetch one ends with a period. */
+const MISSING_HANDLER_MESSAGES: Record<LoaderHandlerName, string> = {
+	fetch: 'Handler does not export a fetch() function.',
+	scheduled: 'Handler does not export a scheduled() function',
+}
+
+function requireHandler(instance: Record<string, unknown>, name: LoaderHandlerName): (...args: unknown[]) => unknown {
+	const handler = handlerFromInstance(instance, name)
+	if (!handler) throw new Error(MISSING_HANDLER_MESSAGES[name])
+	return handler
 }
 
 async function handleCommand(cmd: LoaderCommand): Promise<LoaderResult> {
 	try {
-		const entrypoint = resolveEntrypoint(cmd.entrypoint)
-		if (cmd.type === 'fetch') {
-			const handler = entrypoint.fetch as ((req: Request, env: unknown, ctx: unknown) => Response | Promise<Response>) | undefined
-			if (typeof handler !== 'function') throw new Error('Entrypoint has no fetch() handler')
-			const request = new Request(cmd.url, {
-				method: cmd.method,
-				headers: cmd.headers,
-				body: cmd.body ? cmd.body : null,
-			})
-			const ctx = { waitUntil(_p: Promise<unknown>) {}, passThroughOnException() {} }
-			const response = await handler.call(entrypoint, request, loaderEnv, ctx)
-			const buf = await response.arrayBuffer()
-			return {
-				type: 'fetch',
-				status: response.status,
-				statusText: response.statusText,
-				headers: serializeResponseHeaders(response),
-				body: buf.byteLength ? buf : null,
-			}
-		}
-		if (cmd.type === 'scheduled') {
-			const handler = entrypoint.scheduled as ((event: unknown, env: unknown, ctx: unknown) => unknown) | undefined
-			if (typeof handler !== 'function') throw new Error('Entrypoint has no scheduled() handler')
-			const event = { cron: cmd.cron, scheduledTime: cmd.scheduledTime, type: 'scheduled' }
-			const ctx = { waitUntil(_p: Promise<unknown>) {}, passThroughOnException() {} }
-			await handler.call(entrypoint, event, loaderEnv, ctx)
-			return { type: 'scheduled' }
-		}
-		if (cmd.type === 'rpc-call') {
-			const fn = entrypoint[cmd.method]
-			if (typeof fn !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
-			const value = await (fn as (...args: unknown[]) => unknown).apply(entrypoint, cmd.args)
-			return { type: 'rpc-call', value }
-		}
-		throw new Error(`Unknown command type: ${(cmd as { type: string }).type}`)
+		if (!dispatcher || !loadedModule) throw new Error('Worker not initialized')
+		const module = loadedModule
+		const { compatibility } = dispatcher
+		const ctx = dispatcher.context(decodeEnvObject(cmd.props))
+		const invocation = () => runWithCompatibility(compatibility, () => runWithExecutionContext(ctx, () => invoke(module, cmd, ctx)))
+		return await runWithContext(invocationSpanContext(cmd.parent), invocation)
 	} catch (err) {
 		const error = err instanceof Error ? err : new Error(String(err))
 		return { type: 'error', message: error.message, stack: error.stack, name: error.name }
 	}
+}
+
+/** Each invocation gets its own subrequest budget, as a top-level request does in the other threads. */
+function invocationSpanContext(parent: LoaderCommand['parent']): SpanContext {
+	return {
+		traceId: parent?.traceId ?? generateTraceId(),
+		spanId: parent?.spanId ?? generateId(),
+		fetchStack: { current: null },
+		subrequests: { count: 0 },
+	}
+}
+
+async function invoke(module: Record<string, unknown>, cmd: LoaderCommand, ctx: DispatchExecutionContext): Promise<LoaderResult> {
+	const entrypoint = instantiateEntrypoint(module, cmd.entrypoint, ctx)
+	if (cmd.type === 'fetch') {
+		const request = new Request(cmd.url, {
+			method: cmd.method,
+			headers: cmd.headers,
+			body: cmd.body ? cmd.body : null,
+		})
+		const response = await requireHandler(entrypoint, 'fetch')(request, loaderEnv, ctx)
+		if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
+		const buf = await response.arrayBuffer()
+		return {
+			type: 'fetch',
+			status: response.status,
+			statusText: response.statusText,
+			headers: serializeResponseHeaders(response),
+			body: buf.byteLength ? buf : null,
+		}
+	}
+	if (cmd.type === 'scheduled') {
+		const event = { cron: cmd.cron, scheduledTime: cmd.scheduledTime, type: 'scheduled' }
+		await requireHandler(entrypoint, 'scheduled')(event, loaderEnv, ctx)
+		return { type: 'scheduled' }
+	}
+	const method = entrypoint[cmd.method]
+	if (typeof method !== 'function') throw new Error(`Method "${cmd.method}" is not a function on entrypoint`)
+	const value: unknown = await Reflect.apply(method, entrypoint, cmd.args)
+	return { type: 'rpc-call', value }
 }

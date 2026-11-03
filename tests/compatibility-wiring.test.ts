@@ -82,7 +82,7 @@ test('dynamic receiver recomputes derived selection and rejects conflicting clon
 							{
 								type: 'command',
 								id: 1,
-								command: { type: 'fetch', url: 'https://worker.test', method: 'GET', headers: [], body: null },
+								command: { type: 'fetch', props: {}, url: 'https://worker.test', method: 'GET', headers: [], body: null },
 							} satisfies MainToWorker,
 						)
 					} else {
