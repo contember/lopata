@@ -77,6 +77,12 @@ export default {
 			return stub.fetch('http://do/cookies')
 		}
 
+		// Awaiting a stub member reads the DO's property instead of calling it.
+		if (url.pathname === '/value') {
+			const stub = env.COUNTER.get(env.COUNTER.idFromName('value'))
+			return new Response(String(await stub.value))
+		}
+
 		if (url.pathname.startsWith('/greet/')) {
 			const name = url.pathname.split('/')[2] ?? 'anon'
 			const stub = env.COUNTER.get(env.COUNTER.idFromName(name))

@@ -61,6 +61,11 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect((await res.text()).startsWith('hello charlie from ')).toBe(true)
 	})
 
+	test('awaiting a DO stub property reads its value across the bridge', async () => {
+		const res = await fetch(`${base}/value`)
+		expect(await res.text()).toBe('0')
+	})
+
 	test('id.name is preserved across the worker → main → DO-worker hop', async () => {
 		const res = await fetch(`${base}/counter/alice/name`)
 		expect(await res.text()).toBe('alice:alice')

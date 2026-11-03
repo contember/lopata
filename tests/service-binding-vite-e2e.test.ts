@@ -11,7 +11,7 @@ import { resolve } from 'node:path'
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/service-binding-vite')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
 
-/** A port that is free now, so the test never talks to another process's server. */
+/** A port that was free a moment ago. Another process can still take it before Vite binds it. */
 function freePort(): number {
 	const probe = Bun.serve({ port: 0, fetch: () => new Response() })
 	const port = probe.port
@@ -44,18 +44,16 @@ class OutputLog {
 	}
 }
 
+/**
+ * Vite announces its URL only after it has bound the port itself; with `strictPort` it exits instead
+ * when the port is taken. So requests made after the announcement reach this dev server, never another process.
+ */
 async function waitForServer(timeoutMs: number, proc: Subprocess, log: OutputLog): Promise<void> {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
+		if (log.get().includes(`Local:   ${base}/`)) return
 		if (proc.exitCode !== null) throw new Error(`Vite dev server exited with ${proc.exitCode}\n--- server output ---\n${log.get()}`)
-		try {
-			// The dashboard API answers without loading the main worker.
-			await fetch(`${base}/__api/rpc`)
-			return
-		} catch {
-			// not listening yet
-		}
-		await new Promise(r => setTimeout(r, 250))
+		await new Promise(r => setTimeout(r, 100))
 	}
 	throw new Error(`Vite dev server on :${PORT} did not become ready within ${timeoutMs}ms\n--- server output ---\n${log.get()}`)
 }
@@ -76,6 +74,8 @@ describe('service bindings of the main worker under the Vite plugin', () => {
 			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
+			// Keeps the announced URL free of colour codes, which CI would otherwise enable.
+			env: { ...process.env, NO_COLOR: '1' },
 		})
 		log = new OutputLog(proc)
 		await waitForServer(60_000, proc, log)
