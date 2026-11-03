@@ -19,10 +19,19 @@ export default {
 		return { greeting: `aux greets ${name}` }
 	},
 
+	// A handler-object method gets (arg, env, ctx); a second client argument is a TypeError, as in workerd.
+	async inspect(
+		label: string,
+		env: Record<string, unknown>,
+		ctx: { waitUntil?: unknown },
+	): Promise<{ label: string; envKeys: boolean; ctx: boolean }> {
+		return { label, envKeys: typeof env === 'object' && env !== null, ctx: typeof ctx?.waitUntil === 'function' }
+	},
+
 	// Throws an error carrying custom props + a cause chain — the caller must
 	// receive them intact across the thread boundary (entrypoint-rpc-error path).
-	async failRich(): Promise<never> {
-		throw Object.assign(new Error('rich failure'), {
+	async failRich(message: string): Promise<never> {
+		throw Object.assign(new Error(message), {
 			code: 'E_RICH',
 			status: 422,
 			cause: new Error('root cause'),

@@ -77,6 +77,14 @@ describe('Multi-worker thread mode + cross-thread service bindings', () => {
 	// serializeError/deserializeError — a hand-rolled new Error(message) would
 	// strip custom props (e.code/e.status) and the cause chain, silently
 	// breaking user `catch (e) { if (e.code === ...) }` only in thread mode.
+	test('a handler-object RPC method gets (arg, env, ctx) across the bridge and rejects a second argument', async () => {
+		const res = await fetch(`${base}/aux-rpc/inspect`)
+		expect(await res.json()).toEqual({
+			single: { label: 'one', envKeys: true, ctx: true },
+			twoArgs: 'TypeError: Attempted to call RPC function "inspect" with the wrong number of arguments',
+		})
+	})
+
 	test('RPC errors keep custom props and the cause chain across the bridge', async () => {
 		const res = await fetch(`${base}/aux-rpc/fail-rich`)
 		expect(await res.json()).toEqual({

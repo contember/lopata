@@ -315,8 +315,8 @@ describe('Service Binding', () => {
 			const workerModule: Record<string, unknown> = {
 				default: {
 					fetch: async () => new Response('ok'),
-					add(a: number, b: number) {
-						return a + b
+					double(n: number) {
+						return n * 2
 					},
 				},
 			}
@@ -324,19 +324,19 @@ describe('Service Binding', () => {
 			const proxy = createServiceBinding('my-worker')
 			;(proxy._wire as Function)(workerModule, mockEnv)
 
-			const add = proxy.add as Function
-			const result = add(3, 4)
+			const double = proxy.double as Function
+			const result = double(3)
 			// Must be a Promise
 			expect(result).toBeInstanceOf(Promise)
-			expect(await result).toBe(7)
+			expect(await result).toBe(6)
 		})
 
 		test('async method still returns a Promise', async () => {
 			const workerModule: Record<string, unknown> = {
 				default: {
 					fetch: async () => new Response('ok'),
-					async multiply(a: number, b: number) {
-						return a * b
+					async square(n: number) {
+						return n * n
 					},
 				},
 			}
@@ -344,10 +344,10 @@ describe('Service Binding', () => {
 			const proxy = createServiceBinding('my-worker')
 			;(proxy._wire as Function)(workerModule, mockEnv)
 
-			const multiply = proxy.multiply as Function
-			const result = multiply(3, 4)
+			const square = proxy.square as Function
+			const result = square(3)
 			expect(result).toBeInstanceOf(Promise)
-			expect(await result).toBe(12)
+			expect(await result).toBe(9)
 		})
 	})
 
@@ -375,8 +375,8 @@ describe('Service Binding', () => {
 			const workerModule: Record<string, unknown> = {
 				default: {
 					fetch: async () => new Response('ok'),
-					async makeResponse() {
-						return new Response('rpc-response', { status: 201 })
+					async makeResponse(status: number) {
+						return new Response('rpc-response', { status })
 					},
 				},
 			}
@@ -385,7 +385,7 @@ describe('Service Binding', () => {
 			;(proxy._wire as Function)(workerModule, mockEnv)
 
 			const makeResponse = proxy.makeResponse as Function
-			const response: Response = await makeResponse()
+			const response: Response = await makeResponse(201)
 			expect(response).toBeInstanceOf(Response)
 			expect(response.status).toBe(201)
 			expect(await response.text()).toBe('rpc-response')
@@ -450,10 +450,10 @@ describe('Service Binding', () => {
 			;(proxy._wire as Function)(workerModule, mockEnv)
 
 			const noop = proxy.noop as Function
-			await noop()
-			await noop()
+			await noop(1)
+			await noop(2)
 			// 3rd should throw
-			expect(() => noop()).toThrow('subrequest limit exceeded')
+			expect(() => noop(3)).toThrow('subrequest limit exceeded')
 		})
 
 		test('subrequest count can be read', () => {

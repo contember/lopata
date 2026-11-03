@@ -10,6 +10,7 @@
 
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
+import { callEntrypointMethod } from '../entrypoint-handler'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
@@ -149,14 +150,19 @@ export class ServiceBinding {
 
 	private _invokeRpcFallback(
 		resolved: ResolvedTarget,
-		callback: (target: Record<string, unknown>, scope: RpcExecutionScope) => unknown,
+		callback: (
+			target: Record<string, unknown>,
+			scope: RpcExecutionScope,
+			call: (name: string, method: Function, args: unknown[]) => unknown,
+		) => unknown,
 	): Promise<unknown> {
 		return this._invokeFallback(resolved, async (ctx, target) => {
 			const scope: RpcExecutionScope = {
 				run: callback => runWithCompatibility(target.compatibility, () => runWithExecutionContext(ctx, callback)),
 			}
 			const instance = resolveEntrypointTarget(target.workerModule, this._entrypoint, ctx, target.env)
-			return callback(instance, scope)
+			const exported = target.workerModule[this._entrypoint ?? 'default']
+			return callback(instance, scope, (name, method, args) => callEntrypointMethod(exported, instance, name, method, args, target.env, ctx))
 		})
 	}
 
@@ -249,12 +255,12 @@ export class ServiceBinding {
 						const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
 						if (dispatcher) return dispatcher.rpc(self._entrypoint, prop, args, self._props)
 					}
-					return self._invokeRpcFallback(resolved, async (target, scope) => {
+					return self._invokeRpcFallback(resolved, async (target, scope, call) => {
 						const member = target[prop]
 						if (typeof member !== 'function') {
 							throw new Error(`Service binding "${self._serviceName}": "${prop}" is not a method on the target`)
 						}
-						const value: unknown = await Reflect.apply(member, target, args)
+						const value: unknown = await call(prop, member, args)
 						return wrapRpcReturnValue(value, prop, scope)
 					})
 				}

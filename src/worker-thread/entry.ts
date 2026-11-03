@@ -11,7 +11,7 @@ import { resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility } from '../compatibility-context'
 import { localDurableObjectBindings, validateWorkerCacheConfig } from '../config'
 import { getDatabase } from '../db'
-import { resolveEntrypointHandler } from '../entrypoint-handler'
+import { callEntrypointMethod, resolveEntrypointHandler } from '../entrypoint-handler'
 import { runWithExecutionContext } from '../execution-context'
 import { registerModuleRules } from '../module-rules'
 import { getActiveContext, runWithParentContext } from '../tracing/context'
@@ -292,7 +292,7 @@ async function initRuntime(init: WorkerInitConfig) {
 			if (typeof member !== 'function') {
 				throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
 			}
-			return await Reflect.apply(member, target, args)
+			return await callEntrypointMethod(workerModule[entrypoint ?? 'default'], target, method, member, args, env, ctx)
 		})
 	}
 

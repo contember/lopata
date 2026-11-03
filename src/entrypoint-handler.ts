@@ -62,3 +62,31 @@ export function handlerFromInstance(
 	const fn = instance[name]
 	return typeof fn === 'function' ? (fn as (...args: unknown[]) => unknown).bind(instance) : null
 }
+
+/**
+ * Call an entrypoint's RPC method the way workerd does. A class instance's method gets the caller's
+ * arguments. A handler object (`target` is the export itself) is called as `(arg, env, ctx)`: the method
+ * may declare at most those three parameters and the caller must send exactly one argument.
+ */
+export function callEntrypointMethod(
+	exported: unknown,
+	target: object,
+	name: string,
+	method: Function,
+	args: unknown[],
+	env: unknown,
+	ctx: unknown,
+): unknown {
+	if (target !== exported) return Reflect.apply(method, target, args)
+	if (method.length > 3) {
+		throw new TypeError(
+			`Cannot call handler function "${name}" over RPC because it has the wrong number of arguments. A simple function handler can only be called over RPC if it has exactly the arguments (arg, env, ctx), where only the first argument comes from the client. To support multi-argument RPC functions, use class-based syntax (extending WorkerEntrypoint) instead.`,
+		)
+	}
+	if (args.length !== 1) {
+		throw new TypeError(
+			`Attempted to call RPC function "${name}" with the wrong number of arguments. When calling a top-level handler function that is not declared as part of a class, you must always send exactly one argument. In order to support variable numbers of arguments, the server must use class-based syntax (extending WorkerEntrypoint) instead.`,
+		)
+	}
+	return Reflect.apply(method, target, [args[0], env, ctx])
+}

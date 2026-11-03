@@ -99,6 +99,26 @@ describe('dynamic worker runtime', () => {
 		expect(await rpc(bob, 'whoami')).toBe('bob')
 	})
 
+	test('handler-object RPC methods receive (arg, env, ctx), as in the workerd loader fixture', async () => {
+		const stub = load(
+			`export default {
+				greet(name) { return 'Hello, ' + name },
+			}
+			export let alternate = {
+				greet(name, env, ctx) { return ctx.props.greeting + ', ' + name + ' from ' + env.REGION },
+			}`,
+			{ env: { REGION: 'eu' } },
+		)
+		expect(await rpc(stub.getEntrypoint(), 'greet', 'Alice')).toBe('Hello, Alice')
+		expect(await rpc(stub.getEntrypoint('alternate', { props: { greeting: 'Welcome' } }), 'greet', 'Dave')).toBe('Welcome, Dave from eu')
+		expect(await rpc(stub.getEntrypoint('alternate', { props: { greeting: 'Hi' } }), 'greet', 'Eve')).toBe('Hi, Eve from eu')
+		// Awaited directly: in this file, expect(...).rejects on a loader call made after a successful one never settles.
+		const error = await rpc(stub.getEntrypoint(), 'greet', 'Alice', 'Bob').then(() => null, (e: unknown) => e)
+		if (!(error instanceof Error)) throw new Error('expected the call to fail')
+		expect(error.name).toBe('TypeError')
+		expect(error.message).toStartWith('Attempted to call RPC function "greet" with the wrong number of arguments.')
+	})
+
 	test('props are snapshotted when the handle is created', async () => {
 		const stub = load(`export default { fetch(request, env, ctx) { return Response.json(ctx.props) } }`)
 		const props = { tags: new Map([['a', 1]]), nested: { value: 1 } }
