@@ -68,6 +68,11 @@ describe('Multi-worker thread mode + cross-thread service bindings', () => {
 		expect(await res.text()).toBe('42')
 	})
 
+	test('awaiting a service-binding property reads its value across the bridge', async () => {
+		const res = await fetch(`${base}/aux-rpc/version`)
+		expect(await res.json()).toEqual({ version: 'aux-1' })
+	})
+
 	test('RPC method with an object return is structured-cloned across the bridge', async () => {
 		const res = await fetch(`${base}/aux-rpc/greet?name=alice`)
 		expect(await res.json()).toEqual({ greeting: 'aux greets alice' })

@@ -10,6 +10,9 @@ export default {
 		return new Response('aux: not found', { status: 404 })
 	},
 
+	// Read from worker A with `await env.AUX.version`.
+	version: 'aux-1',
+
 	// Service-binding RPC methods invoked from worker A via `env.AUX.<method>()`.
 	async double(n: number): Promise<number> {
 		return n * 2

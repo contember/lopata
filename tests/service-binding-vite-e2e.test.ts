@@ -10,7 +10,17 @@ import { resolve } from 'node:path'
 
 const FIXTURE_DIR = resolve(import.meta.dir, 'fixtures/service-binding-vite')
 const VITE_BIN = resolve(import.meta.dir, '../node_modules/.bin/vite')
-const PORT = 18893
+
+/** A port that is free now, so the test never talks to another process's server. */
+function freePort(): number {
+	const probe = Bun.serve({ port: 0, fetch: () => new Response() })
+	const port = probe.port
+	probe.stop(true)
+	if (port === undefined) throw new Error('No free port')
+	return port
+}
+
+const PORT = freePort()
 const base = `http://localhost:${PORT}`
 
 /** Drains the dev server's output so the pipe never blocks it, and keeps it for failure messages. */
@@ -34,9 +44,10 @@ class OutputLog {
 	}
 }
 
-async function waitForServer(timeoutMs: number, log: OutputLog): Promise<void> {
+async function waitForServer(timeoutMs: number, proc: Subprocess, log: OutputLog): Promise<void> {
 	const deadline = Date.now() + timeoutMs
 	while (Date.now() < deadline) {
+		if (proc.exitCode !== null) throw new Error(`Vite dev server exited with ${proc.exitCode}\n--- server output ---\n${log.get()}`)
 		try {
 			// The dashboard API answers without loading the main worker.
 			await fetch(`${base}/__api/rpc`)
@@ -67,7 +78,7 @@ describe('service bindings of the main worker under the Vite plugin', () => {
 			stderr: 'pipe',
 		})
 		log = new OutputLog(proc)
-		await waitForServer(60_000, log)
+		await waitForServer(60_000, proc, log)
 	}, 90_000)
 
 	afterAll(() => {

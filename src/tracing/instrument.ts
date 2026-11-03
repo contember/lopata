@@ -146,6 +146,15 @@ export function instrumentDONamespace<T extends object>(namespace: T, className:
 	})
 }
 
+/**
+ * An RPC member of a service binding or Durable Object stub is callable (a traced method call) and thenable
+ * (`await stub.prop` reads the property). Keep the member's `then` on the traced function; the read is not traced.
+ */
+function keepPropertyRead(traced: Function, member: Function): Function {
+	const then: unknown = Reflect.get(member, 'then')
+	return typeof then === 'function' ? Object.assign(traced, { then: then.bind(member) }) : traced
+}
+
 function instrumentDOStub<T extends object>(stub: T, className: string): T {
 	return new Proxy(stub, {
 		get(obj, prop, receiver) {
@@ -159,7 +168,7 @@ function instrumentDOStub<T extends object>(stub: T, className: string): T {
 				const wrapped = wrapMethod(value.bind(obj), 'do', className, prop, 'client')
 				// Capture caller stack at access site (before ALS.run destroys it)
 				// and stitch onto errors so the full call chain is visible.
-				return async function(this: unknown, ...args: unknown[]) {
+				const traced = async function(this: unknown, ...args: unknown[]) {
 					const callerStack = new Error()
 					try {
 						return await (wrapped as Function).apply(this, args)
@@ -168,6 +177,7 @@ function instrumentDOStub<T extends object>(stub: T, className: string): T {
 						throw err
 					}
 				}
+				return keepPropertyRead(traced, value)
 			}
 			return value
 		},
@@ -188,10 +198,7 @@ export function instrumentServiceBinding<T extends object>(binding: T, serviceNa
 			if (['then', 'catch', 'finally', 'toJSON', 'valueOf', 'toString', 'connect'].includes(prop)) return value
 			if (typeof value === 'function') {
 				const method = prop === 'fetch' ? 'fetch' : prop
-				const wrapped = wrapMethod(value, 'service', serviceName, method, 'client')
-				// An RPC member is callable (method call) and thenable (`await env.SVC.prop` reads the property); keep the read.
-				const then: unknown = Reflect.get(value, 'then')
-				return typeof then === 'function' ? Object.assign(wrapped, { then: then.bind(value) }) : wrapped
+				return keepPropertyRead(wrapMethod(value, 'service', serviceName, method, 'client'), value)
 			}
 			return value
 		},

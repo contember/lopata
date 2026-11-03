@@ -26,6 +26,9 @@ export default {
 				const result = await env.AUX.greet(name)
 				return Response.json(result)
 			}
+			if (method === 'version') {
+				return Response.json({ version: await env.AUX.version })
+			}
 			if (method === 'inspect') {
 				const single = await env.AUX.inspect('one')
 				const twoArgs = await env.AUX.inspect('one', 'two').then(() => 'resolved', (e: Error) => `${e.name}: ${e.message.split('.')[0]}`)
