@@ -217,14 +217,11 @@ describe('dynamic worker ctx.exports', () => {
 				},
 			}`
 		const recent = load(main, { compatibilityDate: '2026-04-07' })
-		const recentResult = await (await recent.getEntrypoint().fetch('http://loader/')).json()
-		expect(recentResult.loopback).toEqual(recentResult.direct)
-		expect(recentResult.direct.hasExports).toBe(true)
+		const recentObservation = { binaryType: 'blob', hasExports: true }
+		expect(await (await recent.getEntrypoint().fetch('http://loader/')).json()).toEqual({ direct: recentObservation, loopback: recentObservation })
 		const old = load(main, { compatibilityDate: '2025-11-16' })
-		const oldResult = await (await old.getEntrypoint().fetch('http://loader/')).json()
-		expect(oldResult.loopback).toEqual(oldResult.direct)
-		expect(oldResult.direct.hasExports).toBe(false)
-		expect(oldResult.direct.binaryType).not.toBe(recentResult.direct.binaryType)
+		const oldObservation = { binaryType: 'arraybuffer', hasExports: false }
+		expect(await (await old.getEntrypoint().fetch('http://loader/')).json()).toEqual({ direct: oldObservation, loopback: oldObservation })
 	})
 
 	test("ctx.exports follows the dynamic worker's compatibility date and flags", async () => {
