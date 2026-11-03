@@ -11,6 +11,7 @@ import { dirname, resolve } from 'node:path'
 import type { BrowserConfig } from '../bindings/browser'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
+import { createOwnerLoaderDir, removeLoaderDir } from '../bindings/worker-loader-dirs'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { getDatabase, getDataDir } from '../db'
@@ -118,6 +119,7 @@ export class WorkerThreadExecutor {
 	 *  A `req-stream-cancel` from the worker (user code cancelled `request.body`)
 	 *  stops the source reader. */
 	private _topRequestStreams = new OutboundStreamRegistry()
+	private readonly _workerLoaderDir: string
 
 	constructor(options: WorkerThreadExecutorOptions) {
 		this._compatibility = resolveCompatibility({ date: options.config.compatibility_date, flags: options.config.compatibility_flags })
@@ -131,6 +133,10 @@ export class WorkerThreadExecutor {
 		})
 
 		this._worker = new Worker(WORKER_ENTRY)
+		const workerLoaderDir = createOwnerLoaderDir(getDataDir())
+		this._workerLoaderDir = workerLoaderDir
+		// Fires on terminate and on a crash; the thread's dynamic workers end with it on Bun 1.4.
+		this._worker.addEventListener('close', () => removeLoaderDir(workerLoaderDir))
 		this._wsBridge = new WsHostBridge<WorkerCommand>(cmd => this._send(cmd), {
 			clientMessage: (wsId, data) => ({ type: 'ws-client-message', wsId, data }),
 			clientClose: (wsId, code, reason, wasClean) => ({ type: 'ws-client-close', wsId, code, reason, wasClean }),
@@ -207,6 +213,7 @@ export class WorkerThreadExecutor {
 						// Same physical .lopata dir main + DO workers use, NOT baseDir —
 						// otherwise multi-worker mode splits binding state into a second db.
 						dataDir: getDataDir(),
+						workerLoaderDir: this._workerLoaderDir,
 						workerName: this._initConfig.workerName,
 						browserConfig: this._initConfig.browserConfig,
 						artifactsBaseUrl: this._initConfig.artifactsBaseUrl,

@@ -41,6 +41,8 @@ export interface StatelessEnvOptions {
 	staticAssets?: StaticAssets
 	/** Startup log line per binding; only main prints them. */
 	log?: (message: string) => void
+	/** This thread's Worker Loader directory (`createOwnerLoaderDir`); the thread that spawned it removes it. */
+	workerLoaderDir: string
 }
 
 /**
@@ -180,7 +182,7 @@ export function addStatelessBindings(env: Record<string, unknown>, opts: Statele
 	// `loader.get(id).getEntrypoint().fetch()` chaining the Cloudflare API requires.
 	for (const loader of config.worker_loaders ?? []) {
 		log(`Worker Loader: ${loader.binding}`)
-		env[loader.binding] = new WorkerLoaderBinding(path.join(dataDir, 'worker-loader'))
+		env[loader.binding] = new WorkerLoaderBinding(opts.workerLoaderDir)
 	}
 
 	// Flagship: SQLite-backed feature flags

@@ -69,6 +69,8 @@ export class WorkerStub {
 	private _pending = new Map<number, PendingCommand>()
 	private _nextCmdId = 1
 	private _disposed = false
+	/** Aborted by `dispose()`, so work that runs before a call is registered (reading a request body) stops too. */
+	private readonly _disposal = new AbortController()
 	private _disposeTimer: Timer | null = null
 
 	constructor(code: CodeSource, baseDir: string) {
@@ -96,10 +98,10 @@ export class WorkerStub {
 	private async _boot(): Promise<void> {
 		try {
 			const { code, env } = await this._resolveCode()
-			const compatibility = validateCode(code)
+			const { compatibility, modules } = validateCode(code)
 			this._assertNotDisposed()
 			mkdirSync(this.workDir, { recursive: true })
-			const mainPath = await writeModules(this.workDir, code.modules, code.mainModule)
+			const mainPath = await writeModules(this.workDir, modules, code.mainModule)
 			this._assertNotDisposed()
 			await this._spawn(mainPath, env, code.globalOutbound === null ? 'block' : 'allow', compatibility)
 		} catch (err) {
@@ -212,7 +214,8 @@ export class WorkerStub {
 
 	/** @internal */
 	async _fetch(entrypoint: string | undefined, request: Request): Promise<Response> {
-		const body = request.body ? await request.arrayBuffer() : null
+		this._assertNotDisposed()
+		const body = request.body ? await readBodyUntilAborted(request.body, this._disposal.signal) : null
 		const result = await this._send({
 			type: 'fetch',
 			entrypoint,
@@ -247,6 +250,7 @@ export class WorkerStub {
 		this._disposed = true
 		if (this._disposeTimer) clearTimeout(this._disposeTimer)
 		const error = new Error('WorkerStub has been disposed')
+		this._disposal.abort(error)
 		this._rejectReady?.(error)
 		for (const pending of this._pending.values()) pending.reject(error)
 		this._pending.clear()
@@ -314,14 +318,21 @@ export class WorkerLoaderBinding {
 	}
 }
 
-function validateCode(code: WorkerCode): CompatibilitySelection {
+interface ValidatedCode {
+	compatibility: CompatibilitySelection
+	/** The modules map read once; the files are written from this snapshot, so every written name was validated. */
+	modules: [string, WorkerCodeModule][]
+}
+
+function validateCode(code: WorkerCode): ValidatedCode {
 	if (!code.compatibilityDate) throw new Error('WorkerCode.compatibilityDate is required')
 	const compatibility = resolveCompatibility({ date: code.compatibilityDate, flags: code.compatibilityFlags })
 	if (!code.mainModule) throw new Error('WorkerCode.mainModule is required')
 	if (!code.modules || typeof code.modules !== 'object') throw new Error('WorkerCode.modules must be an object')
-	for (const name of Object.keys(code.modules)) validateModuleName(name)
-	if (!Object.hasOwn(code.modules, code.mainModule)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
-	return compatibility
+	const modules = Object.entries(code.modules)
+	for (const [name] of modules) validateModuleName(name)
+	if (!modules.some(([name]) => name === code.mainModule)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
+	return { compatibility, modules }
 }
 
 /** Module names become paths under the stub directory, so each must stay inside it. */
@@ -436,13 +447,33 @@ async function invokeEnvFetcher(fetcher: Record<string | symbol, unknown> | unde
 	}
 }
 
+/** Buffer a request body; an abort cancels the stream at once instead of waiting for its source to finish. */
+async function readBodyUntilAborted(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<ArrayBuffer> {
+	const reader = body.getReader()
+	const cancel = () => {
+		reader.cancel(signal.reason).catch(() => {})
+	}
+	signal.addEventListener('abort', cancel, { once: true })
+	try {
+		const chunks: Uint8Array[] = []
+		for (;;) {
+			const { done, value } = await reader.read()
+			signal.throwIfAborted()
+			if (done) return Bun.concatArrayBuffers(chunks)
+			chunks.push(value)
+		}
+	} finally {
+		signal.removeEventListener('abort', cancel)
+	}
+}
+
 async function writeModules(
 	workDir: string,
-	modules: Record<string, WorkerCodeModule>,
+	modules: [string, WorkerCodeModule][],
 	mainModule: string,
 ): Promise<string> {
 	let mainPath = ''
-	for (const [name, content] of Object.entries(modules)) {
+	for (const [name, content] of modules) {
 		const filePath = join(workDir, name)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const resolved = resolveModuleContent(name, content)

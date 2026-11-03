@@ -384,6 +384,7 @@ describe('buildWorkerEnv: parity with the worker env', () => {
 			config,
 			baseDir: tempDir,
 			dataDir,
+			workerLoaderDir: join(dataDir, 'worker-loader'),
 			rpc: makeMockRpc().rpc as never,
 			envWsBridge: makeEnvWsBridge() as never,
 		})

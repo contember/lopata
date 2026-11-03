@@ -35,6 +35,7 @@ export interface ThreadEnvOptions {
 	/** Shared `.lopata` data dir (main's `getDataDir()`) — the SQLite/r2/d1 files
 	 *  main and the DO workers use. Distinct from `baseDir` in multi-worker mode. */
 	dataDir: string
+	workerLoaderDir: string
 	rpc: RpcClient
 	/** Guest-side bridge for WebSockets returned by env-binding fetches. */
 	envWsBridge: WsGuestBridge<WorkerMessage>
@@ -52,7 +53,9 @@ export interface ThreadEnvBuilt {
 	workflows: { bindingName: string; className: string; binding: SqliteWorkflowBinding }[]
 }
 
-export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, browserConfig, artifactsBaseUrl }: ThreadEnvOptions): ThreadEnvBuilt {
+export function buildThreadEnv(
+	{ config, baseDir, dataDir, workerLoaderDir, rpc, envWsBridge, browserConfig, artifactsBaseUrl }: ThreadEnvOptions,
+): ThreadEnvBuilt {
 	mkdirSync(dataDir, { recursive: true })
 	mkdirSync(path.join(dataDir, 'r2'), { recursive: true })
 	mkdirSync(path.join(dataDir, 'd1'), { recursive: true })
@@ -108,7 +111,7 @@ export function buildThreadEnv({ config, baseDir, dataDir, rpc, envWsBridge, bro
 		env[config.browser.binding] = makeBrowserRunProxy(config.browser.binding, rpc, envWsBridge, browserConfig ?? {})
 	}
 
-	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl })
+	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl, workerLoaderDir })
 
 	return { env, db, workflows }
 }

@@ -63,7 +63,16 @@ beforeAll(() => {
 	)
 	namespaces.set(
 		'worker thread env',
-		idFactory(buildThreadEnv({ config, baseDir: tempDir, dataDir: tempDir, rpc, envWsBridge: guestBridge<WorkerMessage>() }).env.OTHER),
+		idFactory(
+			buildThreadEnv({
+				config,
+				baseDir: tempDir,
+				dataDir: tempDir,
+				workerLoaderDir: join(tempDir, 'worker-loader'),
+				rpc,
+				envWsBridge: guestBridge<WorkerMessage>(),
+			}).env.OTHER,
+		),
 	)
 })
 

@@ -201,6 +201,7 @@ async function initRuntime(init: WorkerInitConfig) {
 		config: init.config,
 		baseDir: init.baseDir,
 		dataDir: init.dataDir,
+		workerLoaderDir: init.workerLoaderDir,
 		rpc,
 		browserConfig: init.browserConfig,
 		artifactsBaseUrl: init.artifactsBaseUrl,

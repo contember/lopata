@@ -152,6 +152,8 @@ export interface WorkerInitConfig {
 	 * `.dev.vars`/`.env`/assets resolution, which IS per-worker.
 	 */
 	dataDir: string
+	/** This thread's Worker Loader directory; main removes it when the thread closes. */
+	workerLoaderDir: string
 	/** Worker name from `lopata.config.ts` (or single-worker wrangler config). Used
 	 *  for span attribution + error attribution; mirrors `Generation.workerName`. */
 	workerName?: string

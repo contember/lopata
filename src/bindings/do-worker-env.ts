@@ -28,6 +28,7 @@ import { SqliteQueueProducer } from './queue'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import { createOwnerLoaderDir } from './worker-loader-dirs'
 import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
@@ -219,7 +220,14 @@ export function buildWorkerEnv(
 		env[config.browser.binding] = makeBrowserRunProxy(config.browser.binding, rpc, envWsBridge, runtime.browserConfig ?? {})
 	}
 
-	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl: runtime.artifactsBaseUrl })
+	addStatelessBindings(env, {
+		config,
+		db,
+		dataDir,
+		baseDir,
+		artifactsBaseUrl: runtime.artifactsBaseUrl,
+		workerLoaderDir: runtime.workerLoaderDir ?? createOwnerLoaderDir(dataDir),
+	})
 
 	return { db, env }
 }

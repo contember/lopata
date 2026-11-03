@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { DOExecutor } from '../src/bindings/do-executor'
 import { WorkerExecutorFactory } from '../src/bindings/do-executor-worker'
 import { DurableObjectNamespaceImpl } from '../src/bindings/durable-object'
@@ -11,7 +11,8 @@ import { runMigrations } from '../src/db'
 import { WorkerThreadExecutor } from '../src/worker-thread/executor'
 
 // A dynamic worker is a Worker nested in the thread that owns the loader. Bun terminates nested Workers
-// with their parent (pinned in bun-runtime-assumptions.test.ts); these tests check that end to end.
+// with their parent (pinned in bun-runtime-assumptions.test.ts); these tests check that end to end, and
+// that main removes the owner thread's loader directory once the thread closes.
 
 const FIXTURE = join(import.meta.dir, 'fixtures/loader-owner-worker.ts')
 const CONFIG = {
@@ -45,11 +46,35 @@ async function untilTicking(): Promise<void> {
 	}
 }
 
+/** Wait until the tick count holds still, then require it to stay put for another window. */
 async function expectStopped(): Promise<void> {
-	await Bun.sleep(150)
-	const before = ticks()
-	await Bun.sleep(200)
-	expect(ticks()).toBe(before)
+	const deadline = Date.now() + 5000
+	let previous = ticks()
+	for (;;) {
+		await Bun.sleep(100)
+		const current = ticks()
+		if (current === previous) break
+		if (Date.now() > deadline) throw new Error('The dynamic worker kept running')
+		previous = current
+	}
+	await Bun.sleep(300)
+	expect(ticks()).toBe(previous)
+}
+
+/** The owner thread's loader directory: the parent of the dynamic worker's module directory. */
+function ownerLoaderDir(): string {
+	const dir = dirname(readFileSync(`${tickFile}.dir`, 'utf8'))
+	expect(basename(dir).startsWith(`${process.pid}-`)).toBe(true)
+	expect(existsSync(dir)).toBe(true)
+	return dir
+}
+
+async function expectRemoved(dir: string): Promise<void> {
+	const deadline = Date.now() + 5000
+	while (existsSync(dir)) {
+		if (Date.now() > deadline) throw new Error(`${dir} was not removed`)
+		await Bun.sleep(20)
+	}
 }
 
 function stubCaller(stub: unknown) {
@@ -64,15 +89,18 @@ function stubCaller(stub: unknown) {
 describe('Worker Loader threads end with their owner', () => {
 	test('disposing a worker thread terminates the dynamic workers it spawned', async () => {
 		const executor = new WorkerThreadExecutor({ modulePath: FIXTURE, config: CONFIG, baseDir: directory, mainEnv: {} })
+		let loaderDir = ''
 		try {
 			await executor.ready()
 			const response = await executor.executeFetch(new Request(`http://localhost/?file=${encodeURIComponent(tickFile)}`))
 			expect(await response.text()).toBe('ticking')
 			await untilTicking()
+			loaderDir = ownerLoaderDir()
 		} finally {
 			executor.dispose()
 		}
 		await expectStopped()
+		await expectRemoved(loaderDir)
 	}, 15_000)
 
 	function doHarness() {
@@ -103,13 +131,16 @@ describe('Worker Loader threads end with their owner', () => {
 
 	test('disposing a Durable Object thread terminates the dynamic workers it spawned', async () => {
 		const h = doHarness()
+		let loaderDir = ''
 		try {
 			expect(await h.call('startTicker', tickFile)).toBe('ticking')
 			await untilTicking()
+			loaderDir = ownerLoaderDir()
 		} finally {
 			await h.close()
 		}
 		await expectStopped()
+		await expectRemoved(loaderDir)
 	}, 15_000)
 
 	test('ctx.abort() in a Durable Object terminates the dynamic workers it spawned', async () => {
@@ -117,8 +148,10 @@ describe('Worker Loader threads end with their owner', () => {
 		try {
 			expect(await h.call('startTicker', tickFile)).toBe('ticking')
 			await untilTicking()
+			const loaderDir = ownerLoaderDir()
 			await h.call('abortNow').then(() => {}, () => {})
 			await expectStopped()
+			await expectRemoved(loaderDir)
 		} finally {
 			await h.close()
 		}

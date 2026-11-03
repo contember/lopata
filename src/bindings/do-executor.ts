@@ -10,6 +10,8 @@ export interface DOWorkerRuntimeOptions {
 	/** Base URL of main's Artifacts git endpoint. */
 	artifactsBaseUrl?: string
 	browserConfig?: BrowserConfig
+	/** The DO thread's Worker Loader directory, set per thread by `WorkerExecutor`, which removes it when the thread closes. */
+	workerLoaderDir?: string
 }
 
 export interface DOAbortPolicy {

@@ -1,7 +1,7 @@
 import { DurableObjectBase } from '../../src/bindings/durable-object'
 import { WorkerLoaderBinding } from '../../src/bindings/worker-loader'
 
-/** Start a dynamic worker that appends to `file` every 10 ms for as long as its thread lives. */
+/** Start a dynamic worker that records its module directory in `<file>.dir` and appends to `file` every 10 ms while its thread lives. */
 async function startTicker(env: unknown, file: string): Promise<string> {
 	const loader: unknown = typeof env === 'object' && env !== null ? Reflect.get(env, 'LOADER') : undefined
 	if (!(loader instanceof WorkerLoaderBinding)) throw new Error('env.LOADER is not a Worker Loader')
@@ -9,7 +9,8 @@ async function startTicker(env: unknown, file: string): Promise<string> {
 		compatibilityDate: '2026-03-01',
 		mainModule: 'main.js',
 		modules: {
-			'main.js': `import { appendFileSync } from 'node:fs'
+			'main.js': `import { appendFileSync, writeFileSync } from 'node:fs'
+writeFileSync(${JSON.stringify(`${file}.dir`)}, import.meta.dir)
 setInterval(() => appendFileSync(${JSON.stringify(file)}, 'x'), 10)
 export default { fetch() { return new Response('ticking') } }`,
 		},
