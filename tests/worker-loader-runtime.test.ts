@@ -194,12 +194,14 @@ describe('dynamic worker runtime', () => {
 })
 
 describe('dynamic worker background work', () => {
-	test('waitUntil from ctx and from cloudflare:workers belong to the invocation, and a rejection does not take the worker down', async () => {
+	test('waitUntil from ctx and from cloudflare:workers belong to the invocation, and a rejection is logged without taking the worker down', async () => {
 		const stub = load(
 			`import { waitUntil } from 'cloudflare:workers'
+			const logged = []
+			console.error = (...args) => { logged.push(args.map(arg => arg instanceof Error ? arg.message : String(arg)).join(' ')) }
 			export default {
 				fetch(request, env, ctx) {
-					if (new URL(request.url).pathname === '/second') return new Response('second')
+					if (new URL(request.url).pathname === '/logged') return Response.json(logged)
 					ctx.waitUntil(Promise.reject(new Error('context rejection')))
 					waitUntil(Promise.reject(new Error('module rejection')))
 					return new Response('first')
@@ -207,9 +209,18 @@ describe('dynamic worker background work', () => {
 			}`,
 		)
 		expect(await text(stub.getEntrypoint().fetch('http://loader/'))).toBe('first')
-		await Bun.sleep(50)
-		const second = Promise.race([text(stub.getEntrypoint().fetch('http://loader/second')), Bun.sleep(2000).then(() => 'still pending')])
-		expect(await second).toBe('second')
+		const deadline = Date.now() + 2000
+		let logged: unknown = []
+		while (!Array.isArray(logged) || logged.length < 2) {
+			if (Date.now() > deadline) throw new Error(`The rejections were not logged: ${JSON.stringify(logged)}`)
+			const response = stub.getEntrypoint().fetch('http://loader/logged')
+			logged = await Promise.race([response.then(r => r.json()), Bun.sleep(2000).then(() => 'the worker stopped answering')])
+			await Bun.sleep(10)
+		}
+		expect(logged).toEqual(expect.arrayContaining([
+			'[lopata] waitUntil promise rejected: context rejection',
+			'[lopata] waitUntil promise rejected: module rejection',
+		]))
 	})
 })
 
