@@ -6,10 +6,10 @@
  * supplied code with its own module graph. Isolation is "fuzzy" — worker
  * threads share the process with the parent but have separate heaps.
  *
- * Modules are written to `.lopata/worker-loader/<stub-id>/` before the Worker
- * imports the entry point. This keeps the implementation simple at the cost
- * of not supporting languages Bun can't execute directly (CF's `py`, Rust,
- * etc. are rejected in v1).
+ * Modules are written to a random `.lopata/worker-loader/<uuid>/` directory per
+ * stub before the Worker imports the entry point; a `get()` id is only a cache
+ * key. This keeps the implementation simple at the cost of not supporting
+ * languages Bun can't execute directly (CF's `py`, Rust, etc. are rejected in v1).
  */
 
 import { randomUUIDv7 } from 'bun'
@@ -59,21 +59,23 @@ interface ResolvedCode {
 }
 
 export class WorkerStub {
-	private readonly id: string
 	private readonly codeSource: CodeSource
 	private _resolved: ResolvedCode | null = null
 	private readonly workDir: string
 	private _worker: Worker | null = null
 	private _ready: Promise<void> | null = null
+	/** Rejects the Worker's pending `ready` handshake; set while it is outstanding. */
+	private _rejectReady: ((err: Error) => void) | null = null
 	private _pending = new Map<number, PendingCommand>()
 	private _nextCmdId = 1
 	private _disposed = false
+	/** Aborted by `dispose()`, so work that runs before a call is registered (reading a request body) stops too. */
+	private readonly _disposal = new AbortController()
 	private _disposeTimer: Timer | null = null
 
-	constructor(id: string, code: CodeSource, baseDir: string) {
-		this.id = id
+	constructor(code: CodeSource, baseDir: string) {
 		this.codeSource = code
-		this.workDir = join(baseDir, id)
+		this.workDir = join(baseDir, randomUUIDv7())
 		if (typeof code !== 'function') {
 			this._resolved = { code, env: encodeLoaderEnv(code.env) }
 		}
@@ -94,19 +96,31 @@ export class WorkerStub {
 	}
 
 	private async _boot(): Promise<void> {
-		const { code, env } = await this._resolveCode()
-		const compatibility = validateCode(code)
-		mkdirSync(this.workDir, { recursive: true })
-		const mainPath = await writeModules(this.workDir, code.modules, code.mainModule)
+		try {
+			const { code, env } = await this._resolveCode()
+			const { compatibility, modules } = validateCode(code)
+			this._assertNotDisposed()
+			mkdirSync(this.workDir, { recursive: true })
+			const mainPath = await writeModules(this.workDir, modules, code.mainModule)
+			this._assertNotDisposed()
+			await this._spawn(mainPath, env, code.globalOutbound === null ? 'block' : 'allow', compatibility)
+		} catch (err) {
+			// Leave nothing behind from a partial materialization or a failed init; the failure stays cached, as on Cloudflare.
+			this._release()
+			throw err
+		}
+	}
 
+	private _spawn(mainPath: string, env: EncodedLoaderEnv, globalOutbound: 'allow' | 'block', compatibility: CompatibilitySelection): Promise<void> {
 		const worker = new Worker(WORKER_ENTRY_PATH)
 		this._worker = worker
 
-		let readyResolve: () => void
-		let readyReject: (err: Error) => void
-		const ready = new Promise<void>((res, rej) => {
-			readyResolve = res
-			readyReject = rej
+		const { promise: ready, resolve: readyResolve, reject: readyReject } = Promise.withResolvers<void>()
+		this._rejectReady = readyReject
+		void ready.then(() => {
+			this._rejectReady = null
+		}, () => {
+			this._rejectReady = null
 		})
 
 		worker.onmessage = (event: MessageEvent<WorkerToMain>) => {
@@ -116,7 +130,7 @@ export class WorkerStub {
 					type: 'init',
 					mainModulePath: mainPath,
 					env: env.value,
-					globalOutbound: code.globalOutbound === null ? 'block' : 'allow',
+					globalOutbound,
 					compatibility,
 				}
 				worker.postMessage({ type: 'init', data: init } satisfies MainToWorker)
@@ -157,7 +171,24 @@ export class WorkerStub {
 			this._pending.clear()
 		}
 
-		await ready
+		return ready
+	}
+
+	private _assertNotDisposed(): void {
+		if (this._disposed) throw new Error('WorkerStub has been disposed')
+	}
+
+	/** Terminate the Worker and remove the module directory. */
+	private _release(): void {
+		if (this._worker) {
+			try {
+				this._worker.terminate()
+			} catch {}
+			this._worker = null
+		}
+		try {
+			rmSync(this.workDir, { recursive: true, force: true })
+		} catch {}
 	}
 
 	private _send(command: LoaderCommand): Promise<LoaderResult> {
@@ -167,7 +198,8 @@ export class WorkerStub {
 			this._pending.set(id, { resolve, reject })
 			this._ensureReady()
 				.then(() => {
-					this._worker!.postMessage({ type: 'command', id, command } satisfies MainToWorker)
+					this._assertNotDisposed()
+					this._worker?.postMessage({ type: 'command', id, command } satisfies MainToWorker)
 				})
 				.catch(err => {
 					this._pending.delete(id)
@@ -182,7 +214,8 @@ export class WorkerStub {
 
 	/** @internal */
 	async _fetch(entrypoint: string | undefined, request: Request): Promise<Response> {
-		const body = request.body ? await request.arrayBuffer() : null
+		this._assertNotDisposed()
+		const body = request.body ? await readBodyUntilAborted(request.body, this._disposal.signal) : null
 		const result = await this._send({
 			type: 'fetch',
 			entrypoint,
@@ -216,14 +249,12 @@ export class WorkerStub {
 		if (this._disposed) return
 		this._disposed = true
 		if (this._disposeTimer) clearTimeout(this._disposeTimer)
-		if (this._worker) {
-			try {
-				this._worker.terminate()
-			} catch {}
-		}
-		try {
-			rmSync(this.workDir, { recursive: true, force: true })
-		} catch {}
+		const error = new Error('WorkerStub has been disposed')
+		this._disposal.abort(error)
+		this._rejectReady?.(error)
+		for (const pending of this._pending.values()) pending.reject(error)
+		this._pending.clear()
+		this._release()
 	}
 }
 
@@ -267,8 +298,7 @@ export class WorkerLoaderBinding {
 
 	load(code: WorkerCode): WorkerStub {
 		validateCode(code)
-		const id = randomUUIDv7()
-		return new WorkerStub(id, code, this.baseDir)
+		return new WorkerStub(code, this.baseDir)
 	}
 
 	get(id: string, getCodeCallback: () => Promise<WorkerCode> | WorkerCode): WorkerStub {
@@ -277,7 +307,7 @@ export class WorkerLoaderBinding {
 		// Defer invoking the callback until the stub is first used — matches
 		// Cloudflare's behavior (get() returns synchronously, code resolution
 		// happens lazily on first fetch/rpc call).
-		const stub = new WorkerStub(id, getCodeCallback, this.baseDir)
+		const stub = new WorkerStub(getCodeCallback, this.baseDir)
 		this.cache.set(id, stub)
 		return stub
 	}
@@ -288,13 +318,31 @@ export class WorkerLoaderBinding {
 	}
 }
 
-function validateCode(code: WorkerCode): CompatibilitySelection {
+interface ValidatedCode {
+	compatibility: CompatibilitySelection
+	/** The modules map read once; the files are written from this snapshot, so every written name was validated. */
+	modules: [string, WorkerCodeModule][]
+}
+
+function validateCode(code: WorkerCode): ValidatedCode {
 	if (!code.compatibilityDate) throw new Error('WorkerCode.compatibilityDate is required')
 	const compatibility = resolveCompatibility({ date: code.compatibilityDate, flags: code.compatibilityFlags })
 	if (!code.mainModule) throw new Error('WorkerCode.mainModule is required')
 	if (!code.modules || typeof code.modules !== 'object') throw new Error('WorkerCode.modules must be an object')
-	if (!(code.mainModule in code.modules)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
-	return compatibility
+	const modules = Object.entries(code.modules)
+	for (const [name] of modules) validateModuleName(name)
+	if (!modules.some(([name]) => name === code.mainModule)) throw new Error(`mainModule "${code.mainModule}" not present in modules map`)
+	return { compatibility, modules }
+}
+
+/** Module names become paths under the stub directory, so each must stay inside it. */
+function validateModuleName(name: string): void {
+	const segments = name.split('/')
+	if (name.includes('\\') || name.includes('\0') || segments.some(segment => segment === '' || segment === '.' || segment === '..')) {
+		throw new TypeError(
+			`Invalid module name ${JSON.stringify(name)}: use a relative path of non-empty segments without ".", "..", backslashes or NUL characters`,
+		)
+	}
 }
 
 /** A loader `env` ready to post: `value` has each Fetcher swapped for a placeholder indexing `fetchers`. */
@@ -399,13 +447,33 @@ async function invokeEnvFetcher(fetcher: Record<string | symbol, unknown> | unde
 	}
 }
 
+/** Buffer a request body; an abort cancels the stream at once instead of waiting for its source to finish. */
+async function readBodyUntilAborted(body: ReadableStream<Uint8Array>, signal: AbortSignal): Promise<ArrayBuffer> {
+	const reader = body.getReader()
+	const cancel = () => {
+		reader.cancel(signal.reason).catch(() => {})
+	}
+	signal.addEventListener('abort', cancel, { once: true })
+	try {
+		const chunks: Uint8Array[] = []
+		for (;;) {
+			const { done, value } = await reader.read()
+			signal.throwIfAborted()
+			if (done) return Bun.concatArrayBuffers(chunks)
+			chunks.push(value)
+		}
+	} finally {
+		signal.removeEventListener('abort', cancel)
+	}
+}
+
 async function writeModules(
 	workDir: string,
-	modules: Record<string, WorkerCodeModule>,
+	modules: [string, WorkerCodeModule][],
 	mainModule: string,
 ): Promise<string> {
 	let mainPath = ''
-	for (const [name, content] of Object.entries(modules)) {
+	for (const [name, content] of modules) {
 		const filePath = join(workDir, name)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const resolved = resolveModuleContent(name, content)

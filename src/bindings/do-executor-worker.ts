@@ -28,6 +28,7 @@ import { registerContainer, unregisterContainer } from './container-cleanup'
 import type { DOAbortPolicy, DOExecutor, DOExecutorFactory, DOWorkerRuntimeOptions, ExecutorConfig } from './do-executor'
 import { DurableObjectIdImpl } from './durable-object'
 import { CFWebSocket, type ResponseWithWebSocket } from './websocket-pair'
+import { createOwnerLoaderDir, removeLoaderDir } from './worker-loader-dirs'
 
 // The DO-channel message protocol (DOCommand / DOResult / DOWorkerMessage /
 // DOMainMessage / Do*Stream* / WsAcceptSignal) lives in
@@ -153,6 +154,9 @@ export class WorkerExecutor implements DOExecutor {
 
 		const config = this._config
 		const worker = new Worker(WORKER_ENTRY_PATH)
+		const workerLoaderDir = createOwnerLoaderDir(this._resolveDataDir())
+		// Fires on terminate and on a crash; the thread's dynamic workers end with it on Bun 1.4.
+		worker.addEventListener('close', () => removeLoaderDir(workerLoaderDir))
 
 		this._ready = new Promise<void>((resolve, reject) => {
 			this._readyResolve = resolve
@@ -203,7 +207,7 @@ export class WorkerExecutor implements DOExecutor {
 							// instead of re-loading from configPath WITHOUT the --env overrides.
 							wranglerConfig: this._config._wranglerConfig,
 							compatibility: this._config.compatibility,
-							runtime: this._config._runtime,
+							runtime: { ...this._config._runtime, workerLoaderDir },
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
 							idStr: config.id.toString(),

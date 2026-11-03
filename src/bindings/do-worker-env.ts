@@ -22,12 +22,13 @@ import type { WsGuestBridge } from '../worker-thread/ws-bridge-shared'
 import { type BrowserConfig, createBrowserRunMethods, createRemoteBrowserRunBackend } from './browser'
 import type { DOWorkerRuntimeOptions } from './do-executor'
 import type { DOMainMessage } from './do-executor-worker'
-import { DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
+import { durableObjectIdFromString, DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from './durable-object'
 import { EmailMessage } from './email'
 import { SqliteQueueProducer } from './queue'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
+import { createOwnerLoaderDir } from './worker-loader-dirs'
 import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
@@ -113,7 +114,7 @@ function makeDoEnvStubProxy(
 function makeDoEnvNamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
 	const stubs = new Map<string, unknown>()
 	const idFromName = (name: string) => new DurableObjectIdImpl(hashIdFromName(name), name)
-	const idFromString = (idStr: string) => new DurableObjectIdImpl(idStr)
+	const idFromString = durableObjectIdFromString
 	const newUniqueId = (_opts?: { jurisdiction?: string }) => new DurableObjectIdImpl(randomUniqueIdHex())
 	const get = (id: DurableObjectIdImpl) => {
 		const idStr = id.toString()
@@ -219,7 +220,14 @@ export function buildWorkerEnv(
 		env[config.browser.binding] = makeBrowserRunProxy(config.browser.binding, rpc, envWsBridge, runtime.browserConfig ?? {})
 	}
 
-	addStatelessBindings(env, { config, db, dataDir, baseDir, artifactsBaseUrl: runtime.artifactsBaseUrl })
+	addStatelessBindings(env, {
+		config,
+		db,
+		dataDir,
+		baseDir,
+		artifactsBaseUrl: runtime.artifactsBaseUrl,
+		workerLoaderDir: runtime.workerLoaderDir ?? createOwnerLoaderDir(dataDir),
+	})
 
 	return { db, env }
 }

@@ -60,6 +60,7 @@ describe('ratelimits config', () => {
 			db,
 			dataDir: '/tmp/lopata-rate-limit-test',
 			baseDir: '/tmp',
+			workerLoaderDir: '/tmp/lopata-rate-limit-test/worker-loader',
 		})
 		const binding = env.LIMITER as SqliteRateLimiter
 		expect((await binding.limit({ key: 'x' })).success).toBe(true)

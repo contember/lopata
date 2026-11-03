@@ -740,8 +740,8 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 5.11 DurableObjectNamespace
 
 - ✅ `namespace.idFromName(name)` — deterministic ID from SHA256
-- ✅ `namespace.newUniqueId(options?)` — random UUID-based ID; jurisdiction option ignored
-- ✅ `namespace.idFromString(hexId)` — reconstruct from hex string
+- ✅ `namespace.newUniqueId(options?)` — random 64-hex-digit ID; jurisdiction option ignored
+- ✅ `namespace.idFromString(hexId)` — reconstruct from 64 hex digits (case-insensitive, normalized to lowercase); anything else throws `TypeError: Invalid Durable Object ID: must be 64 hex digits`. The 32-digit IDs minted by Lopata 0.31 and older are still accepted. The namespace MAC that workerd checks is not emulated.
 - ✅ `namespace.get(id, options?)` — get stub; locationHint ignored
 - ✅ `namespace.getByName(name)` — convenience: idFromName + get
 - ❌ `namespace.jurisdiction(jurisdiction)` — sub-namespace scoped to jurisdiction

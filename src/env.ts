@@ -12,6 +12,7 @@ import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
 import { createServiceBinding } from './bindings/service-binding'
 import { addStatelessBindings, createStaticAssets } from './bindings/stateless-env'
 import type { StaticAssets } from './bindings/static-assets'
+import { getMainThreadLoaderDir } from './bindings/worker-loader-dirs'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
 import { legacyCompatibility } from './compatibility-context'
 import { isCrossScriptBinding, localDurableObjectBindings, type WranglerConfig } from './config'
@@ -338,6 +339,7 @@ export function buildEnv(
 		db,
 		dataDir: getDataDir(),
 		baseDir: devVarsDir ?? process.cwd(),
+		workerLoaderDir: getMainThreadLoaderDir(getDataDir()),
 		artifactsBaseUrl: baseUrls?.artifacts,
 		staticAssets: registry.staticAssets ?? undefined,
 		log: (message) => console.log(`[lopata] ${message}`),

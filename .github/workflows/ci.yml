@@ -13,6 +13,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: oven-sh/setup-bun@v2
+        with:
+          # Worker threads and the Worker Loader depend on Bun behaviour pinned in tests/bun-runtime-assumptions.test.ts.
+          bun-version-file: .bun-version
 
       - name: Install dependencies
         run: bun install --frozen-lockfile

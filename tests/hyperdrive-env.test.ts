@@ -22,7 +22,7 @@ function build(connectionString?: string, vars: Record<string, unknown> = {}) {
 		hyperdrive: [{ binding: 'F06C_TEST', id: 'test', localConnectionString: connectionString }],
 	}
 	try {
-		addStatelessBindings(vars, { config, db, dataDir: '/unused', baseDir: '/unused' })
+		addStatelessBindings(vars, { config, db, dataDir: '/unused', baseDir: '/unused', workerLoaderDir: '/unused' })
 		const binding = vars.F06C_TEST
 		if (!(binding instanceof HyperdriveBinding)) throw new Error('Missing Hyperdrive binding')
 		return { binding, env: vars, config }

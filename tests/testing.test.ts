@@ -789,6 +789,19 @@ id = "abc123"
 		expect(cancelled).toBeNull()
 	})
 
+	test('durableObject().getById() parses the id like idFromString', async () => {
+		class Counter extends DurableObject {}
+
+		t = await createTestEnv({
+			worker: { Counter },
+			bindings: { COUNTER: { type: 'durable-object', className: 'Counter' } },
+		})
+
+		const ns = t.durableObject('COUNTER')
+		expect(() => ns.getById('../not-hex')).toThrow(new TypeError('Invalid Durable Object ID: must be 64 hex digits'))
+		expect(ns.getById('AB'.repeat(32)).id).toBe('ab'.repeat(32))
+	})
+
 	test('durableObject().listIds()', async () => {
 		class Counter extends DurableObject {
 			async increment(): Promise<number> {
