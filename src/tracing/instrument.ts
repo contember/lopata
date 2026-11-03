@@ -188,7 +188,10 @@ export function instrumentServiceBinding<T extends object>(binding: T, serviceNa
 			if (['then', 'catch', 'finally', 'toJSON', 'valueOf', 'toString', 'connect'].includes(prop)) return value
 			if (typeof value === 'function') {
 				const method = prop === 'fetch' ? 'fetch' : prop
-				return wrapMethod(value, 'service', serviceName, method, 'client')
+				const wrapped = wrapMethod(value, 'service', serviceName, method, 'client')
+				// An RPC member is callable (method call) and thenable (`await env.SVC.prop` reads the property); keep the read.
+				const then: unknown = Reflect.get(value, 'then')
+				return typeof then === 'function' ? Object.assign(wrapped, { then: then.bind(value) }) : wrapped
 			}
 			return value
 		},
