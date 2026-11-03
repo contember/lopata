@@ -1,0 +1,6 @@
+{
+	"name": "svc-main",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"services": [{ "binding": "AUX", "service": "svc-aux" }]
+}
