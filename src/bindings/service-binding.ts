@@ -10,7 +10,7 @@
 
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility, runWithCompatibility } from '../compatibility-context'
-import { callEntrypointMethod } from '../entrypoint-handler'
+import { callEntrypointMethod, constructEntrypoint } from '../entrypoint-handler'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
@@ -41,9 +41,13 @@ export function serviceBindingConnectError(name: string): Error {
 	return new Error(`Service binding "${name}": connect() (TCP sockets) is not supported in local dev mode`)
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null
+}
+
 /**
  * Resolve the call target for a service binding RPC (`fetch` or method):
- * a named entrypoint class, an unnamed default class, or the default object.
+ * a named entrypoint class or handler object, an unnamed default class, or the default object.
  *
  * Used by in-process service dispatch and the worker-thread's
  * `invokeEntrypointRpc`. Single source of truth so the in-process and
@@ -56,11 +60,11 @@ export function resolveEntrypointTarget(
 	env: unknown,
 ): Record<string, unknown> {
 	if (entrypoint) {
-		const cls = workerModule[entrypoint]
-		if (typeof cls !== 'function') {
-			throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
-		}
-		return new (cls as new(ctx: unknown, env: unknown) => Record<string, unknown>)(ctx, env)
+		const exported = workerModule[entrypoint]
+		if (typeof exported === 'function') return constructEntrypoint(exported, ctx, env)
+		// A named handler object is served as is, as workerd and the shared dispatcher do.
+		if (isRecord(exported)) return exported
+		throw new Error(`Entrypoint "${entrypoint}" not exported from worker module`)
 	}
 	const def = workerModule.default
 	if (typeof def === 'function' && def.prototype) {
@@ -281,7 +285,7 @@ export class ServiceBinding {
 							if (result.kind === 'function') {
 								// Property is a function on the entrypoint — hand back a function-stub
 								// that RPCs through to the worker thread on each call.
-								const remoteFn = (...callArgs: unknown[]) => executor.executeEntrypointRpc(entrypoint, prop, callArgs, props)
+								const remoteFn = (...callArgs: unknown[]) => executor.executeEntrypointRpc(entrypoint, prop, callArgs, props, 'property-function')
 								return createRpcFunctionStub(remoteFn, undefined)
 							}
 							return wrapRpcReturnValue(result.value, prop)

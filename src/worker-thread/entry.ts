@@ -19,6 +19,7 @@ import { setTraceStoreOverride } from '../tracing/store'
 import { setGlobalExports } from '../worker-exports'
 import { trackBackgroundWork, WorkerExecutionContext } from './execution-context'
 import type {
+	EntrypointRpcCall,
 	ParentSpanContext,
 	SerializedResponse,
 	WorkerCommand,
@@ -283,7 +284,8 @@ async function initRuntime(init: WorkerInitConfig) {
 		entrypoint: string | undefined,
 		method: string,
 		args: unknown[],
-		props?: Record<string, unknown>,
+		props: Record<string, unknown> | undefined,
+		call: EntrypointRpcCall,
 	): Promise<unknown> => {
 		const ctx = dispatcher.context(props)
 		return runWithExecutionContext(ctx, async () => {
@@ -292,6 +294,7 @@ async function initRuntime(init: WorkerInitConfig) {
 			if (typeof member !== 'function') {
 				throw new Error(`Service binding RPC: "${method}" is not a function on the ${entrypoint ?? 'default'} entrypoint`)
 			}
+			if (call === 'property-function') return await Reflect.apply(member, target, args)
 			return await callEntrypointMethod(workerModule[entrypoint ?? 'default'], target, method, member, args, env, ctx)
 		})
 	}
@@ -429,7 +432,10 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'entrypoint-rpc':
 				try {
-					const value = await runWithParentContext(cmd.parent, () => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props))
+					const value = await runWithParentContext(
+						cmd.parent,
+						() => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props, cmd.call ?? 'method'),
+					)
 					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
 					post({ type: 'entrypoint-rpc-error', id: cmd.id, error: serializeError(e) })

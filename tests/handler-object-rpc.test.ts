@@ -1,9 +1,14 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { WorkerEntrypoint } from 'cloudflare:workers'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ServiceBinding } from '../src/bindings/service-binding'
 import { WorkerDispatcher } from '../src/bindings/worker-dispatcher'
 import { legacyCompatibility } from '../src/compatibility-context'
+import type { WranglerConfig } from '../src/config'
 import { ExecutionContext } from '../src/execution-context'
+import { WorkerThreadExecutor } from '../src/worker-thread/executor'
 
 // workerd calls a handler object's RPC method as (arg, env, ctx) and rejects any other shape
 // (workerd `api/tests/js-rpc-test.js`, `basicServiceBinding`). Class entrypoints keep the caller's arguments.
@@ -45,6 +50,19 @@ function createModule(): Record<string, unknown> {
 				return i * j + this.env.FACTOR
 			}
 		},
+		alternate: {
+			greet(name: string, env: Env, ctx: ExecutionContext) {
+				return `${String(ctx.props.tenant)}: ${name} x${env.FACTOR}`
+			},
+		},
+		inherited: Object.assign(
+			Object.create({
+				greet(name: string) {
+					return name
+				},
+			}),
+			{ fetch: () => new Response('ok') },
+		),
 	}
 }
 
@@ -96,8 +114,82 @@ describe.each(routes)('handler-object RPC through %s', (_route, bind) => {
 		}
 	})
 
+	test('a named handler object is served with (arg, env, ctx)', async () => {
+		const binding = bind(createModule(), { FACTOR: 12 }, 'alternate')
+		expect(await call(binding, 'greet', 'Dave')).toBe('a: Dave x12')
+	})
+
+	test('a handler object exposes only its own methods', async () => {
+		const binding = bind(createModule(), { FACTOR: 12 }, 'inherited')
+		let error: unknown
+		try {
+			await call(binding, 'greet', 'Dave')
+		} catch (e) {
+			error = e
+		}
+		if (!(error instanceof TypeError)) throw new Error('expected a TypeError')
+		expect(error.message).toBe('The RPC receiver does not implement the method "greet".')
+	})
+
 	test('a class entrypoint keeps the caller arguments', async () => {
 		const binding = bind(createModule(), { FACTOR: 12 }, 'Api')
 		expect(await call(binding, 'twoArgsMethod', 123, 2)).toBe(258)
+	})
+})
+
+describe('handler-object RPC through a worker thread', () => {
+	let directory: string
+	let executor: WorkerThreadExecutor
+	let binding: ServiceBinding
+
+	beforeAll(async () => {
+		directory = mkdtempSync(join(tmpdir(), 'lopata-handler-rpc-'))
+		writeFileSync(
+			join(directory, 'worker.js'),
+			`export default {
+				fetch() { return new Response('ok') },
+				oneArg(i, env, ctx) { return { value: i * Number(env.FACTOR), props: ctx.props } },
+				pair(...args) { return args },
+			}
+			export const alternate = {
+				greet(name, env, ctx) { return ctx.props.tenant + ': ' + name + ' x' + env.FACTOR },
+			}`,
+		)
+		const config: WranglerConfig = { name: 'handler-rpc', main: 'worker.js', vars: { FACTOR: '12' } }
+		executor = new WorkerThreadExecutor({ modulePath: join(directory, 'worker.js'), config, baseDir: directory, mainEnv: {} })
+		await executor.ready()
+		binding = new ServiceBinding('svc', undefined, undefined, { tenant: 'a' })
+		binding._wire(() => ({ kind: 'thread', env: {}, executor }))
+	})
+
+	afterAll(() => {
+		executor.dispose()
+		rmSync(directory, { recursive: true, force: true })
+	})
+
+	test('a method call gets (arg, env, ctx) and rejects a second argument', async () => {
+		expect(await call(binding, 'oneArg', 3)).toEqual({ value: 36, props: { tenant: 'a' } })
+		let error: unknown
+		try {
+			await call(binding, 'pair', 'x', 'y')
+		} catch (e) {
+			error = e
+		}
+		if (!(error instanceof Error)) throw new Error(`expected an error, got ${String(error)}`)
+		expect({ name: error.name, message: error.message }).toEqual({ name: 'TypeError', message: argumentCountError('pair') })
+	})
+
+	test('a named handler object is served across the thread', async () => {
+		const named = new ServiceBinding('svc', 'alternate', undefined, { tenant: 'b' })
+		named._wire(() => ({ kind: 'thread', env: {}, executor }))
+		expect(await call(named, 'greet', 'Eve')).toBe('b: Eve x12')
+	})
+
+	test('a function read as a property keeps the caller arguments', async () => {
+		const fn: unknown = await Reflect.get(binding.toProxy(), 'pair')
+		if (typeof fn !== 'function') throw new Error('expected a function stub')
+		expect(await fn()).toEqual([])
+		expect(await fn('x')).toEqual(['x'])
+		expect(await fn('x', 'y')).toEqual(['x', 'y'])
 	})
 })
