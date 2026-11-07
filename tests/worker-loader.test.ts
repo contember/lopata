@@ -118,24 +118,27 @@ describe('WorkerLoaderBinding.load()', () => {
 		expect(await resp.json()).toEqual({ feature: 'enabled', limit: 10 })
 	})
 
-	test.each(['answer.wasm', 'answer.bin'])('wasm module %s loads as a WebAssembly.Module default export', async name => {
-		const stub = track(
-			loader.load({
-				compatibilityDate: '2026-03-01',
-				mainModule: 'main.js',
-				modules: {
-					'main.js': `
+	test.each(['answer.wasm', 'answer.bin', 'answer', 'answer.node', 'answer.wasm?module', 'lib/answer.wasm'])(
+		'wasm module %s loads as a WebAssembly.Module default export',
+		async name => {
+			const stub = track(
+				loader.load({
+					compatibilityDate: '2026-03-01',
+					mainModule: 'main.js',
+					modules: {
+						'main.js': `
 						import mod from './${name}'
 						const { answer } = new WebAssembly.Instance(mod).exports
 						export default { fetch() { return new Response(String(answer())) } }
 					`,
-					[name]: { wasm: ANSWER_WASM.slice().buffer },
-				},
-			}),
-		)
-		const resp = await stub.getEntrypoint().fetch('http://loader/')
-		expect(await resp.text()).toBe('42')
-	})
+						[name]: { wasm: ANSWER_WASM.slice().buffer },
+					},
+				}),
+			)
+			const resp = await stub.getEntrypoint().fetch('http://loader/')
+			expect(await resp.text()).toBe('42')
+		},
+	)
 
 	test('error in handler surfaces as rejected promise', async () => {
 		const stub = track(

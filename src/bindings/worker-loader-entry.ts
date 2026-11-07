@@ -12,6 +12,8 @@
  * access behave identically to the parent.
  */
 
+import { writeFileSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility, runWithCompatibility } from '../compatibility-context'
 import { callEntrypointMethod, constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
@@ -192,16 +194,29 @@ async function init(data: LoaderInitMessage): Promise<void> {
 /** A `{ wasm }` module imports as a `WebAssembly.Module` by its key, whatever its name. */
 function registerWasmModules(paths: string[]): void {
 	if (paths.length === 0) return
-	const filter = new RegExp(`^(?:${paths.map(escapeRegExp).join('|')})$`)
+	const compilers = new Map(paths.map((path, index) => [path, writeWasmCompiler(path, index)]))
+	const filter = new RegExp(`(?:^|/)(?:${paths.map(path => escapeRegExp(basename(path))).join('|')})$`)
 	Bun.plugin({
 		name: 'lopata:worker-loader-wasm',
 		setup(build) {
-			build.onLoad({ filter }, async args => ({
-				exports: { default: new WebAssembly.Module(await Bun.file(args.path).arrayBuffer()) },
-				loader: 'object',
-			}))
+			// Bun's runtime never asks onResolve about an existing extensionless file; a registered module catches that one.
+			for (const path of paths) {
+				build.module(path, async () => ({ exports: { default: new WebAssembly.Module(await Bun.file(path).arrayBuffer()) }, loader: 'object' }))
+			}
+			// The rest resolve to a module compiling the bytes, out of reach of Bun's `.node` addon check and of its file lookup, which drops a `?query`.
+			build.onResolve({ filter }, args => {
+				const compiler = compilers.get(resolve(dirname(args.importer), args.path))
+				return compiler === undefined ? undefined : { path: compiler }
+			})
 		},
 	})
+}
+
+/** Named by index beside the module: a `?` in its key would read as a query in the compiler's path. */
+function writeWasmCompiler(path: string, index: number): string {
+	const compiler = join(dirname(path), `.lopata-wasm-${index}.mjs`)
+	writeFileSync(compiler, `export default new WebAssembly.Module(await Bun.file(${JSON.stringify(path)}).arrayBuffer())\n`)
+	return compiler
 }
 
 function escapeRegExp(value: string): string {
