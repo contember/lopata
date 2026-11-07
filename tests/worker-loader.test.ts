@@ -22,6 +22,9 @@ afterEach(() => {
 	rmSync(tmpDir, { recursive: true, force: true })
 })
 
+/** `(module (func (export "answer") (result i32) i32.const 42))` */
+const ANSWER_WASM = Uint8Array.from(Buffer.from('0061736d010000000105016000017f03020100070a0106616e7377657200000a06010400412a0b', 'hex'))
+
 function track<T extends { dispose: () => void }>(stub: T): T {
 	stubsToDispose.push(stub)
 	return stub
@@ -113,6 +116,25 @@ describe('WorkerLoaderBinding.load()', () => {
 		)
 		const resp = await stub.getEntrypoint().fetch('http://loader/')
 		expect(await resp.json()).toEqual({ feature: 'enabled', limit: 10 })
+	})
+
+	test.each(['answer.wasm', 'answer.bin'])('wasm module %s loads as a WebAssembly.Module default export', async name => {
+		const stub = track(
+			loader.load({
+				compatibilityDate: '2026-03-01',
+				mainModule: 'main.js',
+				modules: {
+					'main.js': `
+						import mod from './${name}'
+						const { answer } = new WebAssembly.Instance(mod).exports
+						export default { fetch() { return new Response(String(answer())) } }
+					`,
+					[name]: { wasm: ANSWER_WASM.slice().buffer },
+				},
+			}),
+		)
+		const resp = await stub.getEntrypoint().fetch('http://loader/')
+		expect(await resp.text()).toBe('42')
 	})
 
 	test('error in handler surfaces as rejected promise', async () => {
