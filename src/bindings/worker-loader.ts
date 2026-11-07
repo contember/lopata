@@ -31,6 +31,7 @@ export type WorkerCodeModule =
 	| { cjs: string }
 	| { text: string }
 	| { data: ArrayBuffer }
+	| { wasm: ArrayBuffer }
 	| { json: unknown }
 
 export interface WorkerCode {
@@ -116,9 +117,9 @@ export class WorkerStub {
 			const { compatibility, modules } = validateCode(code)
 			this._assertNotDisposed()
 			mkdirSync(this.workDir, { recursive: true })
-			const mainPath = await writeModules(this.workDir, modules, code.mainModule)
+			const written = await writeModules(this.workDir, modules, code.mainModule)
 			this._assertNotDisposed()
-			await this._spawn(mainPath, env, code.globalOutbound === null ? 'block' : 'allow', compatibility)
+			await this._spawn(written, env, code.globalOutbound === null ? 'block' : 'allow', compatibility)
 		} catch (err) {
 			// Leave nothing behind from a partial materialization or a failed init; the failure stays cached, as on Cloudflare.
 			this._release()
@@ -127,7 +128,7 @@ export class WorkerStub {
 	}
 
 	private _spawn(
-		mainPath: string,
+		written: WrittenModules,
 		env: Record<string, unknown>,
 		globalOutbound: 'allow' | 'block',
 		compatibility: CompatibilitySelection,
@@ -148,7 +149,8 @@ export class WorkerStub {
 			if (msg.type === 'need-init') {
 				const init: LoaderInitMessage = {
 					type: 'init',
-					mainModulePath: mainPath,
+					mainModulePath: written.mainPath,
+					wasmModulePaths: written.wasmPaths,
 					env,
 					globalOutbound,
 					compatibility,
@@ -513,28 +515,32 @@ async function readBodyUntilAborted(body: ReadableStream<Uint8Array>, signal: Ab
 	}
 }
 
+interface WrittenModules {
+	mainPath: string
+	/** Modules given as `{ wasm }`; they import as a `WebAssembly.Module` whatever their name. */
+	wasmPaths: string[]
+}
+
 async function writeModules(
 	workDir: string,
 	modules: [string, WorkerCodeModule][],
 	mainModule: string,
-): Promise<string> {
+): Promise<WrittenModules> {
 	let mainPath = ''
+	const wasmPaths: string[] = []
 	for (const [name, content] of modules) {
 		const filePath = join(workDir, name)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const resolved = resolveModuleContent(name, content)
-		if (resolved.kind === 'binary') {
-			await Bun.write(filePath, resolved.body)
-		} else {
-			await Bun.write(filePath, resolved.body)
-		}
+		await Bun.write(filePath, resolved.body)
+		if (resolved.kind === 'wasm') wasmPaths.push(filePath)
 		if (name === mainModule) mainPath = filePath
 	}
 	if (!mainPath) throw new Error(`mainModule "${mainModule}" could not be written`)
-	return mainPath
+	return { mainPath, wasmPaths }
 }
 
-type ResolvedModule = { kind: 'text'; body: string } | { kind: 'binary'; body: ArrayBuffer }
+type ResolvedModule = { kind: 'text'; body: string } | { kind: 'binary'; body: ArrayBuffer } | { kind: 'wasm'; body: ArrayBuffer }
 
 function resolveModuleContent(name: string, mod: WorkerCodeModule): ResolvedModule {
 	if (typeof mod === 'string') return { kind: 'text', body: mod }
@@ -548,5 +554,12 @@ function resolveModuleContent(name: string, mod: WorkerCodeModule): ResolvedModu
 		return { kind: 'text', body: `export default ${JSON.stringify(mod.json)}` }
 	}
 	if ('data' in mod) return { kind: 'binary', body: mod.data }
+	if ('wasm' in mod) {
+		// Bun's runtime checks these names before any plugin: `.node` is a Node-API addon, and a `?query` is cut off the file it looks up.
+		if (name.endsWith('.node') || name.includes('?')) {
+			throw new TypeError(`Unsupported name for wasm module ${JSON.stringify(name)}: Bun cannot import a module named with ".node" or a "?query"`)
+		}
+		return { kind: 'wasm', body: mod.wasm }
+	}
 	throw new Error(`Unsupported module type for "${name}": ${JSON.stringify(Object.keys(mod))}`)
 }

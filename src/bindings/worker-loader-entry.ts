@@ -32,6 +32,8 @@ declare var self: Worker
 export interface LoaderInitMessage {
 	type: 'init'
 	mainModulePath: string
+	/** Written `{ wasm }` modules, loaded as a `WebAssembly.Module` default export by their key, as on Cloudflare. */
+	wasmModulePaths: string[]
 	env: Record<string, unknown>
 	globalOutbound: 'allow' | 'block'
 	compatibility: CompatibilitySelection
@@ -168,6 +170,7 @@ async function init(data: LoaderInitMessage): Promise<void> {
 	initializeIsolateCompatibility(compatibility)
 	// Plugins are per thread: `cloudflare:workers`, `caches`, `HTMLRewriter` and `WebSocketPair` must be registered here.
 	await import('../plugin')
+	registerWasmModules(data.wasmModulePaths)
 	registerModuleRules(undefined)
 	ctxExportsEnabled = compatibility.ctxExports === 'enabled'
 	loaderEnv = decodeEnvObject(data.env)
@@ -184,6 +187,23 @@ async function init(data: LoaderInitMessage): Promise<void> {
 	dispatcher = new WorkerDispatcher(workerModule, loaderEnv, props => createExecutionContext(props ?? {}), compatibility)
 	setGlobalExports(buildLoopbackExports(workerModule, loaderEnv, []))
 	loadedModule = workerModule
+}
+
+/**
+ * A `{ wasm }` module imports as a `WebAssembly.Module` by its key, whatever its name. A registered
+ * module is what Bun's runtime consults before its loaders chosen by file name, for a static import
+ * and a dynamic one alike.
+ */
+function registerWasmModules(paths: string[]): void {
+	if (paths.length === 0) return
+	Bun.plugin({
+		name: 'lopata:worker-loader-wasm',
+		setup(build) {
+			for (const path of paths) {
+				build.module(path, async () => ({ exports: { default: new WebAssembly.Module(await Bun.file(path).arrayBuffer()) }, loader: 'object' }))
+			}
+		},
+	})
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
