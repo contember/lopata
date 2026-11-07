@@ -118,7 +118,7 @@ describe('WorkerLoaderBinding.load()', () => {
 		expect(await resp.json()).toEqual({ feature: 'enabled', limit: 10 })
 	})
 
-	test.each(['answer.wasm', 'answer.bin', 'answer', 'answer.node', 'answer.wasm?module', 'lib/answer.wasm', 'lib?query/answer.wasm'])(
+	test.each(['answer.wasm', 'answer.bin', 'answer', 'lib/answer.wasm'])(
 		'wasm module %s loads as a WebAssembly.Module default export',
 		async name => {
 			const stub = track(
@@ -140,25 +140,40 @@ describe('WorkerLoaderBinding.load()', () => {
 		},
 	)
 
-	test('a module named like a wasm compiler keeps its own content', async () => {
+	test.each(['answer.wasm', 'answer.bin', 'answer', 'lib/answer.wasm'])('wasm module %s loads through a dynamic import', async name => {
 		const stub = track(
 			loader.load({
 				compatibilityDate: '2026-03-01',
 				mainModule: 'main.js',
 				modules: {
 					'main.js': `
-						import mod from './answer.wasm'
-						import helper from './wasm/0.mjs'
-						const { answer } = new WebAssembly.Instance(mod).exports
-						export default { fetch() { return new Response(helper + answer()) } }
+						export default {
+							async fetch() {
+								const { default: mod } = await import('./${name}')
+								return new Response(String(new WebAssembly.Instance(mod).exports.answer()))
+							},
+						}
 					`,
-					'answer.wasm': { wasm: ANSWER_WASM.slice().buffer },
-					'wasm/0.mjs': `export default 'helper '`,
+					[name]: { wasm: ANSWER_WASM.slice().buffer },
 				},
 			}),
 		)
 		const resp = await stub.getEntrypoint().fetch('http://loader/')
-		expect(await resp.text()).toBe('helper 42')
+		expect(await resp.text()).toBe('42')
+	})
+
+	test.each(['answer.node', 'answer.wasm?module'])('a wasm module named %s, which Bun cannot import, is refused at load', async name => {
+		const stub = track(
+			loader.load({
+				compatibilityDate: '2026-03-01',
+				mainModule: 'main.js',
+				modules: {
+					'main.js': `export default { fetch() { return new Response('unreachable') } }`,
+					[name]: { wasm: ANSWER_WASM.slice().buffer },
+				},
+			}),
+		)
+		await expect(stub.getEntrypoint().fetch('http://loader/')).rejects.toThrow('Unsupported name for wasm module')
 	})
 
 	test('error in handler surfaces as rejected promise', async () => {

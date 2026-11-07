@@ -22,7 +22,7 @@ import { serializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { isLoopbackServiceStub } from './loopback-exports'
 import { FETCHER_BRAND, isFetcher } from './rpc-stub'
-import type { LoaderCommand, LoaderInitMessage, LoaderResult, MainToWorker, WasmModuleFiles, WorkerToMain } from './worker-loader-entry'
+import type { LoaderCommand, LoaderInitMessage, LoaderResult, MainToWorker, WorkerToMain } from './worker-loader-entry'
 import { ENV_FETCHER_KEY, type EnvFetcherPlaceholder, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 export type WorkerCodeModule =
@@ -150,7 +150,7 @@ export class WorkerStub {
 				const init: LoaderInitMessage = {
 					type: 'init',
 					mainModulePath: written.mainPath,
-					wasmModules: written.wasmModules,
+					wasmModulePaths: written.wasmPaths,
 					env,
 					globalOutbound,
 					compatibility,
@@ -517,34 +517,27 @@ async function readBodyUntilAborted(body: ReadableStream<Uint8Array>, signal: Ab
 
 interface WrittenModules {
 	mainPath: string
-	wasmModules: WasmModuleFiles[]
+	/** Modules given as `{ wasm }`; they import as a `WebAssembly.Module` whatever their name. */
+	wasmPaths: string[]
 }
 
-/**
- * The modules go to `modules/` under the stub directory, so a module's key cannot collide with
- * anything else written there: the compilers of `{ wasm }` modules go to `wasm/`.
- */
 async function writeModules(
 	workDir: string,
 	modules: [string, WorkerCodeModule][],
 	mainModule: string,
 ): Promise<WrittenModules> {
 	let mainPath = ''
-	const wasmModules: WasmModuleFiles[] = []
+	const wasmPaths: string[] = []
 	for (const [name, content] of modules) {
-		const filePath = join(workDir, 'modules', name)
+		const filePath = join(workDir, name)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const resolved = resolveModuleContent(name, content)
 		await Bun.write(filePath, resolved.body)
-		if (resolved.kind === 'wasm') {
-			const compiler = join(workDir, 'wasm', `${wasmModules.length}.mjs`)
-			await Bun.write(compiler, `export default new WebAssembly.Module(await Bun.file(${JSON.stringify(filePath)}).arrayBuffer())\n`)
-			wasmModules.push({ path: filePath, compiler })
-		}
+		if (resolved.kind === 'wasm') wasmPaths.push(filePath)
 		if (name === mainModule) mainPath = filePath
 	}
 	if (!mainPath) throw new Error(`mainModule "${mainModule}" could not be written`)
-	return { mainPath, wasmModules }
+	return { mainPath, wasmPaths }
 }
 
 type ResolvedModule = { kind: 'text'; body: string } | { kind: 'binary'; body: ArrayBuffer } | { kind: 'wasm'; body: ArrayBuffer }
@@ -561,6 +554,12 @@ function resolveModuleContent(name: string, mod: WorkerCodeModule): ResolvedModu
 		return { kind: 'text', body: `export default ${JSON.stringify(mod.json)}` }
 	}
 	if ('data' in mod) return { kind: 'binary', body: mod.data }
-	if ('wasm' in mod) return { kind: 'wasm', body: mod.wasm }
+	if ('wasm' in mod) {
+		// Bun's runtime checks these names before any plugin: `.node` is a Node-API addon, and a `?query` is cut off the file it looks up.
+		if (name.endsWith('.node') || name.includes('?')) {
+			throw new TypeError(`Unsupported name for wasm module ${JSON.stringify(name)}: Bun cannot import a module named with ".node" or a "?query"`)
+		}
+		return { kind: 'wasm', body: mod.wasm }
+	}
 	throw new Error(`Unsupported module type for "${name}": ${JSON.stringify(Object.keys(mod))}`)
 }

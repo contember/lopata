@@ -12,7 +12,6 @@
  * access behave identically to the parent.
  */
 
-import { basename, dirname, resolve } from 'node:path'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
 import { initializeIsolateCompatibility, runWithCompatibility } from '../compatibility-context'
 import { callEntrypointMethod, constructEntrypoint, type EntrypointHandlerName, handlerFromInstance, isClassEntrypoint } from '../entrypoint-handler'
@@ -30,17 +29,11 @@ import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type Loade
 
 declare var self: Worker
 
-/** A `{ wasm }` module's bytes, and a module that compiles them, which an import of it resolves to. */
-export interface WasmModuleFiles {
-	path: string
-	compiler: string
-}
-
 export interface LoaderInitMessage {
 	type: 'init'
 	mainModulePath: string
 	/** Written `{ wasm }` modules, loaded as a `WebAssembly.Module` default export by their key, as on Cloudflare. */
-	wasmModules: WasmModuleFiles[]
+	wasmModulePaths: string[]
 	env: Record<string, unknown>
 	globalOutbound: 'allow' | 'block'
 	compatibility: CompatibilitySelection
@@ -177,7 +170,7 @@ async function init(data: LoaderInitMessage): Promise<void> {
 	initializeIsolateCompatibility(compatibility)
 	// Plugins are per thread: `cloudflare:workers`, `caches`, `HTMLRewriter` and `WebSocketPair` must be registered here.
 	await import('../plugin')
-	registerWasmModules(data.wasmModules)
+	registerWasmModules(data.wasmModulePaths)
 	registerModuleRules(undefined)
 	ctxExportsEnabled = compatibility.ctxExports === 'enabled'
 	loaderEnv = decodeEnvObject(data.env)
@@ -196,29 +189,21 @@ async function init(data: LoaderInitMessage): Promise<void> {
 	loadedModule = workerModule
 }
 
-/** A `{ wasm }` module imports as a `WebAssembly.Module` by its key, whatever its name. */
-function registerWasmModules(modules: WasmModuleFiles[]): void {
-	if (modules.length === 0) return
-	const compilers = new Map(modules.map(module => [module.path, module.compiler]))
-	const filter = new RegExp(`(?:^|/)(?:${modules.map(module => escapeRegExp(basename(module.path))).join('|')})$`)
+/**
+ * A `{ wasm }` module imports as a `WebAssembly.Module` by its key, whatever its name. A registered
+ * module is what Bun's runtime consults before its loaders chosen by file name, for a static import
+ * and a dynamic one alike.
+ */
+function registerWasmModules(paths: string[]): void {
+	if (paths.length === 0) return
 	Bun.plugin({
 		name: 'lopata:worker-loader-wasm',
 		setup(build) {
-			// Bun's runtime never asks onResolve about an existing extensionless file; a registered module catches that one.
-			for (const { path } of modules) {
+			for (const path of paths) {
 				build.module(path, async () => ({ exports: { default: new WebAssembly.Module(await Bun.file(path).arrayBuffer()) }, loader: 'object' }))
 			}
-			// The rest resolve to their compiler, out of reach of Bun's `.node` addon check and of its file lookup, which drops a `?query`.
-			build.onResolve({ filter }, args => {
-				const compiler = compilers.get(resolve(dirname(args.importer), args.path))
-				return compiler === undefined ? undefined : { path: compiler }
-			})
 		},
 	})
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
