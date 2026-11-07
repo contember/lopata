@@ -72,7 +72,7 @@ test('dynamic receiver recomputes derived selection and rejects conflicting clon
 									type: 'init',
 									compatibility,
 									mainModulePath: join(import.meta.dir, 'fixtures/compatibility-wiring-worker.ts'),
-									wasmModulePaths: [],
+									wasmModules: [],
 									env: {},
 									globalOutbound: 'allow',
 								},

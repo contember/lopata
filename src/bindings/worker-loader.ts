@@ -22,7 +22,7 @@ import { serializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { isLoopbackServiceStub } from './loopback-exports'
 import { FETCHER_BRAND, isFetcher } from './rpc-stub'
-import type { LoaderCommand, LoaderInitMessage, LoaderResult, MainToWorker, WorkerToMain } from './worker-loader-entry'
+import type { LoaderCommand, LoaderInitMessage, LoaderResult, MainToWorker, WasmModuleFiles, WorkerToMain } from './worker-loader-entry'
 import { ENV_FETCHER_KEY, type EnvFetcherPlaceholder, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 export type WorkerCodeModule =
@@ -150,7 +150,7 @@ export class WorkerStub {
 				const init: LoaderInitMessage = {
 					type: 'init',
 					mainModulePath: written.mainPath,
-					wasmModulePaths: written.wasmPaths,
+					wasmModules: written.wasmModules,
 					env,
 					globalOutbound,
 					compatibility,
@@ -517,27 +517,34 @@ async function readBodyUntilAborted(body: ReadableStream<Uint8Array>, signal: Ab
 
 interface WrittenModules {
 	mainPath: string
-	/** Modules given as `{ wasm }`; they import as a `WebAssembly.Module` whatever their name. */
-	wasmPaths: string[]
+	wasmModules: WasmModuleFiles[]
 }
 
+/**
+ * The modules go to `modules/` under the stub directory, so a module's key cannot collide with
+ * anything else written there: the compilers of `{ wasm }` modules go to `wasm/`.
+ */
 async function writeModules(
 	workDir: string,
 	modules: [string, WorkerCodeModule][],
 	mainModule: string,
 ): Promise<WrittenModules> {
 	let mainPath = ''
-	const wasmPaths: string[] = []
+	const wasmModules: WasmModuleFiles[] = []
 	for (const [name, content] of modules) {
-		const filePath = join(workDir, name)
+		const filePath = join(workDir, 'modules', name)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const resolved = resolveModuleContent(name, content)
 		await Bun.write(filePath, resolved.body)
-		if (resolved.kind === 'wasm') wasmPaths.push(filePath)
+		if (resolved.kind === 'wasm') {
+			const compiler = join(workDir, 'wasm', `${wasmModules.length}.mjs`)
+			await Bun.write(compiler, `export default new WebAssembly.Module(await Bun.file(${JSON.stringify(filePath)}).arrayBuffer())\n`)
+			wasmModules.push({ path: filePath, compiler })
+		}
 		if (name === mainModule) mainPath = filePath
 	}
 	if (!mainPath) throw new Error(`mainModule "${mainModule}" could not be written`)
-	return { mainPath, wasmPaths }
+	return { mainPath, wasmModules }
 }
 
 type ResolvedModule = { kind: 'text'; body: string } | { kind: 'binary'; body: ArrayBuffer } | { kind: 'wasm'; body: ArrayBuffer }

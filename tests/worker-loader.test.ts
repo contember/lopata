@@ -118,7 +118,7 @@ describe('WorkerLoaderBinding.load()', () => {
 		expect(await resp.json()).toEqual({ feature: 'enabled', limit: 10 })
 	})
 
-	test.each(['answer.wasm', 'answer.bin', 'answer', 'answer.node', 'answer.wasm?module', 'lib/answer.wasm'])(
+	test.each(['answer.wasm', 'answer.bin', 'answer', 'answer.node', 'answer.wasm?module', 'lib/answer.wasm', 'lib?query/answer.wasm'])(
 		'wasm module %s loads as a WebAssembly.Module default export',
 		async name => {
 			const stub = track(
@@ -139,6 +139,27 @@ describe('WorkerLoaderBinding.load()', () => {
 			expect(await resp.text()).toBe('42')
 		},
 	)
+
+	test('a module named like a wasm compiler keeps its own content', async () => {
+		const stub = track(
+			loader.load({
+				compatibilityDate: '2026-03-01',
+				mainModule: 'main.js',
+				modules: {
+					'main.js': `
+						import mod from './answer.wasm'
+						import helper from './wasm/0.mjs'
+						const { answer } = new WebAssembly.Instance(mod).exports
+						export default { fetch() { return new Response(helper + answer()) } }
+					`,
+					'answer.wasm': { wasm: ANSWER_WASM.slice().buffer },
+					'wasm/0.mjs': `export default 'helper '`,
+				},
+			}),
+		)
+		const resp = await stub.getEntrypoint().fetch('http://loader/')
+		expect(await resp.text()).toBe('helper 42')
+	})
 
 	test('error in handler surfaces as rejected promise', async () => {
 		const stub = track(
