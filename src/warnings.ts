@@ -16,7 +16,8 @@ function isAvailable(name: string): boolean {
 
 const OPTIONAL_DEPS: { id: string; description: string; install: string }[] = [
 	{ id: 'sharp', description: 'Image transformations', install: 'bun add sharp' },
-	{ id: 'puppeteer-core', description: 'Browser rendering', install: 'bun add puppeteer-core' },
+	{ id: 'puppeteer', description: 'Browser rendering (local Chrome)', install: 'bun add puppeteer' },
+	{ id: 'puppeteer-core', description: 'Browser rendering (external Chrome)', install: 'bun add puppeteer-core' },
 ]
 
 const resolved: OptionalDep[] = OPTIONAL_DEPS.map(dep => ({
