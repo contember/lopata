@@ -25,11 +25,6 @@
 const Native: typeof Request = globalThis.Request
 
 class LopataRequest extends Native {
-	// Requests built before the install, or by the runtime (`Bun.serve`), are native; they are Requests all the same.
-	static override [Symbol.hasInstance](value: unknown): boolean {
-		return value instanceof Native
-	}
-
 	constructor(input: Request | string | URL, init?: RequestInit) {
 		// Only special-case `new Request(request, init)` where the source carries a
 		// (stream) body and `init` does NOT supply its own `body` — the form Bun
@@ -67,6 +62,14 @@ class LopataRequest extends Native {
 		else super(input instanceof URL ? input.href : input, init)
 	}
 }
+
+// Requests built before the install, or by the runtime (`Bun.serve`), are native; they are Requests all the same.
+// Subclasses declared by user code keep the ordinary prototype-chain check.
+Object.defineProperty(LopataRequest, Symbol.hasInstance, {
+	value(this: unknown, value: unknown): boolean {
+		return this === LopataRequest ? value instanceof Native : Function.prototype[Symbol.hasInstance].call(this, value)
+	},
+})
 
 // Idempotent: only install once, and only over the native constructor.
 if ((globalThis.Request as unknown) === (Native as unknown)) {
