@@ -14,6 +14,7 @@ import { addStatelessBindings, createStaticAssets } from './bindings/stateless-e
 import type { StaticAssets } from './bindings/static-assets'
 import { getMainThreadLoaderDir } from './bindings/worker-loader-dirs'
 import { SqliteWorkflowBinding, wireWorkflowClass } from './bindings/workflow'
+import { resolveCompatibility } from './compatibility'
 import { legacyCompatibility } from './compatibility-context'
 import { isCrossScriptBinding, localDurableObjectBindings, type WranglerConfig } from './config'
 import { getDatabase, getDataDir } from './db'
@@ -226,9 +227,11 @@ export function buildEnv(
 	}
 
 	// Queue producers
+	const compatibility = resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
 	for (const producer of config.queues?.producers ?? []) {
 		console.log(`[lopata] Queue producer: ${producer.binding} -> ${producer.queue}`)
-		env[producer.binding] = instrumentBinding(new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0), {
+		const binding = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0, undefined, undefined, compatibility)
+		env[producer.binding] = instrumentBinding(binding, {
 			type: 'queue',
 			name: producer.binding,
 			methods: ['send', 'sendBatch'],

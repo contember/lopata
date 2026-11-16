@@ -1,6 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { QueueConsumer, QueuePullConsumer, SqliteQueueProducer } from '../src/bindings/queue'
+import { resolveCompatibility } from '../src/compatibility'
 import { runMigrations } from '../src/db'
 
 let db: Database
@@ -66,16 +67,22 @@ describe('SqliteQueueProducer', () => {
 		expect(new Uint8Array(row.body)).toEqual(data)
 	})
 
-	test('send with v8 contentType stores structured data', async () => {
-		const data = { nested: { array: [1, 2, 3] } }
-		await producer.send(data, { contentType: 'v8' })
-
-		const row = db.query<{ body: Uint8Array; content_type: string }, []>(
-			'SELECT body, content_type FROM queue_messages',
-		).get()!
-
-		expect(row.content_type).toBe('v8')
-		expect(JSON.parse(new TextDecoder().decode(row.body))).toEqual(data)
+	test('default content type follows the queues_json_messages compatibility flag', async () => {
+		const cases: [Parameters<typeof resolveCompatibility>[0], string][] = [
+			[{}, 'json'],
+			[{ date: '2024-03-17' }, 'v8'],
+			[{ date: '2024-03-18' }, 'json'],
+			[{ date: '2024-03-17', flags: ['queues_json_messages'] }, 'json'],
+			[{ date: '2024-03-18', flags: ['no_queues_json_messages'] }, 'v8'],
+		]
+		for (const [input, expected] of cases) {
+			db.run('DELETE FROM queue_messages')
+			const compatProducer = new SqliteQueueProducer(db, 'test-queue', 0, undefined, undefined, resolveCompatibility(input))
+			await compatProducer.send({ a: 1 })
+			await compatProducer.sendBatch([{ body: { b: 2 } }])
+			const types = db.query<{ content_type: string }, []>('SELECT content_type FROM queue_messages').all().map(r => r.content_type)
+			expect({ input, types }).toEqual({ input, types: [expected, expected] })
+		}
 	})
 
 	test('send with delaySeconds sets future visible_at', async () => {
@@ -256,8 +263,11 @@ describe('QueueConsumer', () => {
 		expect(receivedBody).toBe('hello text')
 	})
 
-	test('poll delivers v8 content correctly', async () => {
-		await producer.send({ complex: [1, 2] }, { contentType: 'v8' })
+	test('poll decodes v8 rows written as JSON text by earlier versions', async () => {
+		db.run(
+			"INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES ('legacy', 'test-queue', ?, 'v8', 0, ?, ?)",
+			[new TextEncoder().encode(JSON.stringify({ complex: [1, 2] })), Date.now(), Date.now()],
+		)
 
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(

@@ -1,5 +1,8 @@
 import type { Database } from 'bun:sqlite'
 import crypto from 'node:crypto'
+import v8 from 'node:v8'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility } from '../compatibility-context'
 import { ExecutionContext } from '../execution-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
@@ -87,21 +90,27 @@ function encodeBody(message: unknown, contentType: string): Uint8Array {
 		case 'text':
 			return new TextEncoder().encode(String(message))
 		case 'v8':
-			// Use JSON serialization as a v8-structured-clone approximation
-			return new TextEncoder().encode(JSON.stringify(message))
+			return v8.serialize(message)
 		default:
 			return new TextEncoder().encode(JSON.stringify(message))
 	}
 }
 
-function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
+// Serialized bodies start with the serializer's version byte; 'v8' rows written before structured-clone support hold JSON text,
+// whose first byte is printable.
+function isLegacyJsonV8Body(raw: Uint8Array): boolean {
+	const first = raw[0]
+	return first !== undefined && first >= 0x20
+}
+
+export function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
 	switch (contentType) {
 		case 'bytes':
 			return raw instanceof Uint8Array ? raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) : new Uint8Array(raw).buffer
 		case 'text':
 			return new TextDecoder().decode(raw)
 		case 'v8':
-			return JSON.parse(new TextDecoder().decode(raw))
+			return isLegacyJsonV8Body(raw) ? JSON.parse(new TextDecoder().decode(raw)) : v8.deserialize(raw)
 		default:
 			return JSON.parse(new TextDecoder().decode(raw))
 	}
@@ -115,17 +124,26 @@ export class SqliteQueueProducer {
 	private defaultDelay: number
 	private limits: Required<QueueLimits>
 	private clock: Clock
+	private defaultContentType: 'json' | 'v8'
 
-	constructor(db: Database, queueName: string, defaultDelay: number = 0, limits?: QueueLimits, clock?: Clock) {
+	constructor(
+		db: Database,
+		queueName: string,
+		defaultDelay: number = 0,
+		limits?: QueueLimits,
+		clock?: Clock,
+		compatibility: CompatibilitySelection = legacyCompatibility,
+	) {
 		this.db = db
 		this.queueName = queueName
 		this.defaultDelay = defaultDelay
 		this.limits = { ...QUEUE_DEFAULTS, ...limits }
 		this.clock = clock ?? realClock
+		this.defaultContentType = compatibility.queuesJsonMessages === 'disabled' ? 'v8' : 'json'
 	}
 
 	async send(message: unknown, options?: SendOptions): Promise<void> {
-		const contentType = options?.contentType ?? 'json'
+		const contentType = options?.contentType ?? this.defaultContentType
 		const delaySeconds = options?.delaySeconds ?? this.defaultDelay
 
 		if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {
@@ -162,7 +180,7 @@ export class SqliteQueueProducer {
 		let totalSize = 0
 
 		for (const msg of messages) {
-			const contentType = msg.contentType ?? options?.contentType ?? 'json'
+			const contentType = msg.contentType ?? options?.contentType ?? this.defaultContentType
 			const delaySeconds = msg.delaySeconds ?? options?.delaySeconds ?? this.defaultDelay
 
 			if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {

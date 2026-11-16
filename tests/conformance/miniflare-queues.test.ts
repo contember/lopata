@@ -12,6 +12,7 @@ import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect } from 'bun:test'
 import assert from 'node:assert'
 import { QueueConsumer, SqliteQueueProducer } from '../../src/bindings/queue'
+import { resolveCompatibility } from '../../src/compatibility'
 import { runMigrations } from '../../src/db'
 import { TestClock } from '../../src/testing/clock'
 import { conformanceTest, loadKnownFailures } from './harness'
@@ -26,6 +27,8 @@ const POLL_INTERVAL_MS = 1000
 const DEFAULT_BATCH_SIZE = 5
 const DEFAULT_BATCH_TIMEOUT = 1
 const DEFAULT_RETRIES = 2
+// Miniflare's fallback compatibility date (plugins/core); before queues_json_messages, so the default content type is v8.
+const COMPATIBILITY = resolveCompatibility({ date: '2000-01-01' })
 
 type ConsumerConfig = ConstructorParameters<typeof QueueConsumer>[1]
 type QueueHandler = ConstructorParameters<typeof QueueConsumer>[2]
@@ -69,7 +72,7 @@ class QueueControl {
 	}
 
 	producer(defaultDelay = 0): SqliteQueueProducer {
-		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, this.clock)
+		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, this.clock, COMPATIBILITY)
 	}
 
 	async advanceFakeTime(ms: number): Promise<void> {

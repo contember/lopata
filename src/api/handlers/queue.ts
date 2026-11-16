@@ -1,5 +1,5 @@
 import type { SQLQueryBindings } from 'bun:sqlite'
-import { newMessageId } from '../../bindings/queue'
+import { decodeBody, newMessageId } from '../../bindings/queue'
 import { getDatabase } from '../../db'
 import type { HandlerContext, OkResponse, QueueInfo, QueueMessage } from '../types'
 import { getAllConfigs } from '../types'
@@ -42,7 +42,8 @@ export const handlers = {
 		return rows.map(row => {
 			let bodyStr: string
 			try {
-				bodyStr = new TextDecoder().decode(row.body as Uint8Array)
+				const body = row.body as Uint8Array
+				bodyStr = row.content_type === 'v8' ? Bun.inspect(decodeBody(body, 'v8')) : new TextDecoder().decode(body)
 			} catch {
 				bodyStr = `<binary>`
 			}

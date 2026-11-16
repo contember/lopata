@@ -2,6 +2,5 @@
 	".sendBatch() respects default delay": "expect(received).toBe(expected)",
 	".sendBatch() respects per-batch delay": "expect(received).toBe(expected)",
 	"flushes partial and full batches": "expect(received).toBe(expected)",
-	"sends all structured cloneable types": "JSON.stringify cannot serialize BigInt.",
-	"supports message contentTypes": "expect(received).toEqual(expected)"
+	"sends all structured cloneable types": "expect(received).toBe(expected)"
 }

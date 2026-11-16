@@ -10,6 +10,7 @@
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import { resolveVars } from '../env'
@@ -200,8 +201,9 @@ export function buildWorkerEnv(
 	}
 
 	// Queue producers
+	const compatibility = resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
 	for (const producer of config.queues?.producers ?? []) {
-		env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0)
+		env[producer.binding] = new SqliteQueueProducer(db, producer.queue, producer.delivery_delay ?? 0, undefined, undefined, compatibility)
 	}
 
 	for (const svc of config.services ?? []) {
