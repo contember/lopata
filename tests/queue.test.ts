@@ -701,6 +701,30 @@ describe('QueueConsumer', () => {
 		expect(db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!.cnt).toBe(20)
 	})
 
+	test('a timer can stop the consumer between full batches of a backlog', async () => {
+		for (let i = 0; i < 10; i++) {
+			await producer.sendBatch(Array.from({ length: 100 }, (_, j) => ({ body: i * 100 + j })))
+		}
+
+		let batches = 0
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async () => {
+				batches++
+				await Promise.resolve()
+			},
+			{},
+		)
+
+		// Stands in for the reload drain's stop-queue-consumers message, which arrives as a macrotask.
+		setTimeout(() => consumer.stop(), 0)
+		await consumer.poll()
+		// The timer is due after about 1 ms, so the exact count depends on batch speed; without a yield all 100 batches run.
+		expect(batches).toBeGreaterThan(0)
+		expect(batches).toBeLessThan(100)
+	})
+
 	test('concurrent poll calls are prevented', async () => {
 		await producer.send('concurrent-test')
 

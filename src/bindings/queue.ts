@@ -318,6 +318,8 @@ export class QueueConsumer {
 				await delivery
 				// Messages retried from a partial batch wait for the next poll.
 				if (!full) return
+				// Handlers backed by synchronous SQLite never yield; let timers and worker messages (stop on reload, fetches) run.
+				await new Promise<void>(resolve => setImmediate(resolve))
 			}
 		} finally {
 			this.polling = false
