@@ -105,11 +105,12 @@ function encodeBody(message: unknown, contentType: string): Uint8Array {
 	}
 }
 
-// Serialized bodies start with the serializer's version byte; 'v8' rows written before structured-clone support hold JSON text,
-// whose first byte is printable.
+// 'v8' rows written before structured-clone support hold JSON.stringify output, which starts with one of these characters.
+const JSON_FIRST_BYTES = new Set(Array.from('{["-0123456789tfn', (char) => char.charCodeAt(0)))
+
 function isLegacyJsonV8Body(raw: Uint8Array): boolean {
 	const first = raw[0]
-	return first !== undefined && first >= 0x20
+	return first !== undefined && JSON_FIRST_BYTES.has(first)
 }
 
 export function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
