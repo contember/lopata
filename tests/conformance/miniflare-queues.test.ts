@@ -7,6 +7,7 @@
 // Partially ported (Miniflare-specific assertions dropped, delivered batches still asserted):
 // - "retries messages", "moves to dead letter queue": drop the Miniflare log-line assertions (`stripTimings(log.logs)`).
 // - "moves to dead letter queue": drops the final `mf.setOptions` check that rejects a queue as its own dead letter queue.
+// - ".sendBatch() respects default delay", ".sendBatch() respects per-batch delay": count delivered messages instead of batches.
 
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect } from 'bun:test'
@@ -620,7 +621,8 @@ describe('queues delay', () => {
 		// Batch should be delivered 2 seconds later
 		await object.advanceFakeTime(1000)
 		await object.waitForFakeTasks()
-		expect(batches.length).toBe(2)
+		// Miniflare's per-message delay timers split same-instant messages into two batches; Cloudflare does not promise that.
+		expect(batches.flat().length).toBe(2)
 	})
 
 	conformanceTest(known, '.sendBatch() respects per-batch delay', async () => {
@@ -639,7 +641,8 @@ describe('queues delay', () => {
 
 		await object.advanceFakeTime(1000)
 		await object.waitForFakeTasks()
-		expect(batches.length).toBe(2)
+		// Miniflare's per-message delay timers split same-instant messages into two batches; Cloudflare does not promise that.
+		expect(batches.flat().length).toBe(2)
 	})
 
 	conformanceTest(known, '.sendBatch() respects per-message delay', async () => {

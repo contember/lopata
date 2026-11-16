@@ -1,5 +1,3 @@
 {
-	".sendBatch() respects default delay": "expect(received).toBe(expected)",
-	".sendBatch() respects per-batch delay": "expect(received).toBe(expected)",
 	"sends all structured cloneable types": "expect(received).toBe(expected)"
 }
