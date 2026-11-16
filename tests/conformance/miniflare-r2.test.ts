@@ -25,12 +25,8 @@ function hash(value: string, algorithm = 'md5') {
 	return crypto.createHash(algorithm).update(value).digest('hex')
 }
 
-// workers-types' R2Checksums has toJSON(); lopata's type does not, so call it dynamically.
 function checksumsJSON(object: R2Object | null | undefined): unknown {
-	if (!object) return undefined
-	const { checksums } = object
-	if (!('toJSON' in checksums) || typeof checksums.toJSON !== 'function') throw new TypeError('checksums.toJSON is not a function')
-	return checksums.toJSON()
+	return object?.checksums.toJSON()
 }
 
 // workers-types types get() without onlyIf as R2ObjectBody | null; lopata returns R2Object | R2ObjectBody | null.
@@ -41,7 +37,6 @@ function bodyOf(object: R2Object | null): R2ObjectBody | null {
 }
 
 function getWithRangeHeader(r2: FileR2Bucket, key: string, range: Headers) {
-	// @ts-expect-error lopata's R2GetOptions.range does not accept Headers, workers-types does
 	return r2.get(key, { range })
 }
 
@@ -56,7 +51,8 @@ describe('r2', () => {
 		tmpDir = mkdtempSync(join(tmpdir(), 'lopata-conformance-r2-'))
 		db = new Database(':memory:')
 		runMigrations(db)
-		r2 = new FileR2Bucket(db, 'bucket', tmpDir)
+		// Miniflare runs these tests with a 50-byte minimum multipart part size instead of 5 MiB
+		r2 = new FileR2Bucket(db, 'bucket', tmpDir, { minMultipartPartSize: 50 })
 	})
 
 	afterEach(() => {

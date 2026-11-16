@@ -16,6 +16,7 @@ const ERROR_STATUS = {
 	InvalidRequest: 400,
 	InvalidRange: 416,
 	InvalidPart: 400,
+	EntityTooSmall: 400,
 	MalformedXML: 400,
 	BadDigest: 400,
 	InternalError: 500,

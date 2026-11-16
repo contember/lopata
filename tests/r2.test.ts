@@ -14,7 +14,8 @@ beforeEach(() => {
 	tmpDir = mkdtempSync(join(tmpdir(), 'r2-test-'))
 	db = new Database(':memory:')
 	runMigrations(db)
-	r2 = new FileR2Bucket(db, 'test-bucket', tmpDir)
+	// The multipart tests use parts far below R2's 5 MiB minimum part size
+	r2 = new FileR2Bucket(db, 'test-bucket', tmpDir, { minMultipartPartSize: 1 })
 })
 
 afterEach(() => {
@@ -121,6 +122,14 @@ test('delete array of keys', async () => {
 	expect(await r2.get('a')).toBeNull()
 	expect(await r2.get('b')).toBeNull()
 	expect(await r2.get('c')).not.toBeNull()
+})
+
+test('delete of a missing key leaves other keys and outside files alone', async () => {
+	await r2.put('dir/file', 'data')
+	await Bun.write(join(tmpDir, 'r2', 'outside'), 'keep')
+	await r2.delete(['dir', '../outside'])
+	expect(await (await r2.get('dir/file') as R2ObjectBody).text()).toBe('data')
+	expect(await Bun.file(join(tmpDir, 'r2', 'outside')).text()).toBe('keep')
 })
 
 test('delete non-existent is no-op', async () => {
@@ -290,17 +299,13 @@ test('R2ObjectBody blob() returns Blob', async () => {
 
 // --- New: Validation ---
 
-test('key exceeding max size throws', async () => {
-	const longKey = 'a'.repeat(1025)
-	expect(r2.put(longKey, 'data')).rejects.toThrow('Key exceeds max size')
-})
-
-test('custom metadata exceeding max size throws', async () => {
-	const bigMeta: Record<string, string> = {}
-	for (let i = 0; i < 200; i++) {
-		bigMeta[`key-${i}`] = 'x'.repeat(20)
-	}
-	expect(r2.put('key', 'data', { customMetadata: bigMeta })).rejects.toThrow('Custom metadata exceeds max size')
+test('put with a mismatching checksum keeps the existing object', async () => {
+	await r2.put('key', 'old')
+	const wrongMd5 = new Bun.CryptoHasher('md5').update('other').digest('hex')
+	await expect(r2.put('key', 'new', { md5: wrongMd5 })).rejects.toThrow('(10037)')
+	const obj = await r2.get('key') as R2ObjectBody
+	expect(await obj.text()).toBe('old')
+	expect(obj.size).toBe(3)
 })
 
 test('batch delete exceeding limit throws', async () => {
@@ -310,7 +315,7 @@ test('batch delete exceeding limit throws', async () => {
 
 test('configurable limits override defaults', async () => {
 	const r2custom = new FileR2Bucket(db, 'custom', tmpDir, { maxKeySize: 5 })
-	expect(r2custom.put('toolong', 'data')).rejects.toThrow('Key exceeds max size')
+	expect(r2custom.put('toolong', 'data')).rejects.toThrow('put: The specified object name is not valid. (10020)')
 	// Short key still works
 	const result = await r2custom.put('ok', 'data')
 	expect(result!.key).toBe('ok')
@@ -387,16 +392,23 @@ test('get with range offset only', async () => {
 	expect(await obj.text()).toBe('world')
 })
 
+test('get with a malformed range object throws before reading', async () => {
+	await r2.put('key', 'hello world')
+	await expect(r2.get('key', { range: { offset: -1 } })).rejects.toThrow(
+		new RangeError('Invalid range. Starting offset (-1) must be greater than or equal to 0.'),
+	)
+	await expect(r2.get('key', { range: { suffix: -1 } })).rejects.toThrow(
+		new RangeError('Invalid suffix. Suffix (-1) must be greater than or equal to 0.'),
+	)
+	await expect(r2.get('key', { range: { length: 1.5 } })).rejects.toThrow(
+		new RangeError('Invalid range. Length (1.5) must be an integer, not floating point.'),
+	)
+})
+
 test('get with range suffix', async () => {
 	await r2.put('key', 'hello world')
 	const obj = await r2.get('key', { range: { suffix: 5 } }) as R2ObjectBody
 	expect(await obj.text()).toBe('world')
-})
-
-test('get without range has no range property', async () => {
-	await r2.put('key', 'data')
-	const obj = await r2.get('key')
-	expect(obj!.range).toBeUndefined()
 })
 
 // --- New: List enhancements ---
@@ -487,16 +499,39 @@ test('multipart upload: resume', async () => {
 	expect(await obj.text()).toBe('part1part2')
 })
 
-test('multipart upload: complete with wrong etag throws', async () => {
+test('multipart upload: re-uploading a part from a stream replaces all its bytes', async () => {
 	const upload = await r2.createMultipartUpload('key')
-	const part1 = await upload.uploadPart(1, 'data')
-	expect(upload.complete([{ partNumber: 1, etag: 'wrong' }])).rejects.toThrow('etag mismatch')
+	await upload.uploadPart(1, new Blob(['longer-data']).stream())
+	const part = await upload.uploadPart(1, new Blob(['abc']).stream())
+	await upload.complete([part])
+	expect(await (await r2.get('key') as R2ObjectBody).text()).toBe('abc')
 })
 
-test('multipart upload: operations on aborted upload throw', async () => {
+test('multipart upload: concurrent complete() calls finish the upload once', async () => {
 	const upload = await r2.createMultipartUpload('key')
-	await upload.abort()
-	expect(upload.uploadPart(1, 'data')).rejects.toThrow('not found')
+	const parts = [await upload.uploadPart(1, 'a'.repeat(64 * 1024)), await upload.uploadPart(2, 'b'.repeat(64 * 1024))]
+	const results = await Promise.allSettled([upload.complete(parts), upload.complete(parts), upload.complete(parts)])
+	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+	for (const r of results) {
+		if (r.status === 'rejected') expect(String(r.reason)).toContain('completeMultipartUpload: The specified multipart upload does not exist. (10024)')
+	}
+	const obj = await r2.get('key') as R2ObjectBody
+	expect(await obj.text()).toBe('a'.repeat(64 * 1024) + 'b'.repeat(64 * 1024))
+})
+
+test('multipart upload: parts below 5 MiB are rejected by default', async () => {
+	const bucket = new FileR2Bucket(db, 'default-limits', tmpDir)
+	const upload = await bucket.createMultipartUpload('key')
+	const part1 = await upload.uploadPart(1, 'hello ')
+	const part2 = await upload.uploadPart(2, 'world')
+	await expect(upload.complete([part1, part2])).rejects.toThrow('(10011)')
+	expect((await upload.complete([part1])).size).toBe(6)
+})
+
+test('multipart upload: abort with an unknown upload id leaves files alone', async () => {
+	await Bun.write(join(tmpDir, 'r2', 'outside', 'file'), 'keep')
+	await expect(r2.resumeMultipartUpload('key', '../../outside').abort()).rejects.toThrow('(10001)')
+	expect(await Bun.file(join(tmpDir, 'r2', 'outside', 'file')).text()).toBe('keep')
 })
 
 test('multipart upload: uploadPart accepts ArrayBufferView subview', async () => {

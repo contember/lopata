@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 // --- Limits ---
@@ -55,14 +55,14 @@ export interface R2HTTPMetadata {
 }
 
 export interface R2GetOptions {
-	onlyIf?: R2Conditional
-	range?: R2Range
+	onlyIf?: R2Conditional | Headers
+	range?: R2Range | Headers
 }
 
 export interface R2PutOptions {
 	httpMetadata?: R2HTTPMetadata
 	customMetadata?: Record<string, string>
-	onlyIf?: R2Conditional
+	onlyIf?: R2Conditional | Headers
 	md5?: ArrayBuffer | string
 	sha1?: ArrayBuffer | string
 	sha256?: ArrayBuffer | string
@@ -75,6 +75,7 @@ export interface R2ListOptions {
 	limit?: number
 	cursor?: string
 	delimiter?: string
+	startAfter?: string
 	include?: ('httpMetadata' | 'customMetadata')[]
 }
 
@@ -92,6 +93,33 @@ interface R2ObjectMeta {
 
 // --- R2Object ---
 
+export class R2ObjectChecksums implements R2Checksums {
+	readonly md5?: ArrayBuffer
+	readonly sha1?: ArrayBuffer
+	readonly sha256?: ArrayBuffer
+	readonly sha384?: ArrayBuffer
+	readonly sha512?: ArrayBuffer
+
+	constructor(checksums: R2Checksums) {
+		this.md5 = checksums.md5
+		this.sha1 = checksums.sha1
+		this.sha256 = checksums.sha256
+		this.sha384 = checksums.sha384
+		this.sha512 = checksums.sha512
+	}
+
+	/** Hex strings of the present checksums, as workerd's R2Checksums.toJSON(). */
+	toJSON(): { md5?: string; sha1?: string; sha256?: string; sha384?: string; sha512?: string } {
+		const hex = (buf: ArrayBuffer | undefined) => buf === undefined ? undefined : Buffer.from(buf).toString('hex')
+		return Object.fromEntries(
+			CHECKSUM_ALGORITHMS.flatMap(({ field }) => {
+				const value = hex(this[field])
+				return value === undefined ? [] : [[field, value]]
+			}),
+		)
+	}
+}
+
 export class R2Object {
 	readonly key: string
 	readonly size: number
@@ -101,7 +129,7 @@ export class R2Object {
 	readonly uploaded: Date
 	readonly httpMetadata: R2HTTPMetadata
 	readonly customMetadata: Record<string, string>
-	readonly checksums: R2Checksums
+	readonly checksums: R2ObjectChecksums
 	readonly storageClass: string
 	readonly range?: { offset: number; length: number }
 
@@ -114,7 +142,7 @@ export class R2Object {
 		this.uploaded = meta.uploaded
 		this.httpMetadata = meta.httpMetadata
 		this.customMetadata = meta.customMetadata
-		this.checksums = meta.checksums
+		this.checksums = new R2ObjectChecksums(meta.checksums)
 		this.storageClass = 'Standard'
 		this.range = meta.range
 	}
@@ -135,18 +163,16 @@ export class R2ObjectBody extends R2Object {
 	private filePath: string
 	private rangeOffset: number
 	private rangeLength: number
-	private totalSize: number
 
-	constructor(meta: R2ObjectMeta, filePath: string, rangeOffset: number, rangeLength: number, totalSize: number) {
-		super(meta)
+	constructor(meta: R2ObjectMeta, filePath: string, range: { offset: number; length: number }) {
+		super({ ...meta, range })
 		this.filePath = filePath
-		this.rangeOffset = rangeOffset
-		this.rangeLength = rangeLength
-		this.totalSize = totalSize
+		this.rangeOffset = range.offset
+		this.rangeLength = range.length
 	}
 
 	private isFullFile(): boolean {
-		return this.rangeOffset === 0 && this.rangeLength === this.totalSize
+		return this.rangeOffset === 0 && this.rangeLength === this.size
 	}
 
 	/**
@@ -206,7 +232,7 @@ function rowToMeta(row: R2Row): R2ObjectMeta {
 		uploaded: new Date(row.uploaded),
 		httpMetadata: deserializeHttpMetadata(row.http_metadata),
 		customMetadata: row.custom_metadata ? JSON.parse(row.custom_metadata) : {},
-		checksums: row.checksums ? deserializeChecksums(JSON.parse(row.checksums)) : {},
+		checksums: deserializeChecksums(row.checksums ? JSON.parse(row.checksums) : {}, row.etag),
 	}
 }
 
@@ -249,6 +275,11 @@ function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
 	return result
 }
 
+/** Copies into an ArrayBuffer of exactly the buffer's length (a Buffer may view a larger ArrayBuffer). */
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+	return new Uint8Array(buf).buffer
+}
+
 function serializeChecksums(c: R2Checksums): Record<string, string> {
 	const result: Record<string, string> = {}
 	for (const [k, v] of Object.entries(c)) {
@@ -261,60 +292,60 @@ function serializeChecksums(c: R2Checksums): Record<string, string> {
 	return result
 }
 
-function deserializeChecksums(c: Record<string, string>): R2Checksums {
+/** A single-part object's etag is its MD5, so rows stored without checksums still report it, as in R2. */
+function deserializeChecksums(c: Record<string, string>, etag: string): R2Checksums {
 	const result: R2Checksums = {}
-	for (const [k, v] of Object.entries(c)) {
-		;(result as Record<string, ArrayBuffer>)[k] = Buffer.from(v, 'hex').buffer as ArrayBuffer
+	for (const { field } of CHECKSUM_ALGORITHMS) {
+		const value = c[field] ?? (field === 'md5' && /^[0-9a-f]{32}$/.test(etag) ? etag : undefined)
+		if (value !== undefined) result[field] = toArrayBuffer(Buffer.from(value, 'hex'))
 	}
 	return result
 }
 
-/**
- * Compute the S3-compatible multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + N.
- * Each part's stored etag is hex MD5 of the part body; we concatenate the raw (binary)
- * digests and hash the result.
- */
-function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
-	const buf = Buffer.concat(partRows.map((r) => Buffer.from(r.etag, 'hex')))
-	const hasher = new Bun.CryptoHasher('md5')
-	hasher.update(buf)
-	return `${hasher.digest('hex')}-${partRows.length}`
+/** 128 random bits as 32 lowercase hex characters, the format of R2 object versions. */
+function randomHex(): string {
+	return Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('hex')
 }
 
 /**
- * Write `value` to `filePath` while hashing it. No intermediate buffering for
- * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
- * etag and total byte count.
+ * Compute the S3-compatible multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + N.
+ * Takes each part's hex MD5; we concatenate the raw (binary) digests and hash the result.
+ */
+function computeMultipartEtag(partMd5s: string[]): string {
+	const buf = Buffer.concat(partMd5s.map((md5) => Buffer.from(md5, 'hex')))
+	const hasher = new Bun.CryptoHasher('md5')
+	hasher.update(buf)
+	return `${hasher.digest('hex')}-${partMd5s.length}`
+}
+
+type HashAlgorithm = 'md5' | 'sha1' | 'sha256' | 'sha384' | 'sha512'
+
+/**
+ * Write `value` to `filePath` while hashing it with each of `algorithms`. No intermediate
+ * buffering for streams/Blobs — bytes flow directly from the source to disk. Returns the
+ * digests in the order of `algorithms` and the total byte count.
  */
 async function writeValueToFile(
 	value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 	filePath: string,
-): Promise<{ etag: string; size: number }> {
+	algorithms: readonly HashAlgorithm[],
+): Promise<{ digests: Buffer[]; size: number }> {
 	mkdirSync(dirname(filePath), { recursive: true })
-	const hasher = new Bun.CryptoHasher('md5')
-
-	if (value === null) {
-		await Bun.write(filePath, '')
-		return { etag: hasher.digest('hex'), size: 0 }
-	}
-	if (typeof value === 'string') {
-		const bytes = new TextEncoder().encode(value)
-		hasher.update(bytes)
+	const hashers = algorithms.map((algorithm) => new Bun.CryptoHasher(algorithm))
+	const digests = () => hashers.map((hasher) => Buffer.from(hasher.digest()))
+	const writeBytes = async (bytes: Uint8Array | ArrayBuffer) => {
+		for (const hasher of hashers) hasher.update(bytes)
 		await Bun.write(filePath, bytes)
-		return { etag: hasher.digest('hex'), size: bytes.byteLength }
+		return { digests: digests(), size: bytes.byteLength }
 	}
-	if (value instanceof ArrayBuffer) {
-		hasher.update(new Uint8Array(value))
-		await Bun.write(filePath, value)
-		return { etag: hasher.digest('hex'), size: value.byteLength }
-	}
-	if (ArrayBuffer.isView(value)) {
-		const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-		hasher.update(view)
-		await Bun.write(filePath, view)
-		return { etag: hasher.digest('hex'), size: view.byteLength }
-	}
+
+	if (value === null) return writeBytes(new Uint8Array(0))
+	if (typeof value === 'string') return writeBytes(new TextEncoder().encode(value))
+	if (value instanceof ArrayBuffer) return writeBytes(value)
+	if (ArrayBuffer.isView(value)) return writeBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
 	const stream = value instanceof Blob ? value.stream() : value
+	// Bun's FileSink writes over an existing file without truncating it
+	rmSync(filePath, { force: true })
 	const writer = Bun.file(filePath).writer()
 	let size = 0
 	const reader = stream.getReader()
@@ -322,34 +353,245 @@ async function writeValueToFile(
 		while (true) {
 			const { done, value: chunk } = await reader.read()
 			if (done) break
-			hasher.update(chunk)
+			for (const hasher of hashers) hasher.update(chunk)
 			writer.write(chunk)
 			size += chunk.byteLength
 		}
 	} finally {
 		await writer.end()
 	}
-	return { etag: hasher.digest('hex'), size }
+	return { digests: digests(), size }
+}
+
+// --- Errors ---
+
+// workerd surfaces R2 errors as a plain Error with "<method>: <message> (<v4 code>)".
+function r2Error(method: string, code: number, message: string): Error {
+	return new Error(`${method}: ${message} (${code})`)
+}
+
+const INVALID_RANGE = [10039, 'The requested range is not satisfiable'] as const
+const INVALID_MAX_KEYS = [10022, 'MaxKeys params must be positive integer <= 1000.'] as const
+
+const MAX_LIST_KEYS = 1000
+
+const INVALID_OBJECT_NAME = [10020, 'The specified object name is not valid.'] as const
+const METADATA_TOO_LARGE = [10012, 'Your metadata headers exceed the maximum allowed metadata size.'] as const
+
+function checkKey(method: string, key: string, limits: Required<R2Limits>): void {
+	if (Buffer.byteLength(key) > limits.maxKeySize) throw r2Error(method, ...INVALID_OBJECT_NAME)
+}
+
+/** R2 counts each string as its length, doubled when it has a character above U+00FF (Miniflare Validator.metadataSize). */
+function checkMetadataSize(method: string, metadata: Record<string, string> | undefined, limits: Required<R2Limits>): void {
+	if (!metadata) return
+	const serialisedLength = (x: string) => {
+		for (let i = 0; i < x.length; i++) if (x.charCodeAt(i) > 0xff) return x.length * 2
+		return x.length
+	}
+	let size = 0
+	for (const [k, v] of Object.entries(metadata)) size += serialisedLength(k) + serialisedLength(v)
+	if (size > limits.maxCustomMetadataSize) throw r2Error(method, ...METADATA_TOO_LARGE)
+}
+
+/** Objects live at <bucket dir>/<key>, so a key must not climb out of the bucket directory. */
+function objectFilePath(baseDir: string, key: string): string {
+	if (key.includes('..')) throw new Error('Invalid key: path traversal not allowed')
+	return join(baseDir, key)
+}
+
+const CHECKSUM_ALGORITHMS = [
+	{ field: 'md5', name: 'MD5', bytes: 16 },
+	{ field: 'sha1', name: 'SHA-1', bytes: 20 },
+	{ field: 'sha256', name: 'SHA-256', bytes: 32 },
+	{ field: 'sha384', name: 'SHA-384', bytes: 48 },
+	{ field: 'sha512', name: 'SHA-512', bytes: 64 },
+] as const
+
+type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[number]
+
+/** The checksum a put() caller supplied; workerd allows at most one and checks its length (api/r2-bucket.c++). */
+function parseExpectedChecksum(options: R2PutOptions | undefined): { algorithm: ChecksumAlgorithm; digest: Buffer } | undefined {
+	let result: { algorithm: ChecksumAlgorithm; digest: Buffer } | undefined
+	for (const algorithm of CHECKSUM_ALGORITHMS) {
+		const provided = options?.[algorithm.field]
+		if (provided === undefined) continue
+		if (result) throw new TypeError('You cannot specify multiple hashing algorithms.')
+		let digest: Buffer
+		if (typeof provided === 'string') {
+			if (provided.length !== algorithm.bytes * 2) {
+				throw new TypeError(`${algorithm.name} is ${algorithm.bytes * 2} hex characters, not ${provided.length}`)
+			}
+			if (!/^[0-9a-f]*$/i.test(provided)) throw new TypeError(`Provided ${algorithm.name} wasn't a valid hex string`)
+			digest = Buffer.from(provided, 'hex')
+		} else {
+			if (provided.byteLength !== algorithm.bytes) {
+				throw new TypeError(`${algorithm.name} is ${algorithm.bytes} bytes, not ${provided.byteLength}`)
+			}
+			digest = Buffer.from(provided)
+		}
+		result = { algorithm, digest }
+	}
+	return result
 }
 
 // --- Conditional check ---
 
-function evaluateConditional(cond: R2Conditional, etag: string, uploaded: Date): boolean {
-	if (cond.etagMatches !== undefined) {
-		const tags = Array.isArray(cond.etagMatches) ? cond.etagMatches : [cond.etagMatches]
-		if (!tags.some((t) => t === etag || t === `"${etag}"` || t === '*')) return false
+type R2Etag = { type: 'strong' | 'weak'; value: string } | { type: 'wildcard' }
+
+interface ParsedConditional {
+	etagMatches?: R2Etag[]
+	etagDoesNotMatch?: R2Etag[]
+	uploadedBefore?: Date
+	uploadedAfter?: Date
+	secondsGranularity: boolean
+}
+
+function parseConditional(onlyIf: R2Conditional | Headers): ParsedConditional {
+	if (onlyIf instanceof Headers) {
+		const cond: ParsedConditional = { secondsGranularity: true }
+		const ifMatch = onlyIf.get('if-match')
+		if (ifMatch !== null) {
+			cond.etagMatches = parseEtagHeader(ifMatch)
+			if (cond.etagMatches.length === 0) throw new Error('Invalid ETag in if-match header')
+		}
+		const ifNoneMatch = onlyIf.get('if-none-match')
+		if (ifNoneMatch !== null) {
+			cond.etagDoesNotMatch = parseEtagHeader(ifNoneMatch)
+			if (cond.etagDoesNotMatch.length === 0) throw new Error('Invalid ETag in if-none-match header')
+		}
+		const ifModifiedSince = onlyIf.get('if-modified-since')
+		if (ifModifiedSince !== null) cond.uploadedAfter = parseHttpDate(ifModifiedSince)
+		const ifUnmodifiedSince = onlyIf.get('if-unmodified-since')
+		if (ifUnmodifiedSince !== null) cond.uploadedBefore = parseHttpDate(ifUnmodifiedSince)
+		return cond
 	}
-	if (cond.etagDoesNotMatch !== undefined) {
-		const tags = Array.isArray(cond.etagDoesNotMatch) ? cond.etagDoesNotMatch : [cond.etagDoesNotMatch]
-		if (tags.some((t) => t === etag || t === `"${etag}"`)) return false
+	return {
+		etagMatches: onlyIf.etagMatches === undefined ? undefined : etagList(onlyIf.etagMatches),
+		etagDoesNotMatch: onlyIf.etagDoesNotMatch === undefined ? undefined : etagList(onlyIf.etagDoesNotMatch),
+		uploadedBefore: onlyIf.uploadedBefore,
+		uploadedAfter: onlyIf.uploadedAfter,
+		secondsGranularity: false,
 	}
-	if (cond.uploadedBefore !== undefined) {
-		if (uploaded >= cond.uploadedBefore) return false
+}
+
+function etagList(value: string | string[]): R2Etag[] {
+	return (Array.isArray(value) ? value : [value]).map((v) => v === '*' ? { type: 'wildcard' } : { type: 'strong', value: v.replace(/^"(.*)"$/, '$1') })
+}
+
+const ETAG_HEADER_ITEM = /^\s*(?:(\*)|(W\/)?"([^"]*)")\s*(?:,|$)/
+
+/** Parses an If-Match / If-None-Match list (workerd parseConditionalEtagHeader in api/r2-bucket.c++). */
+function parseEtagHeader(header: string): R2Etag[] {
+	const etags: R2Etag[] = []
+	let rest = header
+	while (true) {
+		rest = rest.replace(/^[\s,]+/, '')
+		if (rest === '') return etags
+		const m = ETAG_HEADER_ITEM.exec(rest)
+		if (!m) throw new Error('Invalid conditional header')
+		if (m[1] !== undefined) return [{ type: 'wildcard' }]
+		etags.push({ type: m[2] === undefined ? 'strong' : 'weak', value: m[3] ?? '' })
+		rest = rest.slice(m[0].length)
 	}
-	if (cond.uploadedAfter !== undefined) {
-		if (uploaded <= cond.uploadedAfter) return false
+}
+
+function parseHttpDate(value: string): Date {
+	const date = new Date(value)
+	if (Number.isNaN(date.getTime())) throw new TypeError(`Invalid date: ${value}`)
+	return date
+}
+
+function includesEtag(conditions: R2Etag[], etag: string, comparison: 'strong' | 'weak'): boolean {
+	for (const condition of conditions) {
+		if (condition.type === 'wildcard') return true
+		if (condition.value === etag && (condition.type === 'strong' || comparison === 'weak')) return true
 	}
-	return true
+	return false
+}
+
+/**
+ * RFC 7232 precondition evaluation as R2 does it (Miniflare _testR2Conditional in
+ * workers/r2/validator.worker.ts): a passing etag check overrides the date check it pairs with.
+ */
+function testConditional(cond: ParsedConditional, object: { etag: string; uploaded: Date } | null): boolean {
+	if (object === null) return cond.etagMatches === undefined && cond.uploadedAfter === undefined
+
+	const truncate = (ms: number) => cond.secondsGranularity ? Math.floor(ms / 1000) * 1000 : ms
+	const lastModified = truncate(object.uploaded.getTime())
+	const ifMatch = cond.etagMatches === undefined || includesEtag(cond.etagMatches, object.etag, 'strong')
+	const ifNoneMatch = cond.etagDoesNotMatch === undefined || !includesEtag(cond.etagDoesNotMatch, object.etag, 'weak')
+	const ifModifiedSince = cond.uploadedAfter === undefined
+		|| truncate(cond.uploadedAfter.getTime()) < lastModified
+		|| (cond.etagDoesNotMatch !== undefined && ifNoneMatch)
+	const ifUnmodifiedSince = cond.uploadedBefore === undefined
+		|| lastModified < truncate(cond.uploadedBefore.getTime())
+		|| (cond.etagMatches !== undefined && ifMatch)
+	return ifMatch && ifNoneMatch && ifModifiedSince && ifUnmodifiedSince
+}
+
+// --- Range ---
+
+/** Rejects malformed range objects before any I/O, as workerd does in initGetOptions (api/r2-bucket.c++). */
+function checkRangeArgument(range: R2Range): void {
+	const fields = [
+		['offset', 'Invalid range. Starting offset', 'Invalid range. Starting offset'],
+		['length', 'Invalid range. Length', 'Invalid range. Length'],
+		['suffix', 'Invalid suffix. Suffix', 'Invalid range. Suffix'],
+	] as const
+	for (const [field, negativeLabel, fractionLabel] of fields) {
+		const v = range[field]
+		if (v === undefined) continue
+		if (v < 0) throw new RangeError(`${negativeLabel} (${v}) must be greater than or equal to 0.`)
+		if (!Number.isInteger(v)) throw new RangeError(`${fractionLabel} (${v}) must be an integer, not floating point.`)
+	}
+	if (range.suffix !== undefined && range.offset !== undefined) throw new TypeError('Suffix is incompatible with offset.')
+	if (range.suffix !== undefined && range.length !== undefined) throw new TypeError('Suffix is incompatible with length.')
+}
+
+/**
+ * Resolves a get() range against the object size (Miniflare Validator.range in
+ * workers/r2/validator.worker.ts). A Range header that is absent, invalid or names several
+ * ranges yields the whole object; an unsatisfiable range object throws.
+ */
+function resolveRange(range: R2Range | Headers | undefined, size: number): { offset: number; length: number } {
+	const whole = { offset: 0, length: size }
+	if (range === undefined) return whole
+	if (range instanceof Headers) {
+		const header = range.get('range')
+		return header === null ? whole : (parseRangeHeader(header, size) ?? whole)
+	}
+	let { offset, length } = range
+	if (range.suffix !== undefined) {
+		if (range.suffix <= 0) throw r2Error('get', ...INVALID_RANGE)
+		length = Math.min(range.suffix, size)
+		offset = size - length
+	}
+	offset ??= 0
+	length ??= size - offset
+	if (offset > size || length <= 0) throw r2Error('get', ...INVALID_RANGE)
+	return { offset, length: Math.min(length, size - offset) }
+}
+
+/** Single-range `bytes=` header (Miniflare parseRanges in workers/shared/range.ts); null means "whole object". */
+function parseRangeHeader(header: string, size: number): { offset: number; length: number } | null {
+	const prefix = /^ *bytes *=/i.exec(header)
+	if (!prefix) return null
+	const specs = header.slice(prefix[0].length).split(',')
+	if (specs.length !== 1) return null
+	const m = /^ *(\d+)? *- *(\d+)? *$/.exec(specs[0] ?? '')
+	if (!m) return null
+	const [, start, end] = m
+	if (start !== undefined) {
+		const first = Number(start)
+		const last = end === undefined ? size - 1 : Math.min(Number(end), size - 1)
+		if (first >= size || (end !== undefined && first > Number(end))) return null
+		return { offset: first, length: last - first + 1 }
+	}
+	if (end === undefined) return null
+	const suffix = Number(end)
+	if (suffix === 0 || suffix >= size) return null
+	return { offset: size - suffix, length: suffix }
 }
 
 // --- Multipart Upload ---
@@ -369,7 +611,15 @@ interface MultipartPartRow {
 	etag: string
 	size: number
 	file_path: string
+	/** Null for parts stored before part etags became random; their etag is the MD5. */
+	checksum_md5: string | null
 }
+
+const INTERNAL_ERROR = [10001, 'We encountered an internal error. Please try again.'] as const
+const ENTITY_TOO_SMALL = [10011, 'Your proposed upload is smaller than the minimum allowed object size.'] as const
+const NO_SUCH_UPLOAD = [10024, 'The specified multipart upload does not exist.'] as const
+const INVALID_PART = [10025, 'One or more of the specified parts could not be found.'] as const
+const BAD_UPLOAD = [10048, 'There was a problem with the multipart upload.'] as const
 
 export class R2MultipartUpload {
 	readonly key: string
@@ -395,102 +645,164 @@ export class R2MultipartUpload {
 		this.limits = limits
 	}
 
+	/** The upload row while it is in progress; an upload of another key does not count. */
+	private getUpload(): MultipartRow | null {
+		return this.db
+			.query<MultipartRow, [string, string, string]>(
+				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ? AND key = ?`,
+			)
+			.get(this.uploadId, this.bucket, this.key)
+	}
+
+	private isFinished(): boolean {
+		return this.db
+			.query<{ upload_id: string }, [string, string, string]>(
+				`SELECT upload_id FROM r2_multipart_finished WHERE upload_id = ? AND bucket = ? AND key = ?`,
+			)
+			.get(this.uploadId, this.bucket, this.key) !== null
+	}
+
+	/** Retires the upload; false when another complete() or abort() already did. Run inside a transaction. */
+	private finish(): boolean {
+		const { changes } = this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ? AND key = ?`, [
+			this.uploadId,
+			this.bucket,
+			this.key,
+		])
+		if (changes === 0) return false
+		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+		this.db.run(`INSERT OR REPLACE INTO r2_multipart_finished (upload_id, bucket, key) VALUES (?, ?, ?)`, [
+			this.uploadId,
+			this.bucket,
+			this.key,
+		])
+		return true
+	}
+
 	async uploadPart(
 		partNumber: number,
 		data: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob,
 	): Promise<{ partNumber: number; etag: string }> {
-		// Verify upload exists and is not aborted/completed
-		const upload = this.db
-			.query<MultipartRow, [string, string]>(
-				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ?`,
-			)
-			.get(this.uploadId, this.bucket)
-		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
+		checkKey('uploadPart', this.key, this.limits)
+		if (!this.getUpload()) throw r2Error('uploadPart', ...NO_SUCH_UPLOAD)
 
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
 		const partPath = join(partDir, `part-${partNumber}`)
-		const { etag, size } = await writeValueToFile(data, partPath)
+		const { digests: [md5], size } = await writeValueToFile(data, partPath, ['md5'])
+		// R2 part etags are random, so re-uploading a part number invalidates the previous etag
+		const etag = randomHex()
 
-		// Upsert part record
 		this.db.run(
-			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path)
-       VALUES (?, ?, ?, ?, ?)`,
-			[this.uploadId, partNumber, etag, size, partPath],
+			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path, checksum_md5)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+			[this.uploadId, partNumber, etag, size, partPath, md5?.toString('hex') ?? null],
 		)
 
 		return { partNumber, etag }
 	}
 
 	async complete(parts: { partNumber: number; etag: string }[]): Promise<R2Object> {
-		const upload = this.db
-			.query<MultipartRow, [string, string]>(
-				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ?`,
-			)
-			.get(this.uploadId, this.bucket)
-		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
+		const method = 'completeMultipartUpload'
+		checkKey(method, this.key, this.limits)
+		const upload = this.getUpload()
+		if (!upload) {
+			if (this.isFinished()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+			throw r2Error(method, ...INTERNAL_ERROR)
+		}
+
+		const partNumbers = new Set(parts.map((p) => p.partNumber))
+		if (partNumbers.size !== parts.length) throw r2Error(method, ...INTERNAL_ERROR)
 
 		// Load all parts in one query and index by number — avoids N+1 for uploads with many parts.
 		const allRows = this.db
 			.query<MultipartPartRow, [string]>(`SELECT * FROM r2_multipart_parts WHERE upload_id = ?`)
 			.all(this.uploadId)
 		const byNumber = new Map(allRows.map((r) => [r.part_number, r]))
-		const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber)
-		const partRows: MultipartPartRow[] = []
-		for (const p of sorted) {
+		const selected = parts.map((p) => {
 			const row = byNumber.get(p.partNumber)
-			if (!row) throw new Error(`Part ${p.partNumber} not found`)
-			if (row.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
-			partRows.push(row)
+			if (!row || row.etag !== p.etag) throw r2Error(method, ...INVALID_PART)
+			return row
+		})
+
+		// Size rules as R2 applies them (Miniflare completeMultipartUpload in workers/r2/bucket.worker.ts):
+		// all but the last part in argument order must reach the minimum; then, in part-number order,
+		// all but the last must be equal and at least the minimum, and the last no larger.
+		const minPartSize = this.limits.minMultipartPartSize
+		if (selected.slice(0, -1).some((row) => row.size < minPartSize)) throw r2Error(method, ...ENTITY_TOO_SMALL)
+		const partRows = selected.sort((a, b) => a.part_number - b.part_number)
+		const partSize = partRows[0]?.size
+		const leading = partRows.slice(0, -1)
+		const last = partRows.at(-1)
+		if (
+			leading.some((row) => row.size < minPartSize || row.size !== partSize)
+			|| (leading.length > 0 && partSize !== undefined && last !== undefined && last.size > partSize)
+		) {
+			throw r2Error(method, ...BAD_UPLOAD)
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
-		const filePath = join(this.baseDir, this.key)
-		mkdirSync(dirname(filePath), { recursive: true })
-		const writer = Bun.file(filePath).writer()
+		// Each call assembles into its own file (the sink does not truncate; concurrent calls must not
+		// share it); only the call that wins the transaction below renames it into place.
+		const filePath = objectFilePath(this.baseDir, this.key)
+		const assembledPath = join(this.baseDir, '__multipart__', `assembled-${randomHex()}`)
+		mkdirSync(dirname(assembledPath), { recursive: true })
 		let totalSize = 0
 		try {
-			for (const row of partRows) {
-				const partStream = Bun.file(row.file_path).stream()
-				const reader = partStream.getReader()
-				while (true) {
-					const { done, value } = await reader.read()
-					if (done) break
-					writer.write(value)
-					totalSize += value.byteLength
+			const writer = Bun.file(assembledPath).writer()
+			try {
+				for (const row of partRows) {
+					const partStream = Bun.file(row.file_path).stream()
+					const reader = partStream.getReader()
+					while (true) {
+						const { done, value } = await reader.read()
+						if (done) break
+						writer.write(value)
+						totalSize += value.byteLength
+					}
 				}
+			} finally {
+				await writer.end()
 			}
-		} finally {
-			await writer.end()
+		} catch (err) {
+			rmSync(assembledPath, { force: true })
+			// A concurrent complete() or abort() removed the part files
+			if (!this.getUpload()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+			throw err
 		}
 
 		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
-		const etag = computeMultipartEtag(partRows)
+		const etag = computeMultipartEtag(partRows.map((row) => row.checksum_md5 ?? row.etag))
 		const uploaded = new Date()
-		const version = crypto.randomUUID()
+		const version = randomHex()
 
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Atomically: persist the final object and remove multipart DB rows.
-		this.db.transaction(() => {
-			this.db.run(
-				`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
+		// Atomically: retire the upload, move the assembled file into place and persist the object.
+		try {
+			this.db.transaction(() => {
+				if (!this.finish()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+				mkdirSync(dirname(filePath), { recursive: true })
+				renameSync(assembledPath, filePath)
+				this.db.run(
+					`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					this.bucket,
-					this.key,
-					totalSize,
-					etag,
-					version,
-					uploaded.toISOString(),
-					upload.http_metadata,
-					upload.custom_metadata,
-					null,
-				],
-			)
-			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
-		})()
+					[
+						this.bucket,
+						this.key,
+						totalSize,
+						etag,
+						version,
+						uploaded.toISOString(),
+						upload.http_metadata,
+						upload.custom_metadata,
+						null,
+					],
+				)
+			})()
+		} finally {
+			rmSync(assembledPath, { force: true })
+		}
 		this.removePartFiles()
 
 		return new R2Object({
@@ -505,11 +817,14 @@ export class R2MultipartUpload {
 		})
 	}
 
+	/** Aborting a completed or already aborted upload is a no-op, as in R2. */
 	async abort(): Promise<void> {
-		this.db.transaction(() => {
-			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
-		})()
+		checkKey('abortMultipartUpload', this.key, this.limits)
+		if (!this.getUpload()) {
+			if (this.isFinished()) return
+			throw r2Error('abortMultipartUpload', ...INTERNAL_ERROR)
+		}
+		if (!this.db.transaction(() => this.finish())()) return
 		this.removePartFiles()
 	}
 
@@ -540,12 +855,15 @@ export class FileR2Bucket {
 	private db: Database
 	private bucket: string
 	private baseDir: string
+	private tmpDir: string
 	private limits: Required<R2Limits>
 
 	constructor(db: Database, bucket: string, dataDir: string, limits?: R2Limits) {
 		this.db = db
 		this.bucket = bucket
 		this.baseDir = join(dataDir, 'r2', bucket)
+		// R2 bucket names cannot start with a dot, so this never collides with a bucket directory
+		this.tmpDir = join(dataDir, 'r2', '.tmp')
 		this.limits = { ...R2_DEFAULTS, ...limits }
 		mkdirSync(this.baseDir, { recursive: true })
 
@@ -595,26 +913,8 @@ export class FileR2Bucket {
     `)
 	}
 
-	private validateKey(key: string): void {
-		const keyBytes = new TextEncoder().encode(key)
-		if (keyBytes.length > this.limits.maxKeySize) {
-			throw new Error(`Key exceeds max size of ${this.limits.maxKeySize} bytes`)
-		}
-		if (key.includes('..')) {
-			throw new Error(`Invalid key: path traversal not allowed`)
-		}
-	}
-
-	private validateCustomMetadata(metadata: Record<string, string> | undefined): void {
-		if (!metadata) return
-		const serialized = JSON.stringify(metadata)
-		if (new TextEncoder().encode(serialized).length > this.limits.maxCustomMetadataSize) {
-			throw new Error(`Custom metadata exceeds max size of ${this.limits.maxCustomMetadataSize} bytes`)
-		}
-	}
-
 	private filePath(key: string): string {
-		return join(this.baseDir, key)
+		return objectFilePath(this.baseDir, key)
 	}
 
 	async put(
@@ -622,33 +922,55 @@ export class FileR2Bucket {
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 		options?: R2PutOptions,
 	): Promise<R2Object | null> {
-		this.validateKey(key)
-		this.validateCustomMetadata(options?.customMetadata)
-
-		// Check conditional before writing
-		if (options?.onlyIf) {
-			const existing = this.getRow(key)
-			if (existing) {
-				const meta = rowToMeta(existing)
-				if (!evaluateConditional(options.onlyIf, meta.etag, meta.uploaded)) {
-					return null
-				}
-			}
-		}
-
+		checkKey('put', key, this.limits)
+		checkMetadataSize('put', options?.customMetadata, this.limits)
+		const expected = parseExpectedChecksum(options)
 		const fp = this.filePath(key)
-		const { etag, size } = await writeValueToFile(value, fp)
-		const uploaded = new Date()
-		const version = crypto.randomUUID()
 
-		// Build checksums. md5 is always computed; user-supplied sha* are stored as-is.
-		const checksums: R2Checksums = { md5: Buffer.from(etag, 'hex').buffer as ArrayBuffer }
-		for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
-			const provided = options?.[algo]
-			if (provided) {
-				;(checksums as Record<string, ArrayBuffer>)[algo] = typeof provided === 'string' ? Buffer.from(provided, 'hex').buffer as ArrayBuffer : provided
+		// Check conditional before writing; a missing object fails etagMatches and uploadedAfter
+		if (options?.onlyIf) {
+			const cond = parseConditional(options.onlyIf)
+			const existing = this.getRow(key)
+			if (!testConditional(cond, existing ? rowToMeta(existing) : null)) {
+				return null
 			}
 		}
+
+		// Write aside and rename, so a rejected checksum leaves the current object intact
+		const tmpPath = join(this.tmpDir, crypto.randomUUID())
+		let size: number
+		let md5: Buffer
+		const checksums: R2Checksums = {}
+		try {
+			const algorithms: HashAlgorithm[] = expected && expected.algorithm.field !== 'md5' ? ['md5', expected.algorithm.field] : ['md5']
+			const written = await writeValueToFile(value, tmpPath, algorithms)
+			size = written.size
+			md5 = written.digests[0] ?? Buffer.alloc(0)
+			if (expected) {
+				const actual = written.digests[algorithms.indexOf(expected.algorithm.field)] ?? Buffer.alloc(0)
+				if (!actual.equals(expected.digest)) {
+					const { name } = expected.algorithm
+					throw r2Error(
+						'put',
+						10037,
+						[
+							`The ${name} checksum you specified did not match what we received.`,
+							`You provided a ${name} checksum with value: ${expected.digest.toString('hex')}`,
+							`Actual ${name} was: ${actual.toString('hex')}`,
+						].join('\n'),
+					)
+				}
+				checksums[expected.algorithm.field] = toArrayBuffer(actual)
+			}
+			mkdirSync(dirname(fp), { recursive: true })
+			renameSync(tmpPath, fp)
+		} finally {
+			rmSync(tmpPath, { force: true })
+		}
+		const etag = md5.toString('hex')
+		checksums.md5 = toArrayBuffer(md5)
+		const uploaded = new Date()
+		const version = randomHex()
 
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
@@ -687,42 +1009,28 @@ export class FileR2Bucket {
 	}
 
 	async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | R2Object | null> {
+		checkKey('get', key, this.limits)
+		const cond = options?.onlyIf === undefined ? undefined : parseConditional(options.onlyIf)
+		if (options?.range !== undefined && !(options.range instanceof Headers)) checkRangeArgument(options.range)
+
 		const row = this.getRow(key)
 		if (!row) return null
-
 		const meta = rowToMeta(row)
 
-		// Check conditional
-		if (options?.onlyIf) {
-			if (!evaluateConditional(options.onlyIf, meta.etag, meta.uploaded)) {
-				// Return R2Object (metadata only, no body) when condition fails
-				return new R2Object(meta)
-			}
+		// A failed precondition yields the metadata without a body
+		if (cond && !testConditional(cond, meta)) {
+			return new R2Object({ ...meta, range: { offset: 0, length: meta.size } })
 		}
 
-		const totalSize = row.size
-		let offset = 0
-		let length = totalSize
-		if (options?.range) {
-			const range = options.range
-			if (range.suffix !== undefined) {
-				offset = Math.max(0, totalSize - range.suffix)
-				length = totalSize - offset
-			} else {
-				offset = range.offset ?? 0
-				length = range.length ?? totalSize - offset
-				if (offset + length > totalSize) length = totalSize - offset
-			}
-			meta.range = { offset, length }
-		}
-
-		return new R2ObjectBody(meta, this.filePath(key), offset, length, totalSize)
+		return new R2ObjectBody(meta, this.filePath(key), resolveRange(options?.range, meta.size))
 	}
 
 	async head(key: string): Promise<R2Object | null> {
+		checkKey('head', key, this.limits)
 		const row = this.getRow(key)
 		if (!row) return null
-		return new R2Object(rowToMeta(row))
+		const meta = rowToMeta(row)
+		return new R2Object({ ...meta, range: { offset: 0, length: meta.size } })
 	}
 
 	async delete(key: string | string[]) {
@@ -730,67 +1038,75 @@ export class FileR2Bucket {
 		if (keys.length > this.limits.maxBatchDeleteKeys) {
 			throw new Error(`Cannot delete more than ${this.limits.maxBatchDeleteKeys} keys at once`)
 		}
+		for (const k of keys) checkKey('delete', k, this.limits)
 		for (const k of keys) {
-			this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
-			const fp = this.filePath(k)
-			if (existsSync(fp)) {
-				rmSync(fp)
-			}
+			const { changes } = this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
+			// Only a stored object owns a file; any other path may be another key's directory
+			if (changes > 0) rmSync(this.filePath(k), { force: true })
 		}
 	}
 
 	async list(options?: R2ListOptions) {
-		const prefix = options?.prefix ?? ''
-		const limit = options?.limit ?? 1000
-		const delimiter = options?.delimiter
-		const include = options?.include
-		const cursorOffset = options?.cursor ? parseInt(options.cursor, 10) : 0
+		const limit = options?.limit ?? MAX_LIST_KEYS
+		if (limit < 1 || limit > MAX_LIST_KEYS) throw r2Error('list', ...INVALID_MAX_KEYS)
+		const include = parseListInclude(options?.include)
+		const params = {
+			$bucket: this.bucket,
+			$prefix: options?.prefix ?? '',
+			$startAfter: options?.startAfter ?? null,
+			// The cursor is the base64 of the last returned key, so keys inserted while paginating are still listed
+			$cursorKey: options?.cursor ? Buffer.from(options.cursor, 'base64').toString('utf8') : null,
+			// One extra row tells whether the listing is truncated
+			$limit: limit + 1,
+		}
+		const filter = `bucket = $bucket AND substr(key, 1, length($prefix)) = $prefix
+			AND ($startAfter IS NULL OR key > $startAfter) AND ($cursorKey IS NULL OR key > $cursorKey)`
 
-		const rows = this.db
-			.query<R2Row, [string, string, number, number]>(
-				`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums
-         FROM r2_objects WHERE bucket = ? AND key LIKE ? ORDER BY key LIMIT ? OFFSET ?`,
-			)
-			.all(this.bucket, prefix + '%', limit + 1, cursorOffset)
-
-		if (delimiter) {
-			// With delimiter: group keys by delimiter, return delimitedPrefixes
-			const prefixLen = prefix.length
-			const delimitedPrefixes = new Set<string>()
-			const objects: R2Object[] = []
-
+		const objects: R2Object[] = []
+		const delimitedPrefixes: string[] = []
+		let lastKey: string | undefined
+		let truncated: boolean
+		if (options?.delimiter) {
+			// Keys sharing a delimited prefix collapse into one row (counted once towards the limit);
+			// its max(key) becomes the cursor so the next page skips the rest of that prefix.
+			// Adapted from Miniflare workers/r2/bucket.worker.ts (listMetadata).
+			const rows = this.db
+				.query<Omit<R2Row, 'key'> & { last_key: string; delimited_prefix: string | null }, Record<string, string | number | null>>(
+					`SELECT max(key) AS last_key,
+						iif(instr(substr(key, length($prefix) + 1), $delimiter),
+							substr(key, 1, length($prefix) + instr(substr(key, length($prefix) + 1), $delimiter) + length($delimiter) - 1),
+							NULL) AS delimited_prefix,
+						size, etag, version, uploaded, http_metadata, custom_metadata, checksums
+					FROM r2_objects WHERE ${filter}
+					GROUP BY coalesce('p:' || delimited_prefix, 'k:' || key)
+					ORDER BY last_key LIMIT $limit`,
+				)
+				.all({ ...params, $delimiter: options.delimiter })
+			truncated = rows.length > limit
 			for (const row of rows.slice(0, limit)) {
-				const rest = row.key.slice(prefixLen)
-				const delimIdx = rest.indexOf(delimiter)
-				if (delimIdx !== -1) {
-					delimitedPrefixes.add(prefix + rest.slice(0, delimIdx + delimiter.length))
-				} else {
-					const meta = rowToMeta(row)
-					objects.push(buildListObject(meta, include))
-				}
+				if (row.delimited_prefix === null) objects.push(buildListObject(rowToMeta({ ...row, key: row.last_key }), include))
+				else delimitedPrefixes.push(row.delimited_prefix)
+				lastKey = row.last_key
 			}
-
-			const truncated = rows.length > limit
-			return {
-				objects,
-				truncated,
-				cursor: truncated ? String(cursorOffset + limit) : '',
-				delimitedPrefixes: [...delimitedPrefixes].sort(),
+		} else {
+			const rows = this.db
+				.query<R2Row, Record<string, string | number | null>>(
+					`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums
+					FROM r2_objects WHERE ${filter} ORDER BY key LIMIT $limit`,
+				)
+				.all(params)
+			truncated = rows.length > limit
+			for (const row of rows.slice(0, limit)) {
+				objects.push(buildListObject(rowToMeta(row), include))
+				lastKey = row.key
 			}
 		}
-
-		const truncated = rows.length > limit
-		const resultRows = truncated ? rows.slice(0, limit) : rows
-		const objects = resultRows.map((row) => {
-			const meta = rowToMeta(row)
-			return buildListObject(meta, include)
-		})
 
 		return {
 			objects,
 			truncated,
-			cursor: truncated ? String(cursorOffset + limit) : '',
-			delimitedPrefixes: [] as string[],
+			cursor: truncated && lastKey !== undefined ? Buffer.from(lastKey, 'utf8').toString('base64') : '',
+			delimitedPrefixes,
 		}
 	}
 
@@ -798,8 +1114,10 @@ export class FileR2Bucket {
 		key: string,
 		options?: { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> },
 	): Promise<R2MultipartUpload> {
-		this.validateKey(key)
-		this.validateCustomMetadata(options?.customMetadata)
+		checkKey('createMultipartUpload', key, this.limits)
+		checkMetadataSize('createMultipartUpload', options?.customMetadata, this.limits)
+		// Fail now rather than at complete() for keys that cannot be stored on disk
+		this.filePath(key)
 
 		const uploadId = crypto.randomUUID()
 		this.db.run(
@@ -865,16 +1183,22 @@ export class FileR2Bucket {
 	}
 }
 
-function buildListObject(meta: R2ObjectMeta, include?: ('httpMetadata' | 'customMetadata')[]): R2Object {
-	if (include) {
-		// Only include requested metadata
-		const filtered: R2ObjectMeta = {
-			...meta,
-			httpMetadata: include.includes('httpMetadata') ? meta.httpMetadata : {},
-			customMetadata: include.includes('customMetadata') ? meta.customMetadata : {},
-		}
-		return new R2Object(filtered)
+type ListInclude = { httpMetadata: boolean; customMetadata: boolean }
+
+function parseListInclude(include: R2ListOptions['include']): ListInclude {
+	const result = { httpMetadata: false, customMetadata: false }
+	for (const field of include ?? []) {
+		if (field !== 'httpMetadata' && field !== 'customMetadata') throw new RangeError(`Unsupported include value ${field}`)
+		result[field] = true
 	}
-	// By default, include both
-	return new R2Object(meta)
+	return result
+}
+
+/** Metadata is omitted unless requested, as under r2_list_honor_include (default since 2022-08-04). */
+function buildListObject(meta: R2ObjectMeta, include: ListInclude): R2Object {
+	return new R2Object({
+		...meta,
+		httpMetadata: include.httpMetadata ? meta.httpMetadata : {},
+		customMetadata: include.customMetadata ? meta.customMetadata : {},
+	})
 }

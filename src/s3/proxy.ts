@@ -288,7 +288,7 @@ async function handleListObjects(
 		const list = await r2.list({
 			prefix: params.prefix,
 			cursor: params.continuationToken,
-			limit: params.maxKeys ?? 1000,
+			limit: Math.min(params.maxKeys ?? 1000, 1000),
 			delimiter: params.delimiter,
 		})
 		const body = listBucketV2Xml(
@@ -311,8 +311,8 @@ async function handleListObjects(
 	}
 	const list = await r2.list({
 		prefix: params.prefix,
-		cursor: params.marker,
-		limit: params.maxKeys ?? 1000,
+		startAfter: params.marker,
+		limit: Math.min(params.maxKeys ?? 1000, 1000),
 		delimiter: params.delimiter,
 	})
 	const nextMarker = list.truncated && list.objects.length > 0
@@ -360,7 +360,13 @@ async function handleGetObject(
 		return new Response(null, { status: 304, headers })
 	}
 
-	const obj = (await r2.get(key, { range: range ?? undefined })) as R2ObjectBody | null
+	let obj: R2ObjectBody | null
+	try {
+		obj = (await r2.get(key, { range: range ?? undefined })) as R2ObjectBody | null
+	} catch (err) {
+		if (isRangeError(err)) return xmlError('InvalidRange', 'The requested range is not satisfiable', `/${bucket}/${key}`, cors)
+		throw err
+	}
 	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
 
 	const headers = applyObjectHeaders(obj, new Headers(cors))
@@ -553,6 +559,10 @@ async function handleCompleteMultipartUpload(
 	const xml = await req.text()
 	const parts = parseCompletePartsXml(xml)
 	if (parts.length === 0) return xmlError('MalformedXML', 'No parts in request', `/${bucket}/${key}`, cors)
+	// The binding reports duplicates with the same error (10001) as an unknown upload, so check them here
+	if (new Set(parts.map((p) => p.partNumber)).size !== parts.length) {
+		return xmlError('InvalidRequest', 'Duplicate part numbers in request', `/${bucket}/${key}`, cors)
+	}
 
 	const upload = r2.resumeMultipartUpload(key, uploadId)
 	try {
@@ -561,9 +571,8 @@ async function handleCompleteMultipartUpload(
 		return xmlResponse(completeMultipartUploadXml(bucket, key, result.etag, location), 200, cors)
 	} catch (err) {
 		const msg = String(err)
-		if (msg.includes('etag mismatch')) {
-			return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
-		}
+		if (msg.endsWith('(10025)') || msg.endsWith('(10048)')) return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
+		if (msg.endsWith('(10011)')) return xmlError('EntityTooSmall', msg, `/${bucket}/${key}`, cors)
 		return xmlError('NoSuchUpload', msg, `/${bucket}/${key}`, cors)
 	}
 }
@@ -576,9 +585,12 @@ async function handleAbortMultipartUpload(
 	cors: Headers,
 ): Promise<Response> {
 	const upload = r2.resumeMultipartUpload(key, uploadId)
-	await upload.abort()
-	// S3 returns 204 whether or not the upload existed
-	void bucket
+	try {
+		// Aborting an already completed or aborted upload succeeds; an unknown upload id is an error
+		await upload.abort()
+	} catch (err) {
+		return xmlError('NoSuchUpload', String(err), `/${bucket}/${key}`, cors)
+	}
 	return new Response('', { status: 204, headers: cors })
 }
 
@@ -676,8 +688,15 @@ async function handleUploadPartCopy(
 	// Optional byte range: "bytes=start-end"
 	const rangeHeader = req.headers.get('x-amz-copy-source-range')
 	const range = rangeHeader ? parseRange(rangeHeader) : null
+	if (rangeHeader && !range) return xmlError('InvalidRange', 'Invalid x-amz-copy-source-range header', copySource, cors)
 
-	const srcObj = (await srcR2.get(source.key, range ? { range } : undefined)) as R2ObjectBody | null
+	let srcObj: R2ObjectBody | null
+	try {
+		srcObj = (await srcR2.get(source.key, range ? { range } : undefined)) as R2ObjectBody | null
+	} catch (err) {
+		if (isRangeError(err)) return xmlError('InvalidRange', 'The requested range is not satisfiable', copySource, cors)
+		throw err
+	}
 	if (!srcObj) return xmlError('NoSuchKey', 'Source object not found', copySource, cors)
 
 	const upload = destR2.resumeMultipartUpload(destKey, uploadId)
@@ -687,6 +706,11 @@ async function handleUploadPartCopy(
 	} catch (err) {
 		return xmlError('NoSuchUpload', String(err), `/${destBucket}/${destKey}`, cors)
 	}
+}
+
+/** An unsatisfiable range (R2 error 10039) or a malformed one (RangeError from the binding). */
+function isRangeError(err: unknown): boolean {
+	return err instanceof RangeError || (err instanceof Error && err.message.endsWith('(10039)'))
 }
 
 // ─── Body helpers ────────────────────────────────────────────────────────────

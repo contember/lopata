@@ -16,7 +16,8 @@ beforeEach(() => {
 	tmpDir = mkdtempSync(join(tmpdir(), 's3-proxy-test-'))
 	db = new Database(':memory:')
 	runMigrations(db)
-	r2 = new FileR2Bucket(db, BUCKET, tmpDir)
+	// The multipart tests use parts far below R2's 5 MiB minimum part size
+	r2 = new FileR2Bucket(db, BUCKET, tmpDir, { minMultipartPartSize: 1 })
 })
 
 afterEach(() => {
@@ -179,7 +180,13 @@ test('ListObjectsV2 pagination with max-keys returns continuation token', async 
 	const res = await handleS3Request(s3('GET', '/?list-type=2&max-keys=2'), BUCKET, r2)
 	const xml = await res.text()
 	expect(xml).toContain('<IsTruncated>true</IsTruncated>')
-	expect(xml).toMatch(/<NextContinuationToken>\d+<\/NextContinuationToken>/)
+	const token = /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/.exec(xml)?.[1]
+	expect(token).toBeDefined()
+	const next = await handleS3Request(s3('GET', `/?list-type=2&max-keys=2&continuation-token=${encodeURIComponent(token ?? '')}`), BUCKET, r2)
+	const nextXml = await next.text()
+	expect(nextXml).toContain('<Key>k2</Key>')
+	expect(nextXml).toContain('<Key>k3</Key>')
+	expect(nextXml).not.toContain('<Key>k1</Key>')
 })
 
 // --- Content-MD5 validation ---
@@ -263,6 +270,37 @@ test('GET with Range: bytes=-3 returns last 3 bytes', async () => {
 	expect(await res.text()).toBe('hij')
 })
 
+test('GET with an inverted Range ignores it and returns the whole object', async () => {
+	await r2.put('big', 'abcdefghij')
+	const res = await handleS3Request(s3('GET', '/big', { headers: { range: 'bytes=5-2' } }), BUCKET, r2)
+	expect(res.status).toBe(200)
+	expect(await res.text()).toBe('abcdefghij')
+})
+
+test('UploadPartCopy with an unsatisfiable or inverted source range returns InvalidRange', async () => {
+	await r2.put('src', 'abcdefghij')
+	const createRes = await handleS3Request(s3('POST', '/dst?uploads'), BUCKET, r2)
+	const uploadId = (await createRes.text()).match(/<UploadId>([^<]+)<\/UploadId>/)![1]!
+	for (const range of ['bytes=20-30', 'bytes=5-2']) {
+		const res = await handleS3Request(
+			s3('PUT', `/dst?partNumber=1&uploadId=${uploadId}`, {
+				headers: { 'x-amz-copy-source': `/${BUCKET}/src`, 'x-amz-copy-source-range': range },
+			}),
+			BUCKET,
+			r2,
+		)
+		expect(res.status).toBe(416)
+		expect(await res.text()).toContain('InvalidRange')
+	}
+})
+
+test('GET with Range past the end returns 416 InvalidRange', async () => {
+	await r2.put('big', 'abcdefghij')
+	const res = await handleS3Request(s3('GET', '/big', { headers: { range: 'bytes=20-' } }), BUCKET, r2)
+	expect(res.status).toBe(416)
+	expect(await res.text()).toContain('InvalidRange')
+})
+
 // --- Conditional requests ---
 
 test('GET with matching If-Match returns 200', async () => {
@@ -331,6 +369,15 @@ test('ListObjects V1 (no list-type) returns Marker-style response', async () => 
 	expect(xml).toContain('<Key>a</Key>')
 	expect(xml).toContain('<Key>b</Key>')
 	expect(xml).toContain('<Marker/>')
+})
+
+test('ListObjects V1 lists keys after Marker', async () => {
+	for (const k of ['a', 'b', 'c']) await r2.put(k, '1')
+	const res = await handleS3Request(s3('GET', '/?marker=a'), BUCKET, r2)
+	const xml = await res.text()
+	expect(xml).not.toContain('<Key>a</Key>')
+	expect(xml).toContain('<Key>b</Key>')
+	expect(xml).toContain('<Key>c</Key>')
 })
 
 // --- DeleteObjects batch ---
@@ -502,6 +549,34 @@ test('Multipart: complete with wrong etag returns InvalidPart', async () => {
 	const res = await handleS3Request(s3('POST', `/k?uploadId=${uploadId}`, { body }), BUCKET, r2)
 	expect(res.status).toBe(400)
 	expect(await res.text()).toContain('InvalidPart')
+})
+
+test('Multipart: complete with duplicate part numbers or unequal part sizes returns 400', async () => {
+	const createRes = await handleS3Request(s3('POST', '/k?uploads'), BUCKET, r2)
+	const uploadId = (await createRes.text()).match(/<UploadId>([^<]+)<\/UploadId>/)![1]!
+	const etags: string[] = []
+	for (const [n, body] of [[1, 'aa'], [2, 'bbb'], [3, 'c']] as const) {
+		const res = await handleS3Request(s3('PUT', `/k?partNumber=${n}&uploadId=${uploadId}`, { body }), BUCKET, r2)
+		etags.push(res.headers.get('etag') ?? '')
+	}
+	const complete = (parts: Array<[number, string]>) =>
+		handleS3Request(
+			s3('POST', `/k?uploadId=${uploadId}`, {
+				body: `<CompleteMultipartUpload>${
+					parts.map(([n, etag]) => `<Part><PartNumber>${n}</PartNumber><ETag>${etag}</ETag></Part>`).join('')
+				}</CompleteMultipartUpload>`,
+			}),
+			BUCKET,
+			r2,
+		)
+
+	const duplicate = await complete([[1, etags[0]!], [1, etags[0]!]])
+	expect(duplicate.status).toBe(400)
+	expect(await duplicate.text()).toContain('InvalidRequest')
+
+	const unequal = await complete([[1, etags[0]!], [2, etags[1]!], [3, etags[2]!]])
+	expect(unequal.status).toBe(400)
+	expect(await unequal.text()).toContain('InvalidPart')
 })
 
 // --- Small type helper used in tests ---

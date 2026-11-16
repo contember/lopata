@@ -53,7 +53,10 @@ export function parseRange(header: string | null): R2Range | null {
 	}
 	const offset = Number(startStr)
 	if (endStr === '') return { offset }
-	return { offset, length: Number(endStr) - offset + 1 }
+	const end = Number(endStr)
+	// End before start is not a valid range
+	if (end < offset) return null
+	return { offset, length: end - offset + 1 }
 }
 
 export interface Conditional {
