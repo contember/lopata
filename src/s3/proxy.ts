@@ -569,9 +569,8 @@ async function handleCompleteMultipartUpload(
 		return xmlResponse(completeMultipartUploadXml(bucket, key, result.etag, location), 200, cors)
 	} catch (err) {
 		const msg = String(err)
-		if (msg.includes('etag mismatch')) {
-			return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
-		}
+		if (msg.endsWith('(10025)')) return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
+		if (msg.endsWith('(10011)')) return xmlError('EntityTooSmall', msg, `/${bucket}/${key}`, cors)
 		return xmlError('NoSuchUpload', msg, `/${bucket}/${key}`, cors)
 	}
 }
@@ -584,9 +583,12 @@ async function handleAbortMultipartUpload(
 	cors: Headers,
 ): Promise<Response> {
 	const upload = r2.resumeMultipartUpload(key, uploadId)
-	await upload.abort()
-	// S3 returns 204 whether or not the upload existed
-	void bucket
+	try {
+		// Aborting an already completed or aborted upload succeeds; an unknown upload id is an error
+		await upload.abort()
+	} catch (err) {
+		return xmlError('NoSuchUpload', String(err), `/${bucket}/${key}`, cors)
+	}
 	return new Response('', { status: 204, headers: cors })
 }
 

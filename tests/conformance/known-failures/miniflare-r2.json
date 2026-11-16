@@ -1,8 +1,6 @@
 {
-	"abortMultipartUpload": "expect(received).toThrow(expected)",
-	"completeMultipartUpload": "expect(received).rejects.toThrow(expected)",
-	"delete: waits for in-progress multipart gets before deleting part blobs": "ENOENT: no such file or directory, open '/tmp/lopata-conformance-r2-tO7W0y/r2/bucket/key'",
-	"list: accepts long prefix": "ENAMETOOLONG: name too long, rename '/tmp/lopata-conformance-r2-m9OhTK/r2/.tmp/f4619dc2-895c-4a43-8c11-7eb250e762d3' -> '/tmp/lopata-conformance-r2-m9OhTK/r2/bucket/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
-	"operations permit empty key": "EISDIR: illegal operation on a directory, rename '/tmp/lopata-conformance-r2-vKFFgv/r2/.tmp/c5579b3e-e6be-4e6c-8d2c-87dfdc3a9c02' -> '/tmp/lopata-conformance-r2-vKFFgv/r2/bucket'",
-	"uploadPart": "expect(received).not.toBe(expected)"
+	"completeMultipartUpload": "expect(received).toBe(expected)",
+	"delete: waits for in-progress multipart gets before deleting part blobs": "ENOENT: no such file or directory, open '/tmp/lopata-conformance-r2-7lVXtJ/r2/bucket/key'",
+	"list: accepts long prefix": "ENAMETOOLONG: name too long, rename '/tmp/lopata-conformance-r2-kiUZ2M/r2/.tmp/c0be11ef-3ee0-418f-ab7d-f72ea5cb6f7b' -> '/tmp/lopata-conformance-r2-kiUZ2M/r2/bucket/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+	"operations permit empty key": "EISDIR: illegal operation on a directory, rename '/tmp/lopata-conformance-r2-B1UVb9/r2/.tmp/2ba50a6a-f223-4543-b075-5f54177d0535' -> '/tmp/lopata-conformance-r2-B1UVb9/r2/bucket'"
 }

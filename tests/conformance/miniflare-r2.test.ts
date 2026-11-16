@@ -51,7 +51,8 @@ describe('r2', () => {
 		tmpDir = mkdtempSync(join(tmpdir(), 'lopata-conformance-r2-'))
 		db = new Database(':memory:')
 		runMigrations(db)
-		r2 = new FileR2Bucket(db, 'bucket', tmpDir)
+		// Miniflare runs these tests with a 50-byte minimum multipart part size instead of 5 MiB
+		r2 = new FileR2Bucket(db, 'bucket', tmpDir, { minMultipartPartSize: 50 })
 	})
 
 	afterEach(() => {

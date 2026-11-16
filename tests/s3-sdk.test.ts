@@ -50,7 +50,8 @@ beforeAll(async () => {
 	tmpDir = mkdtempSync(join(tmpdir(), 's3-sdk-test-'))
 	db = new Database(':memory:')
 	runMigrations(db)
-	r2 = new FileR2Bucket(db, BUCKET, tmpDir)
+	// The multipart tests use parts far below R2's 5 MiB minimum part size
+	r2 = new FileR2Bucket(db, BUCKET, tmpDir, { minMultipartPartSize: 1 })
 	otherR2 = new FileR2Bucket(db, OTHER_BUCKET, tmpDir)
 
 	const resolveBucket = (name: string) => {

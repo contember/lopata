@@ -302,21 +302,20 @@ function deserializeChecksums(c: Record<string, string>, etag: string): R2Checks
 	return result
 }
 
-/** R2 object versions are 32 lowercase hex characters. */
-function generateVersion(): string {
+/** 128 random bits as 32 lowercase hex characters, the format of R2 object versions. */
+function randomHex(): string {
 	return Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('hex')
 }
 
 /**
  * Compute the S3-compatible multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + N.
- * Each part's stored etag is hex MD5 of the part body; we concatenate the raw (binary)
- * digests and hash the result.
+ * Takes each part's hex MD5; we concatenate the raw (binary) digests and hash the result.
  */
-function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
-	const buf = Buffer.concat(partRows.map((r) => Buffer.from(r.etag, 'hex')))
+function computeMultipartEtag(partMd5s: string[]): string {
+	const buf = Buffer.concat(partMd5s.map((md5) => Buffer.from(md5, 'hex')))
 	const hasher = new Bun.CryptoHasher('md5')
 	hasher.update(buf)
-	return `${hasher.digest('hex')}-${partRows.length}`
+	return `${hasher.digest('hex')}-${partMd5s.length}`
 }
 
 type HashAlgorithm = 'md5' | 'sha1' | 'sha256' | 'sha384' | 'sha512'
@@ -605,7 +604,15 @@ interface MultipartPartRow {
 	etag: string
 	size: number
 	file_path: string
+	/** Null for parts stored before part etags became random; their etag is the MD5. */
+	checksum_md5: string | null
 }
+
+const INTERNAL_ERROR = [10001, 'We encountered an internal error. Please try again.'] as const
+const ENTITY_TOO_SMALL = [10011, 'Your proposed upload is smaller than the minimum allowed object size.'] as const
+const NO_SUCH_UPLOAD = [10024, 'The specified multipart upload does not exist.'] as const
+const INVALID_PART = [10025, 'One or more of the specified parts could not be found.'] as const
+const BAD_UPLOAD = [10048, 'There was a problem with the multipart upload.'] as const
 
 export class R2MultipartUpload {
 	readonly key: string
@@ -631,55 +638,92 @@ export class R2MultipartUpload {
 		this.limits = limits
 	}
 
+	/** The upload row while it is in progress; an upload of another key does not count. */
+	private getUpload(): MultipartRow | null {
+		return this.db
+			.query<MultipartRow, [string, string, string]>(
+				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ? AND key = ?`,
+			)
+			.get(this.uploadId, this.bucket, this.key)
+	}
+
+	private isFinished(): boolean {
+		return this.db
+			.query<{ upload_id: string }, [string, string, string]>(
+				`SELECT upload_id FROM r2_multipart_finished WHERE upload_id = ? AND bucket = ? AND key = ?`,
+			)
+			.get(this.uploadId, this.bucket, this.key) !== null
+	}
+
+	private finish(): void {
+		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+		this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+		this.db.run(`INSERT OR REPLACE INTO r2_multipart_finished (upload_id, bucket, key) VALUES (?, ?, ?)`, [
+			this.uploadId,
+			this.bucket,
+			this.key,
+		])
+	}
+
 	async uploadPart(
 		partNumber: number,
 		data: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob,
 	): Promise<{ partNumber: number; etag: string }> {
 		checkKey('uploadPart', this.key, this.limits)
-		// Verify upload exists and is not aborted/completed
-		const upload = this.db
-			.query<MultipartRow, [string, string]>(
-				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ?`,
-			)
-			.get(this.uploadId, this.bucket)
-		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
+		if (!this.getUpload()) throw r2Error('uploadPart', ...NO_SUCH_UPLOAD)
 
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
 		const partPath = join(partDir, `part-${partNumber}`)
 		const { digests: [md5], size } = await writeValueToFile(data, partPath, ['md5'])
-		const etag = md5?.toString('hex') ?? ''
+		// R2 part etags are random, so re-uploading a part number invalidates the previous etag
+		const etag = randomHex()
 
-		// Upsert part record
 		this.db.run(
-			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path)
-       VALUES (?, ?, ?, ?, ?)`,
-			[this.uploadId, partNumber, etag, size, partPath],
+			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path, checksum_md5)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+			[this.uploadId, partNumber, etag, size, partPath, md5?.toString('hex') ?? null],
 		)
 
 		return { partNumber, etag }
 	}
 
 	async complete(parts: { partNumber: number; etag: string }[]): Promise<R2Object> {
-		checkKey('completeMultipartUpload', this.key, this.limits)
-		const upload = this.db
-			.query<MultipartRow, [string, string]>(
-				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ?`,
-			)
-			.get(this.uploadId, this.bucket)
-		if (!upload) throw new Error('Multipart upload not found or already completed/aborted')
+		const method = 'completeMultipartUpload'
+		checkKey(method, this.key, this.limits)
+		const upload = this.getUpload()
+		if (!upload) {
+			if (this.isFinished()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+			throw r2Error(method, ...INTERNAL_ERROR)
+		}
+
+		const partNumbers = new Set(parts.map((p) => p.partNumber))
+		if (partNumbers.size !== parts.length) throw r2Error(method, ...INTERNAL_ERROR)
 
 		// Load all parts in one query and index by number — avoids N+1 for uploads with many parts.
 		const allRows = this.db
 			.query<MultipartPartRow, [string]>(`SELECT * FROM r2_multipart_parts WHERE upload_id = ?`)
 			.all(this.uploadId)
 		const byNumber = new Map(allRows.map((r) => [r.part_number, r]))
-		const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber)
-		const partRows: MultipartPartRow[] = []
-		for (const p of sorted) {
+		const selected = parts.map((p) => {
 			const row = byNumber.get(p.partNumber)
-			if (!row) throw new Error(`Part ${p.partNumber} not found`)
-			if (row.etag !== p.etag) throw new Error(`Part ${p.partNumber} etag mismatch`)
-			partRows.push(row)
+			if (!row || row.etag !== p.etag) throw r2Error(method, ...INVALID_PART)
+			return row
+		})
+
+		// Size rules as R2 applies them (Miniflare completeMultipartUpload in workers/r2/bucket.worker.ts):
+		// all but the last part in argument order must reach the minimum; then, in part-number order,
+		// all but the last must be equal and at least the minimum, and the last no larger.
+		const minPartSize = this.limits.minMultipartPartSize
+		if (selected.slice(0, -1).some((row) => row.size < minPartSize)) throw r2Error(method, ...ENTITY_TOO_SMALL)
+		const partRows = selected.sort((a, b) => a.part_number - b.part_number)
+		const partSize = partRows[0]?.size
+		const leading = partRows.slice(0, -1)
+		const last = partRows.at(-1)
+		if (
+			leading.some((row) => row.size < minPartSize || row.size !== partSize)
+			|| (leading.length > 0 && partSize !== undefined && last !== undefined && last.size > partSize)
+		) {
+			throw r2Error(method, ...BAD_UPLOAD)
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
@@ -703,14 +747,14 @@ export class R2MultipartUpload {
 		}
 
 		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
-		const etag = computeMultipartEtag(partRows)
+		const etag = computeMultipartEtag(partRows.map((row) => row.checksum_md5 ?? row.etag))
 		const uploaded = new Date()
-		const version = generateVersion()
+		const version = randomHex()
 
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Atomically: persist the final object and remove multipart DB rows.
+		// Atomically: persist the final object and retire the upload.
 		this.db.transaction(() => {
 			this.db.run(
 				`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
@@ -727,8 +771,7 @@ export class R2MultipartUpload {
 					null,
 				],
 			)
-			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
+			this.finish()
 		})()
 		this.removePartFiles()
 
@@ -744,12 +787,14 @@ export class R2MultipartUpload {
 		})
 	}
 
+	/** Aborting a completed or already aborted upload is a no-op, as in R2. */
 	async abort(): Promise<void> {
 		checkKey('abortMultipartUpload', this.key, this.limits)
-		this.db.transaction(() => {
-			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
-		})()
+		if (!this.getUpload()) {
+			if (this.isFinished()) return
+			throw r2Error('abortMultipartUpload', ...INTERNAL_ERROR)
+		}
+		this.db.transaction(() => this.finish())()
 		this.removePartFiles()
 	}
 
@@ -836,6 +881,19 @@ export class FileR2Bucket {
         PRIMARY KEY (upload_id, part_number)
       )
     `)
+		try {
+			this.db.run(`ALTER TABLE r2_multipart_parts ADD COLUMN checksum_md5 TEXT`)
+		} catch {
+			// Column already exists
+		}
+		// Completed and aborted uploads, so abort() can be a no-op for them and complete() can tell them from unknown ids
+		this.db.run(`
+      CREATE TABLE IF NOT EXISTS r2_multipart_finished (
+        upload_id TEXT PRIMARY KEY,
+        bucket TEXT NOT NULL,
+        key TEXT NOT NULL
+      )
+    `)
 	}
 
 	private filePath(key: string): string {
@@ -895,7 +953,7 @@ export class FileR2Bucket {
 		const etag = md5.toString('hex')
 		checksums.md5 = toArrayBuffer(md5)
 		const uploaded = new Date()
-		const version = generateVersion()
+		const version = randomHex()
 
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)

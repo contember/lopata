@@ -14,7 +14,8 @@ beforeEach(() => {
 	tmpDir = mkdtempSync(join(tmpdir(), 'r2-test-'))
 	db = new Database(':memory:')
 	runMigrations(db)
-	r2 = new FileR2Bucket(db, 'test-bucket', tmpDir)
+	// The multipart tests use parts far below R2's 5 MiB minimum part size
+	r2 = new FileR2Bucket(db, 'test-bucket', tmpDir, { minMultipartPartSize: 1 })
 })
 
 afterEach(() => {
@@ -485,16 +486,19 @@ test('multipart upload: resume', async () => {
 	expect(await obj.text()).toBe('part1part2')
 })
 
-test('multipart upload: complete with wrong etag throws', async () => {
-	const upload = await r2.createMultipartUpload('key')
-	const part1 = await upload.uploadPart(1, 'data')
-	expect(upload.complete([{ partNumber: 1, etag: 'wrong' }])).rejects.toThrow('etag mismatch')
+test('multipart upload: parts below 5 MiB are rejected by default', async () => {
+	const bucket = new FileR2Bucket(db, 'default-limits', tmpDir)
+	const upload = await bucket.createMultipartUpload('key')
+	const part1 = await upload.uploadPart(1, 'hello ')
+	const part2 = await upload.uploadPart(2, 'world')
+	await expect(upload.complete([part1, part2])).rejects.toThrow('(10011)')
+	expect((await upload.complete([part1])).size).toBe(6)
 })
 
-test('multipart upload: operations on aborted upload throw', async () => {
-	const upload = await r2.createMultipartUpload('key')
-	await upload.abort()
-	expect(upload.uploadPart(1, 'data')).rejects.toThrow('not found')
+test('multipart upload: abort with an unknown upload id leaves files alone', async () => {
+	await Bun.write(join(tmpDir, 'r2', 'outside', 'file'), 'keep')
+	await expect(r2.resumeMultipartUpload('key', '../../outside').abort()).rejects.toThrow('(10001)')
+	expect(await Bun.file(join(tmpDir, 'r2', 'outside', 'file')).text()).toBe('keep')
 })
 
 test('multipart upload: uploadPart accepts ArrayBufferView subview', async () => {
