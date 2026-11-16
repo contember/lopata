@@ -3,7 +3,6 @@
 	"bulk get: get with metadata for 404": "expect(received).toEqual(expected)",
 	"bulk get: request json type": "expect(received).toBe(expected)",
 	"delete: validates key": "expect(received).rejects.toThrow(expected)",
-	"get: returns null for expired keys": "expect(received).toBe(expected)",
 	"get: validates but ignores cache ttl": "expect(received).rejects.toThrow(expected)",
 	"get: validates key": "expect(received).toThrow(expected)",
 	"list: validates limit": "expect(received).rejects.toThrow(expected)",

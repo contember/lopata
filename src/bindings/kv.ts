@@ -85,7 +85,7 @@ export class SqliteKVNamespace {
 
 		if (!row) return null
 
-		if (row.expiration && row.expiration < this.clock.now() / 1000) {
+		if (row.expiration && row.expiration <= this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return null
 		}
@@ -124,7 +124,7 @@ export class SqliteKVNamespace {
 
 		const rowMap = new Map<string, { value: Buffer; expiration: number | null }>()
 		for (const row of rows) {
-			if (row.expiration && row.expiration < now) {
+			if (row.expiration && row.expiration <= now) {
 				this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, row.key])
 			} else {
 				rowMap.set(row.key, row)
@@ -166,7 +166,7 @@ export class SqliteKVNamespace {
 
 		if (!row) return { value: null, metadata: null, cacheStatus: null }
 
-		if (row.expiration && row.expiration < this.clock.now() / 1000) {
+		if (row.expiration && row.expiration <= this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return { value: null, metadata: null, cacheStatus: null }
 		}
@@ -207,7 +207,7 @@ export class SqliteKVNamespace {
 
 		const rowMap = new Map<string, { value: Buffer; metadata: string | null; expiration: number | null }>()
 		for (const row of rows) {
-			if (row.expiration && row.expiration < now) {
+			if (row.expiration && row.expiration <= now) {
 				this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, row.key])
 			} else {
 				rowMap.set(row.key, row)
@@ -276,7 +276,7 @@ export class SqliteKVNamespace {
 
 		// Lazily delete expired entries for this namespace
 		this.db.run(
-			'DELETE FROM kv WHERE namespace = ? AND expiration IS NOT NULL AND expiration < ?',
+			'DELETE FROM kv WHERE namespace = ? AND expiration IS NOT NULL AND expiration <= ?',
 			[this.namespace, now],
 		)
 
