@@ -20,6 +20,31 @@ const KV_DEFAULTS: Required<KVLimits> = {
 
 type KVGetOptions = { type?: string; cacheTtl?: number }
 
+const MIN_CACHE_TTL_SECONDS = 30
+const MAX_LIST_KEYS = 1000
+
+// workerd declares cacheTtl, expiration, expirationTtl and list limit as `int`; this is its conversion
+function toWorkerdInt(value: number): number {
+	const number = Number(value)
+	if (!Number.isFinite(number)) return 0
+	if (number > 2147483647 || number < -2147483648) {
+		throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).')
+	}
+	return Math.trunc(number)
+}
+
+type KVMethod = 'GET' | 'GET_BULK' | 'PUT' | 'DELETE'
+
+// workerd surfaces a non-2xx response from the KV service as `Error: KV <METHOD> failed: <status> <statusText>`
+function kvError(method: KVMethod, status: number, message: string): Error {
+	return new Error(`KV ${method} failed: ${status} ${message}`)
+}
+
+type KVListKey = { name: string; expiration?: number; metadata?: unknown }
+type KVListResult =
+	| { keys: KVListKey[]; list_complete: false; cursor: string; cacheStatus: null }
+	| { keys: KVListKey[]; list_complete: true; cacheStatus: null }
+
 export class SqliteKVNamespace {
 	private db: Database
 	private namespace: string
@@ -33,32 +58,123 @@ export class SqliteKVNamespace {
 		this.clock = clock ?? realClock
 	}
 
-	private validateKey(key: string): void {
-		if (key === '' || key === '.' || key === '..') {
-			throw new Error(`KV key "${key}" is not allowed`)
+	// Single-key operations check the name in workerd itself, before any request is made
+	private validateKey(method: KVMethod, key: string): void {
+		if (key === '') {
+			throw new TypeError('Key name cannot be empty.')
 		}
-		if (new TextEncoder().encode(key).byteLength > this.limits.maxKeySize) {
-			throw new Error(`KV key exceeds max size of ${this.limits.maxKeySize} bytes`)
+		if (key === '.' || key === '..') {
+			throw new TypeError(`"${key}" is not allowed as a key name.`)
+		}
+		this.validateKeyLength(method, key)
+	}
+
+	// Bulk get sends the names unchecked; the KV service rejects them with its own messages
+	private validateBulkKey(key: string): void {
+		if (key === '') {
+			throw kvError('GET_BULK', 400, 'Key names must not be empty')
+		}
+		if (key === '.' || key === '..') {
+			throw kvError('GET_BULK', 400, `Illegal key name "${key}". Please use a different name.`)
+		}
+		this.validateKeyLength('GET_BULK', key)
+	}
+
+	private validateKeyLength(method: KVMethod, key: string): void {
+		const length = Buffer.byteLength(key)
+		if (length > this.limits.maxKeySize) {
+			throw kvError(method, 414, `UTF-8 encoded length of ${length} exceeds key length limit of ${this.limits.maxKeySize}.`)
+		}
+	}
+
+	private validateCacheTtl(method: KVMethod, options: string | KVGetOptions | undefined): void {
+		if (typeof options !== 'object' || options.cacheTtl === undefined) return
+		const cacheTtl = toWorkerdInt(options.cacheTtl)
+		if (cacheTtl < MIN_CACHE_TTL_SECONDS) {
+			throw kvError(method, 400, `Invalid cache_ttl of ${cacheTtl}. Cache TTL must be at least ${MIN_CACHE_TTL_SECONDS}.`)
+		}
+	}
+
+	private validateBulkGet(keys: string[], options: string | KVGetOptions | undefined): string {
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
+		if (type !== 'text' && type !== 'json') {
+			throw kvError('GET_BULK', 400, `"${type}" is not a valid type. Use "json" or "text"`)
+		}
+		if (keys.length > this.limits.maxBulkGetKeys) {
+			throw kvError('GET_BULK', 400, `You can request a maximum of ${this.limits.maxBulkGetKeys} keys`)
+		}
+		if (keys.length < 1) {
+			throw kvError('GET_BULK', 400, 'You must request a minimum of 1 key')
+		}
+		for (const key of keys) {
+			this.validateBulkKey(key)
+		}
+		this.validateCacheTtl('GET_BULK', options)
+		return type
+	}
+
+	private validateBulkSize(rows: Iterable<{ value: Buffer }>): void {
+		let totalBytes = 0
+		for (const row of rows) totalBytes += row.value.byteLength
+		const limit = this.limits.maxValueSize
+		if (totalBytes > limit) {
+			throw kvError('GET_BULK', 413, `Total size of request exceeds the limit of ${limit / 1024 / 1024}MB`)
 		}
 	}
 
 	private validateValue(blob: Buffer): void {
 		if (blob.byteLength > this.limits.maxValueSize) {
-			throw new Error(`KV value exceeds max size of ${this.limits.maxValueSize} bytes`)
+			throw kvError('PUT', 413, `Value length of ${blob.byteLength} exceeds limit of ${this.limits.maxValueSize}.`)
 		}
 	}
 
-	private validateMetadata(metadata: unknown): string {
-		const serialized = JSON.stringify(metadata)
-		if (new TextEncoder().encode(serialized).byteLength > this.limits.maxMetadataSize) {
-			throw new Error(`KV metadata exceeds max size of ${this.limits.maxMetadataSize} bytes`)
+	private validateMetadata(metadata: unknown): string | null {
+		// A function or symbol has no JSON form; store no metadata, as lopata did before size checks were added.
+		const serialized: string | undefined = JSON.stringify(metadata)
+		if (serialized === undefined) return null
+		const length = Buffer.byteLength(serialized)
+		if (length > this.limits.maxMetadataSize) {
+			throw kvError('PUT', 413, `Metadata length of ${length} exceeds limit of ${this.limits.maxMetadataSize}.`)
 		}
 		return serialized
 	}
 
-	private validateTtl(ttl: number): void {
-		if (ttl < this.limits.minTtlSeconds) {
-			throw new Error(`KV expirationTtl must be at least ${this.limits.minTtlSeconds} seconds`)
+	private resolveExpiration(options: { expirationTtl?: number; expiration?: number } | undefined): number | null {
+		const now = Math.floor(this.clock.now() / 1000)
+		const minTtl = this.limits.minTtlSeconds
+		if (options?.expirationTtl !== undefined) {
+			const ttl = toWorkerdInt(options.expirationTtl)
+			if (ttl <= 0) {
+				throw kvError('PUT', 400, `Invalid expiration_ttl of ${ttl}. Please specify integer greater than 0.`)
+			}
+			if (ttl < minTtl) {
+				throw kvError('PUT', 400, `Invalid expiration_ttl of ${ttl}. Expiration TTL must be at least ${minTtl}.`)
+			}
+			return now + ttl
+		}
+		if (options?.expiration !== undefined) {
+			const expiration = toWorkerdInt(options.expiration)
+			if (expiration <= now) {
+				throw kvError(
+					'PUT',
+					400,
+					`Invalid expiration of ${expiration}. Please specify integer greater than the current number of seconds since the UNIX epoch.`,
+				)
+			}
+			if (expiration < now + minTtl) {
+				throw kvError('PUT', 400, `Invalid expiration of ${expiration}. Expiration times must be at least ${minTtl} seconds in the future.`)
+			}
+			return expiration
+		}
+		return null
+	}
+
+	private decodeBulkValue(blob: Buffer, type: string): string | ArrayBuffer | object | ReadableStream {
+		try {
+			return this.decodeValue(blob, type)
+		} catch {
+			throw kvError('GET_BULK', 400, `At least one of the requested keys corresponds to a non-${type} value`)
 		}
 	}
 
@@ -72,7 +188,8 @@ export class SqliteKVNamespace {
 			return this.bulkGet(keyOrKeys, options)
 		}
 
-		this.validateKey(keyOrKeys)
+		this.validateKey('GET', keyOrKeys)
+		this.validateCacheTtl('GET', options)
 
 		const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
 			'SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?',
@@ -80,12 +197,13 @@ export class SqliteKVNamespace {
 
 		if (!row) return null
 
-		if (row.expiration && row.expiration < this.clock.now() / 1000) {
+		if (row.expiration && row.expiration <= this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return null
 		}
 
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
 		return this.decodeValue(row.value, type)
 	}
 
@@ -93,21 +211,10 @@ export class SqliteKVNamespace {
 		keys: string[],
 		options?: string | KVGetOptions,
 	): Promise<Map<string, string | ArrayBuffer | object | ReadableStream | null>> {
-		if (keys.length > this.limits.maxBulkGetKeys) {
-			throw new Error(`KV bulk get exceeds max of ${this.limits.maxBulkGetKeys} keys`)
-		}
-		for (const key of keys) {
-			this.validateKey(key)
-		}
+		const type = this.validateBulkGet(keys, options)
 
 		const result = new Map<string, string | ArrayBuffer | object | ReadableStream | null>()
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
-		if (type === 'arrayBuffer' || type === 'stream') {
-			throw new Error(`KV bulk get does not support type "${type}"`)
-		}
 		const now = this.clock.now() / 1000
-
-		if (keys.length === 0) return result
 
 		const placeholders = keys.map(() => '?').join(', ')
 		const rows = this.db.query<
@@ -119,16 +226,17 @@ export class SqliteKVNamespace {
 
 		const rowMap = new Map<string, { value: Buffer; expiration: number | null }>()
 		for (const row of rows) {
-			if (row.expiration && row.expiration < now) {
+			if (row.expiration && row.expiration <= now) {
 				this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, row.key])
 			} else {
 				rowMap.set(row.key, row)
 			}
 		}
 
+		this.validateBulkSize(rowMap.values())
 		for (const key of keys) {
 			const row = rowMap.get(key)
-			result.set(key, row ? this.decodeValue(row.value, type) : null)
+			result.set(key, row ? this.decodeBulkValue(row.value, type) : null)
 		}
 
 		return result
@@ -141,19 +249,20 @@ export class SqliteKVNamespace {
 	async getWithMetadata(
 		keys: string[],
 		options?: string | KVGetOptions,
-	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>>
+	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>>
 	async getWithMetadata(
 		keyOrKeys: string | string[],
 		options?: string | KVGetOptions,
 	): Promise<
 		| { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown; cacheStatus: null }
-		| Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>
+		| Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>
 	> {
 		if (Array.isArray(keyOrKeys)) {
 			return this.bulkGetWithMetadata(keyOrKeys, options)
 		}
 
-		this.validateKey(keyOrKeys)
+		this.validateKey('GET', keyOrKeys)
+		this.validateCacheTtl('GET', options)
 
 		const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
 			'SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?',
@@ -161,12 +270,13 @@ export class SqliteKVNamespace {
 
 		if (!row) return { value: null, metadata: null, cacheStatus: null }
 
-		if (row.expiration && row.expiration < this.clock.now() / 1000) {
+		if (row.expiration && row.expiration <= this.clock.now() / 1000) {
 			this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, keyOrKeys])
 			return { value: null, metadata: null, cacheStatus: null }
 		}
 
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
 		const value = this.decodeValue(row.value, type)
 		const metadata = row.metadata ? JSON.parse(row.metadata) : null
 		return { value, metadata, cacheStatus: null }
@@ -175,22 +285,11 @@ export class SqliteKVNamespace {
 	private async bulkGetWithMetadata(
 		keys: string[],
 		options?: string | KVGetOptions,
-	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
-		if (keys.length > this.limits.maxBulkGetKeys) {
-			throw new Error(`KV bulk get exceeds max of ${this.limits.maxBulkGetKeys} keys`)
-		}
-		for (const key of keys) {
-			this.validateKey(key)
-		}
+	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>> {
+		const type = this.validateBulkGet(keys, options)
 
-		const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>()
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
-		if (type === 'arrayBuffer' || type === 'stream') {
-			throw new Error(`KV bulk get does not support type "${type}"`)
-		}
+		const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>()
 		const now = this.clock.now() / 1000
-
-		if (keys.length === 0) return result
 
 		const placeholders = keys.map(() => '?').join(', ')
 		const rows = this.db.query<
@@ -202,22 +301,23 @@ export class SqliteKVNamespace {
 
 		const rowMap = new Map<string, { value: Buffer; metadata: string | null; expiration: number | null }>()
 		for (const row of rows) {
-			if (row.expiration && row.expiration < now) {
+			if (row.expiration && row.expiration <= now) {
 				this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, row.key])
 			} else {
 				rowMap.set(row.key, row)
 			}
 		}
 
+		this.validateBulkSize(rowMap.values())
 		for (const key of keys) {
 			const row = rowMap.get(key)
 			if (row) {
 				result.set(key, {
-					value: this.decodeValue(row.value, type),
+					value: this.decodeBulkValue(row.value, type),
 					metadata: row.metadata ? JSON.parse(row.metadata) : null,
 				})
 			} else {
-				result.set(key, { value: null, metadata: null })
+				result.set(key, null)
 			}
 		}
 
@@ -229,28 +329,11 @@ export class SqliteKVNamespace {
 		value: string | ArrayBuffer | ReadableStream,
 		options?: { metadata?: unknown; expirationTtl?: number; expiration?: number },
 	) {
-		this.validateKey(key)
+		this.validateKey('PUT', key)
+		const expiration = this.resolveExpiration(options)
+		const metadata = options?.metadata === undefined ? null : this.validateMetadata(options.metadata)
 		const blob = await this.encodeValue(value)
 		this.validateValue(blob)
-
-		if (options?.expirationTtl !== undefined) {
-			this.validateTtl(options.expirationTtl)
-		}
-		if (options?.expiration !== undefined) {
-			const minExpiration = this.clock.now() / 1000 + this.limits.minTtlSeconds
-			if (options.expiration < minExpiration) {
-				throw new Error(`KV expiration must be at least ${this.limits.minTtlSeconds} seconds in the future`)
-			}
-		}
-
-		let expiration: number | null = null
-		if (options?.expiration) expiration = options.expiration
-		else if (options?.expirationTtl) expiration = this.clock.now() / 1000 + options.expirationTtl
-
-		let metadata: string | null = null
-		if (options?.metadata !== undefined) {
-			metadata = this.validateMetadata(options.metadata)
-		}
 
 		this.db.run(
 			'INSERT OR REPLACE INTO kv (namespace, key, value, metadata, expiration) VALUES (?, ?, ?, ?, ?)',
@@ -259,19 +342,26 @@ export class SqliteKVNamespace {
 	}
 
 	async delete(key: string) {
+		this.validateKey('DELETE', key)
 		this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, key])
 	}
 
-	async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+	async list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult> {
 		const prefix = options?.prefix ?? ''
-		const limit = Math.min(options?.limit ?? 1000, 1000)
+		this.validateKeyLength('GET', prefix)
+		// workerd sends the limit only when it is positive; the service rejects one above its maximum
+		const requestedLimit = options?.limit === undefined ? 0 : toWorkerdInt(options.limit)
+		if (requestedLimit > MAX_LIST_KEYS) {
+			throw kvError('GET', 400, `Invalid key_count_limit of ${requestedLimit}. Please specify an integer less than ${MAX_LIST_KEYS}.`)
+		}
+		const limit = requestedLimit > 0 ? requestedLimit : MAX_LIST_KEYS
 		const cursor = options?.cursor ?? ''
 
 		const now = this.clock.now() / 1000
 
 		// Lazily delete expired entries for this namespace
 		this.db.run(
-			'DELETE FROM kv WHERE namespace = ? AND expiration IS NOT NULL AND expiration < ?',
+			'DELETE FROM kv WHERE namespace = ? AND expiration IS NOT NULL AND expiration <= ?',
 			[this.namespace, now],
 		)
 
@@ -316,19 +406,20 @@ export class SqliteKVNamespace {
 			}
 		}
 
-		const listComplete = rows.length <= limit
 		const resultRows = rows.slice(0, limit)
-
-		const keys = resultRows.map((row) => ({
-			name: row.key,
-			expiration: row.expiration ?? undefined,
-			metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-		}))
+		// Absent fields are omitted, as in the JSON workerd parses the list from
+		const keys = resultRows.map((row) => {
+			const key: KVListKey = { name: row.key }
+			if (row.expiration !== null) key.expiration = row.expiration
+			if (row.metadata !== null) key.metadata = JSON.parse(row.metadata)
+			return key
+		})
 
 		const lastRow = resultRows[resultRows.length - 1]
-		const newCursor = listComplete || !lastRow ? '' : lastRow.key
-
-		return { keys, list_complete: listComplete, cursor: newCursor }
+		if (rows.length > limit && lastRow) {
+			return { keys, list_complete: false, cursor: lastRow.key, cacheStatus: null }
+		}
+		return { keys, list_complete: true, cacheStatus: null }
 	}
 
 	private decodeValue(blob: Buffer, type: string): string | ArrayBuffer | object | ReadableStream {

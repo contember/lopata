@@ -150,23 +150,15 @@ describe('kv', () => {
 	})
 
 	conformanceTest(known, 'bulk get: check minimum keys', async () => {
-		try {
-			await kv.get([])
-		} catch (error) {
-			expect(messageOf(error)).toBe(
-				'KV GET_BULK failed: 400 You must request a minimum of 1 key',
-			)
-		}
+		await expect(kv.get([])).rejects.toThrow(
+			new Error('KV GET_BULK failed: 400 You must request a minimum of 1 key'),
+		)
 	})
 
 	conformanceTest(known, 'bulk get: invalid type', async () => {
-		try {
-			await kv.get(['key'], { type: 'invalid' })
-		} catch (error) {
-			expect(messageOf(error)).toBe(
-				'KV GET_BULK failed: 400 "invalid" is not a valid type. Use "json" or "text"',
-			)
-		}
+		await expect(kv.get(['key'], { type: 'invalid' })).rejects.toThrow(
+			new Error('KV GET_BULK failed: 400 "invalid" is not a valid type. Use "json" or "text"'),
+		)
 	})
 
 	conformanceTest(known, 'bulk get: request json type', async () => {
@@ -240,13 +232,9 @@ describe('kv', () => {
 		const bigValue = new Array(1024).fill('x').join('')
 		await kv.put('key1', bigValue)
 		await kv.put('key2', bigValue)
-		try {
-			await kv.getWithMetadata(['key1', 'key2'])
-		} catch (error) {
-			expect(messageOf(error)).toEqual(
-				'KV GET_BULK failed: 413 Total size of request exceeds the limit of 0.0009765625MB', // 1024 Bytes for testing
-			)
-		}
+		await expect(kv.getWithMetadata(['key1', 'key2'])).rejects.toThrow(
+			new Error('KV GET_BULK failed: 413 Total size of request exceeds the limit of 0.0009765625MB'), // 1024 Bytes for testing
+		)
 	})
 
 	conformanceTest(known, 'get: returns null for non-existent keys', async () => {
@@ -261,8 +249,7 @@ describe('kv', () => {
 	conformanceTest(known, 'get: validates but ignores cache ttl', async () => {
 		await kv.put('key', 'value')
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.get('key', { cacheTtl: 'not a number' }),
+			Reflect.apply(kv.get, kv, ['key', { cacheTtl: 'not a number' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV GET failed: 400 Invalid cache_ttl of 0. Cache TTL must be at least 30.',
@@ -324,8 +311,7 @@ describe('kv', () => {
 	})
 	conformanceTest(known, 'put: validates expiration ttl', async () => {
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.put('key', 'value', { expirationTtl: 'nan' }),
+			Reflect.apply(kv.put, kv, ['key', 'value', { expirationTtl: 'nan' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV PUT failed: 400 Invalid expiration_ttl of 0. Please specify integer greater than 0.',
@@ -344,8 +330,7 @@ describe('kv', () => {
 	})
 	conformanceTest(known, 'put: validates expiration', async () => {
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.put('key', 'value', { expiration: 'nan' }),
+			Reflect.apply(kv.put, kv, ['key', 'value', { expiration: 'nan' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV PUT failed: 400 Invalid expiration of 0. Please specify integer greater than the current number of seconds since the UNIX epoch.',

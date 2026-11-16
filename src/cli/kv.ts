@@ -34,7 +34,7 @@ export async function run(ctx: CliContext, args: string[]) {
 					console.log(line)
 				}
 				total += result.keys.length
-				cursor = result.cursor
+				cursor = result.list_complete ? '' : result.cursor
 			} while (cursor)
 			if (total === 0) console.log('(no keys)')
 			break
