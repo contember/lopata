@@ -93,6 +93,33 @@ interface R2ObjectMeta {
 
 // --- R2Object ---
 
+export class R2ObjectChecksums implements R2Checksums {
+	readonly md5?: ArrayBuffer
+	readonly sha1?: ArrayBuffer
+	readonly sha256?: ArrayBuffer
+	readonly sha384?: ArrayBuffer
+	readonly sha512?: ArrayBuffer
+
+	constructor(checksums: R2Checksums) {
+		this.md5 = checksums.md5
+		this.sha1 = checksums.sha1
+		this.sha256 = checksums.sha256
+		this.sha384 = checksums.sha384
+		this.sha512 = checksums.sha512
+	}
+
+	/** Hex strings of the present checksums, as workerd's R2Checksums.toJSON(). */
+	toJSON(): { md5?: string; sha1?: string; sha256?: string; sha384?: string; sha512?: string } {
+		const hex = (buf: ArrayBuffer | undefined) => buf === undefined ? undefined : Buffer.from(buf).toString('hex')
+		return Object.fromEntries(
+			CHECKSUM_ALGORITHMS.flatMap(({ field }) => {
+				const value = hex(this[field])
+				return value === undefined ? [] : [[field, value]]
+			}),
+		)
+	}
+}
+
 export class R2Object {
 	readonly key: string
 	readonly size: number
@@ -102,7 +129,7 @@ export class R2Object {
 	readonly uploaded: Date
 	readonly httpMetadata: R2HTTPMetadata
 	readonly customMetadata: Record<string, string>
-	readonly checksums: R2Checksums
+	readonly checksums: R2ObjectChecksums
 	readonly storageClass: string
 	readonly range?: { offset: number; length: number }
 
@@ -115,7 +142,7 @@ export class R2Object {
 		this.uploaded = meta.uploaded
 		this.httpMetadata = meta.httpMetadata
 		this.customMetadata = meta.customMetadata
-		this.checksums = meta.checksums
+		this.checksums = new R2ObjectChecksums(meta.checksums)
 		this.storageClass = 'Standard'
 		this.range = meta.range
 	}
@@ -205,7 +232,7 @@ function rowToMeta(row: R2Row): R2ObjectMeta {
 		uploaded: new Date(row.uploaded),
 		httpMetadata: deserializeHttpMetadata(row.http_metadata),
 		customMetadata: row.custom_metadata ? JSON.parse(row.custom_metadata) : {},
-		checksums: row.checksums ? deserializeChecksums(JSON.parse(row.checksums)) : {},
+		checksums: deserializeChecksums(row.checksums ? JSON.parse(row.checksums) : {}, row.etag),
 	}
 }
 
@@ -248,7 +275,7 @@ function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
 	return result
 }
 
-/** Copies into an ArrayBuffer of exactly the buffer's length (small Buffers share a pooled ArrayBuffer). */
+/** Copies into an ArrayBuffer of exactly the buffer's length (a Buffer may view a larger ArrayBuffer). */
 function toArrayBuffer(buf: Buffer): ArrayBuffer {
 	return new Uint8Array(buf).buffer
 }
@@ -265,12 +292,19 @@ function serializeChecksums(c: R2Checksums): Record<string, string> {
 	return result
 }
 
-function deserializeChecksums(c: Record<string, string>): R2Checksums {
+/** A single-part object's etag is its MD5, so rows stored without checksums still report it, as in R2. */
+function deserializeChecksums(c: Record<string, string>, etag: string): R2Checksums {
 	const result: R2Checksums = {}
-	for (const [k, v] of Object.entries(c)) {
-		;(result as Record<string, ArrayBuffer>)[k] = Buffer.from(v, 'hex').buffer as ArrayBuffer
+	for (const { field } of CHECKSUM_ALGORITHMS) {
+		const value = c[field] ?? (field === 'md5' && /^[0-9a-f]{32}$/.test(etag) ? etag : undefined)
+		if (value !== undefined) result[field] = toArrayBuffer(Buffer.from(value, 'hex'))
 	}
 	return result
+}
+
+/** R2 object versions are 32 lowercase hex characters. */
+function generateVersion(): string {
+	return Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('hex')
 }
 
 /**
@@ -671,7 +705,7 @@ export class R2MultipartUpload {
 		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
 		const etag = computeMultipartEtag(partRows)
 		const uploaded = new Date()
-		const version = crypto.randomUUID()
+		const version = generateVersion()
 
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
@@ -861,7 +895,7 @@ export class FileR2Bucket {
 		const etag = md5.toString('hex')
 		checksums.md5 = toArrayBuffer(md5)
 		const uploaded = new Date()
-		const version = crypto.randomUUID()
+		const version = generateVersion()
 
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)

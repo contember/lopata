@@ -25,12 +25,8 @@ function hash(value: string, algorithm = 'md5') {
 	return crypto.createHash(algorithm).update(value).digest('hex')
 }
 
-// workers-types' R2Checksums has toJSON(); lopata's type does not, so call it dynamically.
 function checksumsJSON(object: R2Object | null | undefined): unknown {
-	if (!object) return undefined
-	const { checksums } = object
-	if (!('toJSON' in checksums) || typeof checksums.toJSON !== 'function') throw new TypeError('checksums.toJSON is not a function')
-	return checksums.toJSON()
+	return object?.checksums.toJSON()
 }
 
 // workers-types types get() without onlyIf as R2ObjectBody | null; lopata returns R2Object | R2ObjectBody | null.

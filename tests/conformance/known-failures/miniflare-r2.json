@@ -1,16 +1,8 @@
 {
 	"abortMultipartUpload": "expect(received).toThrow(expected)",
-	"completeMultipartUpload": "checksums.toJSON is not a function",
-	"delete: waits for in-progress multipart gets before deleting part blobs": "ENOENT: no such file or directory, open '/tmp/lopata-conformance-r2-BrmVvJ/r2/bucket/key'",
-	"get: is multipart aware": "checksums.toJSON is not a function",
-	"get: returns metadata and body for existing keys": "expect(received).toMatch(expected)",
-	"head: is multipart aware": "checksums.toJSON is not a function",
-	"head: returns metadata for existing keys": "expect(received).toMatch(expected)",
-	"list: accepts long prefix": "ENAMETOOLONG: name too long, rename '/tmp/lopata-conformance-r2-9UkRy3/r2/.tmp/7ff29e6e-b000-411c-aa5b-a305dad27e92' -> '/tmp/lopata-conformance-r2-9UkRy3/r2/bucket/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
-	"list: is multipart aware": "checksums.toJSON is not a function",
-	"list: returns metadata with objects": "expect(received).toMatch(expected)",
-	"operations permit empty key": "EISDIR: illegal operation on a directory, rename '/tmp/lopata-conformance-r2-8YQbPn/r2/.tmp/137eb346-7730-40dc-9d60-05fdf70b9221' -> '/tmp/lopata-conformance-r2-8YQbPn/r2/bucket'",
-	"put: returns metadata for created object": "expect(received).toMatch(expected)",
-	"put: validates checksums": "checksums.toJSON is not a function",
+	"completeMultipartUpload": "expect(received).rejects.toThrow(expected)",
+	"delete: waits for in-progress multipart gets before deleting part blobs": "ENOENT: no such file or directory, open '/tmp/lopata-conformance-r2-tO7W0y/r2/bucket/key'",
+	"list: accepts long prefix": "ENAMETOOLONG: name too long, rename '/tmp/lopata-conformance-r2-m9OhTK/r2/.tmp/f4619dc2-895c-4a43-8c11-7eb250e762d3' -> '/tmp/lopata-conformance-r2-m9OhTK/r2/bucket/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
+	"operations permit empty key": "EISDIR: illegal operation on a directory, rename '/tmp/lopata-conformance-r2-vKFFgv/r2/.tmp/c5579b3e-e6be-4e6c-8d2c-87dfdc3a9c02' -> '/tmp/lopata-conformance-r2-vKFFgv/r2/bucket'",
 	"uploadPart": "expect(received).not.toBe(expected)"
 }
