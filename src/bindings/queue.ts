@@ -369,8 +369,8 @@ export class QueueConsumer {
 			} else {
 				// Retry
 				const delay = decision.delaySeconds ?? this.config.retryDelay ?? 0
-				if (currentAttempts >= this.config.maxRetries) {
-					// Max retries exceeded — move to DLQ or mark as failed
+				// maxRetries counts retries, so a message gets maxRetries + 1 deliveries in total.
+				if (currentAttempts > this.config.maxRetries) {
 					if (this.config.deadLetterQueue) {
 						this.db.run(
 							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending' WHERE id = ?",

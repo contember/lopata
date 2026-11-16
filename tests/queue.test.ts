@@ -400,9 +400,10 @@ describe('QueueConsumer', () => {
 			{},
 		)
 
-		// First poll: attempts becomes 1
+		// Deliveries 1 and 2 are retried; the third exceeds maxRetries (2) and is discarded
 		await consumer.poll()
-		// Second poll: attempts becomes 2 (== maxRetries), should be discarded
+		await consumer.poll()
+		expect(db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!.cnt).toBe(1)
 		await consumer.poll()
 
 		const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!
@@ -421,6 +422,7 @@ describe('QueueConsumer', () => {
 			{},
 		)
 
+		await consumer.poll()
 		await consumer.poll()
 
 		// Original queue should be empty
