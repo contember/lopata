@@ -25,20 +25,31 @@ interface D1ExecResult {
 	duration: number
 }
 
-/** Convert bind parameters: boolean→int, undefined→error, ArrayBuffer→Uint8Array */
-function convertBindParams(params: unknown[]): SQLQueryBindings[] {
-	return params.map((v, idx) => {
-		if (v === undefined) {
-			throw new Error(`D1_TYPE_ERROR: Cannot bind undefined value at index ${idx}. Use null instead.`)
-		}
-		if (typeof v === 'boolean') {
-			return v ? 1 : 0
-		}
-		if (v instanceof ArrayBuffer) {
-			return new Uint8Array(v)
-		}
-		return v as SQLQueryBindings
-	})
+/** A bound value as D1 carries it: a BLOB is an array of byte values. */
+type D1Value = string | number | null | number[]
+
+function isByte(value: unknown): value is number {
+	return typeof value === 'number' && value >= 0 && value < 256
+}
+
+/** Validates and normalises a bind() argument like workerd's D1PreparedStatement.bind(). */
+function toD1Value(value: unknown): D1Value {
+	if (typeof value === 'number' || typeof value === 'string' || value === null) return value
+	if (typeof value === 'boolean') return value ? 1 : 0
+	if (Array.isArray(value) && value.every(isByte)) return value
+	if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value))
+	if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
+	const reason = `Type '${typeof value}' not supported for value '${String(value)}'`
+	throw new Error(`D1_TYPE_ERROR: ${reason}`, { cause: new Error(reason) })
+}
+
+function toSqliteBinding(value: D1Value): SQLQueryBindings {
+	return Array.isArray(value) ? new Uint8Array(value) : value
+}
+
+/** D1 returns a BLOB as an array of byte values, not as bytes. */
+function fromSqliteValue(value: unknown): unknown {
+	return value instanceof Uint8Array ? Array.from(value) : value
 }
 
 interface QueryOutput {
@@ -68,7 +79,7 @@ const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in 
  * one (workerd SqliteDatabase::prepareSql, MULTI mode). bun:sqlite compiles only the first statement and
  * silently drops the rest, so the leading ones run here, each compiled after the previous one ran.
  */
-function executeQuery(db: Database, sql: string, params: SQLQueryBindings[]): QueryOutput {
+function executeQuery(db: Database, sql: string, params: D1Value[]): QueryOutput {
 	const start = performance.now()
 	const before = connectionState(db)
 	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
@@ -77,7 +88,7 @@ function executeQuery(db: Database, sql: string, params: SQLQueryBindings[]): Qu
 		for (const leadingSql of statements) runLeadingStatement(db, leadingSql)
 		const beforeLast = statements.length > 0 ? connectionState(db) : before
 		const stmt = db.query(lastSql)
-		const rows = stmt.values(...params)
+		const rows = stmt.values(...params.map(toSqliteBinding)).map(row => row.map(fromSqliteValue))
 		return { columns: stmt.columnNames, rows, beforeLast }
 	}
 	const { columns, rows, beforeLast } = statements.length > 0 ? inSavepoint(db, execute) : execute()
@@ -265,7 +276,7 @@ export class LocalD1DatabaseSession {
 export class LocalD1PreparedStatement {
 	private db: Database
 	private sql: string
-	private params: SQLQueryBindings[]
+	private params: D1Value[]
 
 	constructor(db: Database, sql: string) {
 		this.db = db
@@ -275,7 +286,7 @@ export class LocalD1PreparedStatement {
 
 	bind(...values: unknown[]): LocalD1PreparedStatement {
 		const stmt = new LocalD1PreparedStatement(this.db, this.sql)
-		stmt.params = convertBindParams(values)
+		stmt.params = values.map(toD1Value)
 		return stmt
 	}
 

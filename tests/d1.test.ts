@@ -374,6 +374,13 @@ describe('D1Database', () => {
 			}).toThrow('D1_TYPE_ERROR')
 		})
 
+		test('types D1 does not accept throw D1_TYPE_ERROR at bind time', () => {
+			const stmt = d1.prepare('INSERT INTO users (name) VALUES (?)')
+			expect(() => stmt.bind(1n)).toThrow("D1_TYPE_ERROR: Type 'bigint' not supported for value '1'")
+			expect(() => stmt.bind({ name: 'x' })).toThrow("D1_TYPE_ERROR: Type 'object' not supported")
+			expect(() => stmt.bind([1, 256])).toThrow('D1_TYPE_ERROR')
+		})
+
 		test('boolean true is converted to 1', async () => {
 			db.run('CREATE TABLE flags (id INTEGER PRIMARY KEY, active INTEGER)')
 			await d1.prepare('INSERT INTO flags (active) VALUES (?)').bind(true).run()
@@ -392,9 +399,8 @@ describe('D1Database', () => {
 			db.run('CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)')
 			const data = new Uint8Array([1, 2, 3, 4]).buffer
 			await d1.prepare('INSERT INTO blobs (data) VALUES (?)').bind(data).run()
-			const row = await d1.prepare('SELECT data FROM blobs').first<{ data: Uint8Array }>()
-			expect(row!.data).toBeInstanceOf(Uint8Array)
-			expect(Array.from(row!.data)).toEqual([1, 2, 3, 4])
+			const row = await d1.prepare('SELECT data FROM blobs').first<{ data: number[] }>()
+			expect(row!.data).toEqual([1, 2, 3, 4])
 		})
 	})
 
