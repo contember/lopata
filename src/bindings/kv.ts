@@ -20,6 +20,19 @@ const KV_DEFAULTS: Required<KVLimits> = {
 
 type KVGetOptions = { type?: string; cacheTtl?: number }
 
+const MIN_CACHE_TTL_SECONDS = 30
+const MAX_LIST_KEYS = 1000
+
+// workerd declares cacheTtl, expiration, expirationTtl and list limit as `int`; this is its conversion
+function toWorkerdInt(value: number): number {
+	const number = Number(value)
+	if (!Number.isFinite(number)) return 0
+	if (number > 2147483647 || number < -2147483648) {
+		throw new TypeError('Value out of range. Must be between -2147483648 and 2147483647 (inclusive).')
+	}
+	return Math.trunc(number)
+}
+
 type KVMethod = 'GET' | 'GET_BULK' | 'PUT' | 'DELETE'
 
 // workerd surfaces a non-2xx response from the KV service as `Error: KV <METHOD> failed: <status> <statusText>`
@@ -74,18 +87,39 @@ export class SqliteKVNamespace {
 		}
 	}
 
+	private validateCacheTtl(method: KVMethod, options: string | KVGetOptions | undefined): void {
+		if (typeof options !== 'object' || options.cacheTtl === undefined) return
+		const cacheTtl = toWorkerdInt(options.cacheTtl)
+		if (cacheTtl < MIN_CACHE_TTL_SECONDS) {
+			throw kvError(method, 400, `Invalid cache_ttl of ${cacheTtl}. Cache TTL must be at least ${MIN_CACHE_TTL_SECONDS}.`)
+		}
+	}
+
 	private validateBulkGet(keys: string[], options: string | KVGetOptions | undefined): string {
 		const type = typeof options === 'string' ? options : options?.type ?? 'text'
-		if (type === 'arrayBuffer' || type === 'stream') {
+		if (type !== 'text' && type !== 'json') {
 			throw kvError('GET_BULK', 400, `"${type}" is not a valid type. Use "json" or "text"`)
 		}
 		if (keys.length > this.limits.maxBulkGetKeys) {
 			throw kvError('GET_BULK', 400, `You can request a maximum of ${this.limits.maxBulkGetKeys} keys`)
 		}
+		if (keys.length < 1) {
+			throw kvError('GET_BULK', 400, 'You must request a minimum of 1 key')
+		}
 		for (const key of keys) {
 			this.validateBulkKey(key)
 		}
+		this.validateCacheTtl('GET_BULK', options)
 		return type
+	}
+
+	private validateBulkSize(rows: Iterable<{ value: Buffer }>): void {
+		let totalBytes = 0
+		for (const row of rows) totalBytes += row.value.byteLength
+		const limit = this.limits.maxValueSize
+		if (totalBytes > limit) {
+			throw kvError('GET_BULK', 413, `Total size of request exceeds the limit of ${limit / 1024 / 1024}MB`)
+		}
 	}
 
 	private validateValue(blob: Buffer): void {
@@ -104,10 +138,10 @@ export class SqliteKVNamespace {
 	}
 
 	private resolveExpiration(options: { expirationTtl?: number; expiration?: number } | undefined): number | null {
-		const now = this.clock.now() / 1000
+		const now = Math.floor(this.clock.now() / 1000)
 		const minTtl = this.limits.minTtlSeconds
 		if (options?.expirationTtl !== undefined) {
-			const ttl = options.expirationTtl
+			const ttl = toWorkerdInt(options.expirationTtl)
 			if (ttl <= 0) {
 				throw kvError('PUT', 400, `Invalid expiration_ttl of ${ttl}. Please specify integer greater than 0.`)
 			}
@@ -117,7 +151,7 @@ export class SqliteKVNamespace {
 			return now + ttl
 		}
 		if (options?.expiration !== undefined) {
-			const expiration = options.expiration
+			const expiration = toWorkerdInt(options.expiration)
 			if (expiration <= now) {
 				throw kvError(
 					'PUT',
@@ -152,6 +186,7 @@ export class SqliteKVNamespace {
 		}
 
 		this.validateKey('GET', keyOrKeys)
+		this.validateCacheTtl('GET', options)
 
 		const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
 			'SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?',
@@ -177,8 +212,6 @@ export class SqliteKVNamespace {
 		const result = new Map<string, string | ArrayBuffer | object | ReadableStream | null>()
 		const now = this.clock.now() / 1000
 
-		if (keys.length === 0) return result
-
 		const placeholders = keys.map(() => '?').join(', ')
 		const rows = this.db.query<
 			{ key: string; value: Buffer; expiration: number | null },
@@ -196,6 +229,7 @@ export class SqliteKVNamespace {
 			}
 		}
 
+		this.validateBulkSize(rowMap.values())
 		for (const key of keys) {
 			const row = rowMap.get(key)
 			result.set(key, row ? this.decodeBulkValue(row.value, type) : null)
@@ -224,6 +258,7 @@ export class SqliteKVNamespace {
 		}
 
 		this.validateKey('GET', keyOrKeys)
+		this.validateCacheTtl('GET', options)
 
 		const row = this.db.query<{ value: Buffer; metadata: string | null; expiration: number | null }, [string, string]>(
 			'SELECT value, metadata, expiration FROM kv WHERE namespace = ? AND key = ?',
@@ -251,8 +286,6 @@ export class SqliteKVNamespace {
 		const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>()
 		const now = this.clock.now() / 1000
 
-		if (keys.length === 0) return result
-
 		const placeholders = keys.map(() => '?').join(', ')
 		const rows = this.db.query<
 			{ key: string; value: Buffer; metadata: string | null; expiration: number | null },
@@ -270,6 +303,7 @@ export class SqliteKVNamespace {
 			}
 		}
 
+		this.validateBulkSize(rowMap.values())
 		for (const key of keys) {
 			const row = rowMap.get(key)
 			if (row) {
@@ -303,12 +337,19 @@ export class SqliteKVNamespace {
 	}
 
 	async delete(key: string) {
+		this.validateKey('DELETE', key)
 		this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, key])
 	}
 
 	async list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult> {
 		const prefix = options?.prefix ?? ''
-		const limit = Math.min(options?.limit ?? 1000, 1000)
+		this.validateKeyLength('GET', prefix)
+		// workerd sends the limit only when it is positive; the service rejects one above its maximum
+		const requestedLimit = options?.limit === undefined ? 0 : toWorkerdInt(options.limit)
+		if (requestedLimit > MAX_LIST_KEYS) {
+			throw kvError('GET', 400, `Invalid key_count_limit of ${requestedLimit}. Please specify an integer less than ${MAX_LIST_KEYS}.`)
+		}
+		const limit = requestedLimit > 0 ? requestedLimit : MAX_LIST_KEYS
 		const cursor = options?.cursor ?? ''
 
 		const now = this.clock.now() / 1000

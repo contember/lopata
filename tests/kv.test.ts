@@ -287,9 +287,8 @@ describe('bulk get', () => {
 		expect(result.get('dead')).toBeNull()
 	})
 
-	test('empty keys array returns empty Map', async () => {
-		const result = await kv.get([])
-		expect(result.size).toBe(0)
+	test('rejects empty keys array', async () => {
+		await expect(kv.get([])).rejects.toThrow('KV GET_BULK failed: 400 You must request a minimum of 1 key')
 	})
 
 	test('rejects too many keys', async () => {
@@ -344,19 +343,18 @@ describe('list with SQL wildcard characters in prefix', () => {
 	})
 })
 
-// --- list limit cap ---
+// --- list limit ---
 
-describe('list limit cap', () => {
-	test('limit is capped at 1000', async () => {
-		// We can't easily insert 1001 keys, but we can verify the cap works
-		// by checking that requesting limit > 1000 behaves as limit = 1000
+describe('list limit', () => {
+	test('non-positive limit lists with the default limit', async () => {
 		for (let i = 0; i < 5; i++) {
 			await kv.put(`key-${String(i).padStart(4, '0')}`, 'v')
 		}
-		const result = await kv.list({ limit: 5000 })
-		// Should still return all 5 keys (cap is 1000, we only have 5)
-		expect(result.keys).toHaveLength(5)
-		expect(result.list_complete).toBe(true)
+		for (const limit of [0, -1]) {
+			const result = await kv.list({ limit })
+			expect(result.keys).toHaveLength(5)
+			expect(result.list_complete).toBe(true)
+		}
 	})
 })
 
