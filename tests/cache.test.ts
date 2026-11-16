@@ -122,6 +122,14 @@ describe('Cache.put', () => {
 		expect(result).toBeUndefined()
 	})
 
+	test('private=set-cookie caches the response without its Set-Cookie header', async () => {
+		const resp = new Response('data', { headers: { 'Set-Cookie': 'session=abc', 'Cache-Control': 'private=set-cookie' } })
+		await cache.put('https://example.com/stripped-cookie', resp)
+		const result = await cache.match('https://example.com/stripped-cookie')
+		expect(await result?.text()).toBe('data')
+		expect(result?.headers.has('Set-Cookie')).toBe(false)
+	})
+
 	test('stores binary body', async () => {
 		const binary = new Uint8Array([1, 2, 3, 4, 5])
 		await cache.put('https://example.com/bin', new Response(binary))

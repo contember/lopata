@@ -13,52 +13,53 @@ const CACHE_DEFAULTS: Required<CacheLimits> = {
 }
 
 /**
- * Parse Cache-Control header and return the effective max-age in seconds,
- * or null if no cacheable directive found.
- * Returns -1 for no-store (should not be cached at all).
+ * Parse Cache-Control into lower-cased directive names mapped to their unquoted value (null when bare).
+ * Commas inside quoted values (e.g. `private="set-cookie, x"`) do not split directives.
  */
-function parseCacheControlMaxAge(header: string | null): number | null {
-	if (!header) return null
-
-	const directives = header.toLowerCase().split(',').map((d) => d.trim())
-
-	for (const d of directives) {
-		if (d === 'no-store') return -1
+function parseCacheControl(header: string | null): Map<string, string | null> {
+	const directives = new Map<string, string | null>()
+	if (!header) return directives
+	for (const part of header.match(/(?:[^,"]|"[^"]*")+/g) ?? []) {
+		const eq = part.indexOf('=')
+		const name = (eq === -1 ? part : part.slice(0, eq)).trim().toLowerCase()
+		if (!name) continue
+		const value = eq === -1 ? null : part.slice(eq + 1).trim().replace(/^"(.*)"$/, '$1')
+		directives.set(name, value)
 	}
-
-	// s-maxage takes precedence over max-age for shared caches (CF behavior)
-	for (const d of directives) {
-		const sMaxAgeMatch = d.match(/^s-maxage\s*=\s*(\d+)$/)
-		if (sMaxAgeMatch?.[1]) return parseInt(sMaxAgeMatch[1], 10)
-	}
-
-	for (const d of directives) {
-		const maxAgeMatch = d.match(/^max-age\s*=\s*(\d+)$/)
-		if (maxAgeMatch?.[1]) return parseInt(maxAgeMatch[1], 10)
-	}
-
-	return null
+	return directives
 }
 
+function parseSeconds(value: string | null | undefined): number | null {
+	return value && /^\d+$/.test(value) ? parseInt(value, 10) : null
+}
+
+type StoragePolicy =
+	| { storable: false }
+	| { storable: true; expiresAt: number | null; stripSetCookie: boolean }
+
 /**
- * Compute the expiration timestamp (ms since epoch) from response headers.
- * Returns null if no expiration info is present (cache indefinitely).
+ * Decide whether Cloudflare's cache would store this response and until when (ms since epoch, null = no expiry info).
+ * Shared-cache rules: `no-store`, `no-cache` and `private` are not stored; a Set-Cookie response is stored only with
+ * `private=set-cookie`, which strips the cookie (as Miniflare's cache.worker.ts getExpiration does).
  */
-function computeExpiresAt(headers: Headers, now: number): number | null {
-	const cacheControl = headers.get('cache-control')
-	const maxAge = parseCacheControlMaxAge(cacheControl)
+function storagePolicy(headers: Headers, now: number): StoragePolicy {
+	const cc = parseCacheControl(headers.get('cache-control'))
+	if (cc.has('no-store') || cc.has('no-cache')) return { storable: false }
 
-	if (maxAge === -1) return -1 // signal: no-store
-	if (maxAge !== null) return now + maxAge * 1000
-
-	// Fallback to Expires header
-	const expires = headers.get('expires')
-	if (expires) {
-		const expiresTime = Date.parse(expires)
-		if (!Number.isNaN(expiresTime)) return expiresTime
+	let stripSetCookie = false
+	if (cc.has('private')) {
+		if (cc.get('private')?.toLowerCase() !== 'set-cookie') return { storable: false }
+		stripSetCookie = true
 	}
+	if (headers.has('set-cookie') && !stripSetCookie) return { storable: false }
 
-	return null
+	// s-maxage takes precedence over max-age for shared caches
+	const maxAge = parseSeconds(cc.get('s-maxage')) ?? parseSeconds(cc.get('max-age'))
+	if (maxAge !== null) return { storable: true, expiresAt: now + maxAge * 1000, stripSetCookie }
+
+	const expires = headers.get('expires')
+	const expiresTime = expires ? Date.parse(expires) : NaN
+	return { storable: true, expiresAt: Number.isNaN(expiresTime) ? null : expiresTime, stripSetCookie }
 }
 
 export class SqliteCache {
@@ -121,22 +122,20 @@ export class SqliteCache {
 			throw new Error('Cache API does not support caching responses with Vary: *')
 		}
 
-		// Responses with Set-Cookie header should not be cached (Cloudflare behavior)
-		if (response.headers.has('Set-Cookie')) {
+		const policy = storagePolicy(response.headers, this.clock.now())
+		if (!policy.storable) {
 			return
 		}
 
-		// Parse expiration from Cache-Control / Expires
-		const expiresAt = computeExpiresAt(response.headers, this.clock.now())
-
-		// no-store — don't cache at all
-		if (expiresAt === -1) {
-			return
+		const storedHeaders = new Headers(response.headers)
+		if (policy.stripSetCookie) {
+			storedHeaders.delete('set-cookie')
 		}
 
 		const url = req.url
 		const status = response.status
-		const headers = JSON.stringify(Array.from(response.headers as unknown as Iterable<[string, string]>))
+		const expiresAt = policy.expiresAt
+		const headers = JSON.stringify(Array.from(storedHeaders))
 		const body = new Uint8Array(await response.arrayBuffer())
 
 		// Validate body size
