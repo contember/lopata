@@ -278,21 +278,9 @@ export class LocalD1PreparedStatement {
 		}
 	}
 
-	async run(): Promise<D1Result> {
-		const unlock = await acquireDbLock(this.db)
-		try {
-			const start = performance.now()
-			executeQuery(this.db, this.sql, this.params)
-			const duration = performance.now() - start
-			const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
-			return {
-				results: [],
-				success: true,
-				meta: buildMeta(this.db, duration, 0, changes),
-			}
-		} finally {
-			unlock()
-		}
+	/** Cloudflare's run() returns the same D1Result as all(), rows included (SELECT, RETURNING). */
+	async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+		return this.all<T>()
 	}
 
 	async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
