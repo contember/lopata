@@ -150,23 +150,15 @@ describe('kv', () => {
 	})
 
 	conformanceTest(known, 'bulk get: check minimum keys', async () => {
-		try {
-			await kv.get([])
-		} catch (error) {
-			expect(messageOf(error)).toBe(
-				'KV GET_BULK failed: 400 You must request a minimum of 1 key',
-			)
-		}
+		await expect(kv.get([])).rejects.toThrow(
+			new Error('KV GET_BULK failed: 400 You must request a minimum of 1 key'),
+		)
 	})
 
 	conformanceTest(known, 'bulk get: invalid type', async () => {
-		try {
-			await kv.get(['key'], { type: 'invalid' })
-		} catch (error) {
-			expect(messageOf(error)).toBe(
-				'KV GET_BULK failed: 400 "invalid" is not a valid type. Use "json" or "text"',
-			)
-		}
+		await expect(kv.get(['key'], { type: 'invalid' })).rejects.toThrow(
+			new Error('KV GET_BULK failed: 400 "invalid" is not a valid type. Use "json" or "text"'),
+		)
 	})
 
 	conformanceTest(known, 'bulk get: request json type', async () => {
@@ -240,13 +232,9 @@ describe('kv', () => {
 		const bigValue = new Array(1024).fill('x').join('')
 		await kv.put('key1', bigValue)
 		await kv.put('key2', bigValue)
-		try {
-			await kv.getWithMetadata(['key1', 'key2'])
-		} catch (error) {
-			expect(messageOf(error)).toEqual(
-				'KV GET_BULK failed: 413 Total size of request exceeds the limit of 0.0009765625MB', // 1024 Bytes for testing
-			)
-		}
+		await expect(kv.getWithMetadata(['key1', 'key2'])).rejects.toThrow(
+			new Error('KV GET_BULK failed: 413 Total size of request exceeds the limit of 0.0009765625MB'), // 1024 Bytes for testing
+		)
 	})
 
 	conformanceTest(known, 'get: returns null for non-existent keys', async () => {
