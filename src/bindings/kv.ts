@@ -20,6 +20,11 @@ const KV_DEFAULTS: Required<KVLimits> = {
 
 type KVGetOptions = { type?: string; cacheTtl?: number }
 
+type KVListKey = { name: string; expiration?: number; metadata?: unknown }
+type KVListResult =
+	| { keys: KVListKey[]; list_complete: false; cursor: string; cacheStatus: null }
+	| { keys: KVListKey[]; list_complete: true; cacheStatus: null }
+
 export class SqliteKVNamespace {
 	private db: Database
 	private namespace: string
@@ -262,7 +267,7 @@ export class SqliteKVNamespace {
 		this.db.run('DELETE FROM kv WHERE namespace = ? AND key = ?', [this.namespace, key])
 	}
 
-	async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+	async list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult> {
 		const prefix = options?.prefix ?? ''
 		const limit = Math.min(options?.limit ?? 1000, 1000)
 		const cursor = options?.cursor ?? ''
@@ -316,19 +321,20 @@ export class SqliteKVNamespace {
 			}
 		}
 
-		const listComplete = rows.length <= limit
 		const resultRows = rows.slice(0, limit)
-
-		const keys = resultRows.map((row) => ({
-			name: row.key,
-			expiration: row.expiration ?? undefined,
-			metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
-		}))
+		// Absent fields are omitted, as in the JSON workerd parses the list from
+		const keys = resultRows.map((row) => {
+			const key: KVListKey = { name: row.key }
+			if (row.expiration !== null) key.expiration = row.expiration
+			if (row.metadata !== null) key.metadata = JSON.parse(row.metadata)
+			return key
+		})
 
 		const lastRow = resultRows[resultRows.length - 1]
-		const newCursor = listComplete || !lastRow ? '' : lastRow.key
-
-		return { keys, list_complete: listComplete, cursor: newCursor }
+		if (rows.length > limit && lastRow) {
+			return { keys, list_complete: false, cursor: lastRow.key, cacheStatus: null }
+		}
+		return { keys, list_complete: true, cacheStatus: null }
 	}
 
 	private decodeValue(blob: Buffer, type: string): string | ArrayBuffer | object | ReadableStream {

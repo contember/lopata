@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
+import assert from 'node:assert'
 import { SqliteKVNamespace } from '../src/bindings/kv'
 import { runMigrations } from '../src/db'
 
@@ -151,7 +152,7 @@ test('list with cursor pagination', async () => {
 	await kv.put('c', '3')
 	const first = await kv.list({ limit: 2 })
 	expect(first.keys).toHaveLength(2)
-	expect(first.list_complete).toBe(false)
+	assert(!first.list_complete)
 	expect(first.cursor).toBeTruthy()
 
 	const second = await kv.list({ cursor: first.cursor, limit: 2 })
