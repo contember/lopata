@@ -19,7 +19,9 @@
 	},
 	"excludes": [
 		"**/node_modules",
-		"**/*-lock.json"
+		"**/*-lock.json",
+		// Vendored workerd tests stay byte-identical to upstream
+		"tests/conformance/workerd/**"
 	],
 	"plugins": [
 		"https://plugins.dprint.dev/typescript-0.95.11.wasm",

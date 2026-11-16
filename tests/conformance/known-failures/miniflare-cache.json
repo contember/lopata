@@ -1,0 +1,9 @@
+{
+	"match respects If-Modified-Since header": "expect(received).toBe(expected)",
+	"match respects If-None-Match header": "expect(received).toBe(expected)",
+	"match respects Range header": "expect(received).toBe(expected)",
+	"operations respect cf.cacheKey": "expect(received).toBe(expected)",
+	"put caches with Set-Cookie if Cache-Control private=set-cookie": "expect(received).toBe(expected)",
+	"put does not cache with no-cache Cache-Control": "expect(received).toBe(expected)",
+	"put does not cache with private Cache-Control": "expect(received).toBe(expected)"
+}
