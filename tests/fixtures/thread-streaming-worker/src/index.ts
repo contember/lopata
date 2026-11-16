@@ -5,6 +5,9 @@ let reqCancelObserved = 0
 let signalAbortObserved = 0
 // Identifies the worker thread (module instance) — a respawned thread gets a new one.
 const threadId = crypto.randomUUID()
+// /crash-late: whether the handler saw its request aborted, and whether its late body was cancelled.
+let lateSawAbort = false
+let lateBodyCancelled = false
 
 export default {
 	async fetch(request: Request): Promise<Response> {
@@ -171,6 +174,28 @@ export default {
 				throw new Error('intentional worker crash')
 			}, 50)
 			return new Promise<Response>(() => {})
+		}
+
+		// Like /crash, but the handler keeps running until it sees its request aborted,
+		// then returns an endless body that nobody will read.
+		if (url.pathname === '/crash-late') {
+			setTimeout(() => {
+				throw new Error('intentional worker crash')
+			}, 20)
+			const deadline = Date.now() + 2_000
+			while (!request.signal.aborted && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+			lateSawAbort = request.signal.aborted
+			const stream = new ReadableStream<Uint8Array>({
+				pull: () => new Promise(r => setTimeout(r, 10)),
+				cancel() {
+					lateBodyCancelled = true
+				},
+			})
+			return new Response(stream)
+		}
+
+		if (url.pathname === '/crash-late-status') {
+			return new Response(`aborted=${lateSawAbort} cancelled=${lateBodyCancelled}`)
 		}
 
 		return new Response('not found', { status: 404 })

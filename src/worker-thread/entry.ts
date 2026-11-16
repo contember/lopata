@@ -35,7 +35,7 @@ import { RpcClient } from './rpc-shared'
 import { deserializeRequest, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
-import { installUncaughtErrorHandlers, runFailableCommand } from './uncaught-errors'
+import { discardResponse, installUncaughtErrorHandlers, runFailableCommand } from './uncaught-errors'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
 
@@ -363,7 +363,10 @@ async function initRuntime(init: WorkerInitConfig) {
 				try {
 					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
 					const request = deserializeRequest(cmd.request, reqBody, abortController.signal)
-					const response = await runFailableCommand(() => runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props)))
+					const response = await runFailableCommand(
+						() => runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props)),
+						discardResponse,
+					)
 					const serialized = serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 					if (serialized.streamId !== undefined && response.body) {
@@ -375,6 +378,8 @@ async function initRuntime(init: WorkerInitConfig) {
 					}
 				} catch (e) {
 					fetchAbortControllers.delete(cmd.id)
+					// The request is over; a handler still running (its command failed) observes that.
+					abortController.abort(e)
 					if (cmd.request.streamId !== undefined) requestStreams.cancel(cmd.request.streamId)
 					post({ type: 'fetch-error', id: cmd.id, error: serializeError(e) })
 				}

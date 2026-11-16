@@ -153,6 +153,17 @@ describe('Worker crash handling (worker-thread runtime)', () => {
 		expect(await (await fetch(`${base}/thread-id`)).text()).toBe(threadBefore)
 	}, 10_000)
 
+	test('a handler still running after its request failed sees the abort, and its late body is cancelled', async () => {
+		const res = await fetch(`${base}/crash-late`)
+		expect(res.status).toBe(500)
+		let status = ''
+		for (let i = 0; i < 50 && status !== 'aborted=true cancelled=true'; i++) {
+			await Bun.sleep(20)
+			status = await (await fetch(`${base}/crash-late-status`)).text()
+		}
+		expect(status).toBe('aborted=true cancelled=true')
+	}, 10_000)
+
 	test('an uncaught exception from one request does not fail a concurrent request', async () => {
 		const slow = fetch(`${base}/slow?ms=300`)
 		const crash = await fetch(`${base}/crash`)

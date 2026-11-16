@@ -16,7 +16,7 @@ import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
-import { installUncaughtErrorHandlers, runFailableCommand } from '../worker-thread/uncaught-errors'
+import { currentCommandFailed, discardResponse, installUncaughtErrorHandlers, runFailableCommand } from '../worker-thread/uncaught-errors'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
@@ -288,6 +288,11 @@ async function initWorker(workerConfig: WorkerConfig) {
 					// source. DO fetch has no ctx.waitUntil, so nothing reads it later.
 					if (cmd.streamId !== undefined && !request.bodyUsed) {
 						requestStreams.cancel(cmd.streamId)
+					}
+					if (currentCommandFailed()) {
+						// Main already got the failure: register no WebSocket or body stream it would never release.
+						discardResponse(response)
+						throw new Error('Durable Object fetch completed after its command failed')
 					}
 					const clientWs = (response as { webSocket?: unknown }).webSocket
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket

@@ -9,6 +9,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { CFWebSocket } from '../bindings/websocket-pair'
 
 class PromiseRejectionEvent extends Event {
 	readonly promise: Promise<unknown>
@@ -21,8 +22,14 @@ class PromiseRejectionEvent extends Event {
 	}
 }
 
-/** Fails the command (request, RPC call, DO command) whose async context scheduled the throwing task. */
-const commandFailure = new AsyncLocalStorage<(error: unknown) => void>()
+interface CommandScope {
+	/** Set once an uncaught exception failed the command before it completed. */
+	failed: boolean
+	fail: (error: unknown) => void
+}
+
+/** The command (request, RPC call, DO command) whose async context scheduled the throwing task. */
+const commandScope = new AsyncLocalStorage<CommandScope>()
 
 /**
  * Runs one dispatched command so that an uncaught exception from a task it scheduled
@@ -30,9 +37,38 @@ const commandFailure = new AsyncLocalStorage<(error: unknown) => void>()
  * request that can no longer produce a response (`IoContext::abortFromHang`); failing it
  * with the thrown error is the approximation. Concurrent commands are unaffected.
  */
-export function runFailableCommand<T>(dispatch: () => Promise<T>): Promise<T> {
+export function runFailableCommand<T>(dispatch: () => Promise<T>, onLateResult?: (late: T) => void): Promise<T> {
 	const failure = Promise.withResolvers<never>()
-	return commandFailure.run(failure.reject, () => Promise.race([dispatch(), failure.promise]))
+	let completed = false
+	const scope: CommandScope = {
+		failed: false,
+		fail: error => {
+			if (completed || scope.failed) return
+			scope.failed = true
+			failure.reject(error)
+		},
+	}
+	return commandScope.run(scope, () => {
+		const result = dispatch()
+		// The caller already got the failure; release what the handler produced after all.
+		result.then(late => {
+			if (scope.failed) onLateResult?.(late)
+		}, () => {})
+		return Promise.race([result, failure.promise]).finally(() => {
+			completed = true
+		})
+	})
+}
+
+/** Whether the command running in this async context already failed, so its result will be discarded. */
+export function currentCommandFailed(): boolean {
+	return commandScope.getStore()?.failed ?? false
+}
+
+/** Releases a response nobody will read: stops its body producer and closes a returned WebSocket. */
+export function discardResponse(response: Response): void {
+	response.body?.cancel().catch(() => {})
+	if ('webSocket' in response && response.webSocket instanceof CFWebSocket) response.webSocket.close(1011, 'request failed')
 }
 
 // Bun's global scope is an EventTarget, but its types do not declare a global `dispatchEvent`.
@@ -55,6 +91,6 @@ export function installUncaughtErrorHandlers(): void {
 	// `unhandledrejection` listener arrive without one and are only logged.
 	process.on('uncaughtException', err => {
 		console.error('[lopata] Uncaught exception:', err)
-		commandFailure.getStore()?.(err)
+		commandScope.getStore()?.fail(err)
 	})
 }
