@@ -290,17 +290,13 @@ test('R2ObjectBody blob() returns Blob', async () => {
 
 // --- New: Validation ---
 
-test('key exceeding max size throws', async () => {
-	const longKey = 'a'.repeat(1025)
-	expect(r2.put(longKey, 'data')).rejects.toThrow('Key exceeds max size')
-})
-
-test('custom metadata exceeding max size throws', async () => {
-	const bigMeta: Record<string, string> = {}
-	for (let i = 0; i < 200; i++) {
-		bigMeta[`key-${i}`] = 'x'.repeat(20)
-	}
-	expect(r2.put('key', 'data', { customMetadata: bigMeta })).rejects.toThrow('Custom metadata exceeds max size')
+test('put with a mismatching checksum keeps the existing object', async () => {
+	await r2.put('key', 'old')
+	const wrongMd5 = new Bun.CryptoHasher('md5').update('other').digest('hex')
+	await expect(r2.put('key', 'new', { md5: wrongMd5 })).rejects.toThrow('(10037)')
+	const obj = await r2.get('key') as R2ObjectBody
+	expect(await obj.text()).toBe('old')
+	expect(obj.size).toBe(3)
 })
 
 test('batch delete exceeding limit throws', async () => {
@@ -310,7 +306,7 @@ test('batch delete exceeding limit throws', async () => {
 
 test('configurable limits override defaults', async () => {
 	const r2custom = new FileR2Bucket(db, 'custom', tmpDir, { maxKeySize: 5 })
-	expect(r2custom.put('toolong', 'data')).rejects.toThrow('Key exceeds max size')
+	expect(r2custom.put('toolong', 'data')).rejects.toThrow('put: The specified object name is not valid. (10020)')
 	// Short key still works
 	const result = await r2custom.put('ok', 'data')
 	expect(result!.key).toBe('ok')

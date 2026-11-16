@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 // --- Limits ---
@@ -248,6 +248,11 @@ function deserializeHttpMetadata(s: string | null): R2HTTPMetadata {
 	return result
 }
 
+/** Copies into an ArrayBuffer of exactly the buffer's length (small Buffers share a pooled ArrayBuffer). */
+function toArrayBuffer(buf: Buffer): ArrayBuffer {
+	return new Uint8Array(buf).buffer
+}
+
 function serializeChecksums(c: R2Checksums): Record<string, string> {
 	const result: Record<string, string> = {}
 	for (const [k, v] of Object.entries(c)) {
@@ -280,39 +285,31 @@ function computeMultipartEtag(partRows: Array<{ etag: string }>): string {
 	return `${hasher.digest('hex')}-${partRows.length}`
 }
 
+type HashAlgorithm = 'md5' | 'sha1' | 'sha256' | 'sha384' | 'sha512'
+
 /**
- * Write `value` to `filePath` while hashing it. No intermediate buffering for
- * streams/Blobs — bytes flow directly from the source to disk. Returns MD5 hex
- * etag and total byte count.
+ * Write `value` to `filePath` while hashing it with each of `algorithms`. No intermediate
+ * buffering for streams/Blobs — bytes flow directly from the source to disk. Returns the
+ * digests in the order of `algorithms` and the total byte count.
  */
 async function writeValueToFile(
 	value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 	filePath: string,
-): Promise<{ etag: string; size: number }> {
+	algorithms: readonly HashAlgorithm[],
+): Promise<{ digests: Buffer[]; size: number }> {
 	mkdirSync(dirname(filePath), { recursive: true })
-	const hasher = new Bun.CryptoHasher('md5')
-
-	if (value === null) {
-		await Bun.write(filePath, '')
-		return { etag: hasher.digest('hex'), size: 0 }
-	}
-	if (typeof value === 'string') {
-		const bytes = new TextEncoder().encode(value)
-		hasher.update(bytes)
+	const hashers = algorithms.map((algorithm) => new Bun.CryptoHasher(algorithm))
+	const digests = () => hashers.map((hasher) => Buffer.from(hasher.digest()))
+	const writeBytes = async (bytes: Uint8Array | ArrayBuffer) => {
+		for (const hasher of hashers) hasher.update(bytes)
 		await Bun.write(filePath, bytes)
-		return { etag: hasher.digest('hex'), size: bytes.byteLength }
+		return { digests: digests(), size: bytes.byteLength }
 	}
-	if (value instanceof ArrayBuffer) {
-		hasher.update(new Uint8Array(value))
-		await Bun.write(filePath, value)
-		return { etag: hasher.digest('hex'), size: value.byteLength }
-	}
-	if (ArrayBuffer.isView(value)) {
-		const view = new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-		hasher.update(view)
-		await Bun.write(filePath, view)
-		return { etag: hasher.digest('hex'), size: view.byteLength }
-	}
+
+	if (value === null) return writeBytes(new Uint8Array(0))
+	if (typeof value === 'string') return writeBytes(new TextEncoder().encode(value))
+	if (value instanceof ArrayBuffer) return writeBytes(value)
+	if (ArrayBuffer.isView(value)) return writeBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
 	const stream = value instanceof Blob ? value.stream() : value
 	const writer = Bun.file(filePath).writer()
 	let size = 0
@@ -321,14 +318,14 @@ async function writeValueToFile(
 		while (true) {
 			const { done, value: chunk } = await reader.read()
 			if (done) break
-			hasher.update(chunk)
+			for (const hasher of hashers) hasher.update(chunk)
 			writer.write(chunk)
 			size += chunk.byteLength
 		}
 	} finally {
 		await writer.end()
 	}
-	return { etag: hasher.digest('hex'), size }
+	return { digests: digests(), size }
 }
 
 // --- Errors ---
@@ -342,6 +339,66 @@ const INVALID_RANGE = [10039, 'The requested range is not satisfiable'] as const
 const INVALID_MAX_KEYS = [10022, 'MaxKeys params must be positive integer <= 1000.'] as const
 
 const MAX_LIST_KEYS = 1000
+
+const INVALID_OBJECT_NAME = [10020, 'The specified object name is not valid.'] as const
+const METADATA_TOO_LARGE = [10012, 'Your metadata headers exceed the maximum allowed metadata size.'] as const
+
+function checkKey(method: string, key: string, limits: Required<R2Limits>): void {
+	if (Buffer.byteLength(key) > limits.maxKeySize) throw r2Error(method, ...INVALID_OBJECT_NAME)
+}
+
+/** R2 counts each string as its length, doubled when it has a character above U+00FF (Miniflare Validator.metadataSize). */
+function checkMetadataSize(method: string, metadata: Record<string, string> | undefined, limits: Required<R2Limits>): void {
+	if (!metadata) return
+	const serialisedLength = (x: string) => {
+		for (let i = 0; i < x.length; i++) if (x.charCodeAt(i) > 0xff) return x.length * 2
+		return x.length
+	}
+	let size = 0
+	for (const [k, v] of Object.entries(metadata)) size += serialisedLength(k) + serialisedLength(v)
+	if (size > limits.maxCustomMetadataSize) throw r2Error(method, ...METADATA_TOO_LARGE)
+}
+
+/** Objects live at <bucket dir>/<key>, so a key must not climb out of the bucket directory. */
+function objectFilePath(baseDir: string, key: string): string {
+	if (key.includes('..')) throw new Error('Invalid key: path traversal not allowed')
+	return join(baseDir, key)
+}
+
+const CHECKSUM_ALGORITHMS = [
+	{ field: 'md5', name: 'MD5', bytes: 16 },
+	{ field: 'sha1', name: 'SHA-1', bytes: 20 },
+	{ field: 'sha256', name: 'SHA-256', bytes: 32 },
+	{ field: 'sha384', name: 'SHA-384', bytes: 48 },
+	{ field: 'sha512', name: 'SHA-512', bytes: 64 },
+] as const
+
+type ChecksumAlgorithm = (typeof CHECKSUM_ALGORITHMS)[number]
+
+/** The checksum a put() caller supplied; workerd allows at most one and checks its length (api/r2-bucket.c++). */
+function parseExpectedChecksum(options: R2PutOptions | undefined): { algorithm: ChecksumAlgorithm; digest: Buffer } | undefined {
+	let result: { algorithm: ChecksumAlgorithm; digest: Buffer } | undefined
+	for (const algorithm of CHECKSUM_ALGORITHMS) {
+		const provided = options?.[algorithm.field]
+		if (provided === undefined) continue
+		if (result) throw new TypeError('You cannot specify multiple hashing algorithms.')
+		let digest: Buffer
+		if (typeof provided === 'string') {
+			if (provided.length !== algorithm.bytes * 2) {
+				throw new TypeError(`${algorithm.name} is ${algorithm.bytes * 2} hex characters, not ${provided.length}`)
+			}
+			if (!/^[0-9a-f]*$/i.test(provided)) throw new TypeError(`Provided ${algorithm.name} wasn't a valid hex string`)
+			digest = Buffer.from(provided, 'hex')
+		} else {
+			if (provided.byteLength !== algorithm.bytes) {
+				throw new TypeError(`${algorithm.name} is ${algorithm.bytes} bytes, not ${provided.byteLength}`)
+			}
+			digest = Buffer.from(provided)
+		}
+		result = { algorithm, digest }
+	}
+	return result
+}
 
 // --- Conditional check ---
 
@@ -544,6 +601,7 @@ export class R2MultipartUpload {
 		partNumber: number,
 		data: ArrayBuffer | ArrayBufferView | string | ReadableStream | Blob,
 	): Promise<{ partNumber: number; etag: string }> {
+		checkKey('uploadPart', this.key, this.limits)
 		// Verify upload exists and is not aborted/completed
 		const upload = this.db
 			.query<MultipartRow, [string, string]>(
@@ -554,7 +612,8 @@ export class R2MultipartUpload {
 
 		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
 		const partPath = join(partDir, `part-${partNumber}`)
-		const { etag, size } = await writeValueToFile(data, partPath)
+		const { digests: [md5], size } = await writeValueToFile(data, partPath, ['md5'])
+		const etag = md5?.toString('hex') ?? ''
 
 		// Upsert part record
 		this.db.run(
@@ -567,6 +626,7 @@ export class R2MultipartUpload {
 	}
 
 	async complete(parts: { partNumber: number; etag: string }[]): Promise<R2Object> {
+		checkKey('completeMultipartUpload', this.key, this.limits)
 		const upload = this.db
 			.query<MultipartRow, [string, string]>(
 				`SELECT * FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ?`,
@@ -589,7 +649,7 @@ export class R2MultipartUpload {
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
-		const filePath = join(this.baseDir, this.key)
+		const filePath = objectFilePath(this.baseDir, this.key)
 		mkdirSync(dirname(filePath), { recursive: true })
 		const writer = Bun.file(filePath).writer()
 		let totalSize = 0
@@ -651,6 +711,7 @@ export class R2MultipartUpload {
 	}
 
 	async abort(): Promise<void> {
+		checkKey('abortMultipartUpload', this.key, this.limits)
 		this.db.transaction(() => {
 			this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
 			this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
@@ -685,12 +746,15 @@ export class FileR2Bucket {
 	private db: Database
 	private bucket: string
 	private baseDir: string
+	private tmpDir: string
 	private limits: Required<R2Limits>
 
 	constructor(db: Database, bucket: string, dataDir: string, limits?: R2Limits) {
 		this.db = db
 		this.bucket = bucket
 		this.baseDir = join(dataDir, 'r2', bucket)
+		// R2 bucket names cannot start with a dot, so this never collides with a bucket directory
+		this.tmpDir = join(dataDir, 'r2', '.tmp')
 		this.limits = { ...R2_DEFAULTS, ...limits }
 		mkdirSync(this.baseDir, { recursive: true })
 
@@ -740,26 +804,8 @@ export class FileR2Bucket {
     `)
 	}
 
-	private validateKey(key: string): void {
-		const keyBytes = new TextEncoder().encode(key)
-		if (keyBytes.length > this.limits.maxKeySize) {
-			throw new Error(`Key exceeds max size of ${this.limits.maxKeySize} bytes`)
-		}
-		if (key.includes('..')) {
-			throw new Error(`Invalid key: path traversal not allowed`)
-		}
-	}
-
-	private validateCustomMetadata(metadata: Record<string, string> | undefined): void {
-		if (!metadata) return
-		const serialized = JSON.stringify(metadata)
-		if (new TextEncoder().encode(serialized).length > this.limits.maxCustomMetadataSize) {
-			throw new Error(`Custom metadata exceeds max size of ${this.limits.maxCustomMetadataSize} bytes`)
-		}
-	}
-
 	private filePath(key: string): string {
-		return join(this.baseDir, key)
+		return objectFilePath(this.baseDir, key)
 	}
 
 	async put(
@@ -767,8 +813,10 @@ export class FileR2Bucket {
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
 		options?: R2PutOptions,
 	): Promise<R2Object | null> {
-		this.validateKey(key)
-		this.validateCustomMetadata(options?.customMetadata)
+		checkKey('put', key, this.limits)
+		checkMetadataSize('put', options?.customMetadata, this.limits)
+		const expected = parseExpectedChecksum(options)
+		const fp = this.filePath(key)
 
 		// Check conditional before writing; a missing object fails etagMatches and uploadedAfter
 		if (options?.onlyIf) {
@@ -779,19 +827,41 @@ export class FileR2Bucket {
 			}
 		}
 
-		const fp = this.filePath(key)
-		const { etag, size } = await writeValueToFile(value, fp)
+		// Write aside and rename, so a rejected checksum leaves the current object intact
+		const tmpPath = join(this.tmpDir, crypto.randomUUID())
+		let size: number
+		let md5: Buffer
+		const checksums: R2Checksums = {}
+		try {
+			const algorithms: HashAlgorithm[] = expected && expected.algorithm.field !== 'md5' ? ['md5', expected.algorithm.field] : ['md5']
+			const written = await writeValueToFile(value, tmpPath, algorithms)
+			size = written.size
+			md5 = written.digests[0] ?? Buffer.alloc(0)
+			if (expected) {
+				const actual = written.digests[algorithms.indexOf(expected.algorithm.field)] ?? Buffer.alloc(0)
+				if (!actual.equals(expected.digest)) {
+					const { name } = expected.algorithm
+					throw r2Error(
+						'put',
+						10037,
+						[
+							`The ${name} checksum you specified did not match what we received.`,
+							`You provided a ${name} checksum with value: ${expected.digest.toString('hex')}`,
+							`Actual ${name} was: ${actual.toString('hex')}`,
+						].join('\n'),
+					)
+				}
+				checksums[expected.algorithm.field] = toArrayBuffer(actual)
+			}
+			mkdirSync(dirname(fp), { recursive: true })
+			renameSync(tmpPath, fp)
+		} finally {
+			rmSync(tmpPath, { force: true })
+		}
+		const etag = md5.toString('hex')
+		checksums.md5 = toArrayBuffer(md5)
 		const uploaded = new Date()
 		const version = crypto.randomUUID()
-
-		// Build checksums. md5 is always computed; user-supplied sha* are stored as-is.
-		const checksums: R2Checksums = { md5: Buffer.from(etag, 'hex').buffer as ArrayBuffer }
-		for (const algo of ['sha1', 'sha256', 'sha384', 'sha512'] as const) {
-			const provided = options?.[algo]
-			if (provided) {
-				;(checksums as Record<string, ArrayBuffer>)[algo] = typeof provided === 'string' ? Buffer.from(provided, 'hex').buffer as ArrayBuffer : provided
-			}
-		}
 
 		this.db.run(
 			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
@@ -830,6 +900,7 @@ export class FileR2Bucket {
 	}
 
 	async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | R2Object | null> {
+		checkKey('get', key, this.limits)
 		const cond = options?.onlyIf === undefined ? undefined : parseConditional(options.onlyIf)
 		if (options?.range !== undefined && !(options.range instanceof Headers)) checkRangeArgument(options.range)
 
@@ -846,6 +917,7 @@ export class FileR2Bucket {
 	}
 
 	async head(key: string): Promise<R2Object | null> {
+		checkKey('head', key, this.limits)
 		const row = this.getRow(key)
 		if (!row) return null
 		const meta = rowToMeta(row)
@@ -857,6 +929,7 @@ export class FileR2Bucket {
 		if (keys.length > this.limits.maxBatchDeleteKeys) {
 			throw new Error(`Cannot delete more than ${this.limits.maxBatchDeleteKeys} keys at once`)
 		}
+		for (const k of keys) checkKey('delete', k, this.limits)
 		for (const k of keys) {
 			this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
 			const fp = this.filePath(k)
@@ -934,8 +1007,10 @@ export class FileR2Bucket {
 		key: string,
 		options?: { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string> },
 	): Promise<R2MultipartUpload> {
-		this.validateKey(key)
-		this.validateCustomMetadata(options?.customMetadata)
+		checkKey('createMultipartUpload', key, this.limits)
+		checkMetadataSize('createMultipartUpload', options?.customMetadata, this.limits)
+		// Fail now rather than at complete() for keys that cannot be stored on disk
+		this.filePath(key)
 
 		const uploadId = crypto.randomUUID()
 		this.db.run(
