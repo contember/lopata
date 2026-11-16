@@ -364,9 +364,7 @@ async function handleGetObject(
 	try {
 		obj = (await r2.get(key, { range: range ?? undefined })) as R2ObjectBody | null
 	} catch (err) {
-		if (err instanceof Error && err.message.endsWith('(10039)')) {
-			return xmlError('InvalidRange', 'The requested range is not satisfiable', `/${bucket}/${key}`, cors)
-		}
+		if (isRangeError(err)) return xmlError('InvalidRange', 'The requested range is not satisfiable', `/${bucket}/${key}`, cors)
 		throw err
 	}
 	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
@@ -686,8 +684,15 @@ async function handleUploadPartCopy(
 	// Optional byte range: "bytes=start-end"
 	const rangeHeader = req.headers.get('x-amz-copy-source-range')
 	const range = rangeHeader ? parseRange(rangeHeader) : null
+	if (rangeHeader && !range) return xmlError('InvalidRange', 'Invalid x-amz-copy-source-range header', copySource, cors)
 
-	const srcObj = (await srcR2.get(source.key, range ? { range } : undefined)) as R2ObjectBody | null
+	let srcObj: R2ObjectBody | null
+	try {
+		srcObj = (await srcR2.get(source.key, range ? { range } : undefined)) as R2ObjectBody | null
+	} catch (err) {
+		if (isRangeError(err)) return xmlError('InvalidRange', 'The requested range is not satisfiable', copySource, cors)
+		throw err
+	}
 	if (!srcObj) return xmlError('NoSuchKey', 'Source object not found', copySource, cors)
 
 	const upload = destR2.resumeMultipartUpload(destKey, uploadId)
@@ -697,6 +702,11 @@ async function handleUploadPartCopy(
 	} catch (err) {
 		return xmlError('NoSuchUpload', String(err), `/${destBucket}/${destKey}`, cors)
 	}
+}
+
+/** An unsatisfiable range (R2 error 10039) or a malformed one (RangeError from the binding). */
+function isRangeError(err: unknown): boolean {
+	return err instanceof RangeError || (err instanceof Error && err.message.endsWith('(10039)'))
 }
 
 // ─── Body helpers ────────────────────────────────────────────────────────────

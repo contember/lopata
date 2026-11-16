@@ -270,6 +270,30 @@ test('GET with Range: bytes=-3 returns last 3 bytes', async () => {
 	expect(await res.text()).toBe('hij')
 })
 
+test('GET with an inverted Range ignores it and returns the whole object', async () => {
+	await r2.put('big', 'abcdefghij')
+	const res = await handleS3Request(s3('GET', '/big', { headers: { range: 'bytes=5-2' } }), BUCKET, r2)
+	expect(res.status).toBe(200)
+	expect(await res.text()).toBe('abcdefghij')
+})
+
+test('UploadPartCopy with an unsatisfiable or inverted source range returns InvalidRange', async () => {
+	await r2.put('src', 'abcdefghij')
+	const createRes = await handleS3Request(s3('POST', '/dst?uploads'), BUCKET, r2)
+	const uploadId = (await createRes.text()).match(/<UploadId>([^<]+)<\/UploadId>/)![1]!
+	for (const range of ['bytes=20-30', 'bytes=5-2']) {
+		const res = await handleS3Request(
+			s3('PUT', `/dst?partNumber=1&uploadId=${uploadId}`, {
+				headers: { 'x-amz-copy-source': `/${BUCKET}/src`, 'x-amz-copy-source-range': range },
+			}),
+			BUCKET,
+			r2,
+		)
+		expect(res.status).toBe(416)
+		expect(await res.text()).toContain('InvalidRange')
+	}
+})
+
 test('GET with Range past the end returns 416 InvalidRange', async () => {
 	await r2.put('big', 'abcdefghij')
 	const res = await handleS3Request(s3('GET', '/big', { headers: { range: 'bytes=20-' } }), BUCKET, r2)
