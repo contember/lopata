@@ -96,7 +96,8 @@ export class SqliteKVNamespace {
 	}
 
 	private validateBulkGet(keys: string[], options: string | KVGetOptions | undefined): string {
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
 		if (type !== 'text' && type !== 'json') {
 			throw kvError('GET_BULK', 400, `"${type}" is not a valid type. Use "json" or "text"`)
 		}
@@ -128,8 +129,10 @@ export class SqliteKVNamespace {
 		}
 	}
 
-	private validateMetadata(metadata: unknown): string {
-		const serialized = JSON.stringify(metadata)
+	private validateMetadata(metadata: unknown): string | null {
+		// A function or symbol has no JSON form; store no metadata, as lopata did before size checks were added.
+		const serialized: string | undefined = JSON.stringify(metadata)
+		if (serialized === undefined) return null
 		const length = Buffer.byteLength(serialized)
 		if (length > this.limits.maxMetadataSize) {
 			throw kvError('PUT', 413, `Metadata length of ${length} exceeds limit of ${this.limits.maxMetadataSize}.`)
@@ -199,7 +202,8 @@ export class SqliteKVNamespace {
 			return null
 		}
 
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
 		return this.decodeValue(row.value, type)
 	}
 
@@ -271,7 +275,8 @@ export class SqliteKVNamespace {
 			return { value: null, metadata: null, cacheStatus: null }
 		}
 
-		const type = typeof options === 'string' ? options : options?.type ?? 'text'
+		// workerd sends `type` only when it is non-empty, so '' reads as text.
+		const type = (typeof options === 'string' ? options : options?.type) || 'text'
 		const value = this.decodeValue(row.value, type)
 		const metadata = row.metadata ? JSON.parse(row.metadata) : null
 		return { value, metadata, cacheStatus: null }

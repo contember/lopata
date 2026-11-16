@@ -433,3 +433,13 @@ describe('cacheTtl option', () => {
 		expect(value).toBe('val')
 	})
 })
+
+test('put stores no metadata when it has no JSON form', async () => {
+	await kv.put('fn-meta', 'v', { metadata: () => 1 })
+	expect((await kv.getWithMetadata('fn-meta')).metadata).toBeNull()
+})
+
+test('bulk get treats an empty type as text', async () => {
+	await kv.put('t', 'value')
+	expect(await kv.get(['t'], { type: '' })).toEqual(new Map([['t', 'value']]))
+})
