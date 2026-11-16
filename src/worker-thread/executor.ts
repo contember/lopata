@@ -150,8 +150,8 @@ export class WorkerThreadExecutor {
 		this._worker.onerror = (event: ErrorEvent) => {
 			if (this._disposed) return
 			this._disposed = true
-			// Bun does NOT auto-terminate a Worker that crashed via an uncaught error
-			// (unhandledrejection, async errors in waitUntil/queue/timer callbacks).
+			// Unhandled rejections and uncaught exceptions are handled inside the thread
+			// (see `uncaught-errors.ts`), so this fires only for a genuinely fatal crash.
 			// Terminate it here — otherwise `dispose()` early-returns on `_disposed`
 			// and the thread (with its queue-consumer `setInterval`s, see
 			// `startThreadQueueConsumers`) lives until process exit, polling the shared

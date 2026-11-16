@@ -35,10 +35,13 @@ import { RpcClient } from './rpc-shared'
 import { deserializeRequest, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 import { buildThreadEnv } from './thread-env'
+import { installUncaughtErrorHandlers, runFailableCommand } from './uncaught-errors'
 import { startThreadQueueConsumers, wireWorkflows } from './wire-handlers'
 import { WsGuestBridge } from './ws-bridge-shared'
 
 declare var self: Worker
+
+installUncaughtErrorHandlers()
 
 function post(msg: WorkerMessage): void {
 	postMessage(msg)
@@ -360,7 +363,7 @@ async function initRuntime(init: WorkerInitConfig) {
 				try {
 					const reqBody = cmd.request.streamId !== undefined ? requestStreams.open(cmd.request.streamId) : undefined
 					const request = deserializeRequest(cmd.request, reqBody, abortController.signal)
-					const response = await runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props))
+					const response = await runFailableCommand(() => runWithParentContext(cmd.parent, () => dispatcher.fetch(request, cmd.entrypoint, cmd.props)))
 					const serialized = serializeResponse(response, wsBridge)
 					post({ type: 'fetch-result', id: cmd.id, response: serialized })
 					if (serialized.streamId !== undefined && response.body) {
@@ -379,7 +382,7 @@ async function initRuntime(init: WorkerInitConfig) {
 			}
 			case 'scheduled':
 				try {
-					const result = await runWithParentContext(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime))
+					const result = await runFailableCommand(() => runWithParentContext(cmd.parent, () => callScheduled(cmd.cronExpr, cmd.scheduledTime)))
 					if (!result.ok) post({ type: 'scheduled-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
 					else post({ type: 'scheduled-result', id: cmd.id })
 				} catch (e) {
@@ -388,7 +391,7 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'email':
 				try {
-					const result = await runWithParentContext(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, cmd.raw))
+					const result = await runFailableCommand(() => runWithParentContext(cmd.parent, () => callEmail(cmd.messageId, cmd.from, cmd.to, cmd.raw)))
 					if (!result.ok) post({ type: 'email-error', id: cmd.id, error: { message: 'no-handler' }, noHandler: true })
 					else post({ type: 'email-result', id: cmd.id })
 				} catch (e) {
@@ -433,9 +436,11 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'entrypoint-rpc':
 				try {
-					const value = await runWithParentContext(
-						cmd.parent,
-						() => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props, cmd.call),
+					const value = await runFailableCommand(() =>
+						runWithParentContext(
+							cmd.parent,
+							() => invokeEntrypointRpc(cmd.entrypoint, cmd.method, cmd.args, cmd.props, cmd.call),
+						)
 					)
 					post({ type: 'entrypoint-rpc-result', id: cmd.id, value })
 				} catch (e) {
@@ -456,7 +461,7 @@ async function initRuntime(init: WorkerInitConfig) {
 				break
 			case 'workflow-control':
 				try {
-					const result = await runWithParentContext(cmd.parent, () => invokeWorkflowControl(cmd.binding, cmd.op))
+					const result = await runFailableCommand(() => runWithParentContext(cmd.parent, () => invokeWorkflowControl(cmd.binding, cmd.op)))
 					post({ type: 'workflow-control-result', id: cmd.id, result })
 				} catch (e) {
 					post({ type: 'workflow-control-error', id: cmd.id, error: serializeError(e) })

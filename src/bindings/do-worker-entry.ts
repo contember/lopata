@@ -16,9 +16,12 @@ import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
+import { installUncaughtErrorHandlers, runFailableCommand } from '../worker-thread/uncaught-errors'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
+
+installUncaughtErrorHandlers()
 
 interface WorkerConfig {
 	compatibility?: CompatibilitySelection
@@ -388,7 +391,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 		if (msg.type === 'command') {
 			try {
-				const { result, afterPost } = await runWithParentContext(msg.parent, () => handleCommand(msg.command))
+				const { result, afterPost } = await runFailableCommand(() => runWithParentContext(msg.parent, () => handleCommand(msg.command)))
 				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
 				// Post-result side effects: for streamed fetch responses, start the
 				// body pump *after* `result` ships so main has registered the

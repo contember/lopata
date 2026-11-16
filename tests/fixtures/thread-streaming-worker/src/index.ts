@@ -3,6 +3,8 @@
 let reqCancelObserved = 0
 // Incremented when a request.signal 'abort' listener fires (client disconnect).
 let signalAbortObserved = 0
+// Identifies the worker thread (module instance) — a respawned thread gets a new one.
+const threadId = crypto.randomUUID()
 
 export default {
 	async fetch(request: Request): Promise<Response> {
@@ -151,9 +153,19 @@ export default {
 			return new Response(String(signalAbortObserved), { headers: { 'content-type': 'text/plain' } })
 		}
 
-		// Crash the worker thread mid-request: schedule an uncaught throw and never
-		// resolve. The executor's onerror must reject the in-flight request instead
-		// of leaving it to hang forever.
+		if (url.pathname === '/thread-id') {
+			return new Response(threadId)
+		}
+
+		// Responds after `ms`; used as a concurrent request while /crash's timer throws.
+		if (url.pathname === '/slow') {
+			await new Promise(r => setTimeout(r, Number(url.searchParams.get('ms') ?? '200')))
+			return new Response('slow done')
+		}
+
+		// Schedule an uncaught throw mid-request and never resolve. The throw fails
+		// the in-flight request instead of leaving it to hang forever; the thread
+		// keeps serving.
 		if (url.pathname === '/crash') {
 			setTimeout(() => {
 				throw new Error('intentional worker crash')

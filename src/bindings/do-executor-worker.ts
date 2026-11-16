@@ -307,9 +307,9 @@ export class WorkerExecutor implements DOExecutor {
 			if (this._disposed) return
 			// Mark dead so the namespace drops this executor and recreates a fresh
 			// one on next access (see `isDisposed()` + `_getOrCreateExecutor`),
-			// instead of posting to a terminated Worker (which would hang). An
-			// uncaught worker error does NOT end the thread (Web Worker semantics),
-			// so `_teardown` terminating it here is what prevents the leak (SQLite
+			// instead of posting to a terminated Worker (which would hang). Only a
+			// fatal crash gets here (rejections and uncaught exceptions are handled
+			// in-thread, see `uncaught-errors.ts`); `_teardown` terminating it prevents the leak (SQLite
 			// handle, container/health timers, WS bridges). Mirrors
 			// WorkerThreadExecutor's onerror → _failAll.
 			const detail = event.error?.stack ?? event.message ?? 'unknown'
