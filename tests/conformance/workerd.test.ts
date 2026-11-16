@@ -2,6 +2,7 @@
 // Each module becomes its own worker in a generated multi-worker project, reachable through a
 // host route; `workerd-runner.ts` invokes the module's `test` exports on request.
 
+import type { Subprocess } from 'bun'
 import { afterAll, describe } from 'bun:test'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -71,16 +72,29 @@ function freePort(): number {
 	return port
 }
 
-async function waitForServer(base: string): Promise<void> {
+function logTail(root: string): string {
+	return ['lopata.out.log', 'lopata.err.log']
+		.map(name => {
+			let text = ''
+			try {
+				text = readFileSync(join(root, name), 'utf8')
+			} catch {}
+			return `--- ${name} ---\n${text.slice(-4_000)}`
+		})
+		.join('\n')
+}
+
+async function waitForServer(base: string, server: Subprocess, root: string): Promise<void> {
 	const deadline = Date.now() + STARTUP_TIMEOUT_MS
 	while (Date.now() < deadline) {
+		if (server.exitCode !== null) throw new Error(`lopata dev exited with code ${server.exitCode}\n${logTail(root)}`)
 		try {
 			const res = await fetch(base)
 			if (res.ok) return
 		} catch {}
 		await Bun.sleep(250)
 	}
-	throw new Error(`lopata dev did not start within ${STARTUP_TIMEOUT_MS} ms`)
+	throw new Error(`lopata dev did not start within ${STARTUP_TIMEOUT_MS} ms\n${logTail(root)}`)
 }
 
 /** Export names of a module that failed to load: everything except classes and the default export. */
@@ -107,7 +121,8 @@ generateProject(root)
 const port = freePort()
 const base = `http://127.0.0.1:${port}`
 // CONFORMANCE_KEEP=1 keeps the generated project and the lopata logs for debugging.
-const server = Bun.spawn(['bun', CLI, 'dev', '--port', String(port)], {
+// Bind the address the harness polls; `localhost` may resolve to ::1 only.
+const server = Bun.spawn(['bun', CLI, 'dev', '--port', String(port), '--listen', '127.0.0.1'], {
 	cwd: root,
 	stdout: Bun.file(join(root, 'lopata.out.log')),
 	stderr: Bun.file(join(root, 'lopata.err.log')),
@@ -119,7 +134,7 @@ afterAll(() => {
 	else rmSync(root, { recursive: true, force: true })
 })
 
-await waitForServer(base)
+await waitForServer(base, server, root)
 
 async function callModule(module: string, path: string): Promise<Response> {
 	return fetch(`${base}${path}`, { headers: { host: hostFor(module) }, signal: AbortSignal.timeout(TEST_TIMEOUT_MS) })
