@@ -187,7 +187,8 @@ registerSection({
 			return Response.json(result)
 		}
 		if (path === '/d1/seed' && method === 'POST') {
-			await env.DB.exec(SEED_SQL)
+			// One multi-statement query: exec() runs each line separately, and these statements span lines.
+			await env.DB.prepare(SEED_SQL).run()
 			return Response.json({ ok: true, message: 'Seeded 7 tables with sample data' })
 		}
 		return null

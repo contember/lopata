@@ -1,7 +1,7 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { splitStatements } from './sql-split'
+import { mayHaveMultipleStatements, splitStatements } from './sql-split'
 
 interface D1Meta {
 	duration: number
@@ -25,42 +25,131 @@ interface D1ExecResult {
 	duration: number
 }
 
-function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritten: number): D1Meta {
-	const changes = db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
-	const { page_count } = db.query<{ page_count: number }, []>('PRAGMA page_count').get()!
-	const { page_size } = db.query<{ page_size: number }, []>('PRAGMA page_size').get()!
+/** A bound value as D1 carries it: a BLOB is an array of byte values. */
+type D1Value = string | number | null | number[]
+
+function isByte(value: unknown): value is number {
+	return typeof value === 'number' && value >= 0 && value < 256
+}
+
+/** Validates and normalises a bind() argument like workerd's D1PreparedStatement.bind(). */
+function toD1Value(value: unknown): D1Value {
+	if (typeof value === 'number' || typeof value === 'string' || value === null) return value
+	if (typeof value === 'boolean') return value ? 1 : 0
+	if (Array.isArray(value) && value.every(isByte)) return value
+	if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value))
+	if (ArrayBuffer.isView(value)) return Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
+	const reason = `Type '${typeof value}' not supported for value '${String(value)}'`
+	throw new Error(`D1_TYPE_ERROR: ${reason}`, { cause: new Error(reason) })
+}
+
+function toSqliteBinding(value: D1Value): SQLQueryBindings {
+	return Array.isArray(value) ? new Uint8Array(value) : value
+}
+
+/** D1 returns a BLOB as an array of byte values, not as bytes. */
+function fromSqliteValue(value: unknown): unknown {
+	return value instanceof Uint8Array ? Array.from(value) : value
+}
+
+interface QueryOutput {
+	columns: string[]
+	rows: unknown[][]
+	meta: D1Meta
+}
+
+interface ConnectionState {
+	totalChanges: number
+	lastRowId: number
+	size: number
+}
+
+function connectionState(db: Database): ConnectionState {
+	return db
+		.query<ConnectionState, []>(
+			'SELECT total_changes() AS totalChanges, last_insert_rowid() AS lastRowId, page_count * page_size AS size FROM pragma_page_count(), pragma_page_size()',
+		)
+		.get()!
+}
+
+const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in a single call, only the last statement can have parameters.'
+
+/**
+ * Runs `sql` the way a D1 query runs: every statement in it, all or nothing, returning the rows of the last
+ * one (workerd SqliteDatabase::prepareSql, MULTI mode). bun:sqlite compiles only the first statement and
+ * silently drops the rest, so the leading ones run here, each compiled after the previous one ran.
+ */
+function executeQuery(db: Database, sql: string, params: D1Value[]): QueryOutput {
+	const start = performance.now()
+	const before = connectionState(db)
+	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
+	const lastSql = statements.pop() ?? sql
+	const execute = () => {
+		for (const leadingSql of statements) runLeadingStatement(db, leadingSql)
+		const beforeLast = statements.length > 0 ? connectionState(db) : before
+		const stmt = db.query(lastSql)
+		const rows = stmt.values(...params.map(toSqliteBinding)).map(row => row.map(fromSqliteValue))
+		return { columns: stmt.columnNames, rows, beforeLast }
+	}
+	const { columns, rows, beforeLast } = statements.length > 0 ? inSavepoint(db, execute) : execute()
+
+	// Counted with total_changes(): changes() keeps the last write's count through later reads.
+	const after = connectionState(db)
+	const changes = after.totalChanges - before.totalChanges
+	const lastChanges = after.totalChanges - beforeLast.totalChanges
 	return {
-		duration: durationMs,
-		changes,
-		last_row_id: db.query<{ id: number }, []>('SELECT last_insert_rowid() as id').get()!.id,
-		served_by: 'lopata-d1',
-		rows_read: rowsRead,
-		rows_written: rowsWritten,
-		size_after: page_count * page_size,
-		changed_db: changes > 0,
+		columns,
+		rows,
+		meta: {
+			duration: performance.now() - start,
+			changes,
+			last_row_id: after.lastRowId,
+			served_by: 'lopata-d1',
+			// D1 reports libSQL's rows-scanned/written counters of the last statement, which bun:sqlite does not
+			// expose. Approximated by counting each returned and each changed row once.
+			rows_read: rows.length + lastChanges,
+			rows_written: lastChanges,
+			size_after: after.size,
+			changed_db: changes !== 0 || after.lastRowId !== before.lastRowId || after.size !== before.size,
+		},
 	}
 }
 
-/** Convert bind parameters: boolean→int, undefined→error, ArrayBuffer→Uint8Array */
-function convertBindParams(params: unknown[]): SQLQueryBindings[] {
-	return params.map((v, idx) => {
-		if (v === undefined) {
-			throw new Error(`D1_TYPE_ERROR: Cannot bind undefined value at index ${idx}. Use null instead.`)
-		}
-		if (typeof v === 'boolean') {
-			return v ? 1 : 0
-		}
-		if (v instanceof ArrayBuffer) {
-			return new Uint8Array(v)
-		}
-		return v as SQLQueryBindings
-	})
+function runLeadingStatement(db: Database, sql: string): void {
+	const stmt = db.prepare(sql)
+	try {
+		if (stmt.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
+		stmt.run()
+	} finally {
+		stmt.finalize()
+	}
 }
 
-/** Check if a SQL statement is a read query (returns rows) */
-function isReadStatement(sql: string): boolean {
-	const upper = sql.trimStart().toUpperCase()
-	return upper.startsWith('SELECT') || upper.startsWith('WITH') || upper.startsWith('PRAGMA')
+function inSavepoint<T>(db: Database, fn: () => T): T {
+	db.run('SAVEPOINT lopata_d1_query')
+	try {
+		const result = fn()
+		db.run('RELEASE lopata_d1_query')
+		return result
+	} catch (e) {
+		try {
+			db.run('ROLLBACK TO lopata_d1_query')
+			db.run('RELEASE lopata_d1_query')
+		} catch {
+			// ON CONFLICT ROLLBACK and similar failures already unwound the whole transaction, savepoint included.
+		}
+		throw e
+	}
+}
+
+/** workerd's error for a failed query: `D1_ERROR: <reason>`, with the bare reason as `cause`. */
+function d1Error(e: unknown): Error {
+	const reason = e instanceof Error ? e.message : String(e)
+	return new Error(`D1_ERROR: ${reason}`, { cause: new Error(reason) })
+}
+
+function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
+	return Object.fromEntries(columns.map((name, i) => [name, row[i]]))
 }
 
 // --- statement serialisation ---
@@ -107,7 +196,11 @@ async function runBatchSerially<T>(db: Database, statements: LocalD1PreparedStat
 				// call holds the db lock, so nothing else can slip into the open transaction.
 				results.push(await stmt.allUnlocked<T>())
 			}
-			db.run('COMMIT')
+			try {
+				db.run('COMMIT')
+			} catch (e) {
+				throw d1Error(e)
+			}
 		} catch (e) {
 			try {
 				db.run('ROLLBACK')
@@ -143,19 +236,25 @@ export class LocalD1Database {
 	async exec(sql: string): Promise<D1ExecResult> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			const start = performance.now()
-			let count = 0
-			const statements = splitStatements(sql)
-			for (const stmt of statements) {
-				try {
-					this.db.run(stmt)
-				} catch (e) {
-					const msg = e instanceof Error ? e.message : String(e)
-					throw new Error(`D1_EXEC_ERROR: Error in SQL statement [${stmt}]: ${msg}`)
+			// Cloudflare sends each line as its own query, all in one request that runs as one transaction
+			// (workerd d1-api.ts exec(), Miniflare's transactionSync), so a statement cannot span lines.
+			const lines = sql.trim().split('\n')
+			return inSavepoint(this.db, () => {
+				let count = 0
+				let duration = 0
+				for (const [index, line] of lines.entries()) {
+					// Blank and comment-only lines are skipped, as Miniflare does.
+					if (splitStatements(line).length === 0) continue
+					try {
+						duration += executeQuery(this.db, line, []).meta.duration
+					} catch (e) {
+						const reason = `Error in line ${index + 1}: ${line}: ${e instanceof Error ? e.message : String(e)}`
+						throw new Error(`D1_EXEC_ERROR: ${reason}`, { cause: new Error(reason) })
+					}
+					count++
 				}
-				count++
-			}
-			return { count, duration: performance.now() - start }
+				return { count, duration }
+			})
 		} finally {
 			unlock()
 		}
@@ -193,7 +292,7 @@ export class LocalD1DatabaseSession {
 export class LocalD1PreparedStatement {
 	private db: Database
 	private sql: string
-	private params: SQLQueryBindings[]
+	private params: D1Value[]
 
 	constructor(db: Database, sql: string) {
 		this.db = db
@@ -203,52 +302,32 @@ export class LocalD1PreparedStatement {
 
 	bind(...values: unknown[]): LocalD1PreparedStatement {
 		const stmt = new LocalD1PreparedStatement(this.db, this.sql)
-		stmt.params = convertBindParams(values)
+		stmt.params = values.map(toD1Value)
 		return stmt
 	}
 
 	async first<T = Record<string, unknown>>(column?: string): Promise<T | null> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			return this.firstUnlocked<T>(column)
-		} finally {
-			unlock()
-		}
-	}
-
-	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
-	firstUnlocked<T = Record<string, unknown>>(column?: string): T | null {
-		const row = this.db.query(this.sql).get(...this.params) as Record<string, unknown> | null
-		if (!row) return null
-		if (column) {
-			if (!(column in row)) {
-				throw new Error(`D1_ERROR: Column '${column}' does not exist in the result set.`)
+			const { columns, rows } = this.execute()
+			const first = rows[0]
+			if (!first) return null
+			const row = rowToObject(columns, first)
+			if (column !== undefined) {
+				if (row[column] === undefined) {
+					throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${column})`, { cause: new Error('Column not found') })
+				}
+				return row[column] as T
 			}
-			return (row[column] as T) ?? null
-		}
-		return row as T
-	}
-
-	async run(): Promise<D1Result> {
-		const unlock = await acquireDbLock(this.db)
-		try {
-			return this.runUnlocked()
+			return row as T
 		} finally {
 			unlock()
 		}
 	}
 
-	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
-	runUnlocked(): D1Result {
-		const start = performance.now()
-		this.db.query(this.sql).run(...this.params)
-		const duration = performance.now() - start
-		const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
-		return {
-			results: [],
-			success: true,
-			meta: buildMeta(this.db, duration, 0, changes),
-		}
+	/** Cloudflare's run() returns the same D1Result as all(), rows included (SELECT, RETURNING). */
+	async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+		return this.all<T>()
 	}
 
 	async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
@@ -262,30 +341,32 @@ export class LocalD1PreparedStatement {
 
 	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
 	allUnlocked<T = Record<string, unknown>>(): D1Result<T> {
-		const start = performance.now()
-		const results = this.db.query(this.sql).all(...this.params) as T[]
-		const duration = performance.now() - start
-		const isRead = isReadStatement(this.sql)
-		const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
+		const { columns, rows, meta } = this.execute()
 		return {
-			results,
+			results: rows.map(row => rowToObject(columns, row)) as T[],
 			success: true,
-			meta: buildMeta(this.db, duration, isRead ? results.length : 0, isRead ? 0 : changes),
+			meta,
 		}
 	}
 
 	async raw<T extends unknown[] = unknown[]>(options?: { columnNames?: boolean }): Promise<T[]> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			const query = this.db.query(this.sql)
-			const columns = query.columnNames
-			const rows = query.values(...this.params) as T[]
+			const { columns, rows } = this.execute()
 			if (options?.columnNames) {
-				return [columns as unknown as T, ...rows]
+				return [columns as unknown as T, ...(rows as T[])]
 			}
-			return rows
+			return rows as T[]
 		} finally {
 			unlock()
+		}
+	}
+
+	private execute(): QueryOutput {
+		try {
+			return executeQuery(this.db, this.sql, this.params)
+		} catch (e) {
+			throw d1Error(e)
 		}
 	}
 }

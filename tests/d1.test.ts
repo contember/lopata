@@ -56,11 +56,11 @@ describe('D1Database', () => {
 			expect(val).toBeNull()
 		})
 
-		test('throws D1_ERROR for non-existent column when row exists', async () => {
+		test('throws D1_COLUMN_NOTFOUND for non-existent column when row exists', async () => {
 			await d1.prepare('INSERT INTO users (name, email) VALUES (?, ?)').bind('Alice', 'alice@example.com').run()
 			await expect(
 				d1.prepare('SELECT * FROM users WHERE id = ?').bind(1).first('nonexistent'),
-			).rejects.toThrow('D1_ERROR')
+			).rejects.toThrow('D1_COLUMN_NOTFOUND: Column not found (nonexistent)')
 		})
 	})
 
@@ -80,6 +80,31 @@ describe('D1Database', () => {
 		test('returns empty results for no matches', async () => {
 			const result = await d1.prepare('SELECT * FROM users WHERE name = ?').bind('Nobody').all()
 			expect(result.success).toBe(true)
+			expect(result.results).toHaveLength(0)
+		})
+	})
+
+	describe('errors', () => {
+		test('a failed query throws D1_ERROR with the reason as cause', async () => {
+			const error = await d1.prepare('SELECT * FROM nonexistent_table').all().catch((e: unknown) => e)
+			expect(error).toBeInstanceOf(Error)
+			expect(error).toHaveProperty('message', 'D1_ERROR: no such table: nonexistent_table')
+			expect(error).toHaveProperty('cause.message', 'no such table: nonexistent_table')
+		})
+
+		test('a failed batch throws D1_ERROR with the reason as cause', async () => {
+			const error = await d1.batch([d1.prepare('SELECT * FROM nonexistent_table')]).catch((e: unknown) => e)
+			expect(error).toHaveProperty('message', 'D1_ERROR: no such table: nonexistent_table')
+			expect(error).toHaveProperty('cause.message', 'no such table: nonexistent_table')
+		})
+	})
+
+	describe('multi-statement query', () => {
+		test('a failing statement rolls back the ones before it', async () => {
+			await expect(
+				d1.prepare("INSERT INTO users (name) VALUES ('Alice'); INSERT INTO nonexistent_table (x) VALUES (1)").run(),
+			).rejects.toThrow(/nonexistent_table/)
+			const result = await d1.prepare('SELECT * FROM users').all()
 			expect(result.results).toHaveLength(0)
 		})
 	})
@@ -276,6 +301,22 @@ describe('D1Database', () => {
 			expect(result!.name).toBe("it's; ok")
 		})
 
+		test('runs each line as a query, so the error names the failing line', async () => {
+			await expect(
+				d1.exec("INSERT INTO users (name) VALUES ('Alice')\nINSERT INTO users (name)\nVALUES ('Bob')"),
+			).rejects.toThrow('D1_EXEC_ERROR: Error in line 2: INSERT INTO users (name): incomplete input')
+		})
+
+		test('a failing line rolls back the lines before it', async () => {
+			await expect(
+				d1.exec(
+					"INSERT INTO users (name) VALUES ('Alice')\nINSERT INTO users (name) VALUES ('Bob'); INSERT INTO users (name) VALUES ('Carol')\nINSERT INTO nonexistent_table (x) VALUES (1)",
+				),
+			).rejects.toThrow('D1_EXEC_ERROR: Error in line 3')
+			const result = await d1.prepare('SELECT * FROM users').all()
+			expect(result.results).toHaveLength(0)
+		})
+
 		test('error includes the failing SQL statement', async () => {
 			await expect(
 				d1.exec("INSERT INTO nonexistent_table (x) VALUES ('fail')"),
@@ -364,6 +405,13 @@ describe('D1Database', () => {
 			}).toThrow('D1_TYPE_ERROR')
 		})
 
+		test('types D1 does not accept throw D1_TYPE_ERROR at bind time', () => {
+			const stmt = d1.prepare('INSERT INTO users (name) VALUES (?)')
+			expect(() => stmt.bind(1n)).toThrow("D1_TYPE_ERROR: Type 'bigint' not supported for value '1'")
+			expect(() => stmt.bind({ name: 'x' })).toThrow("D1_TYPE_ERROR: Type 'object' not supported")
+			expect(() => stmt.bind([1, 256])).toThrow('D1_TYPE_ERROR')
+		})
+
 		test('boolean true is converted to 1', async () => {
 			db.run('CREATE TABLE flags (id INTEGER PRIMARY KEY, active INTEGER)')
 			await d1.prepare('INSERT INTO flags (active) VALUES (?)').bind(true).run()
@@ -382,9 +430,8 @@ describe('D1Database', () => {
 			db.run('CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)')
 			const data = new Uint8Array([1, 2, 3, 4]).buffer
 			await d1.prepare('INSERT INTO blobs (data) VALUES (?)').bind(data).run()
-			const row = await d1.prepare('SELECT data FROM blobs').first<{ data: Uint8Array }>()
-			expect(row!.data).toBeInstanceOf(Uint8Array)
-			expect(Array.from(row!.data)).toEqual([1, 2, 3, 4])
+			const row = await d1.prepare('SELECT data FROM blobs').first<{ data: number[] }>()
+			expect(row!.data).toEqual([1, 2, 3, 4])
 		})
 	})
 
@@ -392,7 +439,7 @@ describe('D1Database', () => {
 		test('rows_written reflects changes for INSERT', async () => {
 			const result = await d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Alice').run()
 			expect(result.meta.rows_written).toBe(1)
-			expect(result.meta.rows_read).toBe(0)
+			expect(result.meta.rows_read).toBe(1)
 		})
 
 		test('rows_read reflects rows returned by SELECT', async () => {
@@ -408,7 +455,7 @@ describe('D1Database', () => {
 			await d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Bob').run()
 			const result = await d1.prepare("UPDATE users SET email = 'test@test.com'").all()
 			expect(result.meta.rows_written).toBe(2)
-			expect(result.meta.rows_read).toBe(0)
+			expect(result.meta.rows_read).toBe(2)
 		})
 
 		test('size_after is a positive number', async () => {

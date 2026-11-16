@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { openD1Database } from '../bindings/d1'
+import { splitStatements } from '../bindings/sql-split'
 import type { CliContext } from './context'
 import { parseArgs } from './context'
 
@@ -50,8 +51,11 @@ export async function run(ctx: CliContext, args: string[]) {
 
 			const sql = values.command ?? readFileSync(resolve(values.file!), 'utf-8')
 			const d1 = openD1Database(ctx.dataDir(), dbConfig.database_name)
-			const result = await d1.exec(sql)
-			console.log(`Executed ${result.count} statement(s) in ${result.duration.toFixed(1)}ms`)
+			// Like `wrangler d1 execute`: split into statements and run them as one batch. D1Database.exec()
+			// splits on newlines only, so it cannot run a statement that spans lines.
+			const results = await d1.batch(splitStatements(sql).map(statement => d1.prepare(statement)))
+			const duration = results.reduce((total, result) => total + result.meta.duration, 0)
+			console.log(`Executed ${results.length} statement(s) in ${duration.toFixed(1)}ms`)
 			break
 		}
 		case 'migrations': {
