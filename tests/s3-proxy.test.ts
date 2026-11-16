@@ -263,6 +263,13 @@ test('GET with Range: bytes=-3 returns last 3 bytes', async () => {
 	expect(await res.text()).toBe('hij')
 })
 
+test('GET with Range past the end returns 416 InvalidRange', async () => {
+	await r2.put('big', 'abcdefghij')
+	const res = await handleS3Request(s3('GET', '/big', { headers: { range: 'bytes=20-' } }), BUCKET, r2)
+	expect(res.status).toBe(416)
+	expect(await res.text()).toContain('InvalidRange')
+})
+
 // --- Conditional requests ---
 
 test('GET with matching If-Match returns 200', async () => {

@@ -393,12 +393,6 @@ test('get with range suffix', async () => {
 	expect(await obj.text()).toBe('world')
 })
 
-test('get without range has no range property', async () => {
-	await r2.put('key', 'data')
-	const obj = await r2.get('key')
-	expect(obj!.range).toBeUndefined()
-})
-
 // --- New: List enhancements ---
 
 test('list with delimiter returns delimitedPrefixes', async () => {

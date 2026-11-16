@@ -41,7 +41,6 @@ function bodyOf(object: R2Object | null): R2ObjectBody | null {
 }
 
 function getWithRangeHeader(r2: FileR2Bucket, key: string, range: Headers) {
-	// @ts-expect-error lopata's R2GetOptions.range does not accept Headers, workers-types does
 	return r2.get(key, { range })
 }
 

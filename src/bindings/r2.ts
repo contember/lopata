@@ -55,14 +55,14 @@ export interface R2HTTPMetadata {
 }
 
 export interface R2GetOptions {
-	onlyIf?: R2Conditional
-	range?: R2Range
+	onlyIf?: R2Conditional | Headers
+	range?: R2Range | Headers
 }
 
 export interface R2PutOptions {
 	httpMetadata?: R2HTTPMetadata
 	customMetadata?: Record<string, string>
-	onlyIf?: R2Conditional
+	onlyIf?: R2Conditional | Headers
 	md5?: ArrayBuffer | string
 	sha1?: ArrayBuffer | string
 	sha256?: ArrayBuffer | string
@@ -135,18 +135,16 @@ export class R2ObjectBody extends R2Object {
 	private filePath: string
 	private rangeOffset: number
 	private rangeLength: number
-	private totalSize: number
 
-	constructor(meta: R2ObjectMeta, filePath: string, rangeOffset: number, rangeLength: number, totalSize: number) {
-		super(meta)
+	constructor(meta: R2ObjectMeta, filePath: string, range: { offset: number; length: number }) {
+		super({ ...meta, range })
 		this.filePath = filePath
-		this.rangeOffset = rangeOffset
-		this.rangeLength = rangeLength
-		this.totalSize = totalSize
+		this.rangeOffset = range.offset
+		this.rangeLength = range.length
 	}
 
 	private isFullFile(): boolean {
-		return this.rangeOffset === 0 && this.rangeLength === this.totalSize
+		return this.rangeOffset === 0 && this.rangeLength === this.size
 	}
 
 	/**
@@ -332,24 +330,167 @@ async function writeValueToFile(
 	return { etag: hasher.digest('hex'), size }
 }
 
+// --- Errors ---
+
+// workerd surfaces R2 errors as a plain Error with "<method>: <message> (<v4 code>)".
+function r2Error(method: string, code: number, message: string): Error {
+	return new Error(`${method}: ${message} (${code})`)
+}
+
+const INVALID_RANGE = [10039, 'The requested range is not satisfiable'] as const
+
 // --- Conditional check ---
 
-function evaluateConditional(cond: R2Conditional, etag: string, uploaded: Date): boolean {
-	if (cond.etagMatches !== undefined) {
-		const tags = Array.isArray(cond.etagMatches) ? cond.etagMatches : [cond.etagMatches]
-		if (!tags.some((t) => t === etag || t === `"${etag}"` || t === '*')) return false
+type R2Etag = { type: 'strong' | 'weak'; value: string } | { type: 'wildcard' }
+
+interface ParsedConditional {
+	etagMatches?: R2Etag[]
+	etagDoesNotMatch?: R2Etag[]
+	uploadedBefore?: Date
+	uploadedAfter?: Date
+	secondsGranularity: boolean
+}
+
+function parseConditional(onlyIf: R2Conditional | Headers): ParsedConditional {
+	if (onlyIf instanceof Headers) {
+		const cond: ParsedConditional = { secondsGranularity: true }
+		const ifMatch = onlyIf.get('if-match')
+		if (ifMatch !== null) {
+			cond.etagMatches = parseEtagHeader(ifMatch)
+			if (cond.etagMatches.length === 0) throw new Error('Invalid ETag in if-match header')
+		}
+		const ifNoneMatch = onlyIf.get('if-none-match')
+		if (ifNoneMatch !== null) {
+			cond.etagDoesNotMatch = parseEtagHeader(ifNoneMatch)
+			if (cond.etagDoesNotMatch.length === 0) throw new Error('Invalid ETag in if-none-match header')
+		}
+		const ifModifiedSince = onlyIf.get('if-modified-since')
+		if (ifModifiedSince !== null) cond.uploadedAfter = parseHttpDate(ifModifiedSince)
+		const ifUnmodifiedSince = onlyIf.get('if-unmodified-since')
+		if (ifUnmodifiedSince !== null) cond.uploadedBefore = parseHttpDate(ifUnmodifiedSince)
+		return cond
 	}
-	if (cond.etagDoesNotMatch !== undefined) {
-		const tags = Array.isArray(cond.etagDoesNotMatch) ? cond.etagDoesNotMatch : [cond.etagDoesNotMatch]
-		if (tags.some((t) => t === etag || t === `"${etag}"`)) return false
+	return {
+		etagMatches: onlyIf.etagMatches === undefined ? undefined : etagList(onlyIf.etagMatches),
+		etagDoesNotMatch: onlyIf.etagDoesNotMatch === undefined ? undefined : etagList(onlyIf.etagDoesNotMatch),
+		uploadedBefore: onlyIf.uploadedBefore,
+		uploadedAfter: onlyIf.uploadedAfter,
+		secondsGranularity: false,
 	}
-	if (cond.uploadedBefore !== undefined) {
-		if (uploaded >= cond.uploadedBefore) return false
+}
+
+function etagList(value: string | string[]): R2Etag[] {
+	return (Array.isArray(value) ? value : [value]).map((v) => v === '*' ? { type: 'wildcard' } : { type: 'strong', value: v.replace(/^"(.*)"$/, '$1') })
+}
+
+const ETAG_HEADER_ITEM = /^\s*(?:(\*)|(W\/)?"([^"]*)")\s*(?:,|$)/
+
+/** Parses an If-Match / If-None-Match list (workerd parseConditionalEtagHeader in api/r2-bucket.c++). */
+function parseEtagHeader(header: string): R2Etag[] {
+	const etags: R2Etag[] = []
+	let rest = header
+	while (true) {
+		rest = rest.replace(/^[\s,]+/, '')
+		if (rest === '') return etags
+		const m = ETAG_HEADER_ITEM.exec(rest)
+		if (!m) throw new Error('Invalid conditional header')
+		if (m[1] !== undefined) return [{ type: 'wildcard' }]
+		etags.push({ type: m[2] === undefined ? 'strong' : 'weak', value: m[3] ?? '' })
+		rest = rest.slice(m[0].length)
 	}
-	if (cond.uploadedAfter !== undefined) {
-		if (uploaded <= cond.uploadedAfter) return false
+}
+
+function parseHttpDate(value: string): Date {
+	const date = new Date(value)
+	if (Number.isNaN(date.getTime())) throw new TypeError(`Invalid date: ${value}`)
+	return date
+}
+
+function includesEtag(conditions: R2Etag[], etag: string, comparison: 'strong' | 'weak'): boolean {
+	for (const condition of conditions) {
+		if (condition.type === 'wildcard') return true
+		if (condition.value === etag && (condition.type === 'strong' || comparison === 'weak')) return true
 	}
-	return true
+	return false
+}
+
+/**
+ * RFC 7232 precondition evaluation as R2 does it (Miniflare _testR2Conditional in
+ * workers/r2/validator.worker.ts): a passing etag check overrides the date check it pairs with.
+ */
+function testConditional(cond: ParsedConditional, object: { etag: string; uploaded: Date } | null): boolean {
+	if (object === null) return cond.etagMatches === undefined && cond.uploadedAfter === undefined
+
+	const truncate = (ms: number) => cond.secondsGranularity ? Math.floor(ms / 1000) * 1000 : ms
+	const lastModified = truncate(object.uploaded.getTime())
+	const ifMatch = cond.etagMatches === undefined || includesEtag(cond.etagMatches, object.etag, 'strong')
+	const ifNoneMatch = cond.etagDoesNotMatch === undefined || !includesEtag(cond.etagDoesNotMatch, object.etag, 'weak')
+	const ifModifiedSince = cond.uploadedAfter === undefined
+		|| truncate(cond.uploadedAfter.getTime()) < lastModified
+		|| (cond.etagDoesNotMatch !== undefined && ifNoneMatch)
+	const ifUnmodifiedSince = cond.uploadedBefore === undefined
+		|| lastModified < truncate(cond.uploadedBefore.getTime())
+		|| (cond.etagMatches !== undefined && ifMatch)
+	return ifMatch && ifNoneMatch && ifModifiedSince && ifUnmodifiedSince
+}
+
+// --- Range ---
+
+/** Rejects malformed range objects before any I/O, as workerd does in initGetOptions (api/r2-bucket.c++). */
+function checkRangeArgument(range: R2Range): void {
+	for (const field of ['offset', 'length', 'suffix'] as const) {
+		const v = range[field]
+		if (v === undefined) continue
+		if (v < 0) throw new RangeError(`Invalid range. ${field} (${v}) must be greater than or equal to 0.`)
+		if (!Number.isInteger(v)) throw new RangeError(`Invalid range. ${field} (${v}) must be an integer, not floating point.`)
+	}
+	if (range.suffix !== undefined && range.offset !== undefined) throw new TypeError('Suffix is incompatible with offset.')
+	if (range.suffix !== undefined && range.length !== undefined) throw new TypeError('Suffix is incompatible with length.')
+}
+
+/**
+ * Resolves a get() range against the object size (Miniflare Validator.range in
+ * workers/r2/validator.worker.ts). A Range header that is absent, invalid or names several
+ * ranges yields the whole object; an unsatisfiable range object throws.
+ */
+function resolveRange(range: R2Range | Headers | undefined, size: number): { offset: number; length: number } {
+	const whole = { offset: 0, length: size }
+	if (range === undefined) return whole
+	if (range instanceof Headers) {
+		const header = range.get('range')
+		return header === null ? whole : (parseRangeHeader(header, size) ?? whole)
+	}
+	let { offset, length } = range
+	if (range.suffix !== undefined) {
+		if (range.suffix <= 0) throw r2Error('get', ...INVALID_RANGE)
+		length = Math.min(range.suffix, size)
+		offset = size - length
+	}
+	offset ??= 0
+	length ??= size - offset
+	if (offset > size || length <= 0) throw r2Error('get', ...INVALID_RANGE)
+	return { offset, length: Math.min(length, size - offset) }
+}
+
+/** Single-range `bytes=` header (Miniflare parseRanges in workers/shared/range.ts); null means "whole object". */
+function parseRangeHeader(header: string, size: number): { offset: number; length: number } | null {
+	const prefix = /^ *bytes *=/i.exec(header)
+	if (!prefix) return null
+	const specs = header.slice(prefix[0].length).split(',')
+	if (specs.length !== 1) return null
+	const m = /^ *(\d+)? *- *(\d+)? *$/.exec(specs[0] ?? '')
+	if (!m) return null
+	const [, start, end] = m
+	if (start !== undefined) {
+		const first = Number(start)
+		const last = end === undefined ? size - 1 : Math.min(Number(end), size - 1)
+		if (first >= size || (end !== undefined && first > Number(end))) return null
+		return { offset: first, length: last - first + 1 }
+	}
+	if (end === undefined) return null
+	const suffix = Number(end)
+	if (suffix === 0 || suffix >= size) return null
+	return { offset: size - suffix, length: suffix }
 }
 
 // --- Multipart Upload ---
@@ -627,12 +768,10 @@ export class FileR2Bucket {
 
 		// Check conditional before writing
 		if (options?.onlyIf) {
+			const cond = parseConditional(options.onlyIf)
 			const existing = this.getRow(key)
-			if (existing) {
-				const meta = rowToMeta(existing)
-				if (!evaluateConditional(options.onlyIf, meta.etag, meta.uploaded)) {
-					return null
-				}
+			if (existing && !testConditional(cond, rowToMeta(existing))) {
+				return null
 			}
 		}
 
@@ -687,42 +826,26 @@ export class FileR2Bucket {
 	}
 
 	async get(key: string, options?: R2GetOptions): Promise<R2ObjectBody | R2Object | null> {
+		const cond = options?.onlyIf === undefined ? undefined : parseConditional(options.onlyIf)
+		if (options?.range !== undefined && !(options.range instanceof Headers)) checkRangeArgument(options.range)
+
 		const row = this.getRow(key)
 		if (!row) return null
-
 		const meta = rowToMeta(row)
 
-		// Check conditional
-		if (options?.onlyIf) {
-			if (!evaluateConditional(options.onlyIf, meta.etag, meta.uploaded)) {
-				// Return R2Object (metadata only, no body) when condition fails
-				return new R2Object(meta)
-			}
+		// A failed precondition yields the metadata without a body
+		if (cond && !testConditional(cond, meta)) {
+			return new R2Object({ ...meta, range: { offset: 0, length: meta.size } })
 		}
 
-		const totalSize = row.size
-		let offset = 0
-		let length = totalSize
-		if (options?.range) {
-			const range = options.range
-			if (range.suffix !== undefined) {
-				offset = Math.max(0, totalSize - range.suffix)
-				length = totalSize - offset
-			} else {
-				offset = range.offset ?? 0
-				length = range.length ?? totalSize - offset
-				if (offset + length > totalSize) length = totalSize - offset
-			}
-			meta.range = { offset, length }
-		}
-
-		return new R2ObjectBody(meta, this.filePath(key), offset, length, totalSize)
+		return new R2ObjectBody(meta, this.filePath(key), resolveRange(options?.range, meta.size))
 	}
 
 	async head(key: string): Promise<R2Object | null> {
 		const row = this.getRow(key)
 		if (!row) return null
-		return new R2Object(rowToMeta(row))
+		const meta = rowToMeta(row)
+		return new R2Object({ ...meta, range: { offset: 0, length: meta.size } })
 	}
 
 	async delete(key: string | string[]) {

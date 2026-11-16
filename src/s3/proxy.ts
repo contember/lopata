@@ -360,7 +360,15 @@ async function handleGetObject(
 		return new Response(null, { status: 304, headers })
 	}
 
-	const obj = (await r2.get(key, { range: range ?? undefined })) as R2ObjectBody | null
+	let obj: R2ObjectBody | null
+	try {
+		obj = (await r2.get(key, { range: range ?? undefined })) as R2ObjectBody | null
+	} catch (err) {
+		if (err instanceof Error && err.message.endsWith('(10039)')) {
+			return xmlError('InvalidRange', 'The requested range is not satisfiable', `/${bucket}/${key}`, cors)
+		}
+		throw err
+	}
 	if (!obj) return xmlError('NoSuchKey', 'The specified key does not exist.', `/${bucket}/${key}`, cors)
 
 	const headers = applyObjectHeaders(obj, new Headers(cors))
