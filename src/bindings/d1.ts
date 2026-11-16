@@ -25,22 +25,6 @@ interface D1ExecResult {
 	duration: number
 }
 
-function buildMeta(db: Database, durationMs: number, rowsRead: number, rowsWritten: number): D1Meta {
-	const changes = db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
-	const { page_count } = db.query<{ page_count: number }, []>('PRAGMA page_count').get()!
-	const { page_size } = db.query<{ page_size: number }, []>('PRAGMA page_size').get()!
-	return {
-		duration: durationMs,
-		changes,
-		last_row_id: db.query<{ id: number }, []>('SELECT last_insert_rowid() as id').get()!.id,
-		served_by: 'lopata-d1',
-		rows_read: rowsRead,
-		rows_written: rowsWritten,
-		size_after: page_count * page_size,
-		changed_db: changes > 0,
-	}
-}
-
 /** Convert bind parameters: boolean→int, undefined→error, ArrayBuffer→Uint8Array */
 function convertBindParams(params: unknown[]): SQLQueryBindings[] {
 	return params.map((v, idx) => {
@@ -57,15 +41,24 @@ function convertBindParams(params: unknown[]): SQLQueryBindings[] {
 	})
 }
 
-/** Check if a SQL statement is a read query (returns rows) */
-function isReadStatement(sql: string): boolean {
-	const upper = sql.trimStart().toUpperCase()
-	return upper.startsWith('SELECT') || upper.startsWith('WITH') || upper.startsWith('PRAGMA')
-}
-
 interface QueryOutput {
 	columns: string[]
 	rows: unknown[][]
+	meta: D1Meta
+}
+
+interface ConnectionState {
+	totalChanges: number
+	lastRowId: number
+	size: number
+}
+
+function connectionState(db: Database): ConnectionState {
+	return db
+		.query<ConnectionState, []>(
+			'SELECT total_changes() AS totalChanges, last_insert_rowid() AS lastRowId, page_count * page_size AS size FROM pragma_page_count(), pragma_page_size()',
+		)
+		.get()!
 }
 
 const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in a single call, only the last statement can have parameters.'
@@ -76,24 +69,57 @@ const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in 
  * silently drops the rest, so the leading ones run here, each compiled after the previous one ran.
  */
 function executeQuery(db: Database, sql: string, params: SQLQueryBindings[]): QueryOutput {
+	const start = performance.now()
+	const before = connectionState(db)
 	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
-	const last = statements.pop() ?? sql
-	if (statements.length === 0) return executeStatement(db, last, params)
+	const lastSql = statements.pop() ?? sql
+	const execute = () => {
+		for (const leadingSql of statements) runLeadingStatement(db, leadingSql)
+		const beforeLast = statements.length > 0 ? connectionState(db) : before
+		const stmt = db.query(lastSql)
+		const rows = stmt.values(...params)
+		return { columns: stmt.columnNames, rows, beforeLast }
+	}
+	const { columns, rows, beforeLast } = statements.length > 0 ? inSavepoint(db, execute) : execute()
 
+	// Counted with total_changes(): changes() keeps the last write's count through later reads.
+	const after = connectionState(db)
+	const changes = after.totalChanges - before.totalChanges
+	const lastChanges = after.totalChanges - beforeLast.totalChanges
+	return {
+		columns,
+		rows,
+		meta: {
+			duration: performance.now() - start,
+			changes,
+			last_row_id: after.lastRowId,
+			served_by: 'lopata-d1',
+			// D1 reports libSQL's rows-scanned/written counters of the last statement, which bun:sqlite does not
+			// expose. Approximated by counting each returned and each changed row once.
+			rows_read: rows.length + lastChanges,
+			rows_written: lastChanges,
+			size_after: after.size,
+			changed_db: changes !== 0 || after.lastRowId !== before.lastRowId || after.size !== before.size,
+		},
+	}
+}
+
+function runLeadingStatement(db: Database, sql: string): void {
+	const stmt = db.prepare(sql)
+	try {
+		if (stmt.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
+		stmt.run()
+	} finally {
+		stmt.finalize()
+	}
+}
+
+function inSavepoint<T>(db: Database, fn: () => T): T {
 	db.run('SAVEPOINT lopata_d1_query')
 	try {
-		for (const leadingSql of statements) {
-			const leading = db.prepare(leadingSql)
-			try {
-				if (leading.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
-				leading.run()
-			} finally {
-				leading.finalize()
-			}
-		}
-		const output = executeStatement(db, last, params)
+		const result = fn()
 		db.run('RELEASE lopata_d1_query')
-		return output
+		return result
 	} catch (e) {
 		try {
 			db.run('ROLLBACK TO lopata_d1_query')
@@ -103,12 +129,6 @@ function executeQuery(db: Database, sql: string, params: SQLQueryBindings[]): Qu
 		}
 		throw e
 	}
-}
-
-function executeStatement(db: Database, sql: string, params: SQLQueryBindings[]): QueryOutput {
-	const stmt = db.query(sql)
-	const rows = stmt.values(...params)
-	return { columns: stmt.columnNames, rows }
 }
 
 function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
@@ -294,16 +314,11 @@ export class LocalD1PreparedStatement {
 
 	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
 	allUnlocked<T = Record<string, unknown>>(): D1Result<T> {
-		const start = performance.now()
-		const { columns, rows } = executeQuery(this.db, this.sql, this.params)
-		const results = rows.map(row => rowToObject(columns, row)) as T[]
-		const duration = performance.now() - start
-		const isRead = isReadStatement(this.sql)
-		const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
+		const { columns, rows, meta } = executeQuery(this.db, this.sql, this.params)
 		return {
-			results,
+			results: rows.map(row => rowToObject(columns, row)) as T[],
 			success: true,
-			meta: buildMeta(this.db, duration, isRead ? results.length : 0, isRead ? 0 : changes),
+			meta,
 		}
 	}
 

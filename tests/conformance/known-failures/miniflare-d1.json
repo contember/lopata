@@ -1,7 +1,5 @@
 {
 	"D1Database: exec": "D1_EXEC_ERROR: Error in SQL statement [UPDATE colours_ns SET name = 'Green' WHERE name = 'green'",
-	"D1PreparedStatement: all": "expect(received).toEqual(expected)",
 	"D1PreparedStatement: bind": "Binding expected string, TypedArray, boolean, number, bigint or null",
-	"D1PreparedStatement: run": "expect(received).toEqual(expected)",
 	"operations permit strange database names": "unable to open database file"
 }

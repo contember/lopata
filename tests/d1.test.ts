@@ -402,7 +402,7 @@ describe('D1Database', () => {
 		test('rows_written reflects changes for INSERT', async () => {
 			const result = await d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Alice').run()
 			expect(result.meta.rows_written).toBe(1)
-			expect(result.meta.rows_read).toBe(0)
+			expect(result.meta.rows_read).toBe(1)
 		})
 
 		test('rows_read reflects rows returned by SELECT', async () => {
@@ -418,7 +418,7 @@ describe('D1Database', () => {
 			await d1.prepare('INSERT INTO users (name) VALUES (?)').bind('Bob').run()
 			const result = await d1.prepare("UPDATE users SET email = 'test@test.com'").all()
 			expect(result.meta.rows_written).toBe(2)
-			expect(result.meta.rows_read).toBe(0)
+			expect(result.meta.rows_read).toBe(2)
 		})
 
 		test('size_after is a positive number', async () => {
