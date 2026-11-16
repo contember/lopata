@@ -62,6 +62,38 @@ function storagePolicy(headers: Headers, now: number): StoragePolicy {
 	return { storable: true, expiresAt: Number.isNaN(expiresTime) ? null : expiresTime, stripSetCookie }
 }
 
+const ETAG = /^(W\/)?"(.+)"$/
+
+// If-None-Match always uses weak comparison, so the W/ prefix is ignored.
+function parseETag(value: string): string | undefined {
+	return ETAG.exec(value.trim())?.[2]
+}
+
+const IMF_FIXDATE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d\d (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d\d:\d\d:\d\d GMT$/
+
+function parseHttpDate(value: string): number {
+	return IMF_FIXDATE.test(value) ? Date.parse(value) : NaN
+}
+
+/**
+ * Evaluate If-None-Match / If-Modified-Since against the cached response, as Miniflare's
+ * cache.worker.ts getMatchResponse does for Cloudflare's cache.
+ */
+function isNotModified(requestHeaders: Headers, responseHeaders: Headers): boolean {
+	const ifNoneMatch = requestHeaders.get('if-none-match')
+	const etag = parseETag(responseHeaders.get('etag') ?? '')
+	if (ifNoneMatch !== null && etag !== undefined) {
+		if (ifNoneMatch.trim() === '*') return true
+		if (ifNoneMatch.split(',').some((candidate) => parseETag(candidate) === etag)) return true
+	}
+
+	const ifModifiedSince = requestHeaders.get('if-modified-since')
+	const lastModified = responseHeaders.get('last-modified')
+	if (ifModifiedSince === null || lastModified === null) return false
+	// An invalid date on either side is NaN, which compares false
+	return parseHttpDate(lastModified) <= parseHttpDate(ifModifiedSince)
+}
+
 export class SqliteCache {
 	private db: Database
 	private cacheName: string
@@ -100,6 +132,9 @@ export class SqliteCache {
 
 		const headers = new Headers(JSON.parse(row.headers))
 		headers.set('cf-cache-status', 'HIT')
+		if (isNotModified(req.headers, headers)) {
+			return new Response(null, { status: 304, headers })
+		}
 		return new Response(row.body as unknown as Bun.BodyInit, { status: row.status, headers })
 	}
 

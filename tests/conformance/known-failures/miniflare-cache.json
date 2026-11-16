@@ -1,6 +1,4 @@
 {
-	"match respects If-Modified-Since header": "expect(received).toBe(expected)",
-	"match respects If-None-Match header": "expect(received).toBe(expected)",
 	"match respects Range header": "expect(received).toBe(expected)",
 	"operations respect cf.cacheKey": "expect(received).toBe(expected)"
 }
