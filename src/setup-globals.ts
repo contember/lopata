@@ -81,7 +81,15 @@ export function setupCloudflareGlobals() {
 
 	// Patch Response to preserve CF-specific `webSocket` property from init
 	const OriginalResponse = globalThis.Response
-	globalThis.Response = class extends OriginalResponse {
+	class LopataResponse extends OriginalResponse {
+		// Bun adds `;charset=utf-8`; workerd sets plain `application/json` unless the caller supplies a content type.
+		static override json(data: unknown, init?: ResponseInit): Response {
+			const response = OriginalResponse.json(data, init)
+			// `init` may be another Response, whose status and headers live on getters; read them through a Response too.
+			if (!new OriginalResponse(null, init).headers.has('content-type')) response.headers.set('content-type', 'application/json')
+			return response
+		}
+
 		webSocket?: InstanceType<typeof WebSocketPair>[0]
 
 		constructor(body?: any, init?: ResponseInit & { webSocket?: InstanceType<typeof WebSocketPair>[0] }) {
@@ -91,6 +99,14 @@ export function setupCloudflareGlobals() {
 			}
 		}
 	}
+	// `fetch()`, `Response.json()`, `Response.error()` and `Response.redirect()` return native Responses; they are Responses all
+	// the same. Subclasses declared by user code keep the ordinary prototype-chain check.
+	Object.defineProperty(LopataResponse, Symbol.hasInstance, {
+		value(this: unknown, value: unknown): boolean {
+			return this === LopataResponse ? value instanceof OriginalResponse : Function.prototype[Symbol.hasInstance].call(this, value)
+		},
+	})
+	globalThis.Response = LopataResponse
 
 	// Register global CF stream classes
 	Object.defineProperty(globalThis, 'IdentityTransformStream', {
