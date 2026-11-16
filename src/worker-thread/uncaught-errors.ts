@@ -32,10 +32,10 @@ interface CommandScope {
 const commandScope = new AsyncLocalStorage<CommandScope>()
 
 /**
- * Runs one dispatched command so that an uncaught exception from a task it scheduled
- * fails this command only. workerd just logs such an exception and later cancels a
- * request that can no longer produce a response (`IoContext::abortFromHang`); failing it
- * with the thrown error is the approximation. Concurrent commands are unaffected.
+ * Runs one dispatched command so that an uncaught exception from a task it scheduled fails this
+ * command (not concurrent ones), even if it would still have responded. workerd only logs it
+ * (`IoContext::taskFailed`) and cancels a hung non-actor request (`IoContext::abortFromHang`;
+ * actors have no hang detection). Failing fast instead of hanging is lopata's choice.
  */
 export function runFailableCommand<T>(dispatch: () => Promise<T>, onLateResult?: (late: T) => void): Promise<T> {
 	const failure = Promise.withResolvers<never>()

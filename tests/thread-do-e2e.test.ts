@@ -116,6 +116,14 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect(await (await fetch(`${base}/counter/thrower/hits`)).text()).toBe('thrower:2')
 	})
 
+	test('an uncaught exception in an alarm does not trigger an overlapping retry', async () => {
+		expect(await (await fetch(`${base}/counter/alarmer/arm-alarm`)).text()).toBe('alarmer:armed')
+		// Past the 1 s retry backoff and the first run's 1.5 s body.
+		await Bun.sleep(2_700)
+		// runs/max concurrently running: a failed-then-retried alarm would read 2/2.
+		expect(await (await fetch(`${base}/counter/alarmer/alarm-stats`)).text()).toBe('alarmer:1/1')
+	}, 10_000)
+
 	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
 	// the main-side check never trips in thread mode. The budget must
 	// accumulate across all binding calls of ONE request (a per-call re-seed of

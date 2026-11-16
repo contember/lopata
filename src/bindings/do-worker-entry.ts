@@ -396,7 +396,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 		if (msg.type === 'command') {
 			try {
-				const { result, afterPost } = await runFailableCommand(() => runWithParentContext(msg.parent, () => handleCommand(msg.command)))
+				const dispatch = () => runWithParentContext(msg.parent, () => handleCommand(msg.command))
+				// Not alarms: a failed alarm is retried after 1 s while this run continues, so two would overlap.
+				const { result, afterPost } = await (msg.command.type === 'alarm' ? dispatch() : runFailableCommand(dispatch))
 				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
 				// Post-result side effects: for streamed fetch responses, start the
 				// body pump *after* `result` ships so main has registered the
