@@ -1,4 +1,3 @@
 {
-	"match respects Range header": "expect(received).toBe(expected)",
 	"operations respect cf.cacheKey": "expect(received).toBe(expected)"
 }

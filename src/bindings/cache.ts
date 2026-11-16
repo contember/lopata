@@ -94,6 +94,58 @@ function isNotModified(requestHeaders: Headers, responseHeaders: Headers): boole
 	return parseHttpDate(lastModified) <= parseHttpDate(ifModifiedSince)
 }
 
+interface ByteRange {
+	start: number // inclusive
+	end: number // inclusive
+}
+
+const RANGE_UNIT = /^ *bytes *=/i
+const RANGE_SPEC = /^ *(\d+)? *- *(\d+)? *$/
+
+/**
+ * Parse a Range header against a body of `length` bytes, as Miniflare's shared/range.ts parseRanges does:
+ * undefined = not satisfiable (416), [] = serve the whole body, otherwise the ranges to serve.
+ */
+function parseRanges(header: string, length: number): ByteRange[] | undefined {
+	const unit = RANGE_UNIT.exec(header)
+	if (!unit) return undefined
+	const specs = header.slice(unit[0].length)
+	if (specs.trim() === '') return []
+
+	const ranges: ByteRange[] = []
+	for (const spec of specs.split(',')) {
+		const match = RANGE_SPEC.exec(spec)
+		if (!match) return undefined
+		const [, start, end] = match
+		if (start !== undefined) {
+			const rangeStart = parseInt(start, 10)
+			const rangeEnd = end === undefined ? length - 1 : parseInt(end, 10)
+			if (rangeStart > rangeEnd || rangeStart >= length) return undefined
+			ranges.push({ start: rangeStart, end: Math.min(rangeEnd, length - 1) })
+		} else if (end !== undefined) {
+			const suffix = parseInt(end, 10)
+			if (suffix >= length) return []
+			if (suffix === 0) continue
+			ranges.push({ start: length - suffix, end: length - 1 })
+		} else {
+			return undefined
+		}
+	}
+	return ranges
+}
+
+function multipartByteRanges(body: Uint8Array, ranges: ByteRange[], contentType: string | null): { boundary: string; body: Blob } {
+	const boundary = `lopata-boundary-${crypto.randomUUID()}`
+	const parts: Bun.BlobPart[] = []
+	for (const [i, { start, end }] of ranges.entries()) {
+		const typeLine = contentType === null ? '' : `Content-Type: ${contentType}\r\n`
+		parts.push(`${i > 0 ? '\r\n' : ''}--${boundary}\r\n${typeLine}Content-Range: bytes ${start}-${end}/${body.byteLength}\r\n\r\n`)
+		parts.push(body.slice(start, end + 1))
+	}
+	parts.push(`\r\n--${boundary}--`)
+	return { boundary, body: new Blob(parts) }
+}
+
 export class SqliteCache {
 	private db: Database
 	private cacheName: string
@@ -130,12 +182,32 @@ export class SqliteCache {
 			return undefined
 		}
 
+		const size = row.body.byteLength
+		const rangeHeader = req.headers.get('range')
+		const ranges = rangeHeader === null ? [] : parseRanges(rangeHeader, size)
+		if (ranges === undefined) {
+			return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${size}`, 'CF-Cache-Status': 'HIT' } })
+		}
+
 		const headers = new Headers(JSON.parse(row.headers))
 		headers.set('cf-cache-status', 'HIT')
 		if (isNotModified(req.headers, headers)) {
 			return new Response(null, { status: 304, headers })
 		}
-		return new Response(row.body as unknown as Bun.BodyInit, { status: row.status, headers })
+
+		const [range, ...moreRanges] = ranges
+		if (range === undefined) {
+			return new Response(row.body as unknown as Bun.BodyInit, { status: row.status, headers })
+		}
+		if (moreRanges.length === 0) {
+			headers.set('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
+			headers.set('Content-Length', String(range.end - range.start + 1))
+			return new Response(row.body.slice(range.start, range.end + 1), { status: 206, headers })
+		}
+		const multipart = multipartByteRanges(row.body, ranges, headers.get('content-type'))
+		headers.set('Content-Type', `multipart/byteranges; boundary=${multipart.boundary}`)
+		headers.set('Content-Length', String(multipart.body.size))
+		return new Response(multipart.body, { status: 206, headers })
 	}
 
 	async put(request: Request | string, response: Response): Promise<void> {
