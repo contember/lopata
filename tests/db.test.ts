@@ -32,6 +32,18 @@ describe('runMigrations', () => {
 		expect(tables.length).toBeGreaterThanOrEqual(7)
 	})
 
+	test('adds checksum_md5 to an existing r2_multipart_parts table and keeps its rows', () => {
+		const db = new Database(':memory:')
+		db.run(`CREATE TABLE r2_multipart_parts (
+			upload_id TEXT NOT NULL, part_number INTEGER NOT NULL, etag TEXT NOT NULL, size INTEGER NOT NULL,
+			file_path TEXT NOT NULL, PRIMARY KEY (upload_id, part_number))`)
+		db.run(`INSERT INTO r2_multipart_parts VALUES ('u', 1, 'e', 1, 'p')`)
+		runMigrations(db)
+
+		const row = db.query<{ etag: string; checksum_md5: string | null }, []>('SELECT etag, checksum_md5 FROM r2_multipart_parts').get()
+		expect(row).toEqual({ etag: 'e', checksum_md5: null })
+	})
+
 	test('can insert and read from kv table', () => {
 		const db = new Database(':memory:')
 		runMigrations(db)

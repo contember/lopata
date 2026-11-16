@@ -888,19 +888,6 @@ export class FileR2Bucket {
         PRIMARY KEY (upload_id, part_number)
       )
     `)
-		try {
-			this.db.run(`ALTER TABLE r2_multipart_parts ADD COLUMN checksum_md5 TEXT`)
-		} catch {
-			// Column already exists
-		}
-		// Completed and aborted uploads, so abort() can be a no-op for them and complete() can tell them from unknown ids
-		this.db.run(`
-      CREATE TABLE IF NOT EXISTS r2_multipart_finished (
-        upload_id TEXT PRIMARY KEY,
-        bucket TEXT NOT NULL,
-        key TEXT NOT NULL
-      )
-    `)
 	}
 
 	private filePath(key: string): string {
