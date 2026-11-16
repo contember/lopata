@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'bun:test'
 import { QueueConsumer, QueuePullConsumer, SqliteQueueProducer } from '../src/bindings/queue'
 import { resolveCompatibility } from '../src/compatibility'
 import { runMigrations } from '../src/db'
+import { TestClock } from '../src/testing/clock'
 
 let db: Database
 
@@ -209,7 +210,7 @@ describe('QueueConsumer', () => {
 		const received: unknown[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					received.push(msg.body)
@@ -234,7 +235,7 @@ describe('QueueConsumer', () => {
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -252,7 +253,7 @@ describe('QueueConsumer', () => {
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -272,7 +273,7 @@ describe('QueueConsumer', () => {
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -283,28 +284,33 @@ describe('QueueConsumer', () => {
 		expect(receivedBody).toEqual({ complex: [1, 2] })
 	})
 
-	test('poll respects maxBatchSize', async () => {
+	test('poll delivers full batches at once and a partial batch after maxBatchTimeout', async () => {
+		const clock = new TestClock(1_000_000)
+		const clockedProducer = new SqliteQueueProducer(db, 'test-queue', 0, undefined, clock)
 		for (let i = 0; i < 5; i++) {
-			await producer.send({ i })
+			await clockedProducer.send({ i })
 		}
 
-		let batchSize = 0
+		const batchSizes: number[] = []
 		const consumer = new QueueConsumer(
 			db,
 			{ queue: 'test-queue', maxBatchSize: 3, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
-				batchSize = batch.messages.length
-				batch.ackAll()
+				batchSizes.push(batch.messages.length)
 			},
 			{},
+			undefined,
+			clock,
 		)
 
 		await consumer.poll()
-		expect(batchSize).toBe(3)
-
-		// 2 remaining
-		const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!
-		expect(count.cnt).toBe(2)
+		expect(batchSizes).toEqual([3])
+		clock.advance(4999)
+		await consumer.poll()
+		expect(batchSizes).toEqual([3])
+		clock.advance(1)
+		await consumer.poll()
+		expect(batchSizes).toEqual([3, 2])
 	})
 
 	test('ackAll deletes all messages in batch', async () => {
@@ -313,7 +319,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.ackAll()
 			},
@@ -332,7 +338,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					if (msg.body === 'remove') {
@@ -357,7 +363,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					msg.retry()
@@ -377,7 +383,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.retryAll({ delaySeconds: 60 })
 			},
@@ -397,7 +403,7 @@ describe('QueueConsumer', () => {
 		let called = false
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				called = true
 			},
@@ -413,7 +419,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 2, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 2, deadLetterQueue: null },
 			async (batch) => {
 				batch.retryAll()
 			},
@@ -435,7 +441,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 1, deadLetterQueue: 'my-dlq' },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 1, deadLetterQueue: 'my-dlq' },
 			async (batch) => {
 				batch.retryAll()
 			},
@@ -464,7 +470,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				throw new Error('handler crash')
 			},
@@ -484,7 +490,7 @@ describe('QueueConsumer', () => {
 		const attemptsSeen: number[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 5, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 5, deadLetterQueue: null },
 			async (batch) => {
 				attemptsSeen.push(batch.messages[0]!.attempts)
 				batch.retryAll()
@@ -505,7 +511,7 @@ describe('QueueConsumer', () => {
 		let queueName = ''
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				queueName = batch.queue
 			},
@@ -525,7 +531,7 @@ describe('QueueConsumer', () => {
 		const received: unknown[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'persist-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'persist-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					received.push(msg.body)
@@ -542,7 +548,7 @@ describe('QueueConsumer', () => {
 		let called = false
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				called = true
 			},
@@ -559,7 +565,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (_batch, _env, ctx) => {
 				ctx.waitUntil(
 					new Promise<void>((resolve) => {
@@ -583,7 +589,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				const msg = batch.messages[0]!
 				// First ack, then retry — retry should win (last call wins)
@@ -605,7 +611,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				// First retryAll, then ackAll — ackAll should win
 				batch.retryAll()
@@ -627,7 +633,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.ackAll()
 				// Override first message to retry
@@ -649,7 +655,7 @@ describe('QueueConsumer', () => {
 		let handlerCallCount = 0
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				handlerCallCount++
 				// Simulate slow handler

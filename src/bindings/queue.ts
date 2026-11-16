@@ -48,6 +48,15 @@ interface ConsumerConfig {
 	retentionPeriodSeconds?: number // default 345600 (4 days), matching CF default
 }
 
+interface QueueRow {
+	id: string
+	body: Uint8Array | Buffer
+	content_type: string
+	attempts: number
+	visible_at: number
+	created_at: number
+}
+
 type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>
 
 // --- Limits ---
@@ -222,8 +231,6 @@ export class QueueConsumer {
 	private env: Record<string, unknown>
 	private workerName: string | undefined
 	private timer: ReturnType<typeof setInterval> | null = null
-	private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = []
-	private batchTimer: ReturnType<typeof setTimeout> | null = null
 	private polling = false
 	private _activeDeliveries = 0
 	/** Optional hook to register an in-flight batch with reload-drain accounting,
@@ -250,7 +257,8 @@ export class QueueConsumer {
 		this._trackBatch = trackBatch
 	}
 
-	start(intervalMs: number = 1000): void {
+	// Short enough that a full batch goes out without a noticeable wait; partial batches wait for maxBatchTimeout.
+	start(intervalMs: number = 100): void {
 		if (this.timer) return
 		this.timer = setInterval(() => this.poll(), intervalMs)
 		// Run first poll immediately
@@ -261,10 +269,6 @@ export class QueueConsumer {
 		if (this.timer) {
 			clearInterval(this.timer)
 			this.timer = null
-		}
-		if (this.batchTimer) {
-			clearTimeout(this.batchTimer)
-			this.batchTimer = null
 		}
 	}
 
@@ -283,29 +287,32 @@ export class QueueConsumer {
 				[this.config.queue, now - retentionMs],
 			)
 
-			const rows = this.db.query<
-				{ id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
-				[string, number, number]
-			>(
-				"SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at LIMIT ?",
-			).all(this.config.queue, now, this.config.maxBatchSize)
+			const select = this.db.query<QueueRow, [string, number, number]>(
+				"SELECT id, body, content_type, attempts, visible_at, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at, rowid LIMIT ?",
+			)
+			while (true) {
+				const batchNow = this.clock.now()
+				const rows = select.all(this.config.queue, batchNow, this.config.maxBatchSize)
+				const full = rows.length >= this.config.maxBatchSize
+				const oldest = rows[0]
+				// A full batch goes out at once; a partial one waits maxBatchTimeout from when its oldest message became visible.
+				if (!oldest || (!full && batchNow - oldest.visible_at < this.config.maxBatchTimeout * 1000)) return
 
-			if (rows.length === 0) return
-
-			const delivery = this.deliverBatch(rows)
-			// Register the in-flight batch with reload drain so the generation isn't
-			// terminated mid-batch (which would expire the lease and redeliver with
-			// the retry counter bumped).
-			this._trackBatch?.(delivery)
-			await delivery
+				const delivery = this.deliverBatch(rows)
+				// Register the in-flight batch with reload drain so the generation isn't
+				// terminated mid-batch (which would expire the lease and redeliver with
+				// the retry counter bumped).
+				this._trackBatch?.(delivery)
+				await delivery
+				// Messages retried from a partial batch wait for the next poll.
+				if (!full) return
+			}
 		} finally {
 			this.polling = false
 		}
 	}
 
-	private async deliverBatch(
-		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
-	): Promise<void> {
+	private async deliverBatch(rows: QueueRow[]): Promise<void> {
 		this._activeDeliveries++
 		try {
 			await this._deliverBatchInner(rows)
@@ -314,9 +321,7 @@ export class QueueConsumer {
 		}
 	}
 
-	private async _deliverBatchInner(
-		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
-	): Promise<void> {
+	private async _deliverBatchInner(rows: QueueRow[]): Promise<void> {
 		// Increment attempts for all fetched messages
 		const ids = rows.map((r) => r.id)
 		const placeholders = ids.map(() => '?').join(',')

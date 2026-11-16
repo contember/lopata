@@ -1,6 +1,6 @@
 // Adapted from workers-sdk packages/miniflare/test/plugins/queues/{index,delay,retry}.spec.ts at 6ee18e1bd (MIT OR Apache-2.0, Cloudflare, Inc.)
 // Miniflare plumbing (producer/consumer Workers, REPORTER service bindings, the queue broker's fake timers) is replaced by
-// SqliteQueueProducer + QueueConsumer over an in-memory database, one TestClock per queue and an in-process handler.
+// SqliteQueueProducer + QueueConsumer over an in-memory database, one shared TestClock and an in-process handler.
 
 // Excluded:
 // - "maxBatchTimeout validation": Miniflare options schema validation (ERR_VALIDATION, Zod message).
@@ -21,8 +21,8 @@ const known = loadKnownFailures('miniflare-queues')
 
 // Miniflare's control stub enables fake timers at 1_000_000 ms.
 const FAKE_TIME_START = 1_000_000
-// The runtime starts every consumer with `QueueConsumer.start()`, whose default poll interval is 1000 ms.
-const POLL_INTERVAL_MS = 1000
+// The runtime starts every consumer with `QueueConsumer.start()`, whose default poll interval is 100 ms.
+const POLL_INTERVAL_MS = 100
 // Miniflare's queue broker defaults (broker.worker.ts); the specs' expected values depend on them.
 const DEFAULT_BATCH_SIZE = 5
 const DEFAULT_BATCH_TIMEOUT = 1
@@ -42,21 +42,22 @@ interface ReportedMessage {
 }
 
 let db: Database
+// One wall clock for every queue, as in the runtime (Miniflare gives each queue broker its own fake timers).
+let clock: TestClock
 
 beforeEach(() => {
 	db = new Database(':memory:')
 	runMigrations(db)
+	clock = new TestClock(FAKE_TIME_START)
 })
 
 afterEach(() => {
 	db.close()
 })
 
-// Stands in for Miniflare's per-queue broker control stub. Each queue has its own fake clock, as each Miniflare broker
-// Durable Object does; advancing it fires the consumer's poll timer at every interval boundary, like `setInterval` would.
+// Stands in for Miniflare's per-queue broker control stub. Advancing the shared clock fires this queue's consumer poll timer
+// at every interval boundary, like `setInterval` would.
 class QueueControl {
-	readonly clock = new TestClock(FAKE_TIME_START)
-	private nextPollAt = FAKE_TIME_START + POLL_INTERVAL_MS
 	readonly consumer: QueueConsumer
 
 	constructor(private readonly queue: string, options: ConsumerOptions, handler: QueueHandler) {
@@ -68,26 +69,27 @@ class QueueControl {
 			deadLetterQueue: null,
 			...options,
 		}
-		this.consumer = new QueueConsumer(db, config, handler, {}, undefined, this.clock)
+		this.consumer = new QueueConsumer(db, config, handler, {}, undefined, clock)
 	}
 
 	producer(defaultDelay = 0): SqliteQueueProducer {
-		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, this.clock, COMPATIBILITY)
+		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, clock, COMPATIBILITY)
 	}
 
 	async advanceFakeTime(ms: number): Promise<void> {
-		const target = this.clock.now() + ms
-		while (this.nextPollAt <= target) {
-			this.clock.set(this.nextPollAt)
+		const target = clock.now() + ms
+		let pollAt = FAKE_TIME_START + (Math.floor((clock.now() - FAKE_TIME_START) / POLL_INTERVAL_MS) + 1) * POLL_INTERVAL_MS
+		for (; pollAt <= target; pollAt += POLL_INTERVAL_MS) {
+			clock.set(pollAt)
 			await this.consumer.poll()
-			this.nextPollAt += POLL_INTERVAL_MS
 		}
-		this.clock.set(target)
+		clock.set(target)
 	}
 
-	// Polls are awaited inside advanceFakeTime; lopata schedules no other queue work.
+	// Miniflare's broker flushes a full batch on a zero-delay timer that this awaits; lopata's equivalent is the consumer's
+	// next poll, run here at the current time.
 	waitForFakeTasks(): Promise<void> {
-		return Promise.resolve()
+		return this.consumer.poll()
 	}
 }
 
