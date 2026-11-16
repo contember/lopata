@@ -128,13 +128,22 @@ const server = Bun.spawn(['bun', CLI, 'dev', '--port', String(port), '--listen',
 	stderr: Bun.file(join(root, 'lopata.err.log')),
 })
 
-afterAll(() => {
+async function shutdown(): Promise<void> {
 	server.kill()
+	await server.exited
 	if (process.env.CONFORMANCE_KEEP === '1') console.log(`conformance project kept in ${root}`)
 	else rmSync(root, { recursive: true, force: true })
-})
+}
 
-await waitForServer(base, server, root)
+// afterAll does not run when the module's top-level await throws, so a failed startup cleans up itself.
+process.on('exit', () => server.kill())
+afterAll(shutdown)
+try {
+	await waitForServer(base, server, root)
+} catch (err) {
+	await shutdown()
+	throw err
+}
 
 async function callModule(module: string, path: string): Promise<Response> {
 	return fetch(`${base}${path}`, { headers: { host: hostFor(module) }, signal: AbortSignal.timeout(TEST_TIMEOUT_MS) })
@@ -161,7 +170,9 @@ interface ModuleRun {
 async function runTest(module: string, name: string): Promise<RunResult> {
 	try {
 		const res = await callModule(module, `/__conformance/run?test=${encodeURIComponent(name)}`)
-		return parseRunResult(await res.json())
+		const body = await res.text()
+		if (!res.ok) return { ok: false, error: `runner returned HTTP ${res.status}: ${body.slice(0, 300)}` }
+		return parseRunResult(JSON.parse(body))
 	} catch (err) {
 		return { ok: false, error: `runner request failed: ${err}` }
 	}
@@ -177,12 +188,17 @@ async function runModule(module: string, area: string): Promise<ModuleRun> {
 	return { module, area, results }
 }
 
+// Modules with Durable Objects run one at a time: lopata keys DO storage by class name, and two modules declare the same class.
 async function runAll(): Promise<ModuleRun[]> {
-	const queue = [...selectedModules]
+	const parallel = selectedModules.filter(([, spec]) => !spec.durableObjects)
+	const serial = selectedModules.filter(([, spec]) => spec.durableObjects)
 	const runs: ModuleRun[] = []
 	const lanes = Array.from({ length: MODULE_CONCURRENCY }, async () => {
-		for (let next = queue.shift(); next; next = queue.shift()) runs.push(await runModule(next[0], next[1].area))
+		for (let next = parallel.shift(); next; next = parallel.shift()) runs.push(await runModule(next[0], next[1].area))
 	})
+	lanes.push((async () => {
+		for (const [module, spec] of serial) runs.push(await runModule(module, spec.area))
+	})())
 	await Promise.all(lanes)
 	return runs.sort((a, b) => a.module.localeCompare(b.module))
 }
