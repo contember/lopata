@@ -20,7 +20,10 @@ These tests measure how closely lopata matches workerd, the Cloudflare Workers r
 
 `known-failures/<corpus>.json` maps each failing test id to the first line of its error. Those tests run as `test.failing`, so
 `bun test tests/` stays green, but it fails when a passing test regresses or when a known failure starts passing. After a fix,
-remove the fixed ids or regenerate the file.
+remove the fixed ids or regenerate the file. A check per corpus fails when the file lists an id that no case registers.
+
+A workerd case that times out (5 s) is reported as failed, but the test keeps running inside its worker; the module's next
+cases may still observe it.
 
 ## Measuring
 

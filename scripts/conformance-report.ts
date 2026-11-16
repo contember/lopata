@@ -3,9 +3,10 @@
 //   bun scripts/conformance-report.ts [--update] [test files…]
 // --update rewrites tests/conformance/known-failures/<corpus>.json from the measured failures.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
+import { knownFailuresPath, parseKnownFailures, STALE_CHECK_PREFIX } from '../tests/conformance/harness'
 
 const ROOT = resolve(import.meta.dir, '..')
 const CONFORMANCE_DIR = join(ROOT, 'tests/conformance')
@@ -29,7 +30,7 @@ function decodeXml(text: string): string {
 
 function attribute(tag: string, name: string): string {
 	const match = new RegExp(`\\s${name}="([^"]*)"`).exec(tag)
-	if (!match?.[1]) throw new Error(`JUnit testcase without ${name}: ${tag}`)
+	if (match?.[1] === undefined) throw new Error(`JUnit testcase without ${name}: ${tag}`)
 	return decodeXml(match[1])
 }
 
@@ -41,11 +42,12 @@ function parseJunit(xml: string): CaseResult[] {
 		const body = match[3] ?? ''
 		const failure = /<failure\b[^>]*?message="([^"]*)"/.exec(body)
 		const isSkipped = /<skipped\b/.test(body)
-		if (isSkipped) continue
+		const id = attribute(tag, 'name')
+		if (isSkipped || id.startsWith(STALE_CHECK_PREFIX)) continue
 		results.push({
 			corpus: basename(attribute(tag, 'file')).replace(/\.test\.ts$/, ''),
 			area: attribute(tag, 'classname'),
-			id: attribute(tag, 'name'),
+			id,
 			failure: failure?.[1] !== undefined ? decodeXml(failure[1]) : /<failure\b/.test(body) ? 'failed' : null,
 		})
 	}
@@ -98,19 +100,25 @@ try {
 	lines.push(`| **all** | | **${passed}** | **${total - passed}** | **${total}** | **${percent(passed, total)}** |`)
 	console.log(lines.join('\n'))
 
+	const requested = (files.length ? files : [...new Bun.Glob('*.test.ts').scanSync(CONFORMANCE_DIR)]).map(f => basename(f).replace(/\.test\.ts$/, ''))
+	const missing = requested.filter(corpus => ![...byArea.keys()].some(key => key.startsWith(`${corpus}\u0000`)))
+	if (missing.length) console.error(`\nNo results for: ${missing.join(', ')} (the file failed to load or registered no cases)`)
+
 	if (update) {
+		// Merge per id, so a run over a subset (CONFORMANCE_ONLY) keeps the entries of cases it did not run.
 		const corpora = new Set(results.map(r => r.corpus))
 		for (const corpus of corpora) {
-			const failures = Object.fromEntries(
-				results
-					.filter(r => r.corpus === corpus && r.failure !== null)
-					.sort((a, b) => a.id.localeCompare(b.id))
-					.map(r => [r.id, firstLine(r.failure ?? '')]),
-			)
-			writeFileSync(join(CONFORMANCE_DIR, 'known-failures', `${corpus}.json`), `${JSON.stringify(failures, null, '\t')}\n`)
+			const path = knownFailuresPath(corpus)
+			const ran = new Set(results.filter(r => r.corpus === corpus).map(r => r.id))
+			const previous = existsSync(path) ? parseKnownFailures(JSON.parse(readFileSync(path, 'utf8')), path) : new Map<string, string>()
+			const merged = new Map([...previous].filter(([id]) => !ran.has(id)))
+			for (const r of results) if (r.corpus === corpus && r.failure !== null) merged.set(r.id, firstLine(r.failure))
+			const sorted = Object.fromEntries([...merged].sort(([a], [b]) => a.localeCompare(b)))
+			writeFileSync(path, `${JSON.stringify(sorted, null, '\t')}\n`)
 		}
 		console.log(`\nUpdated known failures for: ${[...corpora].join(', ')}`)
 	}
+	if (missing.length) process.exitCode = 1
 } finally {
 	rmSync(scratch, { recursive: true, force: true })
 }
