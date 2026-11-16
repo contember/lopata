@@ -11,6 +11,7 @@ import { wireWorkflowClass } from '../bindings/workflow'
 import type { WranglerConfig } from '../config'
 import { ExecutionContext, runWithExecutionContext } from '../execution-context'
 import type { ThreadEnvBuilt } from './thread-env'
+import { runFailableCommand } from './uncaught-errors'
 
 export function wireWorkflows(built: ThreadEnvBuilt, workerModule: Record<string, unknown>): void {
 	for (const wf of built.workflows) {
@@ -49,7 +50,8 @@ export function startThreadQueueConsumers(
 			},
 			(batch, env, ctx: ExecutionContext) => {
 				dispatcher?.attachContext(ctx)
-				return runWithExecutionContext(ctx, () => handler(batch, env, ctx))
+				// A timer throw from the batch fails it (and the consumer retries it) instead of hanging the batch.
+				return runFailableCommand(() => runWithExecutionContext(ctx, () => handler(batch, env, ctx)))
 			},
 			env,
 			workerName,
