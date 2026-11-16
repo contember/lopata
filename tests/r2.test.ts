@@ -123,6 +123,14 @@ test('delete array of keys', async () => {
 	expect(await r2.get('c')).not.toBeNull()
 })
 
+test('delete of a missing key leaves other keys and outside files alone', async () => {
+	await r2.put('dir/file', 'data')
+	await Bun.write(join(tmpDir, 'r2', 'outside'), 'keep')
+	await r2.delete(['dir', '../outside'])
+	expect(await (await r2.get('dir/file') as R2ObjectBody).text()).toBe('data')
+	expect(await Bun.file(join(tmpDir, 'r2', 'outside')).text()).toBe('keep')
+})
+
 test('delete non-existent is no-op', async () => {
 	await r2.delete('missing') // should not throw
 })

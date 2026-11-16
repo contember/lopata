@@ -931,11 +931,9 @@ export class FileR2Bucket {
 		}
 		for (const k of keys) checkKey('delete', k, this.limits)
 		for (const k of keys) {
-			this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
-			const fp = this.filePath(k)
-			if (existsSync(fp)) {
-				rmSync(fp)
-			}
+			const { changes } = this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
+			// Only a stored object owns a file; any other path may be another key's directory
+			if (changes > 0) rmSync(this.filePath(k), { force: true })
 		}
 	}
 
