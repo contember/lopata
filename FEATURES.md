@@ -66,7 +66,7 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 
 Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: `main` at `3562887`, with the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes. The remaining failures:
 
-- **Bindings (6):** D1 database names containing `/`; R2 empty keys, key segments longer than the filesystem allows, and a delete during a multipart read (all from storing keys as file paths); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`); Cache ignores `cf.cacheKey` (Bun's `Request` drops `init.cf`).
+- **Bindings (6):** D1 database names containing `/`; R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`); Cache ignores `cf.cacheKey` (Bun's `Request` drops `init.cf`).
 - **workerd (185):** mostly Bun's native streams (BYOB readers on body and transform streams, `readAtLeast()`), `AbortSignal` over RPC, streamed HTMLRewriter content, `MessagePort` and `Event` details, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`). Two modules (`fetch-test`, `reporterror-test`) do not load at all.
 
 ---
@@ -318,7 +318,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.wrapKey()` — wrap key
 - 🟰 `crypto.subtle.unwrapKey()` — unwrap key
 - ✅ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
-- ⚠️ `crypto.DigestStream` — WritableStream that computes hash digest; no `bytesWritten`, no CRC32 algorithms
+- ⚠️ `crypto.DigestStream` — WritableStream that computes hash digest; no `bytesWritten`, no CRC32 algorithms, no `Symbol.dispose`
 - 🟰 Algorithms: RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA, ECDH, Ed25519, X25519, AES-CTR/CBC/GCM/KW, SHA-1/256/384/512, MD5, HKDF, PBKDF2, HMAC
 
 ### 1.12 HTMLRewriter
@@ -349,7 +349,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 Max message size: 1 MiB
 - ⚠️ WebSocket upgrade: `new Response(null, { status: 101, webSocket: client })` — works via manual webSocket property attachment
 - ❌ `web_socket_compression` flag — RFC 7692 per-message deflate
-- ❌ `websocket_standard_binary_type` flag — outbound `new WebSocket(url)` keeps Bun's `binaryType` and `close()` code checks
+- ⚠️ `websocket_standard_binary_type` flag — honoured by WebSocketPair sockets; an outbound `new WebSocket(url)` keeps Bun's `binaryType` default and `close()` code checks
 
 > **Note:** WebSocketPair and the WebSocket hibernation API in Durable Objects are both implemented.
 
@@ -418,7 +418,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `queueMicrotask(fn)`
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
-- ✅ Global `addEventListener` for `unhandledrejection`, `rejectionhandled`, `error` and custom events
+- ✅ Global `addEventListener` for `unhandledrejection`, `rejectionhandled` and custom events; `error` listeners register but no `error` event is dispatched
 - ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread keeps serving
 - ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads still terminate
 - 🟰 `Blob`, `File`, `FormData`
@@ -620,7 +620,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `uploaded` — Date timestamp
 - ✅ `httpMetadata` — R2HTTPMetadata | undefined
 - ✅ `customMetadata` — Record<string, string> | undefined
-- ✅ `range` — R2Range, reported on every result
+- ✅ `range` — R2Range on get()/head() results (the whole object when no range was requested)
 - ⚠️ `storageClass` — always "Standard" (no InfrequentAccess)
 - ✅ `writeHttpMetadata(headers)` — copy metadata to Headers
 
@@ -629,11 +629,12 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
 - ✅ `arrayBuffer()` / `text()` / `json()` / `blob()` / `bytes()`
+- ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
 
 ### 4.4 R2GetOptions
 
 - ✅ `onlyIf` — R2Conditional | Headers (conditional headers); `get(key, { range: request.headers, onlyIf: request.headers })` serves range and conditional requests
-- ✅ `range` — R2Range | Headers (byte range); an unsatisfiable range throws
+- ✅ `range` — R2Range | Headers (byte range); an unsatisfiable R2Range throws; an unsatisfiable or multi-range Range header returns the whole object
 - ❌ `ssecKey` — SSE-C encryption key
 
 ### 4.5 R2PutOptions
@@ -690,7 +691,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 4.11 R2 Limits
 
 - ✅ Max key length: 1,024 bytes — validated
-- ⚠️ Key layout: each key is stored as a file path, so an empty key, a key with a path segment longer than the filesystem allows, and both `a` and `a/b` in one bucket are not supported
+- ⚠️ Key layout: each key is stored as a file path, so an empty key, a key with a path segment longer than the filesystem allows, and both `a` and `a/b` in one bucket are not supported, nor any key containing `..`
 - ✅ Max metadata size: 2,048 bytes (custom) — validated
 - ✅ Max keys per delete(): 1,000 — validated
 - ✅ All limits configurable via R2Limits
