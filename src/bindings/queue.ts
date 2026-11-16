@@ -224,6 +224,9 @@ export class SqliteQueueProducer {
 
 // --- Consumer (poll loop) ---
 
+/** Short enough that a full batch goes out without a noticeable wait; partial batches wait for maxBatchTimeout. */
+export const QUEUE_POLL_INTERVAL_MS = 100
+
 export class QueueConsumer {
 	private db: Database
 	private config: ConsumerConfig
@@ -257,8 +260,7 @@ export class QueueConsumer {
 		this._trackBatch = trackBatch
 	}
 
-	// Short enough that a full batch goes out without a noticeable wait; partial batches wait for maxBatchTimeout.
-	start(intervalMs: number = 100): void {
+	start(intervalMs: number = QUEUE_POLL_INTERVAL_MS): void {
 		if (this.timer) return
 		this.timer = setInterval(() => this.poll(), intervalMs)
 		// Run first poll immediately

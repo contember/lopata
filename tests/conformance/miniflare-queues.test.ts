@@ -11,7 +11,7 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect } from 'bun:test'
 import assert from 'node:assert'
-import { QueueConsumer, SqliteQueueProducer } from '../../src/bindings/queue'
+import { QUEUE_POLL_INTERVAL_MS, QueueConsumer, SqliteQueueProducer } from '../../src/bindings/queue'
 import { resolveCompatibility } from '../../src/compatibility'
 import { runMigrations } from '../../src/db'
 import { TestClock } from '../../src/testing/clock'
@@ -21,8 +21,8 @@ const known = loadKnownFailures('miniflare-queues')
 
 // Miniflare's control stub enables fake timers at 1_000_000 ms.
 const FAKE_TIME_START = 1_000_000
-// The runtime starts every consumer with `QueueConsumer.start()`, whose default poll interval is 100 ms.
-const POLL_INTERVAL_MS = 100
+// The runtime starts every consumer with `QueueConsumer.start()`, which polls at this interval.
+const POLL_INTERVAL_MS = QUEUE_POLL_INTERVAL_MS
 // Miniflare's queue broker defaults (broker.worker.ts); the specs' expected values depend on them.
 const DEFAULT_BATCH_SIZE = 5
 const DEFAULT_BATCH_TIMEOUT = 1
