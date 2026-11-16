@@ -131,7 +131,9 @@ function parseRanges(header: string, length: number): ByteRange[] | undefined {
 			return undefined
 		}
 	}
-	return ranges
+	// Overlapping or repeated ranges could multiply the body; RFC 9110 §14.2 lets a server ignore Range and send it whole.
+	const total = ranges.reduce((sum, { start, end }) => sum + end - start + 1, 0)
+	return total > length ? [] : ranges
 }
 
 function multipartByteRanges(body: Uint8Array, ranges: ByteRange[], contentType: string | null): { boundary: string; body: Blob } {
@@ -140,7 +142,7 @@ function multipartByteRanges(body: Uint8Array, ranges: ByteRange[], contentType:
 	for (const [i, { start, end }] of ranges.entries()) {
 		const typeLine = contentType === null ? '' : `Content-Type: ${contentType}\r\n`
 		parts.push(`${i > 0 ? '\r\n' : ''}--${boundary}\r\n${typeLine}Content-Range: bytes ${start}-${end}/${body.byteLength}\r\n\r\n`)
-		parts.push(body.slice(start, end + 1))
+		parts.push(body.subarray(start, end + 1))
 	}
 	parts.push(`\r\n--${boundary}--`)
 	return { boundary, body: new Blob(parts) }
@@ -222,6 +224,9 @@ export class SqliteCache {
 		if (response.status === 206) {
 			throw new Error('Cache API does not support caching 206 Partial Content responses')
 		}
+
+		// workerd discards a 304 instead of storing it, so writing back a revalidation result keeps the full entry.
+		if (response.status === 304) return
 
 		// Reject Vary: *
 		const vary = response.headers.get('vary')

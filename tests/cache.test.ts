@@ -312,3 +312,18 @@ describe('CacheLimits', () => {
 		expect(await result!.text()).toBe('small')
 	})
 })
+
+test('put discards a 304 response and keeps the cached entry', async () => {
+	const storage = new SqliteCacheStorage(db)
+	await storage.default.put('http://localhost/a', new Response('full', { headers: { 'Cache-Control': 'max-age=60' } }))
+	await storage.default.put('http://localhost/a', new Response(null, { status: 304 }))
+	expect(await (await storage.default.match('http://localhost/a'))?.text()).toBe('full')
+})
+
+test('match serves the whole body when the requested ranges add up to more than the body', async () => {
+	const storage = new SqliteCacheStorage(db)
+	await storage.default.put('http://localhost/r', new Response('0123456789', { headers: { 'Cache-Control': 'max-age=60' } }))
+	const res = await storage.default.match(new Request('http://localhost/r', { headers: { Range: `bytes=${Array(50).fill('0-').join(',')}` } }))
+	expect(res?.status).toBe(200)
+	expect(await res?.text()).toBe('0123456789')
+})
