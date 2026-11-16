@@ -235,6 +235,7 @@ export class QueueConsumer {
 	private workerName: string | undefined
 	private timer: ReturnType<typeof setInterval> | null = null
 	private polling = false
+	private stopped = false
 	private _activeDeliveries = 0
 	/** Optional hook to register an in-flight batch with reload-drain accounting,
 	 *  so a generation isn't terminated mid-batch (thread mode). */
@@ -262,12 +263,15 @@ export class QueueConsumer {
 
 	start(intervalMs: number = QUEUE_POLL_INTERVAL_MS): void {
 		if (this.timer) return
+		this.stopped = false
 		this.timer = setInterval(() => this.poll(), intervalMs)
 		// Run first poll immediately
 		this.poll()
 	}
 
+	/** Stops claiming new batches; a batch already being delivered finishes. */
 	stop(): void {
+		this.stopped = true
 		if (this.timer) {
 			clearInterval(this.timer)
 			this.timer = null
@@ -292,7 +296,7 @@ export class QueueConsumer {
 			const select = this.db.query<QueueRow, [string, number, number]>(
 				"SELECT id, body, content_type, attempts, visible_at, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at, rowid LIMIT ?",
 			)
-			while (true) {
+			while (!this.stopped) {
 				const batchNow = this.clock.now()
 				const rows = select.all(this.config.queue, batchNow, this.config.maxBatchSize)
 				const full = rows.length >= this.config.maxBatchSize

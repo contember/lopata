@@ -649,6 +649,25 @@ describe('QueueConsumer', () => {
 		expect(count.cnt).toBe(1)
 	})
 
+	test('stop() during a batch prevents further batches in the same poll (reload drain)', async () => {
+		await producer.sendBatch(Array.from({ length: 30 }, (_, i) => ({ body: i })))
+
+		let batches = 0
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async () => {
+				batches++
+				consumer.stop()
+			},
+			{},
+		)
+
+		await consumer.poll()
+		expect(batches).toBe(1)
+		expect(db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!.cnt).toBe(20)
+	})
+
 	test('concurrent poll calls are prevented', async () => {
 		await producer.send('concurrent-test')
 
