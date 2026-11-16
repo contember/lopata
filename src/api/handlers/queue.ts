@@ -1,5 +1,5 @@
-import { randomUUIDv7 } from 'bun'
 import type { SQLQueryBindings } from 'bun:sqlite'
+import { newMessageId } from '../../bindings/queue'
 import { getDatabase } from '../../db'
 import type { HandlerContext, OkResponse, QueueInfo, QueueMessage } from '../types'
 import { getAllConfigs } from '../types'
@@ -69,7 +69,7 @@ export const handlers = {
 		}
 		db.run(
 			"INSERT INTO queue_messages (id, queue, body, content_type, attempts, status, visible_at, created_at) VALUES (?, ?, ?, ?, 0, 'pending', ?, ?)",
-			[randomUUIDv7(), queue, encoded, contentType, now, now],
+			[newMessageId(), queue, encoded, contentType, now, now],
 		)
 		return { ok: true }
 	},

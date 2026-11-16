@@ -1,4 +1,3 @@
-import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import crypto from 'node:crypto'
 import { ExecutionContext } from '../execution-context'
@@ -62,6 +61,11 @@ const QUEUE_DEFAULTS: Required<QueueLimits> = {
 	maxBatchMessages: 100,
 	maxBatchSize: 256 * 1024,
 	maxDelaySeconds: 43200,
+}
+
+/** Cloudflare message ids are 32 lowercase hex characters. */
+export function newMessageId(): string {
+	return crypto.randomBytes(16).toString('hex')
 }
 
 // --- Encoding / Decoding ---
@@ -139,7 +143,7 @@ export class SqliteQueueProducer {
 
 		this.db.run(
 			'INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
-			[randomUUIDv7(), this.queueName, encoded, contentType, visibleAt, now],
+			[newMessageId(), this.queueName, encoded, contentType, visibleAt, now],
 		)
 	}
 
@@ -182,7 +186,7 @@ export class SqliteQueueProducer {
 		const tx = this.db.transaction(() => {
 			for (const { data, contentType, delaySeconds } of encoded) {
 				const visibleAt = now + delaySeconds * 1000
-				stmt.run(randomUUIDv7(), this.queueName, data, contentType, visibleAt, now)
+				stmt.run(newMessageId(), this.queueName, data, contentType, visibleAt, now)
 			}
 		})
 		tx()
