@@ -66,6 +66,8 @@ const WORKER_ENTRY_PATH = resolve(dirname(new URL(import.meta.url).pathname), 'd
 export class WorkerExecutor implements DOExecutor {
 	private _config: ExecutorConfig
 	private _worker: Worker | null = null
+	/** Resolves on the Worker's `close` event, i.e. once the thread has closed its SQLite connection. */
+	private _exited: Promise<void> | null = null
 	private _ready: Promise<void> | null = null
 	private _readyResolve: (() => void) | null = null
 	private _readyReject: ((err: Error) => void) | null = null
@@ -157,6 +159,7 @@ export class WorkerExecutor implements DOExecutor {
 		const workerLoaderDir = createOwnerLoaderDir(this._resolveDataDir())
 		// Fires on terminate and on a crash; the thread's dynamic workers end with it on Bun 1.4.
 		worker.addEventListener('close', () => removeLoaderDir(workerLoaderDir))
+		this._exited = new Promise<void>(resolve => worker.addEventListener('close', () => resolve(), { once: true }))
 
 		this._ready = new Promise<void>((resolve, reject) => {
 			this._readyResolve = resolve
@@ -573,6 +576,9 @@ export class WorkerExecutor implements DOExecutor {
 			} catch {}
 		}
 		this._teardown(new Error('Worker terminated'))
+		// terminate() returns before the thread exits; the thread's last-connection close
+		// checkpoints data.sqlite under an exclusive lock, so callers must not reopen it earlier.
+		await this._exited
 	}
 
 	/**

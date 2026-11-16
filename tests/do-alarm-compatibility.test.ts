@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DOExecutor } from '../src/bindings/do-executor'
@@ -87,6 +87,8 @@ test('real DO bridge cancels scheduled alarms, preserves replacements and surviv
 		namespace.destroy({ force: true })
 		await Promise.all([...executors.values()].map(executor => executor.dispose()))
 		db.close()
+		// Only the last connection to close removes the WAL: disposed DO threads must already have closed theirs.
+		expect(existsSync(join(directory, 'data.sqlite-wal'))).toBe(false)
 		db = new Database(join(directory, 'data.sqlite'))
 		const reopened = new SqliteDurableObjectStorage(db, 'AlarmCompatibility', id.toString())
 		expect(await reopened.getAlarm()).toBeNull()
