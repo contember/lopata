@@ -65,7 +65,7 @@ export async function createTestEnv<Env = Record<string, unknown>>(options: Test
 	}
 
 	const compatibility = resolveCompatibility({ date: workerConfig.compatibility_date, flags: workerConfig.compatibility_flags })
-	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars, clock ?? undefined)
+	const { db, env, registry, tmpDirs } = buildTestEnv(mergedBindings, mergedVars, clock ?? undefined, compatibility)
 
 	// Wire in-memory caches for this test env
 	testCachesRef.current = new SqliteCacheStorage(db, undefined, clock ?? undefined)

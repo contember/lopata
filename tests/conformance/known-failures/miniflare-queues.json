@@ -1,12 +1,3 @@
 {
-	".sendBatch() respects default delay": "expect(received).toBe(expected)",
-	".sendBatch() respects per-batch delay": "expect(received).toBe(expected)",
-	"flushes partial and full batches": "expect(received).toMatch(expected)",
-	"moves to dead letter queue": "expect(received).toEqual(expected)",
-	"respects max retries": "expect(received).toBe(expected)",
-	"respects retry delays": "expect(received).toBe(expected)",
-	"retries messages": "expect(received).toBe(expected)",
-	"sends all structured cloneable types": "JSON.stringify cannot serialize BigInt.",
-	"supports message contentTypes": "expect(received).toEqual(expected)",
-	"validates message size": "expect(received).rejects.toThrow(expected)"
+	"sends all structured cloneable types": "expect(received).toBe(expected)"
 }

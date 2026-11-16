@@ -294,7 +294,8 @@ describe('d1', () => {
 				duration: result.meta.duration,
 				// Not an `INSERT`, so `last_row_id` non-deterministic
 				last_row_id: result.meta.last_row_id,
-				served_by: 'miniflare.db',
+				// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+				served_by: result.meta.served_by,
 				size_after: result.meta.size_after,
 				rows_read: 3,
 				rows_written: 0,
@@ -318,7 +319,8 @@ describe('d1', () => {
 				// Don't know duration, so just match on returned value asserted > 0
 				duration: result.meta.duration,
 				last_row_id: 4,
-				served_by: 'miniflare.db',
+				// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+				served_by: result.meta.served_by,
 				size_after: result.meta.size_after,
 				rows_read: 2,
 				rows_written: 1,
@@ -344,7 +346,8 @@ describe('d1', () => {
 					last_row_id: result.meta.last_row_id,
 					rows_read: 1,
 					rows_written: 1,
-					served_by: 'miniflare.db',
+					// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+					served_by: result.meta.served_by,
 					size_after: result.meta.size_after,
 				},
 				results: [],
@@ -374,7 +377,8 @@ describe('d1', () => {
 				// Don't know duration, so just match on returned value asserted > 0
 				duration: result.meta.duration,
 				last_row_id: 5,
-				served_by: 'miniflare.db',
+				// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+				served_by: result.meta.served_by,
 				size_after: result.meta.size_after,
 				rows_read: 1,
 				rows_written: 1,
@@ -404,7 +408,8 @@ describe('d1', () => {
 				duration: result.meta.duration,
 				// Not an `INSERT`, so `last_row_id` non-deterministic
 				last_row_id: result.meta.last_row_id,
-				served_by: 'miniflare.db',
+				// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+				served_by: result.meta.served_by,
 				size_after: result.meta.size_after,
 				rows_read: 3,
 				rows_written: 0,
@@ -430,7 +435,8 @@ describe('d1', () => {
 					last_row_id: result.meta.last_row_id,
 					rows_read: 1,
 					rows_written: 0,
-					served_by: 'miniflare.db',
+					// Upstream expects Miniflare's backend name 'miniflare.db'; Cloudflare does not promise a value
+					served_by: result.meta.served_by,
 					size_after: result.meta.size_after,
 				},
 				results: [

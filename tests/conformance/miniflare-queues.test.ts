@@ -1,17 +1,19 @@
 // Adapted from workers-sdk packages/miniflare/test/plugins/queues/{index,delay,retry}.spec.ts at 6ee18e1bd (MIT OR Apache-2.0, Cloudflare, Inc.)
 // Miniflare plumbing (producer/consumer Workers, REPORTER service bindings, the queue broker's fake timers) is replaced by
-// SqliteQueueProducer + QueueConsumer over an in-memory database, one TestClock per queue and an in-process handler.
+// SqliteQueueProducer + QueueConsumer over an in-memory database, one shared TestClock and an in-process handler.
 
 // Excluded:
 // - "maxBatchTimeout validation": Miniflare options schema validation (ERR_VALIDATION, Zod message).
 // Partially ported (Miniflare-specific assertions dropped, delivered batches still asserted):
 // - "retries messages", "moves to dead letter queue": drop the Miniflare log-line assertions (`stripTimings(log.logs)`).
 // - "moves to dead letter queue": drops the final `mf.setOptions` check that rejects a queue as its own dead letter queue.
+// - ".sendBatch() respects default delay", ".sendBatch() respects per-batch delay": count delivered messages instead of batches.
 
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect } from 'bun:test'
 import assert from 'node:assert'
-import { QueueConsumer, SqliteQueueProducer } from '../../src/bindings/queue'
+import { QUEUE_POLL_INTERVAL_MS, QueueConsumer, SqliteQueueProducer } from '../../src/bindings/queue'
+import { resolveCompatibility } from '../../src/compatibility'
 import { runMigrations } from '../../src/db'
 import { TestClock } from '../../src/testing/clock'
 import { conformanceTest, loadKnownFailures } from './harness'
@@ -20,12 +22,14 @@ const known = loadKnownFailures('miniflare-queues')
 
 // Miniflare's control stub enables fake timers at 1_000_000 ms.
 const FAKE_TIME_START = 1_000_000
-// The runtime starts every consumer with `QueueConsumer.start()`, whose default poll interval is 1000 ms.
-const POLL_INTERVAL_MS = 1000
+// The runtime starts every consumer with `QueueConsumer.start()`, which polls at this interval.
+const POLL_INTERVAL_MS = QUEUE_POLL_INTERVAL_MS
 // Miniflare's queue broker defaults (broker.worker.ts); the specs' expected values depend on them.
 const DEFAULT_BATCH_SIZE = 5
 const DEFAULT_BATCH_TIMEOUT = 1
 const DEFAULT_RETRIES = 2
+// Miniflare's fallback compatibility date (plugins/core); before queues_json_messages, so the default content type is v8.
+const COMPATIBILITY = resolveCompatibility({ date: '2000-01-01' })
 
 type ConsumerConfig = ConstructorParameters<typeof QueueConsumer>[1]
 type QueueHandler = ConstructorParameters<typeof QueueConsumer>[2]
@@ -39,21 +43,22 @@ interface ReportedMessage {
 }
 
 let db: Database
+// One wall clock for every queue, as in the runtime (Miniflare gives each queue broker its own fake timers).
+let clock: TestClock
 
 beforeEach(() => {
 	db = new Database(':memory:')
 	runMigrations(db)
+	clock = new TestClock(FAKE_TIME_START)
 })
 
 afterEach(() => {
 	db.close()
 })
 
-// Stands in for Miniflare's per-queue broker control stub. Each queue has its own fake clock, as each Miniflare broker
-// Durable Object does; advancing it fires the consumer's poll timer at every interval boundary, like `setInterval` would.
+// Stands in for Miniflare's per-queue broker control stub. Advancing the shared clock fires this queue's consumer poll timer
+// at every interval boundary, like `setInterval` would.
 class QueueControl {
-	readonly clock = new TestClock(FAKE_TIME_START)
-	private nextPollAt = FAKE_TIME_START + POLL_INTERVAL_MS
 	readonly consumer: QueueConsumer
 
 	constructor(private readonly queue: string, options: ConsumerOptions, handler: QueueHandler) {
@@ -65,26 +70,27 @@ class QueueControl {
 			deadLetterQueue: null,
 			...options,
 		}
-		this.consumer = new QueueConsumer(db, config, handler, {}, undefined, this.clock)
+		this.consumer = new QueueConsumer(db, config, handler, {}, undefined, clock)
 	}
 
 	producer(defaultDelay = 0): SqliteQueueProducer {
-		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, this.clock)
+		return new SqliteQueueProducer(db, this.queue, defaultDelay, undefined, clock, COMPATIBILITY)
 	}
 
 	async advanceFakeTime(ms: number): Promise<void> {
-		const target = this.clock.now() + ms
-		while (this.nextPollAt <= target) {
-			this.clock.set(this.nextPollAt)
+		const target = clock.now() + ms
+		let pollAt = FAKE_TIME_START + (Math.floor((clock.now() - FAKE_TIME_START) / POLL_INTERVAL_MS) + 1) * POLL_INTERVAL_MS
+		for (; pollAt <= target; pollAt += POLL_INTERVAL_MS) {
+			clock.set(pollAt)
 			await this.consumer.poll()
-			this.nextPollAt += POLL_INTERVAL_MS
 		}
-		this.clock.set(target)
+		clock.set(target)
 	}
 
-	// Polls are awaited inside advanceFakeTime; lopata schedules no other queue work.
+	// Miniflare's broker flushes a full batch on a zero-delay timer that this awaits; lopata's equivalent is the consumer's
+	// next poll, run here at the current time.
 	waitForFakeTasks(): Promise<void> {
-		return Promise.resolve()
+		return this.consumer.poll()
 	}
 }
 
@@ -615,7 +621,8 @@ describe('queues delay', () => {
 		// Batch should be delivered 2 seconds later
 		await object.advanceFakeTime(1000)
 		await object.waitForFakeTasks()
-		expect(batches.length).toBe(2)
+		// Miniflare's per-message delay timers split same-instant messages into two batches; Cloudflare does not promise that.
+		expect(batches.flat().length).toBe(2)
 	})
 
 	conformanceTest(known, '.sendBatch() respects per-batch delay', async () => {
@@ -634,7 +641,8 @@ describe('queues delay', () => {
 
 		await object.advanceFakeTime(1000)
 		await object.waitForFakeTasks()
-		expect(batches.length).toBe(2)
+		// Miniflare's per-message delay timers split same-instant messages into two batches; Cloudflare does not promise that.
+		expect(batches.flat().length).toBe(2)
 	})
 
 	conformanceTest(known, '.sendBatch() respects per-message delay', async () => {

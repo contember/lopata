@@ -135,6 +135,8 @@ export function runMigrations(db: Database): void {
 	}
 
 	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_visible ON queue_messages(queue, visible_at)`)
+	// The consumer polls pending messages only; without status in the key it scans every acked row of the queue.
+	db.run(`CREATE INDEX IF NOT EXISTS idx_queue_pending ON queue_messages(queue, status, visible_at)`)
 
 	db.run(`
 		CREATE TABLE IF NOT EXISTS queue_leases (

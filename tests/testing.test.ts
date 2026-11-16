@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from 'cloudflare:workers'
+import { SqliteQueueProducer } from '../src/bindings/queue'
 import type { TestEnv } from '../src/testing'
 import { createTestEnv } from '../src/testing'
 
@@ -476,6 +477,46 @@ id = "abc123"
 
 			const res = await t.fetch('/')
 			expect(await res.text()).toBe('key=from-wrangler kv=value')
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	test('queue producers from a wrangler config follow its compatibility date', async () => {
+		const fs = await import('node:fs')
+		const path = await import('node:path')
+		const os = await import('node:os')
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lopata-wrangler-test-'))
+		const wranglerPath = path.join(tmpDir, 'wrangler.toml')
+		// Before queues_json_messages (2024-03-18) the default content type is v8.
+		fs.writeFileSync(
+			wranglerPath,
+			`
+name = "test-worker"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[queues.producers]]
+binding = "QUEUE"
+queue = "my-queue"
+`,
+		)
+
+		try {
+			t = await createTestEnv({
+				worker: {
+					async fetch() {
+						return new Response('ok')
+					},
+				},
+				wrangler: wranglerPath,
+			})
+			const queue = t.env.QUEUE
+			if (!(queue instanceof SqliteQueueProducer)) throw new Error('QUEUE is not a queue producer')
+			await queue.send({ action: 'test' })
+			const row = t.db.query<{ content_type: string }, []>('SELECT content_type FROM queue_messages').get()
+			expect(row?.content_type).toBe('v8')
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true })
 		}
