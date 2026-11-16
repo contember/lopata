@@ -344,6 +344,8 @@ async function writeValueToFile(
 	if (value instanceof ArrayBuffer) return writeBytes(value)
 	if (ArrayBuffer.isView(value)) return writeBytes(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
 	const stream = value instanceof Blob ? value.stream() : value
+	// Bun's FileSink writes over an existing file without truncating it
+	rmSync(filePath, { force: true })
 	const writer = Bun.file(filePath).writer()
 	let size = 0
 	const reader = stream.getReader()
@@ -727,9 +729,12 @@ export class R2MultipartUpload {
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
+		// Assemble aside and rename: the sink does not truncate, and a failure keeps the current object.
 		const filePath = objectFilePath(this.baseDir, this.key)
-		mkdirSync(dirname(filePath), { recursive: true })
-		const writer = Bun.file(filePath).writer()
+		const assembledPath = join(this.baseDir, '__multipart__', this.uploadId, 'assembled')
+		mkdirSync(dirname(assembledPath), { recursive: true })
+		rmSync(assembledPath, { force: true })
+		const writer = Bun.file(assembledPath).writer()
 		let totalSize = 0
 		try {
 			for (const row of partRows) {
@@ -745,6 +750,8 @@ export class R2MultipartUpload {
 		} finally {
 			await writer.end()
 		}
+		mkdirSync(dirname(filePath), { recursive: true })
+		renameSync(assembledPath, filePath)
 
 		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
 		const etag = computeMultipartEtag(partRows.map((row) => row.checksum_md5 ?? row.etag))

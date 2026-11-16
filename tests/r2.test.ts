@@ -486,6 +486,14 @@ test('multipart upload: resume', async () => {
 	expect(await obj.text()).toBe('part1part2')
 })
 
+test('multipart upload: re-uploading a part from a stream replaces all its bytes', async () => {
+	const upload = await r2.createMultipartUpload('key')
+	await upload.uploadPart(1, new Blob(['longer-data']).stream())
+	const part = await upload.uploadPart(1, new Blob(['abc']).stream())
+	await upload.complete([part])
+	expect(await (await r2.get('key') as R2ObjectBody).text()).toBe('abc')
+})
+
 test('multipart upload: parts below 5 MiB are rejected by default', async () => {
 	const bucket = new FileR2Bucket(db, 'default-limits', tmpDir)
 	const upload = await bucket.createMultipartUpload('key')
