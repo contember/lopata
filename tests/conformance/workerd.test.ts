@@ -97,11 +97,15 @@ async function waitForServer(base: string, server: Subprocess, root: string): Pr
 	throw new Error(`lopata dev did not start within ${STARTUP_TIMEOUT_MS} ms\n${logTail(root)}`)
 }
 
-/** Export names of a module that failed to load: everything except classes and the default export. */
+/**
+ * Case names of a module that failed to load: its exports except classes and `default`, which cannot be told apart from
+ * handler objects without running the module. A module left with none reports a single `(load)` case, so it is still counted.
+ */
 function staticTestNames(module: string): string[] {
 	const source = readFileSync(join(VENDOR_DIR, `${module}.js`), 'utf8')
 	const classes = new Set([...source.matchAll(/^export\s+class\s+(\w+)/gm)].map(m => m[1]))
-	return new Bun.Transpiler({ loader: 'js' }).scan(source).exports.filter(name => name !== 'default' && !classes.has(name))
+	const names = new Bun.Transpiler({ loader: 'js' }).scan(source).exports.filter(name => name !== 'default' && !classes.has(name))
+	return names.length ? names : ['(load)']
 }
 
 function parseNames(raw: unknown): string[] | null {
@@ -172,7 +176,11 @@ async function runTest(module: string, name: string): Promise<RunResult> {
 		const res = await callModule(module, `/__conformance/run?test=${encodeURIComponent(name)}`)
 		const body = await res.text()
 		if (!res.ok) return { ok: false, error: `runner returned HTTP ${res.status}: ${body.slice(0, 300)}` }
-		return parseRunResult(JSON.parse(body))
+		try {
+			return parseRunResult(JSON.parse(body))
+		} catch (err) {
+			return { ok: false, error: `unreadable runner response (${err}): ${body.slice(0, 300)}` }
+		}
 	} catch (err) {
 		return { ok: false, error: `runner request failed: ${err}` }
 	}
@@ -188,7 +196,8 @@ async function runModule(module: string, area: string): Promise<ModuleRun> {
 	return { module, area, results }
 }
 
-// Modules with Durable Objects run one at a time: lopata keys DO storage by class name, and two modules declare the same class.
+// Modules with Durable Objects run one at a time, in a lane of their own: lopata keys DO storage by class name and two modules
+// declare the same class, so running them concurrently would race on shared storage.
 async function runAll(): Promise<ModuleRun[]> {
 	const parallel = selectedModules.filter(([, spec]) => !spec.durableObjects)
 	const serial = selectedModules.filter(([, spec]) => spec.durableObjects)

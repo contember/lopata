@@ -1,6 +1,6 @@
 // Measures the conformance pass rate per area: runs tests/conformance with every case as a plain
 // test (CONFORMANCE_RECORD=1), reads bun's JUnit report and prints a markdown table.
-//   bun scripts/conformance-report.ts [--update] [test files…]
+//   bun scripts/conformance-report.ts [--update] [test files…]   (arguments other than --update must be test files)
 // --update rewrites tests/conformance/known-failures/<corpus>.json from the measured failures.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -105,13 +105,14 @@ try {
 	if (missing.length) console.error(`\nNo results for: ${missing.join(', ')} (the file failed to load or registered no cases)`)
 
 	if (update) {
-		// Merge per id, so a run over a subset (CONFORMANCE_ONLY) keeps the entries of cases it did not run.
+		// A run over a subset (CONFORMANCE_ONLY) keeps the entries of cases it did not run; a full run starts empty, dropping stale ids.
+		const subset = Boolean(process.env.CONFORMANCE_ONLY)
 		const corpora = new Set(results.map(r => r.corpus))
 		for (const corpus of corpora) {
 			const path = knownFailuresPath(corpus)
 			const ran = new Set(results.filter(r => r.corpus === corpus).map(r => r.id))
 			const previous = existsSync(path) ? parseKnownFailures(JSON.parse(readFileSync(path, 'utf8')), path) : new Map<string, string>()
-			const merged = new Map([...previous].filter(([id]) => !ran.has(id)))
+			const merged = new Map(subset ? [...previous].filter(([id]) => !ran.has(id)) : [])
 			for (const r of results) if (r.corpus === corpus && r.failure !== null) merged.set(r.id, firstLine(r.failure))
 			const sorted = Object.fromEntries([...merged].sort(([a], [b]) => a.localeCompare(b)))
 			writeFileSync(path, `${JSON.stringify(sorted, null, '\t')}\n`)
