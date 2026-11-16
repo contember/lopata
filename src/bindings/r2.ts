@@ -534,11 +534,16 @@ function testConditional(cond: ParsedConditional, object: { etag: string; upload
 
 /** Rejects malformed range objects before any I/O, as workerd does in initGetOptions (api/r2-bucket.c++). */
 function checkRangeArgument(range: R2Range): void {
-	for (const field of ['offset', 'length', 'suffix'] as const) {
+	const fields = [
+		['offset', 'Invalid range. Starting offset', 'Invalid range. Starting offset'],
+		['length', 'Invalid range. Length', 'Invalid range. Length'],
+		['suffix', 'Invalid suffix. Suffix', 'Invalid range. Suffix'],
+	] as const
+	for (const [field, negativeLabel, fractionLabel] of fields) {
 		const v = range[field]
 		if (v === undefined) continue
-		if (v < 0) throw new RangeError(`Invalid range. ${field} (${v}) must be greater than or equal to 0.`)
-		if (!Number.isInteger(v)) throw new RangeError(`Invalid range. ${field} (${v}) must be an integer, not floating point.`)
+		if (v < 0) throw new RangeError(`${negativeLabel} (${v}) must be greater than or equal to 0.`)
+		if (!Number.isInteger(v)) throw new RangeError(`${fractionLabel} (${v}) must be an integer, not floating point.`)
 	}
 	if (range.suffix !== undefined && range.offset !== undefined) throw new TypeError('Suffix is incompatible with offset.')
 	if (range.suffix !== undefined && range.length !== undefined) throw new TypeError('Suffix is incompatible with length.')

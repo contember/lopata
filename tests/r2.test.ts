@@ -392,6 +392,19 @@ test('get with range offset only', async () => {
 	expect(await obj.text()).toBe('world')
 })
 
+test('get with a malformed range object throws before reading', async () => {
+	await r2.put('key', 'hello world')
+	await expect(r2.get('key', { range: { offset: -1 } })).rejects.toThrow(
+		new RangeError('Invalid range. Starting offset (-1) must be greater than or equal to 0.'),
+	)
+	await expect(r2.get('key', { range: { suffix: -1 } })).rejects.toThrow(
+		new RangeError('Invalid suffix. Suffix (-1) must be greater than or equal to 0.'),
+	)
+	await expect(r2.get('key', { range: { length: 1.5 } })).rejects.toThrow(
+		new RangeError('Invalid range. Length (1.5) must be an integer, not floating point.'),
+	)
+})
+
 test('get with range suffix', async () => {
 	await r2.put('key', 'hello world')
 	const obj = await r2.get('key', { range: { suffix: 5 } }) as R2ObjectBody
