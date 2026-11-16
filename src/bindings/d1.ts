@@ -236,22 +236,25 @@ export class LocalD1Database {
 	async exec(sql: string): Promise<D1ExecResult> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			// Cloudflare runs each line as its own query (workerd d1-api.ts exec()), so a statement cannot span lines.
+			// Cloudflare sends each line as its own query, all in one request that runs as one transaction
+			// (workerd d1-api.ts exec(), Miniflare's transactionSync), so a statement cannot span lines.
 			const lines = sql.trim().split('\n')
-			let count = 0
-			let duration = 0
-			for (const [index, line] of lines.entries()) {
-				// Blank and comment-only lines are skipped, as Miniflare does.
-				if (splitStatements(line).length === 0) continue
-				try {
-					duration += executeQuery(this.db, line, []).meta.duration
-				} catch (e) {
-					const reason = `Error in line ${index + 1}: ${line}: ${e instanceof Error ? e.message : String(e)}`
-					throw new Error(`D1_EXEC_ERROR: ${reason}`, { cause: new Error(reason) })
+			return inSavepoint(this.db, () => {
+				let count = 0
+				let duration = 0
+				for (const [index, line] of lines.entries()) {
+					// Blank and comment-only lines are skipped, as Miniflare does.
+					if (splitStatements(line).length === 0) continue
+					try {
+						duration += executeQuery(this.db, line, []).meta.duration
+					} catch (e) {
+						const reason = `Error in line ${index + 1}: ${line}: ${e instanceof Error ? e.message : String(e)}`
+						throw new Error(`D1_EXEC_ERROR: ${reason}`, { cause: new Error(reason) })
+					}
+					count++
 				}
-				count++
-			}
-			return { count, duration }
+				return { count, duration }
+			})
 		} finally {
 			unlock()
 		}

@@ -307,6 +307,16 @@ describe('D1Database', () => {
 			).rejects.toThrow('D1_EXEC_ERROR: Error in line 2: INSERT INTO users (name): incomplete input')
 		})
 
+		test('a failing line rolls back the lines before it', async () => {
+			await expect(
+				d1.exec(
+					"INSERT INTO users (name) VALUES ('Alice')\nINSERT INTO users (name) VALUES ('Bob'); INSERT INTO users (name) VALUES ('Carol')\nINSERT INTO nonexistent_table (x) VALUES (1)",
+				),
+			).rejects.toThrow('D1_EXEC_ERROR: Error in line 3')
+			const result = await d1.prepare('SELECT * FROM users').all()
+			expect(result.results).toHaveLength(0)
+		})
+
 		test('error includes the failing SQL statement', async () => {
 			await expect(
 				d1.exec("INSERT INTO nonexistent_table (x) VALUES ('fail')"),
