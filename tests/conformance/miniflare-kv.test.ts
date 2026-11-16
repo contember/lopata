@@ -249,8 +249,7 @@ describe('kv', () => {
 	conformanceTest(known, 'get: validates but ignores cache ttl', async () => {
 		await kv.put('key', 'value')
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.get('key', { cacheTtl: 'not a number' }),
+			Reflect.apply(kv.get, kv, ['key', { cacheTtl: 'not a number' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV GET failed: 400 Invalid cache_ttl of 0. Cache TTL must be at least 30.',
@@ -312,8 +311,7 @@ describe('kv', () => {
 	})
 	conformanceTest(known, 'put: validates expiration ttl', async () => {
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.put('key', 'value', { expirationTtl: 'nan' }),
+			Reflect.apply(kv.put, kv, ['key', 'value', { expirationTtl: 'nan' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV PUT failed: 400 Invalid expiration_ttl of 0. Please specify integer greater than 0.',
@@ -332,8 +330,7 @@ describe('kv', () => {
 	})
 	conformanceTest(known, 'put: validates expiration', async () => {
 		await expect(
-			// @ts-expect-error invalid argument on purpose
-			kv.put('key', 'value', { expiration: 'nan' }),
+			Reflect.apply(kv.put, kv, ['key', 'value', { expiration: 'nan' }]),
 		).rejects.toThrow(
 			new Error(
 				'KV PUT failed: 400 Invalid expiration of 0. Please specify integer greater than the current number of seconds since the UNIX epoch.',
