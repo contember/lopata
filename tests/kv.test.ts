@@ -175,21 +175,21 @@ test('namespaces are isolated', async () => {
 
 describe('key validation', () => {
 	test('rejects empty key', async () => {
-		expect(kv.put('', 'val')).rejects.toThrow('not allowed')
-		expect(kv.get('')).rejects.toThrow('not allowed')
+		await expect(kv.put('', 'val')).rejects.toThrow('Key name cannot be empty.')
+		await expect(kv.get('')).rejects.toThrow('Key name cannot be empty.')
 	})
 
 	test("rejects '.' key", async () => {
-		expect(kv.put('.', 'val')).rejects.toThrow('not allowed')
+		await expect(kv.put('.', 'val')).rejects.toThrow('not allowed')
 	})
 
 	test("rejects '..' key", async () => {
-		expect(kv.put('..', 'val')).rejects.toThrow('not allowed')
+		await expect(kv.put('..', 'val')).rejects.toThrow('not allowed')
 	})
 
 	test('rejects key exceeding max size', async () => {
 		const longKey = 'x'.repeat(513)
-		expect(kv.put(longKey, 'val')).rejects.toThrow('exceeds max size')
+		await expect(kv.put(longKey, 'val')).rejects.toThrow('exceeds key length limit of 512')
 	})
 
 	test('allows key at exactly max size', async () => {
@@ -200,7 +200,7 @@ describe('key validation', () => {
 
 	test('custom key size limit', async () => {
 		const customKv = new SqliteKVNamespace(db, 'CUSTOM', { maxKeySize: 10 })
-		expect(customKv.put('x'.repeat(11), 'val')).rejects.toThrow('exceeds max size of 10')
+		await expect(customKv.put('x'.repeat(11), 'val')).rejects.toThrow('exceeds key length limit of 10')
 		await customKv.put('x'.repeat(10), 'val') // should not throw
 	})
 })
@@ -211,7 +211,7 @@ describe('value size validation', () => {
 	test('rejects value exceeding max size', async () => {
 		const customKv = new SqliteKVNamespace(db, 'SMALL', { maxValueSize: 100 })
 		const bigValue = 'x'.repeat(101)
-		expect(customKv.put('key', bigValue)).rejects.toThrow('exceeds max size')
+		await expect(customKv.put('key', bigValue)).rejects.toThrow('Value length of 101 exceeds limit of 100.')
 	})
 
 	test('allows value at exactly max size', async () => {
@@ -227,7 +227,7 @@ describe('metadata size validation', () => {
 	test('rejects metadata exceeding max size', async () => {
 		const customKv = new SqliteKVNamespace(db, 'META', { maxMetadataSize: 50 })
 		const bigMetadata = { data: 'x'.repeat(100) }
-		expect(customKv.put('key', 'val', { metadata: bigMetadata })).rejects.toThrow('metadata exceeds max size')
+		await expect(customKv.put('key', 'val', { metadata: bigMetadata })).rejects.toThrow('exceeds limit of 50.')
 	})
 
 	test('allows metadata at limit', async () => {
@@ -241,7 +241,7 @@ describe('metadata size validation', () => {
 
 describe('TTL validation', () => {
 	test('rejects expirationTtl below minimum', async () => {
-		expect(kv.put('key', 'val', { expirationTtl: 30 })).rejects.toThrow('at least 60 seconds')
+		await expect(kv.put('key', 'val', { expirationTtl: 30 })).rejects.toThrow('Expiration TTL must be at least 60.')
 	})
 
 	test('allows expirationTtl at minimum', async () => {
@@ -251,7 +251,7 @@ describe('TTL validation', () => {
 
 	test('custom min TTL', async () => {
 		const customKv = new SqliteKVNamespace(db, 'TTL', { minTtlSeconds: 10 })
-		expect(customKv.put('key', 'val', { expirationTtl: 5 })).rejects.toThrow('at least 10 seconds')
+		await expect(customKv.put('key', 'val', { expirationTtl: 5 })).rejects.toThrow('Expiration TTL must be at least 10.')
 		await customKv.put('key', 'val', { expirationTtl: 10 }) // should not throw
 	})
 })
@@ -294,7 +294,7 @@ describe('bulk get', () => {
 
 	test('rejects too many keys', async () => {
 		const customKv = new SqliteKVNamespace(db, 'BULK', { maxBulkGetKeys: 3 })
-		expect(customKv.get(['a', 'b', 'c', 'd'])).rejects.toThrow('exceeds max of 3')
+		await expect(customKv.get(['a', 'b', 'c', 'd'])).rejects.toThrow('You can request a maximum of 3 keys')
 	})
 })
 
@@ -365,22 +365,22 @@ describe('list limit cap', () => {
 describe('bulk get type restrictions', () => {
 	test('bulk get rejects arrayBuffer type', async () => {
 		await kv.put('a', '1')
-		expect(kv.get(['a'], 'arrayBuffer')).rejects.toThrow('does not support type "arrayBuffer"')
+		await expect(kv.get(['a'], 'arrayBuffer')).rejects.toThrow('"arrayBuffer" is not a valid type')
 	})
 
 	test('bulk get rejects stream type', async () => {
 		await kv.put('a', '1')
-		expect(kv.get(['a'], 'stream')).rejects.toThrow('does not support type "stream"')
+		await expect(kv.get(['a'], 'stream')).rejects.toThrow('"stream" is not a valid type')
 	})
 
 	test('bulk getWithMetadata rejects arrayBuffer type', async () => {
 		await kv.put('a', '1')
-		expect(kv.getWithMetadata(['a'], 'arrayBuffer')).rejects.toThrow('does not support type "arrayBuffer"')
+		await expect(kv.getWithMetadata(['a'], 'arrayBuffer')).rejects.toThrow('"arrayBuffer" is not a valid type')
 	})
 
 	test('bulk getWithMetadata rejects stream type', async () => {
 		await kv.put('a', '1')
-		expect(kv.getWithMetadata(['a'], 'stream')).rejects.toThrow('does not support type "stream"')
+		await expect(kv.getWithMetadata(['a'], 'stream')).rejects.toThrow('"stream" is not a valid type')
 	})
 })
 
@@ -388,14 +388,14 @@ describe('bulk get type restrictions', () => {
 
 describe('expiration validation', () => {
 	test('rejects expiration in the past', async () => {
-		expect(kv.put('key', 'val', { expiration: Date.now() / 1000 - 10 })).rejects.toThrow(
-			'at least 60 seconds in the future',
+		await expect(kv.put('key', 'val', { expiration: Date.now() / 1000 - 10 })).rejects.toThrow(
+			'Please specify integer greater than the current number of seconds since the UNIX epoch.',
 		)
 	})
 
 	test('rejects expiration less than minTtlSeconds in the future', async () => {
-		expect(kv.put('key', 'val', { expiration: Date.now() / 1000 + 30 })).rejects.toThrow(
-			'at least 60 seconds in the future',
+		await expect(kv.put('key', 'val', { expiration: Date.now() / 1000 + 30 })).rejects.toThrow(
+			'Expiration times must be at least 60 seconds in the future.',
 		)
 	})
 

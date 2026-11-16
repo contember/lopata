@@ -1,13 +1,7 @@
 {
-	"bulk get: check max keys": "expect(received).toBe(expected)",
-	"bulk get: request json type": "expect(received).toBe(expected)",
 	"delete: validates key": "expect(received).rejects.toThrow(expected)",
 	"get: validates but ignores cache ttl": "expect(received).rejects.toThrow(expected)",
-	"get: validates key": "expect(received).toThrow(expected)",
 	"list: validates limit": "expect(received).rejects.toThrow(expected)",
 	"put: validates expiration": "expect(received).rejects.toThrow(expected)",
-	"put: validates expiration ttl": "expect(received).rejects.toThrow(expected)",
-	"put: validates key": "expect(received).toThrow(expected)",
-	"put: validates metadata size": "expect(received).toThrow(expected)",
-	"put: validates value size": "expect(received).toThrow(expected)"
+	"put: validates expiration ttl": "expect(received).rejects.toThrow(expected)"
 }
