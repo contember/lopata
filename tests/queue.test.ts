@@ -839,6 +839,16 @@ describe('QueuePullConsumer', () => {
 		expect(result.messages[0]!.body).toEqual({ data: 'json' })
 	})
 
+	test('v8 messages do not take pull batch_size slots from messages behind them', async () => {
+		for (let i = 0; i < 3; i++) {
+			await producer.send({ data: `v8-${i}` }, { contentType: 'v8' })
+		}
+		await producer.send({ data: 'json' }, { contentType: 'json' })
+
+		const result = pullConsumer.pull({ batch_size: 2 })
+		expect(result.messages.map(m => m.body)).toEqual([{ data: 'json' }])
+	})
+
 	test('pull respects batch_size', async () => {
 		for (let i = 0; i < 5; i++) {
 			await producer.send({ i })

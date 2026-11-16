@@ -480,13 +480,14 @@ export class QueuePullConsumer {
 			[this.queueName, now],
 		)
 
-		// Select visible pending messages that don't have an active lease
+		// Select visible pending messages that don't have an active lease. Pull consumers cannot decode v8 bodies, so those are
+		// skipped here, before LIMIT, rather than left to take up the batch.
 		const rows = this.db.query<
 			{ id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
 			[string, number, string, number, number]
 		>(
 			`SELECT id, body, content_type, attempts, created_at FROM queue_messages
-       WHERE queue = ? AND status = 'pending' AND visible_at <= ?
+       WHERE queue = ? AND status = 'pending' AND visible_at <= ? AND content_type != 'v8'
        AND id NOT IN (SELECT message_id FROM queue_leases WHERE queue = ? AND expires_at > ?)
        ORDER BY visible_at LIMIT ?`,
 		).all(this.queueName, now, this.queueName, now, batchSize)
@@ -494,10 +495,6 @@ export class QueuePullConsumer {
 		if (rows.length === 0) {
 			return { messages: [] }
 		}
-
-		// Reject v8 content type
-		const v8Messages = rows.filter(r => r.content_type === 'v8')
-		const validRows = rows.filter(r => r.content_type !== 'v8')
 
 		const messages: PullMessage[] = []
 
@@ -509,7 +506,7 @@ export class QueuePullConsumer {
 		)
 
 		const tx = this.db.transaction(() => {
-			for (const row of validRows) {
+			for (const row of rows) {
 				const leaseId = crypto.randomUUID()
 				const expiresAt = now + visibilityTimeoutMs
 
