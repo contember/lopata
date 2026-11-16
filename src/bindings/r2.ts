@@ -770,11 +770,11 @@ export class FileR2Bucket {
 		this.validateKey(key)
 		this.validateCustomMetadata(options?.customMetadata)
 
-		// Check conditional before writing
+		// Check conditional before writing; a missing object fails etagMatches and uploadedAfter
 		if (options?.onlyIf) {
 			const cond = parseConditional(options.onlyIf)
 			const existing = this.getRow(key)
-			if (existing && !testConditional(cond, rowToMeta(existing))) {
+			if (!testConditional(cond, existing ? rowToMeta(existing) : null)) {
 				return null
 			}
 		}
