@@ -286,6 +286,12 @@ describe('D1Database', () => {
 			expect(result!.name).toBe("it's; ok")
 		})
 
+		test('runs each line as a query, so the error names the failing line', async () => {
+			await expect(
+				d1.exec("INSERT INTO users (name) VALUES ('Alice')\nINSERT INTO users (name)\nVALUES ('Bob')"),
+			).rejects.toThrow('D1_EXEC_ERROR: Error in line 2: INSERT INTO users (name): incomplete input')
+		})
+
 		test('error includes the failing SQL statement', async () => {
 			await expect(
 				d1.exec("INSERT INTO nonexistent_table (x) VALUES ('fail')"),

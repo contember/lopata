@@ -1,4 +1,3 @@
 {
-	"D1Database: exec": "D1_EXEC_ERROR: Error in SQL statement [UPDATE colours_ns SET name = 'Green' WHERE name = 'green'",
 	"operations permit strange database names": "unable to open database file"
 }
