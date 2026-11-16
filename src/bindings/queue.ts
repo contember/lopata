@@ -373,7 +373,7 @@ export class QueueConsumer {
 				if (currentAttempts > this.config.maxRetries) {
 					if (this.config.deadLetterQueue) {
 						this.db.run(
-							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending' WHERE id = ?",
+							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending', attempts = 0 WHERE id = ?",
 							[this.config.deadLetterQueue, this.clock.now(), row.id],
 						)
 					} else {
