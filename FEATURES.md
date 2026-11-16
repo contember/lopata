@@ -11,14 +11,14 @@
 
 | Area                      | Coverage  | Notes                                                                         |
 | ------------------------- | --------- | ----------------------------------------------------------------------------- |
-| **Workers Core API**      | ~90%      | Native Web APIs via Bun; HTMLRewriter, WebSocketPair, streams all implemented |
+| **Workers Core API**      | ~90%      | Native Web APIs via Bun; HTMLRewriter, WebSocketPair, streams; see gaps below |
 | **KV**                    | 100%      | All methods, bulk ops, limits, validation                                     |
 | **D1**                    | ~90%      | Missing named params, some meta fields, session is stub                       |
-| **R2**                    | ~95%      | Missing SSE-C, storageClass only "Standard"                                   |
-| **Durable Objects**       | ~95%      | Sync KV + transactionSync implemented; state.abort supported                  |
+| **R2**                    | ~95%      | Missing SSE-C, storageClass only "Standard"; keys stored as file paths        |
+| **Durable Objects**       | ~95%      | Sync KV + transactionSync; state.abort supported; no point-in-time recovery   |
 | **Queues**                | ~95%      | Full push + pull consumers; max_concurrency + retry_delay supported           |
 | **Workflows**             | 100%      | Full lifecycle, checkpointing, concurrency                                    |
-| **Cache API**             | 100%      | put/match/delete, TTL, expiration, validation                                 |
+| **Cache API**             | ~95%      | put/match/delete, TTL, conditional + range match; cf.cacheKey ignored         |
 | **Static Assets**         | ~98%      | Full _redirects + _headers with !Header removal                               |
 | **Service Bindings**      | ~95%      | Full RPC stubs, using/dup; instance property filtering relaxed                |
 | **Scheduled (Cron)**      | 100%      | Full cron parser with L/W/# support, aliases, manual trigger                  |
@@ -32,6 +32,42 @@
 | -------- | ------------- | -------------------------------------- |
 | Very low | Tail handler  | Hard to simulate locally               |
 | Very low | Secrets Store | `[[secrets_store_secrets]]`, open beta |
+
+### Measured conformance
+
+The [conformance harness](tests/conformance/README.md) runs two corpora:
+
+- 45 modules of workerd's own API tests, each as a worker inside `lopata dev`: fetch, streams, encoding and URL, crypto, HTMLRewriter, events, globals, WebSocket and Durable Object storage.
+- Ports of Miniflare's KV, R2, D1, Cache and Queues binding tests, run against lopata's binding classes.
+
+Run it with `bun scripts/conformance-report.ts`. Each failing case is listed with its error in `tests/conformance/known-failures/`.
+
+The pass rates are of these selected suites, not of Cloudflare's whole API. The workerd tests concentrate on runtime edge cases, most of which lopata takes from Bun. The Miniflare ports were the target of the binding fixes, so their pass rate shows what is fixed, not an independent sample.
+
+| Corpus           | Area            |                Before |                 After |
+| ---------------- | --------------- | --------------------: | --------------------: |
+| miniflare-cache  | cache           |               15 / 22 |               21 / 22 |
+| miniflare-d1     | d1              |                 2 / 9 |                 8 / 9 |
+| miniflare-kv     | kv              |               18 / 44 |               44 / 44 |
+| miniflare-queues | queues          |                4 / 10 |                9 / 10 |
+| miniflare-queues | queues delay    |                 3 / 5 |                 5 / 5 |
+| miniflare-queues | Queues: retry   |                 0 / 2 |                 2 / 2 |
+| miniflare-r2     | r2              |               17 / 49 |               46 / 49 |
+| workerd          | crypto          |                7 / 15 |                7 / 15 |
+| workerd          | durable-objects |                4 / 11 |                4 / 11 |
+| workerd          | encoding-url    |               33 / 39 |               33 / 39 |
+| workerd          | events          |               12 / 57 |               26 / 57 |
+| workerd          | fetch           |               15 / 43 |               20 / 43 |
+| workerd          | globals         |               10 / 31 |               19 / 31 |
+| workerd          | htmlrewriter    |               21 / 33 |               21 / 33 |
+| workerd          | streams         |             141 / 269 |             190 / 269 |
+| workerd          | websocket       |               11 / 18 |               11 / 18 |
+| **all**          |                 | **313 / 657 (47.6%)** | **466 / 657 (70.9%)** |
+
+Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: `main` at `3562887`, with the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes. The remaining failures:
+
+- **Bindings (6):** D1 database names containing `/`; R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`); Cache ignores `cf.cacheKey` (Bun's `Request` drops `init.cf`).
+- **workerd (185):** mostly Bun's native streams (BYOB readers on body and transform streams, `readAtLeast()`), `AbortSignal` over RPC, streamed HTMLRewriter content, `MessagePort` and `Event` details, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`). Two modules (`fetch-test`, `reporterror-test`) do not load at all.
 
 ---
 
@@ -125,6 +161,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `request.json()` — read body as JSON
 - 🟰 `request.text()` — read body as string
 - 🟰 `request.blob()` — read body as Blob
+- ✅ `instanceof Request` — true for native Requests too (the global `Request` is a lopata subclass)
 
 ### 1.2 Request `cf` Object (IncomingRequestCfProperties)
 
@@ -197,8 +234,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `response.json()` — read body
 - 🟰 `response.text()` — read body
 - 🟰 `response.blob()` — read body
-- 🟰 `Response.json(data, init?)` — static, create JSON response
+- ✅ `Response.json(data, init?)` — static, create JSON response; `Content-Type: application/json` without a charset, as in workerd
 - 🟰 `Response.redirect(url, status?)` — static, create redirect
+- ✅ `instanceof Response` — true for responses from `fetch()`, `Response.json()`, `Response.error()` and `Response.redirect()` (the global `Response` is a lopata subclass)
 - ❌ `encodeBody` option — "manual" | "automatic" for Content-Encoding
 
 ### 1.5 ExecutionContext
@@ -247,12 +285,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `ReadableStream.cancel(reason?)` — cancel
 - 🟰 `ReadableStream.values()` — async iterator
 - 🟰 `ReadableStreamDefaultReader` — read(), cancel(), releaseLock()
-- 🟰 `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock()
+- ⚠️ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); only on `type: 'bytes'` streams, not on Request/Response bodies or transform streams
+- ❌ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
 - 🟰 `WritableStream` — accessed via TransformStream.writable
 - 🟰 `WritableStreamDefaultWriter` — write(), close(), abort(), releaseLock()
 - 🟰 `new TransformStream()` — identity transform (CF default)
 - 🟰 `transformstream_enable_standard_constructor` flag — spec-compliant constructor
-- ✅ `new IdentityTransformStream()` — forwards bytes, supports BYOB
+- ⚠️ `new IdentityTransformStream()` — forwards bytes; a BYOB reader on its readable side throws
 - ✅ `new FixedLengthStream(length)` — limits total bytes, sets Content-Length
 - 🟰 PipeToOptions: preventClose, preventAbort, preventCancel, signal
 
@@ -279,7 +318,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.wrapKey()` — wrap key
 - 🟰 `crypto.subtle.unwrapKey()` — unwrap key
 - ✅ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
-- ✅ `crypto.DigestStream` — WritableStream that computes hash digest
+- ⚠️ `crypto.DigestStream` — WritableStream that computes hash digest; no `bytesWritten`, no CRC32 algorithms, no `Symbol.dispose`
 - 🟰 Algorithms: RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA, ECDH, Ed25519, X25519, AES-CTR/CBC/GCM/KW, SHA-1/256/384/512, MD5, HKDF, PBKDF2, HMAC
 
 ### 1.12 HTMLRewriter
@@ -294,12 +333,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ Text: text, lastInTextNode, removed, before, after, replace, remove
 - ✅ Comment: text, removed, before, after, replace, remove
 - ✅ Document: doctype, comments, text, end
+- ❌ Streamed content: a `ReadableStream` or `Response` as the content of before/after/prepend/append/replace
 
 > **Note:** HTMLRewriter runs on `html-rewriter-wasm` (the lol-html engine that Cloudflare uses, built to WASM), which lopata installs as a regular dependency. The output streams, and async handlers can await any binding, including Durable Object calls.
 
 ### 1.13 WebSocket
 
-- ✅ `new WebSocketPair()` — create client/server pair
+- ⚠️ `new WebSocketPair()` — create client/server pair; `Object.values()` works, array destructuring (`const [client, server] = …`) throws
 - ✅ `ws.accept()` — begin handling (CF-specific)
 - 🟰 `ws.send(message)` — send data
 - 🟰 `ws.close(code?, reason?)` — close connection
@@ -309,8 +349,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 Max message size: 1 MiB
 - ⚠️ WebSocket upgrade: `new Response(null, { status: 101, webSocket: client })` — works via manual webSocket property attachment
 - ❌ `web_socket_compression` flag — RFC 7692 per-message deflate
+- ⚠️ `websocket_standard_binary_type` flag — honoured by WebSocketPair sockets; an outbound `new WebSocket(url)` keeps Bun's `binaryType` default and `close()` code checks
 
-> **Note:** WebSocketPair and WebSocket hibernation API in Durable Objects are both fully implemented.
+> **Note:** WebSocketPair and the WebSocket hibernation API in Durable Objects are both implemented.
 
 ### 1.14 Global fetch()
 
@@ -368,7 +409,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - 🟰 `setTimeout(fn, delay)` / `clearTimeout(id)`
 - 🟰 `setInterval(fn, delay)` / `clearInterval(id)`
-- ✅ `scheduler.wait(ms)` — await-able setTimeout alternative
+- ⚠️ `scheduler.wait(ms)` — await-able setTimeout alternative; the `signal` option is ignored
 - 🟰 `atob()` / `btoa()` — Base64 encode/decode
 - 🟰 `AbortController` / `AbortSignal` — standard
 - 🟰 `AbortSignal.timeout(delay)`, `AbortSignal.abort()`, `AbortSignal.any(signals)`
@@ -377,6 +418,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `queueMicrotask(fn)`
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
+- ✅ Global `addEventListener` for `unhandledrejection`, `rejectionhandled` and custom events; `error` listeners register but no `error` event is dispatched
+- ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread keeps serving
+- ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads still terminate
 - 🟰 `Blob`, `File`, `FormData`
 - 🟰 `MessageChannel`, `MessagePort` (expose_global_message_channel flag)
 - 🟰 `AsyncLocalStorage` (nodejs_als / nodejs_compat flag)
@@ -418,9 +462,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 2.1 KVNamespace Methods
 
 - ✅ `kv.get(key, options?)` — read single value (text/json/arrayBuffer/stream)
-- ✅ `kv.get(keys, options?)` — bulk read up to 100 keys (returns Map)
+- ✅ `kv.get(keys, options?)` — bulk read up to 100 keys (returns Map; a missing key maps to `null`)
 - ✅ `kv.getWithMetadata(key, options?)` — read value + metadata
-- ✅ `kv.getWithMetadata(keys, options?)` — bulk read with metadata
+- ✅ `kv.getWithMetadata(keys, options?)` — bulk read with metadata (a missing key maps to `null`)
 - ✅ `kv.put(key, value, options?)` — write key-value pair
 - ✅ `kv.delete(key)` — delete single key
 - ✅ `kv.list(options?)` — list keys with pagination
@@ -431,20 +475,21 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `type: "json"` — return parsed JSON
 - ✅ `type: "arrayBuffer"` — return ArrayBuffer
 - ✅ `type: "stream"` — return ReadableStream
-- ✅ `cacheTtl` — edge cache TTL in seconds (accepted, no-op in dev)
+- ✅ `cacheTtl` — edge cache TTL in seconds (validated: at least 30; no caching in dev)
 
 ### 2.3 put() Options
 
 - ✅ `expiration` — absolute UNIX epoch timestamp (seconds)
-- ✅ `expirationTtl` — seconds from now (minimum 60)
+- ✅ `expirationTtl` — seconds from now (minimum 60); wins over `expiration` when both are given
+- ✅ Expiration values converted as workerd does (NaN → 0, fractions truncated); a key expires at its expiration second
 - ✅ `metadata` — JSON-serializable object (max 1024 bytes)
 
 ### 2.4 list() Options & Result
 
-- ✅ `limit` — max keys (default/max 1000)
+- ✅ `limit` — max keys (default 1000; 0 or below means the default; above 1000 throws)
 - ✅ `prefix` — filter by prefix
 - ✅ `cursor` — pagination cursor
-- ✅ Result: `{ keys: [{ name, expiration?, metadata? }], list_complete, cursor? }`
+- ✅ Result: `{ keys: [{ name, expiration?, metadata? }], list_complete, cursor?, cacheStatus: null }`; `cursor` only when `list_complete` is false
 - ✅ Keys returned in lexicographic order (UTF-8 bytes)
 
 ### 2.5 getWithMetadata() Result
@@ -456,7 +501,8 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ Key max size: 512 bytes — validated
 - ✅ Value max size: 25 MiB — validated
 - ✅ Metadata max size: 1024 bytes — validated
-- ✅ Key cannot be empty, ".", or ".." — validated
+- ✅ Key cannot be empty, ".", or ".." — validated, on delete too
+- ✅ Errors use Cloudflare's types and messages (e.g. `KV GET failed: 414 …`, `TypeError: Key name cannot be empty.`)
 - ✅ Bulk get: max 100 keys — validated
 - ✅ All limits configurable via KVLimits
 - ⚠️ Eventually consistent — N/A locally (immediate consistency)
@@ -470,28 +516,29 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 3.1 D1Database Methods
 
-- ✅ `db.prepare(query)` — prepare SQL statement with ? placeholders
+- ✅ `db.prepare(query)` — prepare SQL statement with ? placeholders; a multi-statement query runs every statement, all or nothing
 - ✅ `db.batch(statements)` — execute multiple statements as transaction
-- ✅ `db.exec(query)` — execute raw SQL (proper statement splitter, handles strings/comments)
+- ✅ `db.exec(query)` — execute raw SQL, one query per line (a statement spanning lines throws `D1_EXEC_ERROR`, as on Cloudflare); all lines run in one transaction
 - ✅ `db.dump()` — export database as ArrayBuffer
 - ⚠️ `db.withSession(option?)` — returns session object (stub, no real replication)
 
 ### 3.2 D1PreparedStatement Methods
 
 - ✅ `stmt.bind(...values)` — bind values to ? placeholders (immutable, returns new statement)
-- ✅ `stmt.first(column?)` — first row or column value, null if none
+- ✅ `stmt.first(column?)` — first row or column value, null if none; a missing column throws `D1_COLUMN_NOTFOUND`
 - ✅ `stmt.all()` — all rows as D1Result { success, results, meta }
-- ✅ `stmt.run()` — execute (results empty for writes)
+- ✅ `stmt.run()` — execute; returns the same D1Result as `all()`, rows included
+- ✅ Errors use workerd's `D1_ERROR` / `D1_TYPE_ERROR` / `D1_EXEC_ERROR` / `D1_COLUMN_NOTFOUND` prefixes, with a `cause`
 - ✅ `stmt.raw(options?)` — results as arrays; { columnNames: true } for header row
 
 ### 3.3 D1Meta Fields
 
 - ✅ `duration` — query execution ms
-- ✅ `rows_read` — rows scanned
+- ⚠️ `rows_read` — rows scanned (approximated: rows returned plus rows changed)
 - ✅ `rows_written` — rows modified
 - ✅ `last_row_id` — last inserted rowid
 - ✅ `changed_db` — whether DB was modified
-- ✅ `changes` — number of rows changed
+- ✅ `changes` — number of rows changed by this query (a read reports 0)
 - ✅ `size_after` — DB size in bytes after query
 - ✅ `served_by` — "lopata-d1"
 - ❌ `served_by_region` — execution region
@@ -514,7 +561,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ String → TEXT → String
 - ✅ Boolean → INTEGER (0/1) → Number
 - ✅ ArrayBuffer/ArrayBufferView → BLOB → Array (of bytes)
-- ✅ undefined → throws D1_TYPE_ERROR
+- ✅ undefined, bigint and other unsupported types → throw D1_TYPE_ERROR
 
 ### 3.6 Session API (Read Replication)
 
@@ -538,6 +585,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 3.9 D1 Limits
 
 - ❌ Max DB size: 500 MB (free), 10 GB (paid) — not enforced
+- ⚠️ Database names: a name containing `/` is used as a file path and fails to open
 - ❌ Queries per invocation: 50 (free), 1,000 (paid) — not enforced
 - ❌ SQL statement length: 100 KB — not enforced
 - ❌ Max bound parameters: 100 — not enforced
@@ -555,7 +603,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `bucket.get(key, options?)` — returns R2ObjectBody | null
 - ✅ `bucket.get(key, { onlyIf })` — conditional get, may return R2Object without body
 - ✅ `bucket.put(key, value, options?)` — store value
-- ✅ `bucket.put(key, value, { onlyIf })` — conditional put, returns null on failure
+- ✅ `bucket.put(key, value, { onlyIf })` — conditional put, returns null on failure (also when the key is missing and the condition requires it)
 - ✅ `bucket.delete(keys)` — delete one or multiple keys (up to 1,000)
 - ✅ `bucket.list(options?)` — list objects
 - ✅ `bucket.createMultipartUpload(key, options?)` — initiate multipart
@@ -564,7 +612,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 4.2 R2Object Properties
 
 - ✅ `key` — object key
-- ✅ `version` — unique version string (UUID)
+- ✅ `version` — unique version string (32 hex characters; versions stored as UUIDs by older lopata are kept)
 - ✅ `size` — size in bytes
 - ✅ `etag` — ETag without quotes (MD5)
 - ✅ `httpEtag` — ETag with quotes
@@ -572,7 +620,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `uploaded` — Date timestamp
 - ✅ `httpMetadata` — R2HTTPMetadata | undefined
 - ✅ `customMetadata` — Record<string, string> | undefined
-- ✅ `range` — R2Range | undefined
+- ✅ `range` — R2Range on get()/head() results (the whole object when no range was requested)
 - ⚠️ `storageClass` — always "Standard" (no InfrequentAccess)
 - ✅ `writeHttpMetadata(headers)` — copy metadata to Headers
 
@@ -580,12 +628,14 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
-- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()` / `bytes()`
+- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()`
+- ❌ `bytes()`
+- ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
 
 ### 4.4 R2GetOptions
 
-- ✅ `onlyIf` — R2Conditional | Headers (conditional headers)
-- ✅ `range` — R2Range | Headers (byte range)
+- ✅ `onlyIf` — R2Conditional | Headers (conditional headers); `get(key, { range: request.headers, onlyIf: request.headers })` serves range and conditional requests
+- ✅ `range` — R2Range | Headers (byte range); an unsatisfiable R2Range throws; an unsatisfiable or multi-range Range header returns the whole object
 - ❌ `ssecKey` — SSE-C encryption key
 
 ### 4.5 R2PutOptions
@@ -593,7 +643,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `onlyIf` — conditional write
 - ✅ `httpMetadata` — contentType, contentLanguage, contentDisposition, contentEncoding, cacheControl, cacheExpiry
 - ✅ `customMetadata` — arbitrary key-value pairs
-- ✅ `md5` / `sha1` / `sha256` / `sha384` / `sha512` — integrity checksums
+- ✅ `md5` / `sha1` / `sha256` / `sha384` / `sha512` — integrity checksums (validated)
 - ⚠️ `storageClass` — accepted, always stored as "Standard"
 - ❌ `ssecKey` — SSE-C encryption key
 
@@ -601,10 +651,10 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `limit` — max 1000 (default 1000)
 - ✅ `prefix` — filter by prefix
-- ✅ `cursor` — pagination token
-- ✅ `delimiter` — grouping character (e.g. "/")
+- ✅ `cursor` — pagination token (key-based)
+- ✅ `delimiter` — grouping character (e.g. "/"); `limit` counts delimited prefixes too
 - ✅ `startAfter` — lexicographic start (exclusive)
-- ✅ `include` — ["httpMetadata", "customMetadata"]
+- ✅ `include` — ["httpMetadata", "customMetadata"]; metadata is returned only when included (as with compatibility dates from 2022-08-04, regardless of the date)
 
 ### 4.7 R2 List Result
 
@@ -634,12 +684,15 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `upload.uploadPart(partNumber, value)` — upload part (temp files)
 - ✅ `upload.abort()` — abort upload
 - ✅ `upload.complete(uploadedParts)` — finalize (concatenates parts)
-- ✅ Part number starts at 1, min 5 MiB (except last), max 5 GiB, max 10,000 parts
+- ✅ Part sizes: every part but the last at least 5 MiB (configurable via `minMultipartPartSize`) and of equal size, the last no larger — validated on `complete()` with R2's error codes
+- ❌ Max part size 5 GiB, max 10,000 parts — not enforced
+- ✅ Concurrent `complete()` calls: only one finishes the upload
 - ❌ Uncompleted uploads auto-abort after 7 days — not enforced
 
 ### 4.11 R2 Limits
 
 - ✅ Max key length: 1,024 bytes — validated
+- ⚠️ Key layout: each key is stored as a file path, so an empty key, a key with a path segment longer than the filesystem allows, and both `a` and `a/b` in one bucket are not supported, nor any key containing `..`
 - ✅ Max metadata size: 2,048 bytes (custom) — validated
 - ✅ Max keys per delete(): 1,000 — validated
 - ✅ All limits configurable via R2Limits
@@ -682,6 +735,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `storage.sql.exec(query, ...bindings)` — execute SQL, returns SqlStorageCursor (synchronous)
 - ✅ `storage.sql.databaseSize` — current DB size in bytes
 - ✅ SqlStorageCursor: columnNames, rowsRead, rowsWritten, [Symbol.iterator], next(), toArray(), one(), raw()
+- ❌ Point-in-time recovery: `storage.getCurrentBookmark()`, `getBookmarkForTime()`, `onNextSessionRestoreBookmark()`
 
 > **Note:** Each DO instance gets its own SQLite file at `.lopata/do-sql/<namespace>/<id>.sqlite`
 
@@ -816,12 +870,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 6.2 send() Options
 
-- ✅ `contentType` — "json" (default) | "text" | "bytes" | "v8"
+- ✅ `contentType` — "json" | "text" | "bytes" | "v8"; the default follows the `queues_json_messages` flag (`json` from compatibility date 2024-03-18, `v8` before; `json` without a date)
+- ⚠️ `v8` bodies use structured clone (`Map`, `Set`, `Date`, `BigInt`, cycles survive), but `Error.cause` is lost (Bun's `v8.serialize`)
 - ✅ `delaySeconds` — delivery delay 0-43,200 (12 hours) — validated
 
 ### 6.3 sendBatch() Message Format
 
-- ✅ `body` — message payload (max 128 KB per message) — validated
+- ✅ `body` — message payload (max 128,000 bytes per message) — validated
 - ✅ `contentType` — per-message override
 - ✅ `delaySeconds` — per-message delay
 
@@ -838,10 +893,10 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 6.6 Message
 
-- ✅ `message.id` — unique identifier (UUID)
+- ✅ `message.id` — unique identifier (32 hex characters)
 - ✅ `message.timestamp` — Date when published
 - ✅ `message.body` — deserialized payload
-- ✅ `message.attempts` — delivery attempt count
+- ✅ `message.attempts` — delivery attempt count (starts at 1; restarts at 1 in the dead letter queue)
 - ✅ `message.ack()` — acknowledge this message
 - ✅ `message.retry(options?)` — retry this message; options: { delaySeconds }
 - ✅ Individual ack/retry overrides batch-level; last invocation wins
@@ -849,8 +904,8 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 6.7 Consumer Configuration
 
 - ✅ `max_batch_size` — 1-100 (default 10)
-- ✅ `max_batch_timeout` — 0-60 seconds (default 5)
-- ✅ `max_retries` — 0-100 (default 3)
+- ✅ `max_batch_timeout` — 0-60 seconds (default 5); a full batch is delivered at once, a partial batch after the timeout (so a single `send()` arrives after about 5 s by default)
+- ✅ `max_retries` — 0-100 (default 3); a message is delivered `max_retries + 1` times
 - ✅ `dead_letter_queue` — DLQ name
 - ✅ `max_concurrency` — 1-250 (default auto) — concurrency gate in consumer
 - ✅ `retry_delay` — default delay for retried messages
@@ -869,7 +924,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 6.10 Queue Limits
 
-- ✅ Message size: 128 KB — validated
+- ✅ Message size: 128,000 bytes — validated, with Cloudflare's error text
 - ✅ Messages per sendBatch: 100 / 256 KB total — validated
 - ✅ delaySeconds max: 43,200 (12 hours) — validated
 - ✅ All limits configurable via QueueLimits
@@ -968,6 +1023,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `cache.put(request, response)` — store response (GET only, no 206, no Vary:*)
 - ✅ `cache.match(request, options?)` — retrieve response; options: { ignoreMethod }
+- ✅ `match()` conditional requests: `If-None-Match` / `If-Modified-Since` → 304
+- ✅ `match()` range requests: 206 for one range, `multipart/byteranges` for several, 416 when unsatisfiable
+- ❌ `cf.cacheKey` on the request — ignored by put/match/delete (Bun's `Request` drops `init.cf`)
 - ✅ `cache.delete(request, options?)` — remove response; options: { ignoreMethod }
 
 ### 8.3 Cache Constraints
@@ -976,10 +1034,12 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ⚠️ Per-data-center locality — N/A locally (single instance)
 - ✅ Max object size: 512 MB — validated via CacheLimits
 - ❌ Calls share subrequest quota — not enforced
-- ✅ Responses with Set-Cookie never cached — silently skipped
+- ✅ `Cache-Control: private` / `no-cache` / `no-store` responses not stored — silently skipped
+- ✅ Responses with Set-Cookie stored only with `Cache-Control: private=set-cookie`, which strips the cookie
+- ✅ A 304 response passed to `put()` is discarded
 - ✅ Rejects 206 Partial Content responses
 - ✅ Rejects Vary: * responses
-- ✅ Parses Cache-Control (s-maxage, max-age, no-store) and Expires headers
+- ✅ Parses Cache-Control (s-maxage, max-age, no-store, no-cache, private) and Expires headers
 - ✅ Adds `cf-cache-status: HIT` header on cache hits
 - ✅ Lazy-deletes expired entries
 
@@ -1104,6 +1164,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ ReadableStream / WritableStream — passed in-process
 - ✅ Request, Response, Headers — passed in-process
 - ✅ Functions → stubs; RpcTarget subclasses → stubs — via `createRpcFunctionStub()` / `createRpcStub()`
+- ❌ AbortSignal — passing one to an RPC method fails (the worker thread's `postMessage` cannot clone it)
 - ⚠️ Max serialized payload: 32 MiB — limit defined but not enforced
 
 ### 10.6 Promise Pipelining
