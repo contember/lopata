@@ -179,7 +179,13 @@ test('ListObjectsV2 pagination with max-keys returns continuation token', async 
 	const res = await handleS3Request(s3('GET', '/?list-type=2&max-keys=2'), BUCKET, r2)
 	const xml = await res.text()
 	expect(xml).toContain('<IsTruncated>true</IsTruncated>')
-	expect(xml).toMatch(/<NextContinuationToken>\d+<\/NextContinuationToken>/)
+	const token = /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/.exec(xml)?.[1]
+	expect(token).toBeDefined()
+	const next = await handleS3Request(s3('GET', `/?list-type=2&max-keys=2&continuation-token=${encodeURIComponent(token ?? '')}`), BUCKET, r2)
+	const nextXml = await next.text()
+	expect(nextXml).toContain('<Key>k2</Key>')
+	expect(nextXml).toContain('<Key>k3</Key>')
+	expect(nextXml).not.toContain('<Key>k1</Key>')
 })
 
 // --- Content-MD5 validation ---
@@ -338,6 +344,15 @@ test('ListObjects V1 (no list-type) returns Marker-style response', async () => 
 	expect(xml).toContain('<Key>a</Key>')
 	expect(xml).toContain('<Key>b</Key>')
 	expect(xml).toContain('<Marker/>')
+})
+
+test('ListObjects V1 lists keys after Marker', async () => {
+	for (const k of ['a', 'b', 'c']) await r2.put(k, '1')
+	const res = await handleS3Request(s3('GET', '/?marker=a'), BUCKET, r2)
+	const xml = await res.text()
+	expect(xml).not.toContain('<Key>a</Key>')
+	expect(xml).toContain('<Key>b</Key>')
+	expect(xml).toContain('<Key>c</Key>')
 })
 
 // --- DeleteObjects batch ---

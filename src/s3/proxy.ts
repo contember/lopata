@@ -288,7 +288,7 @@ async function handleListObjects(
 		const list = await r2.list({
 			prefix: params.prefix,
 			cursor: params.continuationToken,
-			limit: params.maxKeys ?? 1000,
+			limit: Math.min(params.maxKeys ?? 1000, 1000),
 			delimiter: params.delimiter,
 		})
 		const body = listBucketV2Xml(
@@ -311,8 +311,8 @@ async function handleListObjects(
 	}
 	const list = await r2.list({
 		prefix: params.prefix,
-		cursor: params.marker,
-		limit: params.maxKeys ?? 1000,
+		startAfter: params.marker,
+		limit: Math.min(params.maxKeys ?? 1000, 1000),
 		delimiter: params.delimiter,
 	})
 	const nextMarker = list.truncated && list.objects.length > 0

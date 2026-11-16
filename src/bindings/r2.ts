@@ -75,6 +75,7 @@ export interface R2ListOptions {
 	limit?: number
 	cursor?: string
 	delimiter?: string
+	startAfter?: string
 	include?: ('httpMetadata' | 'customMetadata')[]
 }
 
@@ -338,6 +339,9 @@ function r2Error(method: string, code: number, message: string): Error {
 }
 
 const INVALID_RANGE = [10039, 'The requested range is not satisfiable'] as const
+const INVALID_MAX_KEYS = [10022, 'MaxKeys params must be positive integer <= 1000.'] as const
+
+const MAX_LIST_KEYS = 1000
 
 // --- Conditional check ---
 
@@ -863,57 +867,66 @@ export class FileR2Bucket {
 	}
 
 	async list(options?: R2ListOptions) {
-		const prefix = options?.prefix ?? ''
-		const limit = options?.limit ?? 1000
-		const delimiter = options?.delimiter
-		const include = options?.include
-		const cursorOffset = options?.cursor ? parseInt(options.cursor, 10) : 0
+		const limit = options?.limit ?? MAX_LIST_KEYS
+		if (limit < 1 || limit > MAX_LIST_KEYS) throw r2Error('list', ...INVALID_MAX_KEYS)
+		const include = parseListInclude(options?.include)
+		const params = {
+			$bucket: this.bucket,
+			$prefix: options?.prefix ?? '',
+			$startAfter: options?.startAfter ?? null,
+			// The cursor is the base64 of the last returned key, so keys inserted while paginating are still listed
+			$cursorKey: options?.cursor ? Buffer.from(options.cursor, 'base64').toString('utf8') : null,
+			// One extra row tells whether the listing is truncated
+			$limit: limit + 1,
+		}
+		const filter = `bucket = $bucket AND substr(key, 1, length($prefix)) = $prefix
+			AND ($startAfter IS NULL OR key > $startAfter) AND ($cursorKey IS NULL OR key > $cursorKey)`
 
-		const rows = this.db
-			.query<R2Row, [string, string, number, number]>(
-				`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums
-         FROM r2_objects WHERE bucket = ? AND key LIKE ? ORDER BY key LIMIT ? OFFSET ?`,
-			)
-			.all(this.bucket, prefix + '%', limit + 1, cursorOffset)
-
-		if (delimiter) {
-			// With delimiter: group keys by delimiter, return delimitedPrefixes
-			const prefixLen = prefix.length
-			const delimitedPrefixes = new Set<string>()
-			const objects: R2Object[] = []
-
+		const objects: R2Object[] = []
+		const delimitedPrefixes: string[] = []
+		let lastKey: string | undefined
+		let truncated: boolean
+		if (options?.delimiter) {
+			// Keys sharing a delimited prefix collapse into one row (counted once towards the limit);
+			// its max(key) becomes the cursor so the next page skips the rest of that prefix.
+			// Adapted from Miniflare workers/r2/bucket.worker.ts (listMetadata).
+			const rows = this.db
+				.query<Omit<R2Row, 'key'> & { last_key: string; delimited_prefix: string | null }, Record<string, string | number | null>>(
+					`SELECT max(key) AS last_key,
+						iif(instr(substr(key, length($prefix) + 1), $delimiter),
+							substr(key, 1, length($prefix) + instr(substr(key, length($prefix) + 1), $delimiter) + length($delimiter) - 1),
+							NULL) AS delimited_prefix,
+						size, etag, version, uploaded, http_metadata, custom_metadata, checksums
+					FROM r2_objects WHERE ${filter}
+					GROUP BY coalesce('p:' || delimited_prefix, 'k:' || key)
+					ORDER BY last_key LIMIT $limit`,
+				)
+				.all({ ...params, $delimiter: options.delimiter })
+			truncated = rows.length > limit
 			for (const row of rows.slice(0, limit)) {
-				const rest = row.key.slice(prefixLen)
-				const delimIdx = rest.indexOf(delimiter)
-				if (delimIdx !== -1) {
-					delimitedPrefixes.add(prefix + rest.slice(0, delimIdx + delimiter.length))
-				} else {
-					const meta = rowToMeta(row)
-					objects.push(buildListObject(meta, include))
-				}
+				if (row.delimited_prefix === null) objects.push(buildListObject(rowToMeta({ ...row, key: row.last_key }), include))
+				else delimitedPrefixes.push(row.delimited_prefix)
+				lastKey = row.last_key
 			}
-
-			const truncated = rows.length > limit
-			return {
-				objects,
-				truncated,
-				cursor: truncated ? String(cursorOffset + limit) : '',
-				delimitedPrefixes: [...delimitedPrefixes].sort(),
+		} else {
+			const rows = this.db
+				.query<R2Row, Record<string, string | number | null>>(
+					`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums
+					FROM r2_objects WHERE ${filter} ORDER BY key LIMIT $limit`,
+				)
+				.all(params)
+			truncated = rows.length > limit
+			for (const row of rows.slice(0, limit)) {
+				objects.push(buildListObject(rowToMeta(row), include))
+				lastKey = row.key
 			}
 		}
-
-		const truncated = rows.length > limit
-		const resultRows = truncated ? rows.slice(0, limit) : rows
-		const objects = resultRows.map((row) => {
-			const meta = rowToMeta(row)
-			return buildListObject(meta, include)
-		})
 
 		return {
 			objects,
 			truncated,
-			cursor: truncated ? String(cursorOffset + limit) : '',
-			delimitedPrefixes: [] as string[],
+			cursor: truncated && lastKey !== undefined ? Buffer.from(lastKey, 'utf8').toString('base64') : '',
+			delimitedPrefixes,
 		}
 	}
 
@@ -988,16 +1001,22 @@ export class FileR2Bucket {
 	}
 }
 
-function buildListObject(meta: R2ObjectMeta, include?: ('httpMetadata' | 'customMetadata')[]): R2Object {
-	if (include) {
-		// Only include requested metadata
-		const filtered: R2ObjectMeta = {
-			...meta,
-			httpMetadata: include.includes('httpMetadata') ? meta.httpMetadata : {},
-			customMetadata: include.includes('customMetadata') ? meta.customMetadata : {},
-		}
-		return new R2Object(filtered)
+type ListInclude = { httpMetadata: boolean; customMetadata: boolean }
+
+function parseListInclude(include: R2ListOptions['include']): ListInclude {
+	const result = { httpMetadata: false, customMetadata: false }
+	for (const field of include ?? []) {
+		if (field !== 'httpMetadata' && field !== 'customMetadata') throw new RangeError(`Unsupported include value ${field}`)
+		result[field] = true
 	}
-	// By default, include both
-	return new R2Object(meta)
+	return result
+}
+
+/** Metadata is omitted unless requested, as under r2_list_honor_include (default since 2022-08-04). */
+function buildListObject(meta: R2ObjectMeta, include: ListInclude): R2Object {
+	return new R2Object({
+		...meta,
+		httpMetadata: include.httpMetadata ? meta.httpMetadata : {},
+		customMetadata: include.customMetadata ? meta.customMetadata : {},
+	})
 }
