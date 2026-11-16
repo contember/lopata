@@ -142,6 +142,12 @@ function inSavepoint<T>(db: Database, fn: () => T): T {
 	}
 }
 
+/** workerd's error for a failed query: `D1_ERROR: <reason>`, with the bare reason as `cause`. */
+function d1Error(e: unknown): Error {
+	const reason = e instanceof Error ? e.message : String(e)
+	return new Error(`D1_ERROR: ${reason}`, { cause: new Error(reason) })
+}
+
 function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
 	return Object.fromEntries(columns.map((name, i) => [name, row[i]]))
 }
@@ -190,7 +196,11 @@ async function runBatchSerially<T>(db: Database, statements: LocalD1PreparedStat
 				// call holds the db lock, so nothing else can slip into the open transaction.
 				results.push(await stmt.allUnlocked<T>())
 			}
-			db.run('COMMIT')
+			try {
+				db.run('COMMIT')
+			} catch (e) {
+				throw d1Error(e)
+			}
 		} catch (e) {
 			try {
 				db.run('ROLLBACK')
@@ -296,15 +306,15 @@ export class LocalD1PreparedStatement {
 	async first<T = Record<string, unknown>>(column?: string): Promise<T | null> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			const { columns, rows } = executeQuery(this.db, this.sql, this.params)
+			const { columns, rows } = this.execute()
 			const first = rows[0]
 			if (!first) return null
 			const row = rowToObject(columns, first)
-			if (column) {
-				if (!(column in row)) {
-					throw new Error(`D1_ERROR: Column '${column}' does not exist in the result set.`)
+			if (column !== undefined) {
+				if (row[column] === undefined) {
+					throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${column})`, { cause: new Error('Column not found') })
 				}
-				return (row[column] as T) ?? null
+				return row[column] as T
 			}
 			return row as T
 		} finally {
@@ -328,7 +338,7 @@ export class LocalD1PreparedStatement {
 
 	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
 	allUnlocked<T = Record<string, unknown>>(): D1Result<T> {
-		const { columns, rows, meta } = executeQuery(this.db, this.sql, this.params)
+		const { columns, rows, meta } = this.execute()
 		return {
 			results: rows.map(row => rowToObject(columns, row)) as T[],
 			success: true,
@@ -339,13 +349,21 @@ export class LocalD1PreparedStatement {
 	async raw<T extends unknown[] = unknown[]>(options?: { columnNames?: boolean }): Promise<T[]> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			const { columns, rows } = executeQuery(this.db, this.sql, this.params)
+			const { columns, rows } = this.execute()
 			if (options?.columnNames) {
 				return [columns as unknown as T, ...(rows as T[])]
 			}
 			return rows as T[]
 		} finally {
 			unlock()
+		}
+	}
+
+	private execute(): QueryOutput {
+		try {
+			return executeQuery(this.db, this.sql, this.params)
+		} catch (e) {
+			throw d1Error(e)
 		}
 	}
 }

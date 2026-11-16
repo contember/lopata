@@ -56,11 +56,11 @@ describe('D1Database', () => {
 			expect(val).toBeNull()
 		})
 
-		test('throws D1_ERROR for non-existent column when row exists', async () => {
+		test('throws D1_COLUMN_NOTFOUND for non-existent column when row exists', async () => {
 			await d1.prepare('INSERT INTO users (name, email) VALUES (?, ?)').bind('Alice', 'alice@example.com').run()
 			await expect(
 				d1.prepare('SELECT * FROM users WHERE id = ?').bind(1).first('nonexistent'),
-			).rejects.toThrow('D1_ERROR')
+			).rejects.toThrow('D1_COLUMN_NOTFOUND: Column not found (nonexistent)')
 		})
 	})
 
@@ -81,6 +81,21 @@ describe('D1Database', () => {
 			const result = await d1.prepare('SELECT * FROM users WHERE name = ?').bind('Nobody').all()
 			expect(result.success).toBe(true)
 			expect(result.results).toHaveLength(0)
+		})
+	})
+
+	describe('errors', () => {
+		test('a failed query throws D1_ERROR with the reason as cause', async () => {
+			const error = await d1.prepare('SELECT * FROM nonexistent_table').all().catch((e: unknown) => e)
+			expect(error).toBeInstanceOf(Error)
+			expect(error).toHaveProperty('message', 'D1_ERROR: no such table: nonexistent_table')
+			expect(error).toHaveProperty('cause.message', 'no such table: nonexistent_table')
+		})
+
+		test('a failed batch throws D1_ERROR with the reason as cause', async () => {
+			const error = await d1.batch([d1.prepare('SELECT * FROM nonexistent_table')]).catch((e: unknown) => e)
+			expect(error).toHaveProperty('message', 'D1_ERROR: no such table: nonexistent_table')
+			expect(error).toHaveProperty('cause.message', 'no such table: nonexistent_table')
 		})
 	})
 
