@@ -29,3 +29,10 @@ test('a request the runtime built is still an instance of the global Request', a
 		server.stop(true)
 	}
 })
+
+test('a subclass of the global Request does not claim plain requests', () => {
+	setupCloudflareGlobals()
+	class SignedRequest extends Request {}
+	expect(new Request('http://localhost/') instanceof SignedRequest).toBe(false)
+	expect(new SignedRequest('http://localhost/') instanceof Request).toBe(true)
+})
