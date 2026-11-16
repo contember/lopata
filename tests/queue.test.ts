@@ -264,6 +264,39 @@ describe('QueueConsumer', () => {
 		expect(receivedBody).toBe('hello text')
 	})
 
+	test('v8 contentType round-trips structured-clone types through the consumer', async () => {
+		const cyclic: { name: string; self?: unknown } = { name: 'cyclic' }
+		cyclic.self = cyclic
+		const sent = {
+			map: new Map<string, number>([['a', 1], ['b', 2]]),
+			set: new Set(['x', 'y']),
+			date: new Date(1600000000000),
+			bigint: 42n,
+			cyclic,
+		}
+		await producer.send(sent, { contentType: 'v8' })
+
+		let received: unknown
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async (batch) => {
+				received = batch.messages[0]!.body
+			},
+			{},
+		)
+		await consumer.poll()
+
+		expect(received).toEqual(sent)
+		if (typeof received !== 'object' || received === null || !('map' in received) || !('cyclic' in received)) {
+			throw new Error('unexpected body shape')
+		}
+		expect(received.map).toBeInstanceOf(Map)
+		const receivedCyclic = received.cyclic
+		if (typeof receivedCyclic !== 'object' || receivedCyclic === null || !('self' in receivedCyclic)) throw new Error('cycle lost')
+		expect(receivedCyclic.self).toBe(receivedCyclic)
+	})
+
 	test('poll decodes v8 rows written as JSON text by earlier versions', async () => {
 		db.run(
 			"INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES ('legacy', 'test-queue', ?, 'v8', 0, ?, ?)",
