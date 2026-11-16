@@ -146,13 +146,13 @@ export class SqliteKVNamespace {
 	async getWithMetadata(
 		keys: string[],
 		options?: string | KVGetOptions,
-	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>>
+	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>>
 	async getWithMetadata(
 		keyOrKeys: string | string[],
 		options?: string | KVGetOptions,
 	): Promise<
 		| { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown; cacheStatus: null }
-		| Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>
+		| Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>
 	> {
 		if (Array.isArray(keyOrKeys)) {
 			return this.bulkGetWithMetadata(keyOrKeys, options)
@@ -180,7 +180,7 @@ export class SqliteKVNamespace {
 	private async bulkGetWithMetadata(
 		keys: string[],
 		options?: string | KVGetOptions,
-	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>> {
+	): Promise<Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>> {
 		if (keys.length > this.limits.maxBulkGetKeys) {
 			throw new Error(`KV bulk get exceeds max of ${this.limits.maxBulkGetKeys} keys`)
 		}
@@ -188,7 +188,7 @@ export class SqliteKVNamespace {
 			this.validateKey(key)
 		}
 
-		const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream | null; metadata: unknown }>()
+		const result = new Map<string, { value: string | ArrayBuffer | object | ReadableStream; metadata: unknown } | null>()
 		const type = typeof options === 'string' ? options : options?.type ?? 'text'
 		if (type === 'arrayBuffer' || type === 'stream') {
 			throw new Error(`KV bulk get does not support type "${type}"`)
@@ -222,7 +222,7 @@ export class SqliteKVNamespace {
 					metadata: row.metadata ? JSON.parse(row.metadata) : null,
 				})
 			} else {
-				result.set(key, { value: null, metadata: null })
+				result.set(key, null)
 			}
 		}
 

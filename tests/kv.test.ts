@@ -308,7 +308,7 @@ describe('bulk getWithMetadata', () => {
 		expect(result).toBeInstanceOf(Map)
 		expect(result.get('a')).toEqual({ value: '1', metadata: { tag: 'x' } })
 		expect(result.get('b')).toEqual({ value: '2', metadata: null })
-		expect(result.get('missing')).toEqual({ value: null, metadata: null })
+		expect(result.get('missing')).toBeNull()
 	})
 
 	test('skips expired keys', async () => {
@@ -320,7 +320,7 @@ describe('bulk getWithMetadata', () => {
 		)
 		const result = await kv.getWithMetadata(['live', 'dead'])
 		expect(result.get('live')?.value).toBe('ok')
-		expect(result.get('dead')).toEqual({ value: null, metadata: null })
+		expect(result.get('dead')).toBeNull()
 	})
 })
 

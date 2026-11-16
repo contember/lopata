@@ -1,6 +1,5 @@
 {
 	"bulk get: check max keys": "expect(received).toBe(expected)",
-	"bulk get: get with metadata for 404": "expect(received).toEqual(expected)",
 	"bulk get: request json type": "expect(received).toBe(expected)",
 	"delete: validates key": "expect(received).rejects.toThrow(expected)",
 	"get: validates but ignores cache ttl": "expect(received).rejects.toThrow(expected)",
