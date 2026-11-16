@@ -149,7 +149,17 @@ describe('SqliteQueueProducer', () => {
 
 	test('send rejects message exceeding max size', async () => {
 		const smallProducer = new SqliteQueueProducer(db, 'test-queue', 0, { maxMessageSize: 10 })
-		await expect(smallProducer.send('this message is way too long for the limit')).rejects.toThrow('max size')
+		await expect(smallProducer.send('this message is way too long for the limit')).rejects.toThrow(
+			'Queue send failed: message length of 44 bytes exceeds limit of 10',
+		)
+	})
+
+	test('sendBatch rejects a message exceeding max size', async () => {
+		const smallProducer = new SqliteQueueProducer(db, 'test-queue', 0, { maxMessageSize: 10 })
+		await expect(smallProducer.sendBatch([{ body: 'ok' }, { body: 'this message is too long' }])).rejects.toThrow(
+			'Queue sendBatch failed: message in batch has length 26 bytes which exceeds single message size limit of 10',
+		)
+		expect(db.query<{ cnt: number }, []>('SELECT COUNT(*) as cnt FROM queue_messages').get()!.cnt).toBe(0)
 	})
 
 	test('send rejects invalid delaySeconds', async () => {

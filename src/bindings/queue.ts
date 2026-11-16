@@ -50,14 +50,14 @@ type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: Exe
 // --- Limits ---
 
 export interface QueueLimits {
-	maxMessageSize?: number // default 128 * 1024 (128 KB)
+	maxMessageSize?: number // default 128000 (128 KB)
 	maxBatchMessages?: number // default 100
 	maxBatchSize?: number // default 256 * 1024 (256 KB)
 	maxDelaySeconds?: number // default 43200 (12 hours)
 }
 
 const QUEUE_DEFAULTS: Required<QueueLimits> = {
-	maxMessageSize: 128 * 1024,
+	maxMessageSize: 128_000,
 	maxBatchMessages: 100,
 	maxBatchSize: 256 * 1024,
 	maxDelaySeconds: 43200,
@@ -135,7 +135,7 @@ export class SqliteQueueProducer {
 		const encoded = encodeBody(message, contentType)
 
 		if (encoded.byteLength > this.limits.maxMessageSize) {
-			throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`)
+			throw new Error(`Queue send failed: message length of ${encoded.byteLength} bytes exceeds limit of ${this.limits.maxMessageSize}`)
 		}
 
 		const now = this.clock.now()
@@ -172,7 +172,9 @@ export class SqliteQueueProducer {
 			const data = encodeBody(msg.body, contentType)
 
 			if (data.byteLength > this.limits.maxMessageSize) {
-				throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`)
+				throw new Error(
+					`Queue sendBatch failed: message in batch has length ${data.byteLength} bytes which exceeds single message size limit of ${this.limits.maxMessageSize}`,
+				)
 			}
 
 			totalSize += data.byteLength
