@@ -507,6 +507,18 @@ test('multipart upload: re-uploading a part from a stream replaces all its bytes
 	expect(await (await r2.get('key') as R2ObjectBody).text()).toBe('abc')
 })
 
+test('multipart upload: concurrent complete() calls finish the upload once', async () => {
+	const upload = await r2.createMultipartUpload('key')
+	const parts = [await upload.uploadPart(1, 'a'.repeat(64 * 1024)), await upload.uploadPart(2, 'b'.repeat(64 * 1024))]
+	const results = await Promise.allSettled([upload.complete(parts), upload.complete(parts), upload.complete(parts)])
+	expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+	for (const r of results) {
+		if (r.status === 'rejected') expect(String(r.reason)).toContain('completeMultipartUpload: The specified multipart upload does not exist. (10024)')
+	}
+	const obj = await r2.get('key') as R2ObjectBody
+	expect(await obj.text()).toBe('a'.repeat(64 * 1024) + 'b'.repeat(64 * 1024))
+})
+
 test('multipart upload: parts below 5 MiB are rejected by default', async () => {
 	const bucket = new FileR2Bucket(db, 'default-limits', tmpDir)
 	const upload = await bucket.createMultipartUpload('key')

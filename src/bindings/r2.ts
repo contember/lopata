@@ -662,14 +662,21 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket, this.key) !== null
 	}
 
-	private finish(): void {
+	/** Retires the upload; false when another complete() or abort() already did. Run inside a transaction. */
+	private finish(): boolean {
+		const { changes } = this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ? AND key = ?`, [
+			this.uploadId,
+			this.bucket,
+			this.key,
+		])
+		if (changes === 0) return false
 		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
-		this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ?`, [this.uploadId])
 		this.db.run(`INSERT OR REPLACE INTO r2_multipart_finished (upload_id, bucket, key) VALUES (?, ?, ?)`, [
 			this.uploadId,
 			this.bucket,
 			this.key,
 		])
+		return true
 	}
 
 	async uploadPart(
@@ -734,29 +741,34 @@ export class R2MultipartUpload {
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
-		// Assemble aside and rename: the sink does not truncate, and a failure keeps the current object.
+		// Each call assembles into its own file (the sink does not truncate; concurrent calls must not
+		// share it); only the call that wins the transaction below renames it into place.
 		const filePath = objectFilePath(this.baseDir, this.key)
-		const assembledPath = join(this.baseDir, '__multipart__', this.uploadId, 'assembled')
+		const assembledPath = join(this.baseDir, '__multipart__', `assembled-${randomHex()}`)
 		mkdirSync(dirname(assembledPath), { recursive: true })
-		rmSync(assembledPath, { force: true })
-		const writer = Bun.file(assembledPath).writer()
 		let totalSize = 0
 		try {
-			for (const row of partRows) {
-				const partStream = Bun.file(row.file_path).stream()
-				const reader = partStream.getReader()
-				while (true) {
-					const { done, value } = await reader.read()
-					if (done) break
-					writer.write(value)
-					totalSize += value.byteLength
+			const writer = Bun.file(assembledPath).writer()
+			try {
+				for (const row of partRows) {
+					const partStream = Bun.file(row.file_path).stream()
+					const reader = partStream.getReader()
+					while (true) {
+						const { done, value } = await reader.read()
+						if (done) break
+						writer.write(value)
+						totalSize += value.byteLength
+					}
 				}
+			} finally {
+				await writer.end()
 			}
-		} finally {
-			await writer.end()
+		} catch (err) {
+			rmSync(assembledPath, { force: true })
+			// A concurrent complete() or abort() removed the part files
+			if (!this.getUpload()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+			throw err
 		}
-		mkdirSync(dirname(filePath), { recursive: true })
-		renameSync(assembledPath, filePath)
 
 		// S3/CF multipart ETag: hex(md5(concat-of-part-md5-bytes)) + "-" + partCount.
 		const etag = computeMultipartEtag(partRows.map((row) => row.checksum_md5 ?? row.etag))
@@ -766,25 +778,31 @@ export class R2MultipartUpload {
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Atomically: persist the final object and retire the upload.
-		this.db.transaction(() => {
-			this.db.run(
-				`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
+		// Atomically: retire the upload, move the assembled file into place and persist the object.
+		try {
+			this.db.transaction(() => {
+				if (!this.finish()) throw r2Error(method, ...NO_SUCH_UPLOAD)
+				mkdirSync(dirname(filePath), { recursive: true })
+				renameSync(assembledPath, filePath)
+				this.db.run(
+					`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					this.bucket,
-					this.key,
-					totalSize,
-					etag,
-					version,
-					uploaded.toISOString(),
-					upload.http_metadata,
-					upload.custom_metadata,
-					null,
-				],
-			)
-			this.finish()
-		})()
+					[
+						this.bucket,
+						this.key,
+						totalSize,
+						etag,
+						version,
+						uploaded.toISOString(),
+						upload.http_metadata,
+						upload.custom_metadata,
+						null,
+					],
+				)
+			})()
+		} finally {
+			rmSync(assembledPath, { force: true })
+		}
 		this.removePartFiles()
 
 		return new R2Object({
@@ -806,7 +824,7 @@ export class R2MultipartUpload {
 			if (this.isFinished()) return
 			throw r2Error('abortMultipartUpload', ...INTERNAL_ERROR)
 		}
-		this.db.transaction(() => this.finish())()
+		if (!this.db.transaction(() => this.finish())()) return
 		this.removePartFiles()
 	}
 
