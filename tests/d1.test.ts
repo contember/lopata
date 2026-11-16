@@ -84,6 +84,16 @@ describe('D1Database', () => {
 		})
 	})
 
+	describe('multi-statement query', () => {
+		test('a failing statement rolls back the ones before it', async () => {
+			await expect(
+				d1.prepare("INSERT INTO users (name) VALUES ('Alice'); INSERT INTO nonexistent_table (x) VALUES (1)").run(),
+			).rejects.toThrow(/nonexistent_table/)
+			const result = await d1.prepare('SELECT * FROM users').all()
+			expect(result.results).toHaveLength(0)
+		})
+	})
+
 	describe('prepare + raw', () => {
 		test('returns rows as arrays', async () => {
 			await d1.prepare('INSERT INTO users (name, email) VALUES (?, ?)').bind('Alice', 'alice@example.com').run()

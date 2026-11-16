@@ -1,7 +1,7 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { splitStatements } from './sql-split'
+import { mayHaveMultipleStatements, splitStatements } from './sql-split'
 
 interface D1Meta {
 	duration: number
@@ -61,6 +61,58 @@ function convertBindParams(params: unknown[]): SQLQueryBindings[] {
 function isReadStatement(sql: string): boolean {
 	const upper = sql.trimStart().toUpperCase()
 	return upper.startsWith('SELECT') || upper.startsWith('WITH') || upper.startsWith('PRAGMA')
+}
+
+interface QueryOutput {
+	columns: string[]
+	rows: unknown[][]
+}
+
+const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in a single call, only the last statement can have parameters.'
+
+/**
+ * Runs `sql` the way a D1 query runs: every statement in it, all or nothing, returning the rows of the last
+ * one (workerd SqliteDatabase::prepareSql, MULTI mode). bun:sqlite compiles only the first statement and
+ * silently drops the rest, so the leading ones run here, each compiled after the previous one ran.
+ */
+function executeQuery(db: Database, sql: string, params: SQLQueryBindings[]): QueryOutput {
+	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
+	const last = statements.pop() ?? sql
+	if (statements.length === 0) return executeStatement(db, last, params)
+
+	db.run('SAVEPOINT lopata_d1_query')
+	try {
+		for (const leadingSql of statements) {
+			const leading = db.prepare(leadingSql)
+			try {
+				if (leading.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
+				leading.run()
+			} finally {
+				leading.finalize()
+			}
+		}
+		const output = executeStatement(db, last, params)
+		db.run('RELEASE lopata_d1_query')
+		return output
+	} catch (e) {
+		try {
+			db.run('ROLLBACK TO lopata_d1_query')
+			db.run('RELEASE lopata_d1_query')
+		} catch {
+			// ON CONFLICT ROLLBACK and similar failures already unwound the whole transaction, savepoint included.
+		}
+		throw e
+	}
+}
+
+function executeStatement(db: Database, sql: string, params: SQLQueryBindings[]): QueryOutput {
+	const stmt = db.query(sql)
+	const rows = stmt.values(...params)
+	return { columns: stmt.columnNames, rows }
+}
+
+function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
+	return Object.fromEntries(columns.map((name, i) => [name, row[i]]))
 }
 
 // --- statement serialisation ---
@@ -210,44 +262,36 @@ export class LocalD1PreparedStatement {
 	async first<T = Record<string, unknown>>(column?: string): Promise<T | null> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			return this.firstUnlocked<T>(column)
+			const { columns, rows } = executeQuery(this.db, this.sql, this.params)
+			const first = rows[0]
+			if (!first) return null
+			const row = rowToObject(columns, first)
+			if (column) {
+				if (!(column in row)) {
+					throw new Error(`D1_ERROR: Column '${column}' does not exist in the result set.`)
+				}
+				return (row[column] as T) ?? null
+			}
+			return row as T
 		} finally {
 			unlock()
 		}
-	}
-
-	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
-	firstUnlocked<T = Record<string, unknown>>(column?: string): T | null {
-		const row = this.db.query(this.sql).get(...this.params) as Record<string, unknown> | null
-		if (!row) return null
-		if (column) {
-			if (!(column in row)) {
-				throw new Error(`D1_ERROR: Column '${column}' does not exist in the result set.`)
-			}
-			return (row[column] as T) ?? null
-		}
-		return row as T
 	}
 
 	async run(): Promise<D1Result> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			return this.runUnlocked()
+			const start = performance.now()
+			executeQuery(this.db, this.sql, this.params)
+			const duration = performance.now() - start
+			const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
+			return {
+				results: [],
+				success: true,
+				meta: buildMeta(this.db, duration, 0, changes),
+			}
 		} finally {
 			unlock()
-		}
-	}
-
-	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
-	runUnlocked(): D1Result {
-		const start = performance.now()
-		this.db.query(this.sql).run(...this.params)
-		const duration = performance.now() - start
-		const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
-		return {
-			results: [],
-			success: true,
-			meta: buildMeta(this.db, duration, 0, changes),
 		}
 	}
 
@@ -263,7 +307,8 @@ export class LocalD1PreparedStatement {
 	/** @internal Skips the db lock — only for a caller that already holds it, such as `batch()`. */
 	allUnlocked<T = Record<string, unknown>>(): D1Result<T> {
 		const start = performance.now()
-		const results = this.db.query(this.sql).all(...this.params) as T[]
+		const { columns, rows } = executeQuery(this.db, this.sql, this.params)
+		const results = rows.map(row => rowToObject(columns, row)) as T[]
 		const duration = performance.now() - start
 		const isRead = isReadStatement(this.sql)
 		const changes = this.db.query<{ c: number }, []>('SELECT changes() as c').get()!.c
@@ -277,13 +322,11 @@ export class LocalD1PreparedStatement {
 	async raw<T extends unknown[] = unknown[]>(options?: { columnNames?: boolean }): Promise<T[]> {
 		const unlock = await acquireDbLock(this.db)
 		try {
-			const query = this.db.query(this.sql)
-			const columns = query.columnNames
-			const rows = query.values(...this.params) as T[]
+			const { columns, rows } = executeQuery(this.db, this.sql, this.params)
 			if (options?.columnNames) {
-				return [columns as unknown as T, ...rows]
+				return [columns as unknown as T, ...(rows as T[])]
 			}
-			return rows
+			return rows as T[]
 		} finally {
 			unlock()
 		}
