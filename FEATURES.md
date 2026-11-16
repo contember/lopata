@@ -628,7 +628,8 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
-- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()` / `bytes()`
+- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()`
+- ❌ `bytes()`
 - ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
 
 ### 4.4 R2GetOptions
