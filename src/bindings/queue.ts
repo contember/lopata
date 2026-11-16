@@ -226,6 +226,7 @@ export class SqliteQueueProducer {
 
 /** Short enough that a full batch goes out without a noticeable wait; partial batches wait for maxBatchTimeout. */
 export const QUEUE_POLL_INTERVAL_MS = 100
+const RETENTION_CLEANUP_INTERVAL_MS = 5000
 
 export class QueueConsumer {
 	private db: Database
@@ -236,6 +237,7 @@ export class QueueConsumer {
 	private timer: ReturnType<typeof setInterval> | null = null
 	private polling = false
 	private stopped = false
+	private nextCleanupAt = Number.NEGATIVE_INFINITY
 	private _activeDeliveries = 0
 	/** Optional hook to register an in-flight batch with reload-drain accounting,
 	 *  so a generation isn't terminated mid-batch (thread mode). */
@@ -286,12 +288,15 @@ export class QueueConsumer {
 		try {
 			const now = this.clock.now()
 
-			// Periodically clean up completed messages beyond retention period
-			const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000
-			this.db.run(
-				'DELETE FROM queue_messages WHERE queue = ? AND created_at < ?',
-				[this.config.queue, now - retentionMs],
-			)
+			// Clean up messages beyond the retention period; not on every poll, as it scans the queue's whole history.
+			if (now >= this.nextCleanupAt) {
+				this.nextCleanupAt = now + RETENTION_CLEANUP_INTERVAL_MS
+				const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000
+				this.db.run(
+					'DELETE FROM queue_messages WHERE queue = ? AND created_at < ?',
+					[this.config.queue, now - retentionMs],
+				)
+			}
 
 			const select = this.db.query<QueueRow, [string, number, number]>(
 				"SELECT id, body, content_type, attempts, visible_at, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at, rowid LIMIT ?",
