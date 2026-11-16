@@ -559,6 +559,10 @@ async function handleCompleteMultipartUpload(
 	const xml = await req.text()
 	const parts = parseCompletePartsXml(xml)
 	if (parts.length === 0) return xmlError('MalformedXML', 'No parts in request', `/${bucket}/${key}`, cors)
+	// The binding reports duplicates with the same error (10001) as an unknown upload, so check them here
+	if (new Set(parts.map((p) => p.partNumber)).size !== parts.length) {
+		return xmlError('InvalidRequest', 'Duplicate part numbers in request', `/${bucket}/${key}`, cors)
+	}
 
 	const upload = r2.resumeMultipartUpload(key, uploadId)
 	try {
@@ -567,7 +571,7 @@ async function handleCompleteMultipartUpload(
 		return xmlResponse(completeMultipartUploadXml(bucket, key, result.etag, location), 200, cors)
 	} catch (err) {
 		const msg = String(err)
-		if (msg.endsWith('(10025)')) return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
+		if (msg.endsWith('(10025)') || msg.endsWith('(10048)')) return xmlError('InvalidPart', msg, `/${bucket}/${key}`, cors)
 		if (msg.endsWith('(10011)')) return xmlError('EntityTooSmall', msg, `/${bucket}/${key}`, cors)
 		return xmlError('NoSuchUpload', msg, `/${bucket}/${key}`, cors)
 	}

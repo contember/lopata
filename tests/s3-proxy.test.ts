@@ -551,6 +551,34 @@ test('Multipart: complete with wrong etag returns InvalidPart', async () => {
 	expect(await res.text()).toContain('InvalidPart')
 })
 
+test('Multipart: complete with duplicate part numbers or unequal part sizes returns 400', async () => {
+	const createRes = await handleS3Request(s3('POST', '/k?uploads'), BUCKET, r2)
+	const uploadId = (await createRes.text()).match(/<UploadId>([^<]+)<\/UploadId>/)![1]!
+	const etags: string[] = []
+	for (const [n, body] of [[1, 'aa'], [2, 'bbb'], [3, 'c']] as const) {
+		const res = await handleS3Request(s3('PUT', `/k?partNumber=${n}&uploadId=${uploadId}`, { body }), BUCKET, r2)
+		etags.push(res.headers.get('etag') ?? '')
+	}
+	const complete = (parts: Array<[number, string]>) =>
+		handleS3Request(
+			s3('POST', `/k?uploadId=${uploadId}`, {
+				body: `<CompleteMultipartUpload>${
+					parts.map(([n, etag]) => `<Part><PartNumber>${n}</PartNumber><ETag>${etag}</ETag></Part>`).join('')
+				}</CompleteMultipartUpload>`,
+			}),
+			BUCKET,
+			r2,
+		)
+
+	const duplicate = await complete([[1, etags[0]!], [1, etags[0]!]])
+	expect(duplicate.status).toBe(400)
+	expect(await duplicate.text()).toContain('InvalidRequest')
+
+	const unequal = await complete([[1, etags[0]!], [2, etags[1]!], [3, etags[2]!]])
+	expect(unequal.status).toBe(400)
+	expect(await unequal.text()).toContain('InvalidPart')
+})
+
 // --- Small type helper used in tests ---
 interface R2ObjectBodyLike {
 	text(): Promise<string>
