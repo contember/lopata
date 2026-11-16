@@ -9,6 +9,7 @@ import { SqliteQueueProducer } from '../bindings/queue'
 import { FileR2Bucket } from '../bindings/r2'
 import { createServiceBinding } from '../bindings/service-binding'
 import type { SqliteWorkflowBinding } from '../bindings/workflow'
+import type { CompatibilitySelection } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { runMigrations } from '../db'
 import type { Clock } from './clock'
@@ -38,6 +39,7 @@ export function buildTestEnv(
 	bindings: Record<string, BindingSpec> | undefined,
 	vars: Record<string, string> | undefined,
 	clock?: Clock,
+	compatibility?: CompatibilitySelection,
 ): BuiltTestEnv {
 	const db = new Database(':memory:')
 	runMigrations(db)
@@ -66,7 +68,7 @@ export function buildTestEnv(
 		} else if (spec === 'd1') {
 			env[bindingName] = new LocalD1Database(new Database(':memory:'))
 		} else if (spec === 'queue') {
-			env[bindingName] = new SqliteQueueProducer(db, bindingName, 0, undefined, clock)
+			env[bindingName] = new SqliteQueueProducer(db, bindingName, 0, undefined, clock, compatibility)
 		} else if (typeof spec === 'object') {
 			if (spec.type === 'durable-object') {
 				// Lazy import to avoid pulling in the whole DO module at parse time

@@ -1,7 +1,9 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { QueueConsumer, QueuePullConsumer, SqliteQueueProducer } from '../src/bindings/queue'
+import { resolveCompatibility } from '../src/compatibility'
 import { runMigrations } from '../src/db'
+import { TestClock } from '../src/testing/clock'
 
 let db: Database
 
@@ -66,16 +68,22 @@ describe('SqliteQueueProducer', () => {
 		expect(new Uint8Array(row.body)).toEqual(data)
 	})
 
-	test('send with v8 contentType stores structured data', async () => {
-		const data = { nested: { array: [1, 2, 3] } }
-		await producer.send(data, { contentType: 'v8' })
-
-		const row = db.query<{ body: Uint8Array; content_type: string }, []>(
-			'SELECT body, content_type FROM queue_messages',
-		).get()!
-
-		expect(row.content_type).toBe('v8')
-		expect(JSON.parse(new TextDecoder().decode(row.body))).toEqual(data)
+	test('default content type follows the queues_json_messages compatibility flag', async () => {
+		const cases: [Parameters<typeof resolveCompatibility>[0], string][] = [
+			[{}, 'json'],
+			[{ date: '2024-03-17' }, 'v8'],
+			[{ date: '2024-03-18' }, 'json'],
+			[{ date: '2024-03-17', flags: ['queues_json_messages'] }, 'json'],
+			[{ date: '2024-03-18', flags: ['no_queues_json_messages'] }, 'v8'],
+		]
+		for (const [input, expected] of cases) {
+			db.run('DELETE FROM queue_messages')
+			const compatProducer = new SqliteQueueProducer(db, 'test-queue', 0, undefined, undefined, resolveCompatibility(input))
+			await compatProducer.send({ a: 1 })
+			await compatProducer.sendBatch([{ body: { b: 2 } }])
+			const types = db.query<{ content_type: string }, []>('SELECT content_type FROM queue_messages').all().map(r => r.content_type)
+			expect({ input, types }).toEqual({ input, types: [expected, expected] })
+		}
 	})
 
 	test('send with delaySeconds sets future visible_at', async () => {
@@ -149,7 +157,17 @@ describe('SqliteQueueProducer', () => {
 
 	test('send rejects message exceeding max size', async () => {
 		const smallProducer = new SqliteQueueProducer(db, 'test-queue', 0, { maxMessageSize: 10 })
-		await expect(smallProducer.send('this message is way too long for the limit')).rejects.toThrow('max size')
+		await expect(smallProducer.send('this message is way too long for the limit')).rejects.toThrow(
+			'Queue send failed: message length of 44 bytes exceeds limit of 10',
+		)
+	})
+
+	test('sendBatch rejects a message exceeding max size', async () => {
+		const smallProducer = new SqliteQueueProducer(db, 'test-queue', 0, { maxMessageSize: 10 })
+		await expect(smallProducer.sendBatch([{ body: 'ok' }, { body: 'this message is too long' }])).rejects.toThrow(
+			'Queue sendBatch failed: message in batch has length 26 bytes which exceeds single message size limit of 10',
+		)
+		expect(db.query<{ cnt: number }, []>('SELECT COUNT(*) as cnt FROM queue_messages').get()!.cnt).toBe(0)
 	})
 
 	test('send rejects invalid delaySeconds', async () => {
@@ -192,7 +210,7 @@ describe('QueueConsumer', () => {
 		const received: unknown[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					received.push(msg.body)
@@ -217,7 +235,7 @@ describe('QueueConsumer', () => {
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -235,7 +253,7 @@ describe('QueueConsumer', () => {
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -246,13 +264,49 @@ describe('QueueConsumer', () => {
 		expect(receivedBody).toBe('hello text')
 	})
 
-	test('poll delivers v8 content correctly', async () => {
-		await producer.send({ complex: [1, 2] }, { contentType: 'v8' })
+	test('v8 contentType round-trips structured-clone types through the consumer', async () => {
+		const cyclic: { name: string; self?: unknown } = { name: 'cyclic' }
+		cyclic.self = cyclic
+		const sent = {
+			map: new Map<string, number>([['a', 1], ['b', 2]]),
+			set: new Set(['x', 'y']),
+			date: new Date(1600000000000),
+			bigint: 42n,
+			cyclic,
+		}
+		await producer.send(sent, { contentType: 'v8' })
+
+		let received: unknown
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async (batch) => {
+				received = batch.messages[0]!.body
+			},
+			{},
+		)
+		await consumer.poll()
+
+		expect(received).toEqual(sent)
+		if (typeof received !== 'object' || received === null || !('map' in received) || !('cyclic' in received)) {
+			throw new Error('unexpected body shape')
+		}
+		expect(received.map).toBeInstanceOf(Map)
+		const receivedCyclic = received.cyclic
+		if (typeof receivedCyclic !== 'object' || receivedCyclic === null || !('self' in receivedCyclic)) throw new Error('cycle lost')
+		expect(receivedCyclic.self).toBe(receivedCyclic)
+	})
+
+	test('poll decodes v8 rows written as JSON text by earlier versions', async () => {
+		db.run(
+			"INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES ('legacy', 'test-queue', ?, 'v8', 0, ?, ?)",
+			[new TextEncoder().encode(JSON.stringify({ complex: [1, 2] })), Date.now(), Date.now()],
+		)
 
 		let receivedBody: unknown = null
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				receivedBody = batch.messages[0]!.body
 			},
@@ -263,28 +317,33 @@ describe('QueueConsumer', () => {
 		expect(receivedBody).toEqual({ complex: [1, 2] })
 	})
 
-	test('poll respects maxBatchSize', async () => {
+	test('poll delivers full batches at once and a partial batch after maxBatchTimeout', async () => {
+		const clock = new TestClock(1_000_000)
+		const clockedProducer = new SqliteQueueProducer(db, 'test-queue', 0, undefined, clock)
 		for (let i = 0; i < 5; i++) {
-			await producer.send({ i })
+			await clockedProducer.send({ i })
 		}
 
-		let batchSize = 0
+		const batchSizes: number[] = []
 		const consumer = new QueueConsumer(
 			db,
 			{ queue: 'test-queue', maxBatchSize: 3, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
-				batchSize = batch.messages.length
-				batch.ackAll()
+				batchSizes.push(batch.messages.length)
 			},
 			{},
+			undefined,
+			clock,
 		)
 
 		await consumer.poll()
-		expect(batchSize).toBe(3)
-
-		// 2 remaining
-		const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!
-		expect(count.cnt).toBe(2)
+		expect(batchSizes).toEqual([3])
+		clock.advance(4999)
+		await consumer.poll()
+		expect(batchSizes).toEqual([3])
+		clock.advance(1)
+		await consumer.poll()
+		expect(batchSizes).toEqual([3, 2])
 	})
 
 	test('ackAll deletes all messages in batch', async () => {
@@ -293,7 +352,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.ackAll()
 			},
@@ -312,7 +371,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					if (msg.body === 'remove') {
@@ -337,7 +396,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					msg.retry()
@@ -357,7 +416,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.retryAll({ delaySeconds: 60 })
 			},
@@ -377,7 +436,7 @@ describe('QueueConsumer', () => {
 		let called = false
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				called = true
 			},
@@ -393,16 +452,17 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 2, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 2, deadLetterQueue: null },
 			async (batch) => {
 				batch.retryAll()
 			},
 			{},
 		)
 
-		// First poll: attempts becomes 1
+		// Deliveries 1 and 2 are retried; the third exceeds maxRetries (2) and is discarded
 		await consumer.poll()
-		// Second poll: attempts becomes 2 (== maxRetries), should be discarded
+		await consumer.poll()
+		expect(db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!.cnt).toBe(1)
 		await consumer.poll()
 
 		const count = db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!
@@ -414,13 +474,14 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 1, deadLetterQueue: 'my-dlq' },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 1, deadLetterQueue: 'my-dlq' },
 			async (batch) => {
 				batch.retryAll()
 			},
 			{},
 		)
 
+		await consumer.poll()
 		await consumer.poll()
 
 		// Original queue should be empty
@@ -442,7 +503,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				throw new Error('handler crash')
 			},
@@ -462,7 +523,7 @@ describe('QueueConsumer', () => {
 		const attemptsSeen: number[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 5, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 5, deadLetterQueue: null },
 			async (batch) => {
 				attemptsSeen.push(batch.messages[0]!.attempts)
 				batch.retryAll()
@@ -483,7 +544,7 @@ describe('QueueConsumer', () => {
 		let queueName = ''
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				queueName = batch.queue
 			},
@@ -503,7 +564,7 @@ describe('QueueConsumer', () => {
 		const received: unknown[] = []
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'persist-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'persist-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				for (const msg of batch.messages) {
 					received.push(msg.body)
@@ -520,7 +581,7 @@ describe('QueueConsumer', () => {
 		let called = false
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async () => {
 				called = true
 			},
@@ -537,7 +598,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (_batch, _env, ctx) => {
 				ctx.waitUntil(
 					new Promise<void>((resolve) => {
@@ -561,7 +622,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				const msg = batch.messages[0]!
 				// First ack, then retry — retry should win (last call wins)
@@ -583,7 +644,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				// First retryAll, then ackAll — ackAll should win
 				batch.retryAll()
@@ -605,7 +666,7 @@ describe('QueueConsumer', () => {
 
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				batch.ackAll()
 				// Override first message to retry
@@ -621,13 +682,56 @@ describe('QueueConsumer', () => {
 		expect(count.cnt).toBe(1)
 	})
 
+	test('stop() during a batch prevents further batches in the same poll (reload drain)', async () => {
+		await producer.sendBatch(Array.from({ length: 30 }, (_, i) => ({ body: i })))
+
+		let batches = 0
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async () => {
+				batches++
+				consumer.stop()
+			},
+			{},
+		)
+
+		await consumer.poll()
+		expect(batches).toBe(1)
+		expect(db.query<{ cnt: number }, []>("SELECT COUNT(*) as cnt FROM queue_messages WHERE status = 'pending'").get()!.cnt).toBe(20)
+	})
+
+	test('a timer can stop the consumer between full batches of a backlog', async () => {
+		for (let i = 0; i < 10; i++) {
+			await producer.sendBatch(Array.from({ length: 100 }, (_, j) => ({ body: i * 100 + j })))
+		}
+
+		let batches = 0
+		const consumer = new QueueConsumer(
+			db,
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
+			async () => {
+				batches++
+				await Promise.resolve()
+			},
+			{},
+		)
+
+		// Stands in for the reload drain's stop-queue-consumers message, which arrives as a macrotask.
+		setTimeout(() => consumer.stop(), 0)
+		await consumer.poll()
+		// The timer is due after about 1 ms, so the exact count depends on batch speed; without a yield all 100 batches run.
+		expect(batches).toBeGreaterThan(0)
+		expect(batches).toBeLessThan(100)
+	})
+
 	test('concurrent poll calls are prevented', async () => {
 		await producer.send('concurrent-test')
 
 		let handlerCallCount = 0
 		const consumer = new QueueConsumer(
 			db,
-			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 5, maxRetries: 3, deadLetterQueue: null },
+			{ queue: 'test-queue', maxBatchSize: 10, maxBatchTimeout: 0, maxRetries: 3, deadLetterQueue: null },
 			async (batch) => {
 				handlerCallCount++
 				// Simulate slow handler
@@ -733,6 +837,16 @@ describe('QueuePullConsumer', () => {
 		// Only json message should be returned, v8 is filtered out
 		expect(result.messages).toHaveLength(1)
 		expect(result.messages[0]!.body).toEqual({ data: 'json' })
+	})
+
+	test('v8 messages do not take pull batch_size slots from messages behind them', async () => {
+		for (let i = 0; i < 3; i++) {
+			await producer.send({ data: `v8-${i}` }, { contentType: 'v8' })
+		}
+		await producer.send({ data: 'json' }, { contentType: 'json' })
+
+		const result = pullConsumer.pull({ batch_size: 2 })
+		expect(result.messages.map(m => m.body)).toEqual([{ data: 'json' }])
 	})
 
 	test('pull respects batch_size', async () => {

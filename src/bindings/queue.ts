@@ -1,6 +1,8 @@
-import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import crypto from 'node:crypto'
+import v8 from 'node:v8'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility } from '../compatibility-context'
 import { ExecutionContext } from '../execution-context'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
@@ -46,22 +48,36 @@ interface ConsumerConfig {
 	retentionPeriodSeconds?: number // default 345600 (4 days), matching CF default
 }
 
+interface QueueRow {
+	id: string
+	body: Uint8Array | Buffer
+	content_type: string
+	attempts: number
+	visible_at: number
+	created_at: number
+}
+
 type QueueHandler = (batch: MessageBatch, env: Record<string, unknown>, ctx: ExecutionContext) => Promise<void>
 
 // --- Limits ---
 
 export interface QueueLimits {
-	maxMessageSize?: number // default 128 * 1024 (128 KB)
+	maxMessageSize?: number // default 128000 (128 KB)
 	maxBatchMessages?: number // default 100
 	maxBatchSize?: number // default 256 * 1024 (256 KB)
 	maxDelaySeconds?: number // default 43200 (12 hours)
 }
 
 const QUEUE_DEFAULTS: Required<QueueLimits> = {
-	maxMessageSize: 128 * 1024,
+	maxMessageSize: 128_000,
 	maxBatchMessages: 100,
 	maxBatchSize: 256 * 1024,
 	maxDelaySeconds: 43200,
+}
+
+/** Cloudflare message ids are 32 lowercase hex characters. */
+export function newMessageId(): string {
+	return crypto.randomBytes(16).toString('hex')
 }
 
 // --- Encoding / Decoding ---
@@ -83,21 +99,28 @@ function encodeBody(message: unknown, contentType: string): Uint8Array {
 		case 'text':
 			return new TextEncoder().encode(String(message))
 		case 'v8':
-			// Use JSON serialization as a v8-structured-clone approximation
-			return new TextEncoder().encode(JSON.stringify(message))
+			return v8.serialize(message)
 		default:
 			return new TextEncoder().encode(JSON.stringify(message))
 	}
 }
 
-function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
+// 'v8' rows written before structured-clone support hold JSON.stringify output, which starts with one of these characters.
+const JSON_FIRST_BYTES = new Set(Array.from('{["-0123456789tfn', (char) => char.charCodeAt(0)))
+
+function isLegacyJsonV8Body(raw: Uint8Array): boolean {
+	const first = raw[0]
+	return first !== undefined && JSON_FIRST_BYTES.has(first)
+}
+
+export function decodeBody(raw: Uint8Array | Buffer, contentType: string): unknown {
 	switch (contentType) {
 		case 'bytes':
 			return raw instanceof Uint8Array ? raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength) : new Uint8Array(raw).buffer
 		case 'text':
 			return new TextDecoder().decode(raw)
 		case 'v8':
-			return JSON.parse(new TextDecoder().decode(raw))
+			return isLegacyJsonV8Body(raw) ? JSON.parse(new TextDecoder().decode(raw)) : v8.deserialize(raw)
 		default:
 			return JSON.parse(new TextDecoder().decode(raw))
 	}
@@ -111,17 +134,26 @@ export class SqliteQueueProducer {
 	private defaultDelay: number
 	private limits: Required<QueueLimits>
 	private clock: Clock
+	private defaultContentType: 'json' | 'v8'
 
-	constructor(db: Database, queueName: string, defaultDelay: number = 0, limits?: QueueLimits, clock?: Clock) {
+	constructor(
+		db: Database,
+		queueName: string,
+		defaultDelay: number = 0,
+		limits?: QueueLimits,
+		clock?: Clock,
+		compatibility: CompatibilitySelection = legacyCompatibility,
+	) {
 		this.db = db
 		this.queueName = queueName
 		this.defaultDelay = defaultDelay
 		this.limits = { ...QUEUE_DEFAULTS, ...limits }
 		this.clock = clock ?? realClock
+		this.defaultContentType = compatibility.queuesJsonMessages === 'disabled' ? 'v8' : 'json'
 	}
 
 	async send(message: unknown, options?: SendOptions): Promise<void> {
-		const contentType = options?.contentType ?? 'json'
+		const contentType = options?.contentType ?? this.defaultContentType
 		const delaySeconds = options?.delaySeconds ?? this.defaultDelay
 
 		if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {
@@ -131,7 +163,7 @@ export class SqliteQueueProducer {
 		const encoded = encodeBody(message, contentType)
 
 		if (encoded.byteLength > this.limits.maxMessageSize) {
-			throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`)
+			throw new Error(`Queue send failed: message length of ${encoded.byteLength} bytes exceeds limit of ${this.limits.maxMessageSize}`)
 		}
 
 		const now = this.clock.now()
@@ -139,7 +171,7 @@ export class SqliteQueueProducer {
 
 		this.db.run(
 			'INSERT INTO queue_messages (id, queue, body, content_type, attempts, visible_at, created_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
-			[randomUUIDv7(), this.queueName, encoded, contentType, visibleAt, now],
+			[newMessageId(), this.queueName, encoded, contentType, visibleAt, now],
 		)
 	}
 
@@ -158,7 +190,7 @@ export class SqliteQueueProducer {
 		let totalSize = 0
 
 		for (const msg of messages) {
-			const contentType = msg.contentType ?? options?.contentType ?? 'json'
+			const contentType = msg.contentType ?? options?.contentType ?? this.defaultContentType
 			const delaySeconds = msg.delaySeconds ?? options?.delaySeconds ?? this.defaultDelay
 
 			if (delaySeconds < 0 || delaySeconds > this.limits.maxDelaySeconds) {
@@ -168,7 +200,9 @@ export class SqliteQueueProducer {
 			const data = encodeBody(msg.body, contentType)
 
 			if (data.byteLength > this.limits.maxMessageSize) {
-				throw new Error(`Message exceeds max size of ${this.limits.maxMessageSize} bytes`)
+				throw new Error(
+					`Queue sendBatch failed: message in batch has length ${data.byteLength} bytes which exceeds single message size limit of ${this.limits.maxMessageSize}`,
+				)
 			}
 
 			totalSize += data.byteLength
@@ -182,7 +216,7 @@ export class SqliteQueueProducer {
 		const tx = this.db.transaction(() => {
 			for (const { data, contentType, delaySeconds } of encoded) {
 				const visibleAt = now + delaySeconds * 1000
-				stmt.run(randomUUIDv7(), this.queueName, data, contentType, visibleAt, now)
+				stmt.run(newMessageId(), this.queueName, data, contentType, visibleAt, now)
 			}
 		})
 		tx()
@@ -191,6 +225,10 @@ export class SqliteQueueProducer {
 
 // --- Consumer (poll loop) ---
 
+/** Short enough that a full batch goes out without a noticeable wait; partial batches wait for maxBatchTimeout. */
+export const QUEUE_POLL_INTERVAL_MS = 100
+const RETENTION_CLEANUP_INTERVAL_MS = 5000
+
 export class QueueConsumer {
 	private db: Database
 	private config: ConsumerConfig
@@ -198,9 +236,9 @@ export class QueueConsumer {
 	private env: Record<string, unknown>
 	private workerName: string | undefined
 	private timer: ReturnType<typeof setInterval> | null = null
-	private batchBuffer: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[] = []
-	private batchTimer: ReturnType<typeof setTimeout> | null = null
 	private polling = false
+	private stopped = false
+	private nextCleanupAt = Number.NEGATIVE_INFINITY
 	private _activeDeliveries = 0
 	/** Optional hook to register an in-flight batch with reload-drain accounting,
 	 *  so a generation isn't terminated mid-batch (thread mode). */
@@ -226,21 +264,20 @@ export class QueueConsumer {
 		this._trackBatch = trackBatch
 	}
 
-	start(intervalMs: number = 1000): void {
+	start(intervalMs: number = QUEUE_POLL_INTERVAL_MS): void {
 		if (this.timer) return
+		this.stopped = false
 		this.timer = setInterval(() => this.poll(), intervalMs)
 		// Run first poll immediately
 		this.poll()
 	}
 
+	/** Stops claiming new batches; a batch already being delivered finishes. */
 	stop(): void {
+		this.stopped = true
 		if (this.timer) {
 			clearInterval(this.timer)
 			this.timer = null
-		}
-		if (this.batchTimer) {
-			clearTimeout(this.batchTimer)
-			this.batchTimer = null
 		}
 	}
 
@@ -252,36 +289,44 @@ export class QueueConsumer {
 		try {
 			const now = this.clock.now()
 
-			// Periodically clean up completed messages beyond retention period
-			const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000
-			this.db.run(
-				'DELETE FROM queue_messages WHERE queue = ? AND created_at < ?',
-				[this.config.queue, now - retentionMs],
+			// Clean up messages beyond the retention period; not on every poll, as it scans the queue's whole history.
+			if (now >= this.nextCleanupAt) {
+				this.nextCleanupAt = now + RETENTION_CLEANUP_INTERVAL_MS
+				const retentionMs = (this.config.retentionPeriodSeconds ?? 345600) * 1000
+				this.db.run(
+					'DELETE FROM queue_messages WHERE queue = ? AND created_at < ?',
+					[this.config.queue, now - retentionMs],
+				)
+			}
+
+			const select = this.db.query<QueueRow, [string, number, number]>(
+				"SELECT id, body, content_type, attempts, visible_at, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at, rowid LIMIT ?",
 			)
+			while (!this.stopped) {
+				const batchNow = this.clock.now()
+				const rows = select.all(this.config.queue, batchNow, this.config.maxBatchSize)
+				const full = rows.length >= this.config.maxBatchSize
+				const oldest = rows[0]
+				// A full batch goes out at once; a partial one waits maxBatchTimeout from when its oldest message became visible.
+				if (!oldest || (!full && batchNow - oldest.visible_at < this.config.maxBatchTimeout * 1000)) return
 
-			const rows = this.db.query<
-				{ id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
-				[string, number, number]
-			>(
-				"SELECT id, body, content_type, attempts, created_at FROM queue_messages WHERE queue = ? AND status = 'pending' AND visible_at <= ? ORDER BY visible_at LIMIT ?",
-			).all(this.config.queue, now, this.config.maxBatchSize)
-
-			if (rows.length === 0) return
-
-			const delivery = this.deliverBatch(rows)
-			// Register the in-flight batch with reload drain so the generation isn't
-			// terminated mid-batch (which would expire the lease and redeliver with
-			// the retry counter bumped).
-			this._trackBatch?.(delivery)
-			await delivery
+				const delivery = this.deliverBatch(rows)
+				// Register the in-flight batch with reload drain so the generation isn't
+				// terminated mid-batch (which would expire the lease and redeliver with
+				// the retry counter bumped).
+				this._trackBatch?.(delivery)
+				await delivery
+				// Messages retried from a partial batch wait for the next poll.
+				if (!full) return
+				// Handlers backed by synchronous SQLite never yield; let timers and worker messages (stop on reload, fetches) run.
+				await new Promise<void>(resolve => setImmediate(resolve))
+			}
 		} finally {
 			this.polling = false
 		}
 	}
 
-	private async deliverBatch(
-		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
-	): Promise<void> {
+	private async deliverBatch(rows: QueueRow[]): Promise<void> {
 		this._activeDeliveries++
 		try {
 			await this._deliverBatchInner(rows)
@@ -290,9 +335,7 @@ export class QueueConsumer {
 		}
 	}
 
-	private async _deliverBatchInner(
-		rows: { id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number }[],
-	): Promise<void> {
+	private async _deliverBatchInner(rows: QueueRow[]): Promise<void> {
 		// Increment attempts for all fetched messages
 		const ids = rows.map((r) => r.id)
 		const placeholders = ids.map(() => '?').join(',')
@@ -365,11 +408,11 @@ export class QueueConsumer {
 			} else {
 				// Retry
 				const delay = decision.delaySeconds ?? this.config.retryDelay ?? 0
-				if (currentAttempts >= this.config.maxRetries) {
-					// Max retries exceeded — move to DLQ or mark as failed
+				// maxRetries counts retries, so a message gets maxRetries + 1 deliveries in total.
+				if (currentAttempts > this.config.maxRetries) {
 					if (this.config.deadLetterQueue) {
 						this.db.run(
-							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending' WHERE id = ?",
+							"UPDATE queue_messages SET queue = ?, visible_at = ?, status = 'pending', attempts = 0 WHERE id = ?",
 							[this.config.deadLetterQueue, this.clock.now(), row.id],
 						)
 					} else {
@@ -437,13 +480,14 @@ export class QueuePullConsumer {
 			[this.queueName, now],
 		)
 
-		// Select visible pending messages that don't have an active lease
+		// Select visible pending messages that don't have an active lease. Pull consumers cannot decode v8 bodies, so those are
+		// skipped here, before LIMIT, rather than left to take up the batch.
 		const rows = this.db.query<
 			{ id: string; body: Uint8Array | Buffer; content_type: string; attempts: number; created_at: number },
 			[string, number, string, number, number]
 		>(
 			`SELECT id, body, content_type, attempts, created_at FROM queue_messages
-       WHERE queue = ? AND status = 'pending' AND visible_at <= ?
+       WHERE queue = ? AND status = 'pending' AND visible_at <= ? AND content_type != 'v8'
        AND id NOT IN (SELECT message_id FROM queue_leases WHERE queue = ? AND expires_at > ?)
        ORDER BY visible_at LIMIT ?`,
 		).all(this.queueName, now, this.queueName, now, batchSize)
@@ -451,10 +495,6 @@ export class QueuePullConsumer {
 		if (rows.length === 0) {
 			return { messages: [] }
 		}
-
-		// Reject v8 content type
-		const v8Messages = rows.filter(r => r.content_type === 'v8')
-		const validRows = rows.filter(r => r.content_type !== 'v8')
 
 		const messages: PullMessage[] = []
 
@@ -466,7 +506,7 @@ export class QueuePullConsumer {
 		)
 
 		const tx = this.db.transaction(() => {
-			for (const row of validRows) {
+			for (const row of rows) {
 				const leaseId = crypto.randomUUID()
 				const expiresAt = now + visibilityTimeoutMs
 
