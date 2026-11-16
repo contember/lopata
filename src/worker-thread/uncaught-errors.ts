@@ -86,9 +86,9 @@ export function installUncaughtErrorHandlers(): void {
 	process.on('rejectionHandled', promise => {
 		dispatchRejectionEvent(new PromiseRejectionEvent('rejectionhandled', { promise }))
 	})
-	// Bun reports exceptions from timers and event listeners (dispatchEvent does not rethrow) here,
-	// in the async context that scheduled them. A `queueMicrotask` throw and a throw from an
-	// `unhandledrejection` listener arrive without one and are only logged.
+	// Bun reports a timer throw here in the context that scheduled the timer, and a listener throw
+	// (dispatchEvent does not rethrow) in the context of the dispatchEvent call. Throws from
+	// queueMicrotask, `unhandledrejection` and AbortSignal.timeout listeners arrive without one: only logged.
 	process.on('uncaughtException', err => {
 		console.error('[lopata] Uncaught exception:', err)
 		commandScope.getStore()?.fail(err)
