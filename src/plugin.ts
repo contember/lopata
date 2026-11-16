@@ -12,12 +12,16 @@ setupCloudflareGlobals()
 // Register addEventListener shim for legacy service worker syntax
 // Workers that use addEventListener("fetch", handler) instead of export default { fetch }
 const _serviceWorkerHandlers: { fetch?: (event: any) => void } = {}
+const nativeAddEventListener = globalThis.addEventListener.bind(globalThis)
 
 Object.defineProperty(globalThis, 'addEventListener', {
-	value: (type: string, handler: (event: any) => void) => {
+	value: (type: string, handler: (event: any) => void, options?: boolean | AddEventListenerOptions) => {
 		if (type === 'fetch') {
 			_serviceWorkerHandlers.fetch = handler
+			return
 		}
+		// Other global events (`unhandledrejection`, `error`, custom ones) go to the real EventTarget.
+		nativeAddEventListener(type, handler, options)
 	},
 	writable: false,
 	configurable: true,

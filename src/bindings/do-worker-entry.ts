@@ -16,9 +16,12 @@ import { deserializeError, serializeError } from '../worker-thread/protocol'
 import { RemoteTraceStore } from '../worker-thread/remote-trace-store'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from '../worker-thread/stream-shared'
+import { currentCommandFailed, discardResponse, installUncaughtErrorHandlers, runFailableCommand } from '../worker-thread/uncaught-errors'
 import type { DOCommand, DOMainMessage, DOResult, DOWorkerMessage } from './do-executor-worker'
 
 declare var self: Worker
+
+installUncaughtErrorHandlers()
 
 interface WorkerConfig {
 	compatibility?: CompatibilitySelection
@@ -286,6 +289,11 @@ async function initWorker(workerConfig: WorkerConfig) {
 					if (cmd.streamId !== undefined && !request.bodyUsed) {
 						requestStreams.cancel(cmd.streamId)
 					}
+					if (currentCommandFailed()) {
+						// Main already got the failure: register no WebSocket or body stream it would never release.
+						discardResponse(response)
+						throw new Error('Durable Object fetch completed after its command failed')
+					}
 					const clientWs = (response as { webSocket?: unknown }).webSocket
 					const hasWebSocket = response.status === 101 && clientWs instanceof CFWebSocket
 					const resHeaders = serializeResponseHeaders(response)
@@ -388,7 +396,9 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 		if (msg.type === 'command') {
 			try {
-				const { result, afterPost } = await runWithParentContext(msg.parent, () => handleCommand(msg.command))
+				const dispatch = () => runWithParentContext(msg.parent, () => handleCommand(msg.command))
+				// Not alarms: a failed alarm is retried after 1 s while this run continues, so two would overlap.
+				const { result, afterPost } = await (msg.command.type === 'alarm' ? dispatch() : runFailableCommand(dispatch))
 				postMessage({ type: 'result', id: msg.id, result } satisfies DOMainMessage)
 				// Post-result side effects: for streamed fetch responses, start the
 				// body pump *after* `result` ships so main has registered the

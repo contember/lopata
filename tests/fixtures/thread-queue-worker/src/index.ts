@@ -18,6 +18,13 @@ export default {
 
 	async queue(batch: any, env: any): Promise<void> {
 		for (const message of batch.messages) {
+			if (message.body.body === 'hang-once' && message.attempts === 1) {
+				// First delivery: a timer throws while the batch waits on work that never settles.
+				setTimeout(() => {
+					throw new Error('uncaught in queue handler')
+				}, 20)
+				await new Promise(() => {})
+			}
 			const key = `receipt:${message.body.body}`
 			await env.MY_KV.put(key, JSON.stringify({ id: message.id, attempts: message.attempts }))
 			message.ack()

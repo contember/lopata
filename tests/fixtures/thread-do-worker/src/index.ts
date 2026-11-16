@@ -1,6 +1,11 @@
 export class Counter {
 	state: any
 	value = 0
+	/** In-memory only: resets if the DO worker thread is torn down and recreated. */
+	hits = 0
+	alarmRuns = 0
+	alarmActive = 0
+	alarmMaxActive = 0
 
 	constructor(state: any) {
 		this.state = state
@@ -8,6 +13,29 @@ export class Counter {
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url)
+		this.hits++
+		if (url.pathname === '/reject') {
+			// A floating rejection must be logged, not kill the DO worker thread.
+			Promise.reject(new Error('floating rejection'))
+			return new Response('rejected')
+		}
+		if (url.pathname === '/throw-later') {
+			// An uncaught timer exception must fail this in-flight call, not kill the thread.
+			setTimeout(() => {
+				throw new Error('uncaught in DO')
+			}, 20)
+			return new Promise<Response>(() => {})
+		}
+		if (url.pathname === '/arm-alarm') {
+			await this.state.storage.setAlarm(Date.now())
+			return new Response('armed')
+		}
+		if (url.pathname === '/alarm-stats') {
+			return new Response(`${this.alarmRuns}/${this.alarmMaxActive}`)
+		}
+		if (url.pathname === '/hits') {
+			return new Response(String(this.hits))
+		}
 		if (url.pathname === '/inc') {
 			const stored = (await this.state.storage.get('value')) as number | undefined
 			this.value = (stored ?? 0) + 1
@@ -39,6 +67,20 @@ export class Counter {
 			return new Response('cookies', { headers })
 		}
 		return new Response('not found', { status: 404 })
+	}
+
+	// The first run schedules a throwing timer and keeps running; a retry must not overlap it.
+	async alarm(): Promise<void> {
+		this.alarmRuns++
+		this.alarmActive++
+		this.alarmMaxActive = Math.max(this.alarmMaxActive, this.alarmActive)
+		if (this.alarmRuns === 1) {
+			setTimeout(() => {
+				throw new Error('uncaught in alarm')
+			}, 20)
+		}
+		await new Promise(r => setTimeout(r, 1_500))
+		this.alarmActive--
 	}
 
 	async greet(name: string): Promise<string> {

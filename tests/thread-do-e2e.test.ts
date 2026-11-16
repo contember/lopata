@@ -101,6 +101,29 @@ describe('Durable Objects (worker-thread runtime)', () => {
 		expect(cookies).toEqual(['a=1; Path=/', 'b=2; Path=/; HttpOnly'])
 	})
 
+	test('an unhandled rejection in a DO keeps its worker thread serving', async () => {
+		expect(await (await fetch(`${base}/counter/survivor/reject`)).text()).toBe('survivor:rejected')
+		await Bun.sleep(100)
+		// Same in-memory instance: the thread was not torn down and recreated.
+		expect(await (await fetch(`${base}/counter/survivor/hits`)).text()).toBe('survivor:2')
+	})
+
+	test('an uncaught exception in a DO fails the in-flight call and keeps the thread serving', async () => {
+		const started = Date.now()
+		const res = await fetch(`${base}/counter/thrower/throw-later`)
+		expect(res.status).toBe(500)
+		expect(Date.now() - started).toBeLessThan(5_000)
+		expect(await (await fetch(`${base}/counter/thrower/hits`)).text()).toBe('thrower:2')
+	})
+
+	test('an uncaught exception in an alarm does not trigger an overlapping retry', async () => {
+		expect(await (await fetch(`${base}/counter/alarmer/arm-alarm`)).text()).toBe('alarmer:armed')
+		// Past the 1 s retry backoff and the first run's 1.5 s body.
+		await Bun.sleep(2_700)
+		// runs/max concurrently running: a failed-then-retried alarm would read 2/2.
+		expect(await (await fetch(`${base}/counter/alarmer/alarm-stats`)).text()).toBe('alarmer:1/1')
+	}, 10_000)
+
 	// TEST-1: the subrequest budget is enforced on the WORKER side (1c1e263) —
 	// the main-side check never trips in thread mode. The budget must
 	// accumulate across all binding calls of ONE request (a per-call re-seed of

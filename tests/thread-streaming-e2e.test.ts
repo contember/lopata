@@ -141,20 +141,35 @@ describe('Worker crash handling (worker-thread runtime)', () => {
 		cleanup()
 	})
 
-	test('in-flight request rejects (does not hang) when the worker thread crashes', async () => {
-		// Without the executor's onerror -> reject-pending fix this never settles.
+	test('in-flight request rejects (does not hang) on an uncaught exception, and the thread keeps serving', async () => {
+		const threadBefore = await (await fetch(`${base}/thread-id`)).text()
+		// The timer throw must fail the pending request instead of leaving it hanging.
 		const started = Date.now()
-		let settled = false
-		try {
-			const res = await fetch(`${base}/crash`)
-			settled = true
-			// dev server surfaces the dead worker as a 5xx
-			expect(res.status).toBeGreaterThanOrEqual(500)
-		} catch {
-			// connection reset is also an acceptable "settled, not hung" outcome
-			settled = true
-		}
-		expect(settled).toBe(true)
+		const res = await fetch(`${base}/crash`)
+		expect(res.status).toBe(500)
+		expect(await res.text()).toContain('intentional worker crash')
 		expect(Date.now() - started).toBeLessThan(5_000)
+		// Same thread: the exception did not kill it, so no respawn.
+		expect(await (await fetch(`${base}/thread-id`)).text()).toBe(threadBefore)
+	}, 10_000)
+
+	test('a handler still running after its request failed sees the abort, and its late body is cancelled', async () => {
+		const res = await fetch(`${base}/crash-late`)
+		expect(res.status).toBe(500)
+		let status = ''
+		for (let i = 0; i < 50 && status !== 'aborted=true cancelled=true'; i++) {
+			await Bun.sleep(20)
+			status = await (await fetch(`${base}/crash-late-status`)).text()
+		}
+		expect(status).toBe('aborted=true cancelled=true')
+	}, 10_000)
+
+	test('an uncaught exception from one request does not fail a concurrent request', async () => {
+		const slow = fetch(`${base}/slow?ms=300`)
+		const crash = await fetch(`${base}/crash`)
+		expect(crash.status).toBe(500)
+		const res = await slow
+		expect(res.status).toBe(200)
+		expect(await res.text()).toBe('slow done')
 	}, 10_000)
 })

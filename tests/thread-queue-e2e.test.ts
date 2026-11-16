@@ -67,4 +67,16 @@ describe('Queue consumers (worker-thread runtime)', () => {
 		db.close()
 		expect(statuses.every(s => s === 'acked')).toBe(true)
 	}, 10_000)
+
+	test('a batch failed by an uncaught exception is retried instead of hanging', async () => {
+		await fetch(`${base}/send?body=hang-once`)
+		const deadline = Date.now() + 8_000
+		let receipts: string[] = []
+		while (Date.now() < deadline) {
+			receipts = await (await fetch(`${base}/receipts`)).json() as string[]
+			if (receipts.includes('receipt:hang-once')) break
+			await new Promise(r => setTimeout(r, 100))
+		}
+		expect(receipts).toContain('receipt:hang-once')
+	}, 10_000)
 })
