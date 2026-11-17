@@ -1,7 +1,10 @@
-import { existsSync, mkdirSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { FileR2Bucket, R2ObjectBody } from '../bindings/r2'
 import { getDatabase, getDataDir } from '../db'
 import { withCors } from './cors'
+
+function openBucket(bucket: string): FileR2Bucket {
+	return new FileR2Bucket(getDatabase(), bucket, getDataDir())
+}
 
 export async function handleR2Upload(request: Request): Promise<Response> {
 	try {
@@ -14,21 +17,7 @@ export async function handleR2Upload(request: Request): Promise<Response> {
 			return withCors(Response.json({ error: 'Missing bucket, key, or file' }, { status: 400 }))
 		}
 
-		const data = await file.arrayBuffer()
-		const fp = join(getDataDir(), 'r2', bucket, key)
-		mkdirSync(dirname(fp), { recursive: true })
-		await Bun.write(fp, data)
-
-		const hasher = new Bun.CryptoHasher('md5')
-		hasher.update(new Uint8Array(data))
-		const etag = hasher.digest('hex')
-
-		const db = getDatabase()
-		db.run(
-			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
-			[bucket, key, data.byteLength, etag, crypto.randomUUID(), new Date().toISOString()],
-		)
+		await openBucket(bucket).put(key, await file.arrayBuffer())
 
 		return withCors(Response.json({ ok: true }))
 	} catch (err) {
@@ -37,7 +26,7 @@ export async function handleR2Upload(request: Request): Promise<Response> {
 	}
 }
 
-export function handleR2Download(url: URL): Response {
+export async function handleR2Download(url: URL): Promise<Response> {
 	const bucket = url.searchParams.get('bucket')
 	const key = url.searchParams.get('key')
 
@@ -45,18 +34,17 @@ export function handleR2Download(url: URL): Response {
 		return withCors(Response.json({ error: 'Missing bucket or key' }, { status: 400 }))
 	}
 
-	const fp = join(getDataDir(), 'r2', bucket, key)
-	const file = Bun.file(fp)
-
-	if (!existsSync(fp)) {
+	const object = await openBucket(bucket).get(key)
+	if (!(object instanceof R2ObjectBody)) {
 		return withCors(new Response('Not found', { status: 404 }))
 	}
 
 	const filename = key.split('/').pop() ?? key
-	const response = new Response(file as unknown as Bun.BodyInit, {
+	const response = new Response(object.body, {
 		headers: {
 			'Content-Disposition': `attachment; filename="${filename}"`,
-			'Content-Type': file.type || 'application/octet-stream',
+			// Without a stored content type, guess from the key's extension
+			'Content-Type': object.httpMetadata?.contentType || Bun.file(filename).type || 'application/octet-stream',
 		},
 	})
 	return withCors(response)

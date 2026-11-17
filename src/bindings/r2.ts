@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative } from 'node:path'
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility } from '../compatibility-context'
 import { NativeReadableStream } from './cf-streams'
@@ -230,6 +230,10 @@ interface R2Row {
 	checksums: string | null
 }
 
+interface StoredRow extends R2Row {
+	blob: string | null
+}
+
 function rowToMeta(row: R2Row): R2ObjectMeta {
 	return {
 		key: row.key,
@@ -337,7 +341,6 @@ async function writeValueToFile(
 	filePath: string,
 	algorithms: readonly HashAlgorithm[],
 ): Promise<{ digests: Buffer[]; size: number }> {
-	mkdirSync(dirname(filePath), { recursive: true })
 	const hashers = algorithms.map((algorithm) => new Bun.CryptoHasher(algorithm))
 	const digests = () => hashers.map((hasher) => Buffer.from(hasher.digest()))
 	const writeBytes = async (bytes: Uint8Array | ArrayBuffer) => {
@@ -401,10 +404,76 @@ function checkMetadataSize(method: string, metadata: Record<string, string> | un
 	if (size > limits.maxCustomMetadataSize) throw r2Error(method, ...METADATA_TOO_LARGE)
 }
 
-/** Objects live at <bucket dir>/<key>, so a key must not climb out of the bucket directory. */
-function objectFilePath(baseDir: string, key: string): string {
-	if (key.includes('..')) throw new Error('Invalid key: path traversal not allowed')
-	return join(baseDir, key)
+// --- Blobs ---
+
+/**
+ * How long the blob of a deleted or replaced object outlives it. An R2ObjectBody reads its blob lazily, so a body
+ * fetched before the delete or overwrite stays readable for this long (a stream already reading it is unaffected).
+ */
+export const R2_BLOB_GRACE_MS = 60_000
+
+/** Object bodies and multipart parts live in `<dataDir>/r2/.blobs/<id>`; R2 bucket names cannot start with a dot. */
+function blobDirectory(dataDir: string): string {
+	return join(dataDir, 'r2', '.blobs')
+}
+
+function newBlobPath(blobDir: string): { blob: string; path: string } {
+	const blob = randomHex()
+	return { blob, path: join(blobDir, blob) }
+}
+
+/**
+ * Hands a file no row refers to any more to the sweep. Run inside the transaction that dropped the reference. The path
+ * is stored relative to the `r2` directory, so a copied data directory never sweeps the original's files.
+ */
+function releaseBlob(db: Database, blobDir: string, path: string): void {
+	db.run(`INSERT OR REPLACE INTO r2_blob_garbage (path, released_at) VALUES (?, ?)`, [relative(dirname(blobDir), path), Date.now()])
+}
+
+function sweepBlobs(db: Database, blobDir: string): void {
+	const due = db
+		.query<{ path: string }, [number]>(`DELETE FROM r2_blob_garbage WHERE released_at <= ? RETURNING path`)
+		.all(Date.now() - R2_BLOB_GRACE_MS)
+	for (const { path } of due) rmSync(join(dirname(blobDir), path), { force: true })
+}
+
+/** Inserts or replaces an object row pointing at `blob`, releasing the blob of the object it replaces. */
+function storeObject(
+	db: Database,
+	blobDir: string,
+	row: {
+		bucket: string
+		key: string
+		size: number
+		etag: string
+		version: string
+		uploaded: string
+		httpMetadata: string | null
+		customMetadata: string | null
+		checksums: string | null
+		blob: string
+	},
+): void {
+	const previous = db
+		.query<{ blob: string | null }, [string, string]>(`SELECT blob FROM r2_objects WHERE bucket = ? AND key = ?`)
+		.get(row.bucket, row.key)
+	db.run(
+		`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums, blob)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		[row.bucket, row.key, row.size, row.etag, row.version, row.uploaded, row.httpMetadata, row.customMetadata, row.checksums, row.blob],
+	)
+	if (previous?.blob) releaseBlob(db, blobDir, join(blobDir, previous.blob))
+}
+
+/** Blob id for an object stored by an earlier version at <bucket>/<key>; deterministic, so a crashed migration resumes. */
+function legacyBlobId(bucket: string, key: string): string {
+	return `legacy-${new Bun.CryptoHasher('sha256').update(`${bucket}\0${key}`).digest('hex')}`
+}
+
+/** True when `path` lies inside `dir` (a key from the database must not lead out of the bucket directory). */
+function isInside(dir: string, path: string): boolean {
+	const rel = relative(dir, path)
+	return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 const CHECKSUM_ALGORITHMS = [
@@ -634,12 +703,14 @@ export class R2MultipartUpload {
 	private db: Database
 	private bucket: string
 	private baseDir: string
+	private blobDir: string
 	private limits: Required<R2Limits>
 
 	constructor(
 		db: Database,
 		bucket: string,
 		baseDir: string,
+		blobDir: string,
 		key: string,
 		uploadId: string,
 		limits: Required<R2Limits>,
@@ -647,6 +718,7 @@ export class R2MultipartUpload {
 		this.db = db
 		this.bucket = bucket
 		this.baseDir = baseDir
+		this.blobDir = blobDir
 		this.key = key
 		this.uploadId = uploadId
 		this.limits = limits
@@ -669,21 +741,26 @@ export class R2MultipartUpload {
 			.get(this.uploadId, this.bucket, this.key) !== null
 	}
 
-	/** Retires the upload; false when another complete() or abort() already did. Run inside a transaction. */
-	private finish(): boolean {
+	/**
+	 * Retires the upload and returns the files of all its parts, which nothing reads any more; null when another
+	 * complete() or abort() already did. Run inside a transaction.
+	 */
+	private finish(): string[] | null {
 		const { changes } = this.db.run(`DELETE FROM r2_multipart_uploads WHERE upload_id = ? AND bucket = ? AND key = ?`, [
 			this.uploadId,
 			this.bucket,
 			this.key,
 		])
-		if (changes === 0) return false
-		this.db.run(`DELETE FROM r2_multipart_parts WHERE upload_id = ?`, [this.uploadId])
+		if (changes === 0) return null
+		const parts = this.db
+			.query<{ file_path: string }, [string]>(`DELETE FROM r2_multipart_parts WHERE upload_id = ? RETURNING file_path`)
+			.all(this.uploadId)
 		this.db.run(`INSERT OR REPLACE INTO r2_multipart_finished (upload_id, bucket, key) VALUES (?, ?, ?)`, [
 			this.uploadId,
 			this.bucket,
 			this.key,
 		])
-		return true
+		return parts.map(part => part.file_path)
 	}
 
 	async uploadPart(
@@ -693,17 +770,39 @@ export class R2MultipartUpload {
 		checkKey('uploadPart', this.key, this.limits)
 		if (!this.getUpload()) throw r2Error('uploadPart', ...NO_SUCH_UPLOAD)
 
-		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		const partPath = join(partDir, `part-${partNumber}`)
-		const { digests: [md5], size } = await writeValueToFile(data, partPath, ['md5'])
+		const { path: partPath } = newBlobPath(this.blobDir)
+		let md5: Buffer | undefined
+		let size: number
+		try {
+			const written = await writeValueToFile(data, partPath, ['md5'])
+			md5 = written.digests[0]
+			size = written.size
+		} catch (err) {
+			rmSync(partPath, { force: true })
+			throw err
+		}
 		// R2 part etags are random, so re-uploading a part number invalidates the previous etag
 		const etag = randomHex()
 
-		this.db.run(
-			`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path, checksum_md5)
+		const stored = this.db.transaction(() => {
+			// complete() or abort() may have finished the upload while the part was being written
+			if (!this.getUpload()) return false
+			const previous = this.db
+				.query<{ file_path: string }, [string, number]>(`SELECT file_path FROM r2_multipart_parts WHERE upload_id = ? AND part_number = ?`)
+				.get(this.uploadId, partNumber)
+			this.db.run(
+				`INSERT OR REPLACE INTO r2_multipart_parts (upload_id, part_number, etag, size, file_path, checksum_md5)
        VALUES (?, ?, ?, ?, ?, ?)`,
-			[this.uploadId, partNumber, etag, size, partPath, md5?.toString('hex') ?? null],
-		)
+				[this.uploadId, partNumber, etag, size, partPath, md5?.toString('hex') ?? null],
+			)
+			// A concurrent complete() may be reading the part it replaces
+			if (previous) releaseBlob(this.db, this.blobDir, previous.file_path)
+			return true
+		}).immediate()
+		if (!stored) {
+			rmSync(partPath, { force: true })
+			throw r2Error('uploadPart', ...NO_SUCH_UPLOAD)
+		}
 
 		return { partNumber, etag }
 	}
@@ -748,11 +847,8 @@ export class R2MultipartUpload {
 		}
 
 		// Stream each part's bytes through a FileSink — O(1) memory regardless of total size.
-		// Each call assembles into its own file (the sink does not truncate; concurrent calls must not
-		// share it); only the call that wins the transaction below renames it into place.
-		const filePath = objectFilePath(this.baseDir, this.key)
-		const assembledPath = join(this.baseDir, '__multipart__', `assembled-${randomHex()}`)
-		mkdirSync(dirname(assembledPath), { recursive: true })
+		// Each call assembles into its own blob; only the call that wins the transaction below stores it.
+		const { blob, path: assembledPath } = newBlobPath(this.blobDir)
 		let totalSize = 0
 		try {
 			const writer = Bun.file(assembledPath).writer()
@@ -785,32 +881,32 @@ export class R2MultipartUpload {
 		const httpMeta = deserializeHttpMetadata(upload.http_metadata)
 		const customMeta = upload.custom_metadata ? JSON.parse(upload.custom_metadata) : {}
 
-		// Atomically: retire the upload, move the assembled file into place and persist the object.
+		// Atomically: retire the upload and store the object.
+		let partFiles: string[]
 		try {
-			this.db.transaction(() => {
-				if (!this.finish()) throw r2Error(method, ...NO_SUCH_UPLOAD)
-				mkdirSync(dirname(filePath), { recursive: true })
-				renameSync(assembledPath, filePath)
-				this.db.run(
-					`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-					[
-						this.bucket,
-						this.key,
-						totalSize,
-						etag,
-						version,
-						uploaded.toISOString(),
-						upload.http_metadata,
-						upload.custom_metadata,
-						null,
-					],
-				)
-			})()
-		} finally {
+			partFiles = this.db.transaction(() => {
+				const finished = this.finish()
+				if (!finished) throw r2Error(method, ...NO_SUCH_UPLOAD)
+				storeObject(this.db, this.blobDir, {
+					bucket: this.bucket,
+					key: this.key,
+					size: totalSize,
+					etag,
+					version,
+					uploaded: uploaded.toISOString(),
+					httpMetadata: upload.http_metadata,
+					customMetadata: upload.custom_metadata,
+					checksums: null,
+					blob,
+				})
+				return finished
+			}).immediate()
+		} catch (err) {
 			rmSync(assembledPath, { force: true })
+			throw err
 		}
-		this.removePartFiles()
+		this.removePartFiles(partFiles)
+		sweepBlobs(this.db, this.blobDir)
 
 		return new R2Object({
 			key: this.key,
@@ -831,8 +927,8 @@ export class R2MultipartUpload {
 			if (this.isFinished()) return
 			throw r2Error('abortMultipartUpload', ...INTERNAL_ERROR)
 		}
-		if (!this.db.transaction(() => this.finish())()) return
-		this.removePartFiles()
+		const partFiles = this.db.transaction(() => this.finish()).immediate()
+		if (partFiles) this.removePartFiles(partFiles)
 	}
 
 	/** Inspect parts that have been uploaded so far (used by S3 ListParts). */
@@ -850,9 +946,12 @@ export class R2MultipartUpload {
 		}))
 	}
 
-	private removePartFiles(): void {
-		const partDir = join(this.baseDir, '__multipart__', this.uploadId)
-		if (existsSync(partDir)) rmSync(partDir, { recursive: true, force: true })
+	/** Parts of a finished upload; nothing reads them any more. */
+	private removePartFiles(partFiles: string[]): void {
+		for (const file of partFiles) rmSync(file, { force: true })
+		// Parts stored by earlier versions live in <bucket>/__multipart__/<upload id>
+		const legacyDir = join(this.baseDir, '__multipart__', this.uploadId)
+		if (existsSync(legacyDir)) rmSync(legacyDir, { recursive: true, force: true })
 	}
 }
 
@@ -861,8 +960,9 @@ export class R2MultipartUpload {
 export class FileR2Bucket {
 	private db: Database
 	private bucket: string
+	/** Where earlier versions stored objects, at <bucket>/<key>; read only to migrate them. */
 	private baseDir: string
-	private tmpDir: string
+	private blobDir: string
 	private limits: Required<R2Limits>
 	private listHonorsInclude: boolean
 
@@ -871,14 +971,42 @@ export class FileR2Bucket {
 		this.listHonorsInclude = compatibility.r2ListHonorInclude !== 'disabled'
 		this.bucket = bucket
 		this.baseDir = join(dataDir, 'r2', bucket)
-		// R2 bucket names cannot start with a dot, so this never collides with a bucket directory
-		this.tmpDir = join(dataDir, 'r2', '.tmp')
+		this.blobDir = blobDirectory(dataDir)
 		this.limits = { ...R2_DEFAULTS, ...limits }
-		mkdirSync(this.baseDir, { recursive: true })
+		mkdirSync(this.blobDir, { recursive: true })
 
 		// Ensure version and checksums columns exist (migration for existing DBs)
 		this.ensureColumns()
 		this.ensureMultipartTables()
+		this.migrateLegacyObjects()
+		sweepBlobs(this.db, this.blobDir)
+	}
+
+	/**
+	 * Moves objects stored by earlier versions at <bucket>/<key> into blobs. Idempotent and safe to run from several
+	 * threads at once: the blob id is derived from bucket and key, and a row is claimed only while its blob is null.
+	 */
+	private migrateLegacyObjects(): void {
+		const rows = this.db
+			.query<{ key: string }, [string]>(`SELECT key FROM r2_objects WHERE bucket = ? AND blob IS NULL`)
+			.all(this.bucket)
+		for (const { key } of rows) {
+			const blob = legacyBlobId(this.bucket, key)
+			const path = join(this.blobDir, blob)
+			const legacyPath = join(this.baseDir, key)
+			if (!existsSync(path) && isInside(this.baseDir, legacyPath) && existsSync(legacyPath) && statSync(legacyPath).isFile()) {
+				try {
+					renameSync(legacyPath, path)
+				} catch (err) {
+					// Another thread moved it first
+					if (!existsSync(path)) throw err
+				}
+			}
+			// A row whose file is missing stays unmigrated: get() reports an internal error, and a later run can still find it
+			if (existsSync(path)) {
+				this.db.run(`UPDATE r2_objects SET blob = ? WHERE bucket = ? AND key = ? AND blob IS NULL`, [blob, this.bucket, key])
+			}
+		}
 	}
 
 	private ensureColumns(): void {
@@ -922,10 +1050,6 @@ export class FileR2Bucket {
     `)
 	}
 
-	private filePath(key: string): string {
-		return objectFilePath(this.baseDir, key)
-	}
-
 	async put(
 		key: string,
 		value: string | ArrayBuffer | ArrayBufferView | ReadableStream | Blob | null,
@@ -934,7 +1058,6 @@ export class FileR2Bucket {
 		checkKey('put', key, this.limits)
 		checkMetadataSize('put', options?.customMetadata, this.limits)
 		const expected = parseExpectedChecksum(options)
-		const fp = this.filePath(key)
 
 		// Check conditional before writing; a missing object fails etagMatches and uploadedAfter
 		if (options?.onlyIf) {
@@ -945,14 +1068,14 @@ export class FileR2Bucket {
 			}
 		}
 
-		// Write aside and rename, so a rejected checksum leaves the current object intact
-		const tmpPath = join(this.tmpDir, crypto.randomUUID())
+		// A new blob, so a rejected checksum leaves the current object intact
+		const { blob, path } = newBlobPath(this.blobDir)
 		let size: number
 		let md5: Buffer
 		const checksums: R2Checksums = {}
 		try {
 			const algorithms: HashAlgorithm[] = expected && expected.algorithm.field !== 'md5' ? ['md5', expected.algorithm.field] : ['md5']
-			const written = await writeValueToFile(value, tmpPath, algorithms)
+			const written = await writeValueToFile(value, path, algorithms)
 			size = written.size
 			md5 = written.digests[0] ?? Buffer.alloc(0)
 			if (expected) {
@@ -971,31 +1094,35 @@ export class FileR2Bucket {
 				}
 				checksums[expected.algorithm.field] = toArrayBuffer(actual)
 			}
-			mkdirSync(dirname(fp), { recursive: true })
-			renameSync(tmpPath, fp)
-		} finally {
-			rmSync(tmpPath, { force: true })
+		} catch (err) {
+			rmSync(path, { force: true })
+			throw err
 		}
 		const etag = md5.toString('hex')
 		checksums.md5 = toArrayBuffer(md5)
 		const uploaded = new Date()
 		const version = randomHex()
 
-		this.db.run(
-			`INSERT OR REPLACE INTO r2_objects (bucket, key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
-				this.bucket,
-				key,
-				size,
-				etag,
-				version,
-				uploaded.toISOString(),
-				serializeHttpMetadata(options?.httpMetadata),
-				options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
-				JSON.stringify(serializeChecksums(checksums)),
-			],
-		)
+		try {
+			this.db.transaction(() =>
+				storeObject(this.db, this.blobDir, {
+					bucket: this.bucket,
+					key,
+					size,
+					etag,
+					version,
+					uploaded: uploaded.toISOString(),
+					httpMetadata: serializeHttpMetadata(options?.httpMetadata),
+					customMetadata: options?.customMetadata ? JSON.stringify(options.customMetadata) : null,
+					checksums: JSON.stringify(serializeChecksums(checksums)),
+					blob,
+				})
+			).immediate()
+		} catch (err) {
+			rmSync(path, { force: true })
+			throw err
+		}
+		sweepBlobs(this.db, this.blobDir)
 
 		return new R2Object({
 			key,
@@ -1009,10 +1136,10 @@ export class FileR2Bucket {
 		})
 	}
 
-	private getRow(key: string): R2Row | null {
+	private getRow(key: string): StoredRow | null {
 		return this.db
-			.query<R2Row, [string, string]>(
-				`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums FROM r2_objects WHERE bucket = ? AND key = ?`,
+			.query<StoredRow, [string, string]>(
+				`SELECT key, size, etag, version, uploaded, http_metadata, custom_metadata, checksums, blob FROM r2_objects WHERE bucket = ? AND key = ?`,
 			)
 			.get(this.bucket, key)
 	}
@@ -1031,7 +1158,9 @@ export class FileR2Bucket {
 			return new R2Object({ ...meta, range: { offset: 0, length: meta.size } })
 		}
 
-		return new R2ObjectBody(meta, this.filePath(key), resolveRange(options?.range, meta.size))
+		// A row without a blob is one whose legacy file the migration could not find
+		if (row.blob === null) throw r2Error('get', ...INTERNAL_ERROR)
+		return new R2ObjectBody(meta, join(this.blobDir, row.blob), resolveRange(options?.range, meta.size))
 	}
 
 	async head(key: string): Promise<R2Object | null> {
@@ -1048,11 +1177,36 @@ export class FileR2Bucket {
 			throw new Error(`Cannot delete more than ${this.limits.maxBatchDeleteKeys} keys at once`)
 		}
 		for (const k of keys) checkKey('delete', k, this.limits)
-		for (const k of keys) {
-			const { changes } = this.db.run(`DELETE FROM r2_objects WHERE bucket = ? AND key = ?`, [this.bucket, k])
-			// Only a stored object owns a file; any other path may be another key's directory
-			if (changes > 0) rmSync(this.filePath(k), { force: true })
-		}
+		this.db.transaction(() => {
+			for (const k of keys) {
+				const removed = this.db
+					.query<{ blob: string | null }, [string, string]>(`DELETE FROM r2_objects WHERE bucket = ? AND key = ? RETURNING blob`)
+					.get(this.bucket, k)
+				if (removed?.blob) releaseBlob(this.db, this.blobDir, join(this.blobDir, removed.blob))
+			}
+		}).immediate()
+		sweepBlobs(this.db, this.blobDir)
+	}
+
+	/**
+	 * Moves an object to another key, keeping its body and every stored attribute; an object already at `newKey` is
+	 * replaced. Not part of the R2 API: the dashboard uses it. Returns false when `oldKey` does not exist.
+	 */
+	renameObject(oldKey: string, newKey: string): boolean {
+		checkKey('rename', oldKey, this.limits)
+		checkKey('rename', newKey, this.limits)
+		const renamed = this.db.transaction(() => {
+			const exists = this.db.query(`SELECT 1 FROM r2_objects WHERE bucket = ? AND key = ?`).get(this.bucket, oldKey) !== null
+			if (!exists || oldKey === newKey) return exists
+			const replaced = this.db
+				.query<{ blob: string | null }, [string, string]>(`DELETE FROM r2_objects WHERE bucket = ? AND key = ? RETURNING blob`)
+				.get(this.bucket, newKey)
+			if (replaced?.blob) releaseBlob(this.db, this.blobDir, join(this.blobDir, replaced.blob))
+			this.db.run(`UPDATE r2_objects SET key = ? WHERE bucket = ? AND key = ?`, [newKey, this.bucket, oldKey])
+			return true
+		}).immediate()
+		sweepBlobs(this.db, this.blobDir)
+		return renamed
 	}
 
 	async list(options?: R2ListOptions) {
@@ -1126,8 +1280,6 @@ export class FileR2Bucket {
 	): Promise<R2MultipartUpload> {
 		checkKey('createMultipartUpload', key, this.limits)
 		checkMetadataSize('createMultipartUpload', options?.customMetadata, this.limits)
-		// Fail now rather than at complete() for keys that cannot be stored on disk
-		this.filePath(key)
 
 		const uploadId = crypto.randomUUID()
 		this.db.run(
@@ -1143,11 +1295,11 @@ export class FileR2Bucket {
 			],
 		)
 
-		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, key, uploadId, this.limits)
+		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, this.blobDir, key, uploadId, this.limits)
 	}
 
 	resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
-		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, key, uploadId, this.limits)
+		return new R2MultipartUpload(this.db, this.bucket, this.baseDir, this.blobDir, key, uploadId, this.limits)
 	}
 
 	/** Read tags for a key. Returns [] if the object has no tags or doesn't exist. */

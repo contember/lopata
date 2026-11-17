@@ -54,7 +54,25 @@ export function runMigrations(db: Database): void {
 			http_metadata TEXT,
 			custom_metadata TEXT,
 			checksums TEXT,
+			blob TEXT,
 			PRIMARY KEY (bucket, key)
+		)
+	`)
+
+	// Migrate: objects are stored as blobs named by this column, no longer at <bucket>/<key>. Null until
+	// FileR2Bucket has moved the object's legacy file (it needs the data directory, which this function lacks).
+	{
+		const cols = db.query<{ name: string }, []>('PRAGMA table_info(r2_objects)').all()
+		if (!cols.some(c => c.name === 'blob')) {
+			db.run('ALTER TABLE r2_objects ADD COLUMN blob TEXT')
+		}
+	}
+
+	// Blobs of deleted or replaced objects, removed once R2_BLOB_GRACE_MS has passed
+	db.run(`
+		CREATE TABLE IF NOT EXISTS r2_blob_garbage (
+			path TEXT PRIMARY KEY,
+			released_at INTEGER NOT NULL
 		)
 	`)
 
