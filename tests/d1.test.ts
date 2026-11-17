@@ -1,10 +1,17 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { runConsoleQuery } from '../src/api/handlers/d1'
-import { d1DatabaseNameFromFile, LocalD1Database, LocalD1DatabaseSession, LocalD1PreparedStatement, openD1Database } from '../src/bindings/d1'
+import {
+	d1DatabaseNameFromFile,
+	d1DatabasePath,
+	LocalD1Database,
+	LocalD1DatabaseSession,
+	LocalD1PreparedStatement,
+	openD1Database,
+} from '../src/bindings/d1'
 
 let db: Database
 let d1: LocalD1Database
@@ -507,6 +514,33 @@ describe('database files', () => {
 				const row = await openD1Database(dataDir, name).prepare('SELECT name FROM t').first<{ name: string }>()
 				expect(row).toEqual({ name })
 			}
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
+	})
+
+	test('a database created under its verbatim name keeps its file', async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'd1-legacy-'))
+		try {
+			mkdirSync(join(dataDir, 'd1'))
+			for (const name of ['100%', 'a\\b']) {
+				const legacy = new Database(join(dataDir, 'd1', `${name}.sqlite`))
+				legacy.run(`CREATE TABLE t (name TEXT); INSERT INTO t VALUES ('${name}')`)
+				legacy.close()
+				const row = await openD1Database(dataDir, name).prepare('SELECT name FROM t').first<{ name: string }>()
+				expect(row).toEqual({ name })
+			}
+			expect(readdirSync(join(dataDir, 'd1')).filter(f => f.endsWith('.sqlite')).sort()).toEqual(['100%.sqlite', 'a\\b.sqlite'])
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
+	})
+
+	test('a name that leaves d1/ never resolves to a file outside it', () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'd1-escape-'))
+		try {
+			writeFileSync(join(dataDir, 'escape.sqlite'), '')
+			expect(dirname(d1DatabasePath(dataDir, '../escape'))).toBe(join(dataDir, 'd1'))
 		} finally {
 			rmSync(dataDir, { recursive: true, force: true })
 		}

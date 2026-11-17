@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
-import { mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { inSavepoint, runStatements, splitStatements } from './sql-split'
 
 interface D1Meta {
@@ -344,7 +344,12 @@ const ENCODED_NAME_ESCAPES = /%(25|2F|5C)/g
  */
 export function d1DatabasePath(dataDir: string, databaseName: string): string {
 	const fileName = databaseName.replace(ENCODED_NAME_CHARS, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
-	return join(dataDir, 'd1', `${fileName}${D1_FILE_SUFFIX}`)
+	const dir = join(dataDir, 'd1')
+	const path = join(dir, `${fileName}${D1_FILE_SUFFIX}`)
+	// Names were once used verbatim as file names; a database created that way keeps its file, if it lies inside d1/.
+	const legacyPath = join(dir, `${databaseName}${D1_FILE_SUFFIX}`)
+	const legacy = legacyPath !== path && dirname(legacyPath) === dir && !existsSync(path) && existsSync(legacyPath)
+	return legacy ? legacyPath : path
 }
 
 /** The database name a file in `d1/` belongs to, or null for files that are not databases (WAL, SHM). */
