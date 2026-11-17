@@ -46,28 +46,28 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 
 | Corpus           | Area            |                Before |                 After |
 | ---------------- | --------------- | --------------------: | --------------------: |
-| miniflare-cache  | cache           |               15 / 22 |               21 / 22 |
-| miniflare-d1     | d1              |                 2 / 9 |                 8 / 9 |
+| miniflare-cache  | cache           |               15 / 22 |               22 / 22 |
+| miniflare-d1     | d1              |                 2 / 9 |                 9 / 9 |
 | miniflare-kv     | kv              |               18 / 44 |               44 / 44 |
 | miniflare-queues | queues          |                4 / 10 |                9 / 10 |
 | miniflare-queues | queues delay    |                 3 / 5 |                 5 / 5 |
 | miniflare-queues | Queues: retry   |                 0 / 2 |                 2 / 2 |
 | miniflare-r2     | r2              |               17 / 49 |               46 / 49 |
-| workerd          | crypto          |                7 / 15 |                7 / 15 |
+| workerd          | crypto          |                7 / 15 |               11 / 15 |
 | workerd          | durable-objects |                4 / 11 |                4 / 11 |
 | workerd          | encoding-url    |               33 / 39 |               33 / 39 |
 | workerd          | events          |               12 / 57 |               26 / 57 |
 | workerd          | fetch           |               15 / 43 |               20 / 43 |
-| workerd          | globals         |               10 / 31 |               19 / 31 |
-| workerd          | htmlrewriter    |               21 / 33 |               21 / 33 |
-| workerd          | streams         |             141 / 269 |             190 / 269 |
-| workerd          | websocket       |               11 / 18 |               11 / 18 |
-| **all**          |                 | **313 / 657 (47.6%)** | **466 / 657 (70.9%)** |
+| workerd          | globals         |               10 / 31 |               22 / 31 |
+| workerd          | htmlrewriter    |               21 / 33 |               25 / 33 |
+| workerd          | streams         |             141 / 269 |             203 / 269 |
+| workerd          | websocket       |               11 / 18 |               14 / 18 |
+| **all**          |                 | **313 / 657 (47.6%)** | **495 / 657 (75.3%)** |
 
-Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: `main` at `3562887`, with the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes. The remaining failures:
+Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers). The remaining failures:
 
-- **Bindings (6):** D1 database names containing `/`; R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`); Cache ignores `cf.cacheKey` (Bun's `Request` drops `init.cf`).
-- **workerd (185):** mostly Bun's native streams (BYOB readers on body and transform streams, `readAtLeast()`), `AbortSignal` over RPC, streamed HTMLRewriter content, `MessagePort` and `Event` details, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`). Two modules (`fetch-test`, `reporterror-test`) do not load at all.
+- **Bindings (4):** R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`).
+- **workerd (158):** mostly Bun's native streams (byte-stream controller details, `new ReadableStreamBYOBReader()` on a body), `AbortSignal` over RPC, `MessagePort` and `Event` details, V8 error positions in `reportError()`, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`).
 
 ---
 
@@ -285,7 +285,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `ReadableStream.cancel(reason?)` — cancel
 - 🟰 `ReadableStream.values()` — async iterator
 - 🟰 `ReadableStreamDefaultReader` — read(), cancel(), releaseLock()
-- ✅ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); on every stream of bytes, Request/Response bodies and transform streams included (a stream without a byte source is read through an adapter that stays locked to it)
+- ⚠️ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); on `type: 'bytes'` streams and on native streams (Request/Response bodies, binding bodies, IdentityTransformStream and FixedLengthStream readables, their tee branches), which are read through an adapter that stays locked to them. A stream constructed in JS without a byte source refuses one, as in workerd; the readable side of a plain `new TransformStream()` accepts one, which workerd refuses under the standard constructor. `new ReadableStreamBYOBReader(stream)` works only on `type: 'bytes'` streams
 - ✅ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
 - 🟰 `WritableStream` — accessed via TransformStream.writable
 - 🟰 `WritableStreamDefaultWriter` — write(), close(), abort(), releaseLock()
