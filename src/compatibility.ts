@@ -9,6 +9,12 @@ export interface CompatibilitySelection {
 	readonly date: string | null
 	readonly flags: readonly string[]
 	readonly unimplementedFlags: readonly string[]
+	/**
+	 * workerd's `Cloudflare.compatibilityFlags`: every enable flag lopata models, resolved from the date and flags,
+	 * plus the flags the config lists (other than known disable flags) as true. Flags lopata does not model and the
+	 * date alone would enable are absent.
+	 */
+	readonly enableFlagStates: Readonly<Record<string, boolean>>
 	readonly deleteAllDeletesAlarm: CompatibilityMode
 	readonly websocketCloseReasonByteLimit: CompatibilityMode
 	readonly websocketStandardBinaryType: CompatibilityMode
@@ -97,9 +103,15 @@ export function resolveCompatibility(input: CompatibilityInput): CompatibilitySe
 		if (date === null) return 'legacy-local'
 		return date >= rule.date ? 'enabled' : 'disabled'
 	}
+	const enableFlagStates: Record<string, boolean> = Object.create(null)
+	for (const flag of flags) {
+		if (!ruleList.some(rule => rule.disable === flag)) enableFlagStates[flag] = true
+	}
+	for (const rule of ruleList) enableFlagStates[rule.enable] = select(rule) === 'enabled'
 	return Object.freeze({
 		date,
 		flags,
+		enableFlagStates: Object.freeze(enableFlagStates),
 		unimplementedFlags: Object.freeze(flags.filter(flag => !ruleList.some(rule => rule.enable === flag || rule.disable === flag))),
 		deleteAllDeletesAlarm: select(rules.deleteAllDeletesAlarm),
 		websocketCloseReasonByteLimit: select(rules.websocketCloseReasonByteLimit),

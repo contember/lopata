@@ -417,6 +417,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `structuredClone(value)` — deep copy
 - ✅ `queueMicrotask(fn)` — a callback that throws dispatches an `ErrorEvent` named `error` on the global scope, then is logged unless a listener calls `preventDefault()`
 - ⚠️ `reportError(error)` — dispatches an `ErrorEvent` named `error` and logs the error unless cancelled; `filename`, `lineno` and `colno` are left empty
+- ⚠️ `Cloudflare.compatibilityFlags` — read-only map of enable flags: those lopata models, resolved from the compatibility date and flags, plus every flag the config lists as `true`; flags lopata does not model that only the date would enable are absent
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
 - ✅ Global `addEventListener` for `error` (from `reportError()` and `queueMicrotask()`), `unhandledrejection`, `rejectionhandled` and custom events; an uncaught exception from a timer or listener is not dispatched as `error`

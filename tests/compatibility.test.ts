@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { type CompatibilitySelection, parseCompatibility, resolveCompatibility } from '../src/compatibility'
+import { cloudflareGlobal } from '../src/compatibility-context'
 import { loadConfig } from '../src/config'
 
 interface DatedCase {
@@ -245,5 +246,28 @@ compatibility_flags = ["delete_all_preserves_alarm", "unknown"]
 			await Bun.write(path, `name = "invalid"\n[env.production]\n${fields}\n`)
 			await expect(loadConfig(path, 'production')).rejects.toThrow(TypeError)
 		}
+	})
+})
+
+describe('Cloudflare.compatibilityFlags', () => {
+	test('lists the enable flags lopata models, resolved from the date and flags', () => {
+		const flags = cloudflareGlobal(resolveCompatibility({ date: '2024-03-18', flags: ['web_socket_auto_reply_to_close'] })).compatibilityFlags
+		expect(flags.queues_json_messages).toBe(true)
+		expect(flags.enable_ctx_exports).toBe(false)
+		expect(flags.web_socket_auto_reply_to_close).toBe(true)
+	})
+
+	test('reports explicitly enabled flags lopata does not model as true, and never disable flags', () => {
+		const flags = cloudflareGlobal(resolveCompatibility({ date: '2024-03-18', flags: ['upper_case_all_http_methods', 'no_queues_json_messages'] }))
+			.compatibilityFlags
+		expect(flags.upper_case_all_http_methods).toBe(true)
+		expect(flags.queues_json_messages).toBe(false)
+		expect('no_queues_json_messages' in flags).toBe(false)
+	})
+
+	test('is read-only and has no prototype', () => {
+		const flags = cloudflareGlobal(resolveCompatibility({ date: '2024-03-18' })).compatibilityFlags
+		expect(Object.getPrototypeOf(flags)).toBeNull()
+		expect(Object.isFrozen(flags)).toBe(true)
 	})
 })
