@@ -18,7 +18,7 @@
 | **Durable Objects**       | ~95%      | Sync KV + transactionSync; state.abort supported; no point-in-time recovery   |
 | **Queues**                | ~95%      | Full push + pull consumers; max_concurrency + retry_delay supported           |
 | **Workflows**             | 100%      | Full lifecycle, checkpointing, concurrency                                    |
-| **Cache API**             | ~95%      | put/match/delete, TTL, conditional + range match; cf.cacheKey ignored         |
+| **Cache API**             | ~95%      | put/match/delete, TTL, conditional + range match, cf.cacheKey                 |
 | **Static Assets**         | ~98%      | Full _redirects + _headers with !Header removal                               |
 | **Service Bindings**      | ~95%      | Full RPC stubs, using/dup; instance property filtering relaxed                |
 | **Scheduled (Cron)**      | 100%      | Full cron parser with L/W/# support, aliases, manual trigger                  |
@@ -1024,7 +1024,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `cache.match(request, options?)` — retrieve response; options: { ignoreMethod }
 - ✅ `match()` conditional requests: `If-None-Match` / `If-Modified-Since` → 304
 - ✅ `match()` range requests: 206 for one range, `multipart/byteranges` for several, 416 when unsatisfiable
-- ❌ `cf.cacheKey` on the request — ignored by put/match/delete (Bun's `Request` drops `init.cf`)
+- ✅ `cf.cacheKey` on the request — put/match/delete key the entry by it instead of the URL (`new Request(url, { cf })` keeps `init.cf` as `request.cf`)
 - ✅ `cache.delete(request, options?)` — remove response; options: { ignoreMethod }
 
 ### 8.3 Cache Constraints

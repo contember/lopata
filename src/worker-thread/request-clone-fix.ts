@@ -1,5 +1,10 @@
 /**
- * Bun bug workaround, installed as a global in every thread that runs user code.
+ * The global `Request` of every thread that runs user code. It does two things Bun's own does not:
+ * keeps workerd's `cf` request property (below) and works around a Bun bug.
+ *
+ * `cf`: `new Request(url, { cf })` exposes `init.cf` as `request.cf`, as workerd does; a request
+ * built from another request, or cloned, carries the source's `cf` unless `init` sets its own.
+ * Bun drops the unknown init member. The Cache API keys entries by `cf.cacheKey`.
  *
  * `new Request(existingRequest, init)` HANGS on read in Bun when
  * `existingRequest.body` is a JS `ReadableStream` — which is exactly what every
@@ -16,8 +21,7 @@
  * forwarded, not buffered). Every other construction form delegates to the native
  * constructor unchanged.
  *
- * TODO: remove once the upstream Bun bug is fixed — delete this file and its three
- * side-effect imports (entry.ts, do-worker-entry.ts, setup-globals.ts); the e2e test
+ * TODO: remove the clone workaround once the upstream Bun bug is fixed; the e2e test
  * `a re-wrapped incoming request body survives the worker → DO hop` guards the
  * removal. Track: https://github.com/oven-sh/bun/issues (clone hang on stream body).
  */
@@ -32,6 +36,7 @@ class LopataRequest extends Native {
 		// explicit `{ body: null }` is a deliberate "drop the body" override and must
 		// reach the native path so the result is body-less (matching Bun/workerd).
 		const overridesBody = init != null && 'body' in init
+		const cf = init != null && 'cf' in init ? init.cf : input instanceof Native ? Reflect.get(input, 'cf') : undefined
 		if (input instanceof Native && input.body != null && !overridesBody) {
 			const headers = new Headers(input.headers)
 			if (init?.headers) { for (const [k, v] of new Headers(init.headers)) headers.set(k, v) }
@@ -54,13 +59,32 @@ class LopataRequest extends Native {
 				// a stream body requires duplex: 'half' (not in the lib's RequestInit type)
 				duplex: 'half',
 			} as RequestInit)
+			defineCf(this, cf)
 			return
 		}
 		// Native path for every other form (string/URL input, no source body, or an
 		// explicit `body` override). Narrow so the call matches a native overload.
 		if (input instanceof Native) super(input, init)
 		else super(input instanceof URL ? input.href : input, init)
+		defineCf(this, cf)
 	}
+}
+
+// Bun's clone() returns a native Request, which has no cf. (Request's typings declare clone as a property, hence no method override.)
+const nativeClone = Native.prototype.clone
+Object.defineProperty(LopataRequest.prototype, 'clone', {
+	value: function clone(this: Request) {
+		const copy = nativeClone.call(this)
+		defineCf(copy, Reflect.get(this, 'cf'))
+		return copy
+	},
+	writable: true,
+	configurable: true,
+})
+
+function defineCf(request: object, cf: unknown): void {
+	if (cf === undefined) return
+	Object.defineProperty(request, 'cf', { value: cf, writable: false, enumerable: false, configurable: true })
 }
 
 // Requests built before the install, or by the runtime (`Bun.serve`), are native; they are Requests all the same.
