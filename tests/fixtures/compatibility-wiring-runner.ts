@@ -54,6 +54,7 @@ const doConfig = {
 	id: new DurableObjectIdImpl('1'.repeat(64)),
 	db,
 	namespaceName: 'CompatibilityProbe',
+	className: 'CompatibilityProbe',
 	cls: DurableObjectBase,
 	env: {},
 	_modulePath: modulePath,

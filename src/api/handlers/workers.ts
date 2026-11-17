@@ -1,7 +1,17 @@
+import { doStorageKey } from '../../bindings/do-storage-key'
 import { isCrossScriptBinding, type WranglerConfig } from '../../config'
+import type { GenerationManager } from '../../generation-manager'
 import type { HandlerContext, WorkerBinding, WorkerInfo } from '../types'
 
-function extractBindings(config: WranglerConfig): WorkerBinding[] {
+/**
+ * `auxiliaryWorker` is the worker's own storage-key prefix; `managers` resolves the worker hosting a cross-script
+ * Durable Object, so its link opens that worker's data.
+ */
+function extractBindings(
+	config: WranglerConfig,
+	auxiliaryWorker: string | undefined,
+	managers: ReadonlyMap<string, GenerationManager>,
+): WorkerBinding[] {
 	const bindings: WorkerBinding[] = []
 
 	for (const ns of config.kv_namespaces ?? []) {
@@ -14,8 +24,10 @@ function extractBindings(config: WranglerConfig): WorkerBinding[] {
 		bindings.push({ type: 'd1', name: db.binding, target: db.database_name, href: `#/d1/${encodeURIComponent(db.database_name)}` })
 	}
 	for (const b of config.durable_objects?.bindings ?? []) {
-		const target = isCrossScriptBinding(b, config) ? `${b.script_name}#${b.class_name}` : b.class_name
-		bindings.push({ type: 'do', name: b.name, target, href: `#/do/${encodeURIComponent(b.class_name)}` })
+		const crossScript = isCrossScriptBinding(b, config)
+		const target = crossScript ? `${b.script_name}#${b.class_name}` : b.class_name
+		const host = crossScript && b.script_name ? managers.get(b.script_name)?.auxiliaryWorker : auxiliaryWorker
+		bindings.push({ type: 'do', name: b.name, target, href: `#/do/${encodeURIComponent(doStorageKey(b.class_name, host))}` })
 	}
 	for (const p of config.queues?.producers ?? []) {
 		bindings.push({ type: 'queue', name: p.binding, target: p.queue, href: `#/queue/${encodeURIComponent(p.queue)}` })
@@ -46,7 +58,7 @@ export const handlers = {
 				workers.push({
 					name,
 					isMain: isFirst,
-					bindings: extractBindings(mgr.config),
+					bindings: extractBindings(mgr.config, mgr.auxiliaryWorker, ctx.registry.listManagers()),
 				})
 				isFirst = false
 			}
@@ -57,7 +69,7 @@ export const handlers = {
 			return [{
 				name: ctx.config.name || 'main',
 				isMain: true,
-				bindings: extractBindings(ctx.config),
+				bindings: extractBindings(ctx.config, undefined, new Map()),
 			}]
 		}
 

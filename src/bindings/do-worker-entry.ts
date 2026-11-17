@@ -34,7 +34,10 @@ interface WorkerConfig {
 	/** Runtime settings the worker env gets too (Artifacts URL, browser config). */
 	runtime?: import('./do-executor').DOWorkerRuntimeOptions
 	dataDir: string
+	/** Storage key of the class's data (see doStorageKey). */
 	namespaceName: string
+	/** The exported class to instantiate. */
+	className: string
 	idStr: string
 	idName?: string
 }
@@ -125,16 +128,16 @@ async function initWorker(workerConfig: WorkerConfig) {
 
 	// Create this DO's instance
 	const id = new DurableObjectIdImpl(workerConfig.idStr, workerConfig.idName)
-	const cls = workerModule[workerConfig.namespaceName]
+	const cls = workerModule[workerConfig.className]
 	if (!cls) {
-		throw new Error(`DO class "${workerConfig.namespaceName}" not exported from worker module`)
+		throw new Error(`DO class "${workerConfig.className}" not exported from worker module`)
 	}
 
 	const state = new DurableObjectStateImpl(id, db, workerConfig.namespaceName, workerConfig.dataDir, undefined, compatibility)
 	state.storage._setAlarmCallback((time: number | null) => {
 		postMessage({ type: 'alarm-set', time } satisfies DOMainMessage)
 	})
-	if (!config.containers?.some(container => container.class_name === workerConfig.namespaceName)) {
+	if (!config.containers?.some(container => container.class_name === workerConfig.className)) {
 		state._setAbortCallback(policy => {
 			postMessage({ type: 'do-abort', policy } satisfies DOMainMessage)
 		})
@@ -168,7 +171,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	// Mirrors the `ContainerRuntime` wiring `InProcessExecutor` did on main —
 	// without it, `ContainerBase` instances fail with "Container runtime not
 	// initialized" on the first `startAndWaitForPorts` call.
-	const containerEntry = config.containers?.find(c => c.class_name === workerConfig.namespaceName)
+	const containerEntry = config.containers?.find(c => c.class_name === workerConfig.className)
 	let containerRuntime: InstanceType<typeof ContainerRuntime> | undefined
 	if (containerEntry) {
 		// `DockerManager` itself stays per-worker (the hot path is `docker
@@ -182,7 +185,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 			labels: containerLabels(),
 		})
 		containerRuntime = new ContainerRuntime(
-			workerConfig.namespaceName,
+			workerConfig.className,
 			id.toString(),
 			containerEntry.image,
 			dockerManager,

@@ -213,6 +213,7 @@ export class WorkerExecutor implements DOExecutor {
 							runtime: { ...this._config._runtime, workerLoaderDir },
 							dataDir: this._resolveDataDir(),
 							namespaceName: config.namespaceName,
+							className: config.className,
 							idStr: config.id.toString(),
 							idName: config.id.name,
 						},

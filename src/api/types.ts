@@ -381,7 +381,9 @@ export type { SpanData, SpanEventData, TraceDetail, TraceEvent, TraceSummary } f
 
 // ─── Handler context ─────────────────────────────────────────────────
 
+import { doStorageKey } from '../bindings/do-storage-key'
 import type { WranglerConfig } from '../config'
+import { localDurableObjectBindings } from '../config'
 import type { GenerationManager } from '../generation-manager'
 import type { LopataConfig } from '../lopata-config'
 import type { RouteDispatcher } from '../route-matcher'
@@ -422,16 +424,33 @@ export function getAllConfigs(ctx: HandlerContext): WranglerConfig[] {
 	return ctx.config ? [ctx.config] : []
 }
 
-/** Find a DO namespace by class name across all active generations. */
-export function getDoNamespace(ctx: HandlerContext, ns: string) {
-	if (ctx.registry) {
-		for (const manager of ctx.registry.listManagers().values()) {
-			const entry = manager.active?.registry.durableObjects.find(d => d.className === ns)
-			if (entry) return entry.namespace
-		}
-	}
-	if (ctx.manager) {
-		const entry = ctx.manager.active?.registry.durableObjects.find(d => d.className === ns)
+/**
+ * Durable Object classes each worker hosts, with the key their data is stored under (see doStorageKey()): `binding`
+ * marks a class with a local durable_objects binding, `container` one declared in `containers`.
+ */
+export function getDoStorageKeys(ctx: HandlerContext): { className: string; storageKey: string; binding: boolean; container: boolean }[] {
+	const workers = ctx.registry
+		? Array.from(ctx.registry.listManagers().values(), m => ({ config: m.config, auxiliaryWorker: m.auxiliaryWorker }))
+		: ctx.config
+		? [{ config: ctx.config, auxiliaryWorker: undefined }]
+		: []
+	return workers.flatMap(({ config, auxiliaryWorker }) => {
+		const bindings = new Set(localDurableObjectBindings(config).map(b => b.class_name))
+		const containers = new Set((config.containers ?? []).map(c => c.class_name))
+		return Array.from(new Set([...bindings, ...containers]), className => ({
+			className,
+			storageKey: doStorageKey(className, auxiliaryWorker),
+			binding: bindings.has(className),
+			container: containers.has(className),
+		}))
+	})
+}
+
+/** Find a DO namespace by its storage key across all active generations. */
+export function getDoNamespace(ctx: HandlerContext, storageKey: string) {
+	const managers = ctx.registry ? ctx.registry.listManagers().values() : ctx.manager ? [ctx.manager] : []
+	for (const manager of managers) {
+		const entry = manager.active?.registry.durableObjects.find(d => d.namespace.storageKey === storageKey)
 		if (entry) return entry.namespace
 	}
 	return null

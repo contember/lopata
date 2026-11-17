@@ -83,6 +83,11 @@ export class GenerationManager {
 		this._configPath = options?.configPath ?? ''
 	}
 
+	/** The worker name that keys this worker's Durable Object data, or undefined for the main worker; see doStorageKey() */
+	get auxiliaryWorker(): string | undefined {
+		return this.isMain ? undefined : this.workerName
+	}
+
 	/** The currently active generation (receives new requests) */
 	get active(): Generation | null {
 		if (this._activeGenId === null) return null
@@ -139,7 +144,15 @@ export class GenerationManager {
 		// service bindings, email, browser, containers) live in main — the worker
 		// RPCs into them. Stateless ones duplicate in the thread. Static assets
 		// stay main-side for the auto-serve fallback.
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
+		const { env, registry } = buildEnv(
+			this.config,
+			this.baseDir,
+			this.executorFactory,
+			this.browserConfig,
+			this._doNamespaces,
+			this.baseUrls,
+			this.auxiliaryWorker,
+		)
 		wireCrossWorkerBindings(registry, {}, env, this.workerRegistry)
 
 		const executor = new WorkerThreadExecutor({
@@ -233,7 +246,15 @@ export class GenerationManager {
 	 * that answers every request from `registry.staticAssets`.
 	 */
 	private async _doReloadAssetsOnly(): Promise<Generation> {
-		const { env, registry } = buildEnv(this.config, this.baseDir, this.executorFactory, this.browserConfig, this._doNamespaces, this.baseUrls)
+		const { env, registry } = buildEnv(
+			this.config,
+			this.baseDir,
+			this.executorFactory,
+			this.browserConfig,
+			this._doNamespaces,
+			this.baseUrls,
+			this.auxiliaryWorker,
+		)
 		wireCrossWorkerBindings(registry, {}, env, this.workerRegistry)
 
 		const genId = this.nextGenId++

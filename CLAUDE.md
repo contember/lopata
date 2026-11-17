@@ -90,6 +90,7 @@ registry knows about every worker.
 ### Multi-worker & service bindings
 
 `lopata.config.ts` defines multi-worker setups. `WorkerRegistry` (`src/worker-registry.ts`) maps worker names to `GenerationManager` instances. Service bindings (`src/bindings/service-binding.ts`) use Proxy to intercept `.fetch()` and RPC method calls, resolving target workers lazily to support hot-reload.
+Durable Object data is keyed per worker (`src/bindings/do-storage-key.ts`): the main worker uses the bare class name, an auxiliary worker `<worker>/<class>`.
 
 ### Generation & hot-reload (`src/generation-manager.ts`)
 

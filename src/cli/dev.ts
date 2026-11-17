@@ -26,9 +26,11 @@ import {
 } from '../api'
 import { handleArtifactsGitRequest } from '../bindings/artifacts-git-http'
 import { reapOrphanContainers } from '../bindings/container-cleanup'
+import { moveAuxiliaryDurableObjectData } from '../bindings/do-storage-key'
 import { QueuePullConsumer } from '../bindings/queue'
 import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair'
+import type { WranglerConfig } from '../config'
 import { findConfigPath, hasScript, loadConfig } from '../config'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase, getDataDir } from '../db'
@@ -134,11 +136,22 @@ export async function run(ctx: CliContext, args: string[]) {
 		})
 		registry.register(mainConfig.name, mainManager, true)
 
-		// Load auxiliary workers and collect their configs for route setup
-		const auxConfigs = new Map<string, import('../config').WranglerConfig>()
+		// Load auxiliary worker configs (also used for route setup)
+		const auxConfigs = new Map<string, WranglerConfig>()
 		for (const workerDef of lopataConfig.workers ?? []) {
-			const auxConfig = await loadConfig(workerDef.config, envFlag)
-			auxConfigs.set(workerDef.name, auxConfig)
+			auxConfigs.set(workerDef.name, await loadConfig(workerDef.config, envFlag))
+		}
+		// Before any worker opens its Durable Objects
+		moveAuxiliaryDurableObjectData(
+			getDatabase(),
+			getDataDir(),
+			mainConfig,
+			[...auxConfigs].map(([name, config]) => ({ name, config })),
+		)
+
+		for (const workerDef of lopataConfig.workers ?? []) {
+			const auxConfig = auxConfigs.get(workerDef.name)
+			if (!auxConfig) continue
 			const auxBaseDir = path.dirname(workerDef.config)
 			console.log(`[lopata] Auxiliary worker: ${workerDef.name} (${auxConfig.name})`)
 

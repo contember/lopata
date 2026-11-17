@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { getDatabase, getDataDir } from '../../db'
 import { getTraceStore } from '../../tracing/store'
 import type { HandlerContext, OverviewData } from '../types'
-import { getAllConfigs } from '../types'
+import { getAllConfigs, getDoStorageKeys } from '../types'
 
 export const handlers = {
 	'overview.get'(_input: {}, ctx: HandlerContext): OverviewData {
@@ -24,11 +24,13 @@ export const handlers = {
 			db.query<{ workflow_name: string }, []>('SELECT DISTINCT workflow_name FROM workflow_instances').all().map(r => r.workflow_name),
 		)
 
+		for (const { storageKey, binding } of getDoStorageKeys(ctx)) {
+			if (binding) dbDo.add(storageKey)
+		}
 		for (const config of getAllConfigs(ctx)) {
 			for (const ns of config.kv_namespaces ?? []) dbKv.add(ns.id)
 			for (const b of config.r2_buckets ?? []) dbR2.add(b.bucket_name)
 			for (const p of config.queues?.producers ?? []) dbQueue.add(p.queue)
-			for (const b of config.durable_objects?.bindings ?? []) dbDo.add(b.class_name)
 			for (const w of config.workflows ?? []) dbWorkflows.add(w.binding)
 			for (const c of config.containers ?? []) dbContainers.add(c.class_name)
 			d1Count = Math.max(d1Count, (config.d1_databases ?? []).length)
