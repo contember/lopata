@@ -70,16 +70,16 @@ class LopataRequest extends Native {
 	}
 }
 
-// Bun's clone() returns a native Request, which has no cf. (Request's typings declare clone as a property, hence no method override.)
+// Bun's clone() drops cf. Patched on the native prototype: incoming requests are native Requests carrying cf too.
+// (Request's typings declare clone as a property, hence no method override.)
 const nativeClone = Native.prototype.clone
-Object.defineProperty(LopataRequest.prototype, 'clone', {
+// Non-configurable but writable: only its value may change.
+Object.defineProperty(Native.prototype, 'clone', {
 	value: function clone(this: Request) {
 		const copy = nativeClone.call(this)
 		defineCf(copy, Reflect.get(this, 'cf'))
 		return copy
 	},
-	writable: true,
-	configurable: true,
 })
 
 function defineCf(request: object, cf: unknown): void {

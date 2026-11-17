@@ -67,6 +67,13 @@ describe('request.cf from RequestInit', () => {
 		expect(Reflect.get(new Request('http://example.test/', init).clone(), 'cf')).toEqual(cf)
 	})
 
+	test('clone() of a native request keeps the cf the runtime gave it', () => {
+		const NativeRequest = Object.getPrototypeOf(Request)
+		const incoming: Request = Reflect.construct(NativeRequest, ['http://example.test/'])
+		Object.defineProperty(incoming, 'cf', { value: cf, enumerable: false })
+		expect(Reflect.get(incoming.clone(), 'cf')).toEqual(cf)
+	})
+
 	test('a request without cf has none', () => {
 		expect(Reflect.get(new Request('http://example.test/'), 'cf')).toBeUndefined()
 	})
