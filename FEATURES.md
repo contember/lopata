@@ -737,6 +737,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `storage.sql.databaseSize` — current DB size in bytes
 - ✅ SqlStorageCursor: columnNames, rowsRead, rowsWritten, [Symbol.iterator], next(), toArray(), one(), raw()
 - ❌ Point-in-time recovery: `storage.getCurrentBookmark()`, `getBookmarkForTime()`, `onNextSessionRestoreBookmark()`
+- ❌ Known limit: 6 workerd conformance cases depend on what lopata does not provide. The 5 SQLITE_FULL critical-error and automatic-rollback cases in `sql-test` and `sync-kv-test` need workerd's test-only `setMaxPageCountForTest()` hook, and `testSessionsAPIBookmark` needs point-in-time recovery. The remaining failing case, `sql-test/default`, is a bug: after `cursor.one()`, iterating the cursor yields the row again instead of nothing.
 
 > **Note:** Each DO instance gets its own SQLite file at `.lopata/do-sql/<namespace>/<id>.sqlite`
 
