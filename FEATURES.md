@@ -415,10 +415,11 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `AbortSignal.timeout(delay)`, `AbortSignal.abort()`, `AbortSignal.any(signals)`
 - 🟰 `CompressionStream` / `DecompressionStream` — gzip, deflate, deflate-raw
 - 🟰 `structuredClone(value)` — deep copy
-- 🟰 `queueMicrotask(fn)`
+- ✅ `queueMicrotask(fn)` — a callback that throws dispatches an `ErrorEvent` named `error` on the global scope, then is logged unless a listener calls `preventDefault()`
+- ⚠️ `reportError(error)` — dispatches an `ErrorEvent` named `error` and logs the error unless cancelled; `filename`, `lineno` and `colno` are left empty
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
-- ✅ Global `addEventListener` for `unhandledrejection`, `rejectionhandled` and custom events; `error` listeners register but no `error` event is dispatched
+- ✅ Global `addEventListener` for `error` (from `reportError()` and `queueMicrotask()`), `unhandledrejection`, `rejectionhandled` and custom events; an uncaught exception from a timer or listener is not dispatched as `error`
 - ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread keeps serving
 - ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads still terminate
 - 🟰 `Blob`, `File`, `FormData`

@@ -6,6 +6,9 @@
  * (workerd src/workerd/api/global-scope.c++ `emitPromiseRejection`, src/workerd/jsg/promise.c++).
  * An exception thrown by a task (timer, event listener) is logged
  * (workerd src/workerd/io/io-context.c++ `IoContext::taskFailed`); see `runFailableCommand`.
+ * `reportError()` and a throwing `queueMicrotask` callback dispatch an `ErrorEvent` named `error`
+ * on the global scope and log the error unless a listener cancels it
+ * (workerd src/workerd/api/global-scope.c++ `reportError`, `queueMicrotask`).
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -72,23 +75,59 @@ export function discardResponse(response: Response): void {
 }
 
 // Bun's global scope is an EventTarget, but its types do not declare a global `dispatchEvent`.
-function dispatchRejectionEvent(event: PromiseRejectionEvent): void {
-	EventTarget.prototype.dispatchEvent.call(globalThis, event)
+function dispatchGlobalEvent(event: Event): boolean {
+	return EventTarget.prototype.dispatchEvent.call(globalThis, event)
+}
+
+function reportError(...args: unknown[]): void {
+	if (args.length === 0) {
+		throw new TypeError("Failed to execute 'reportError' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'JsValue'.")
+	}
+	const error = args[0]
+	// V8's message for an uncaught value; Bun has no source location to add for it.
+	const event = new ErrorEvent('error', { message: `Uncaught ${describeValue(error)}`, error, cancelable: true })
+	if (dispatchGlobalEvent(event)) console.error('[lopata] Uncaught', error)
+}
+
+function describeValue(value: unknown): string {
+	try {
+		return String(value)
+	} catch {
+		return Object.prototype.toString.call(value)
+	}
+}
+
+const nativeQueueMicrotask = globalThis.queueMicrotask
+
+function queueMicrotask(...args: unknown[]): void {
+	const callback = args[0]
+	if (typeof callback !== 'function') {
+		throw new TypeError("Failed to execute 'queueMicrotask' on 'ServiceWorkerGlobalScope': parameter 1 is not of type 'function'.")
+	}
+	nativeQueueMicrotask(() => {
+		try {
+			callback()
+		} catch (error) {
+			reportError(error)
+		}
+	})
 }
 
 export function installUncaughtErrorHandlers(): void {
 	Object.defineProperty(globalThis, 'PromiseRejectionEvent', { value: PromiseRejectionEvent, writable: true, configurable: true })
+	Object.defineProperty(globalThis, 'reportError', { value: reportError, writable: true, configurable: true })
+	Object.defineProperty(globalThis, 'queueMicrotask', { value: queueMicrotask, writable: true, configurable: true })
 	process.on('unhandledRejection', (reason, promise) => {
 		console.error('[lopata] Unhandled promise rejection:', reason)
-		dispatchRejectionEvent(new PromiseRejectionEvent('unhandledrejection', { promise, reason }))
+		dispatchGlobalEvent(new PromiseRejectionEvent('unhandledrejection', { promise, reason }))
 	})
 	// workerd dispatches `rejectionhandled` without a reason.
 	process.on('rejectionHandled', promise => {
-		dispatchRejectionEvent(new PromiseRejectionEvent('rejectionhandled', { promise }))
+		dispatchGlobalEvent(new PromiseRejectionEvent('rejectionhandled', { promise }))
 	})
 	// Bun reports a timer throw here in the context that scheduled the timer, and a listener throw
 	// (dispatchEvent does not rethrow) in the context of the dispatchEvent call. Throws from
-	// queueMicrotask, `unhandledrejection` and AbortSignal.timeout listeners arrive without one: only logged.
+	// `error`, `unhandledrejection` and AbortSignal.timeout listeners arrive without one: only logged.
 	process.on('uncaughtException', err => {
 		console.error('[lopata] Uncaught exception:', err)
 		commandScope.getStore()?.fail(err)
