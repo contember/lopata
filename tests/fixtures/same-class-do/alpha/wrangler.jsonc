@@ -1,0 +1,14 @@
+{
+	"name": "alpha",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"durable_objects": {
+		"bindings": [
+			{ "name": "COUNTER", "class_name": "Counter" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Counter"] },
+		{ "tag": "v2", "renamed_classes": [{ "from": "OldCounter", "to": "Counter" }] }
+	]
+}

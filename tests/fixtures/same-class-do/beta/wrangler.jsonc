@@ -1,0 +1,16 @@
+{
+	"name": "beta",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-02-12",
+	"routes": ["example.com/beta/*"],
+	"durable_objects": {
+		"bindings": [
+			{ "name": "COUNTER", "class_name": "Counter" },
+			{ "name": "SOLO", "class_name": "Solo" }
+		]
+	},
+	"migrations": [
+		{ "tag": "v1", "new_sqlite_classes": ["Counter", "Solo"] },
+		{ "tag": "v2", "renamed_classes": [{ "from": "OldCounter", "to": "Counter" }] }
+	]
+}

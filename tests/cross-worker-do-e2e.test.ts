@@ -148,7 +148,7 @@ describe('Durable Objects shared across workers (script_name)', () => {
 
 	test('the dashboard lists each namespace once, under the worker that hosts it', async () => {
 		const namespaces = await dashboardRpc('do.listNamespaces', {})
-		expect(namespaces).toEqual([{ namespace: 'Ledger', count: 1 }, { namespace: 'Mailbox', count: 1 }])
+		expect(namespaces).toEqual([{ namespace: 'Ledger', count: 1 }, { namespace: 'mailbox/Mailbox', count: 1 }])
 
 		const generations = await dashboardRpc('generations.list', {})
 		expect(generations).toMatchObject({

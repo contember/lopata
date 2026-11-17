@@ -1,11 +1,10 @@
 import { Database } from 'bun:sqlite'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { localDurableObjectBindings } from '../../config'
 import { getDatabase, getDataDir } from '../../db'
 import { generateSqlFromPrompt } from '../generate-sql'
 import type { D1Table, DoDetail, DoInstance, DoNamespace, HandlerContext, OkResponse, QueryResult } from '../types'
-import { getAllConfigs, getDoNamespace } from '../types'
+import { getDoNamespace, getDoStorageKeys } from '../types'
 
 export const handlers = {
 	'do.listNamespaces'(_input: {}, ctx: HandlerContext): DoNamespace[] {
@@ -14,11 +13,10 @@ export const handlers = {
 			'SELECT namespace, COUNT(*) as count FROM do_instances GROUP BY namespace ORDER BY namespace',
 		).all()
 		const rowMap = new Map(rows.map(r => [r.namespace, r]))
-		for (const config of getAllConfigs(ctx)) {
-			for (const b of localDurableObjectBindings(config)) {
-				if (!rowMap.has(b.class_name)) {
-					rows.push({ namespace: b.class_name, count: 0 })
-				}
+		for (const { storageKey } of getDoStorageKeys(ctx)) {
+			if (!rowMap.has(storageKey)) {
+				rowMap.set(storageKey, { namespace: storageKey, count: 0 })
+				rows.push({ namespace: storageKey, count: 0 })
 			}
 		}
 		rows.sort((a, b) => a.namespace.localeCompare(b.namespace))

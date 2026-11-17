@@ -586,13 +586,22 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				workerRegistry = new WorkerRegistry()
 				workerRegistry.register(config.name, mainAdapter as any, true) // Dashboard adapter
 
+				const { moveAuxiliaryDurableObjectData } = await import('../bindings/do-storage-key.ts')
+
 				const auxConfigs = new Map<string, { config: any; name: string }>()
+				for (const workerDef of options.auxiliaryWorkers) {
+					const auxConfig = await configMod.loadConfig(resolve(projectRoot, workerDef.configPath))
+					auxConfigs.set(workerDef.configPath, { config: auxConfig, name: workerDef.name ?? auxConfig.name })
+				}
+				// Before any auxiliary worker opens its Durable Objects
+				moveAuxiliaryDurableObjectData(getDatabase(), dbMod.getDataDir(), config, [...auxConfigs.values()])
+
 				for (const workerDef of options.auxiliaryWorkers) {
 					const auxConfigPath = resolve(projectRoot, workerDef.configPath)
 					const auxBaseDir = dirname(auxConfigPath)
-					const auxConfig = await configMod.loadConfig(auxConfigPath)
-					const workerName = workerDef.name ?? auxConfig.name
-					auxConfigs.set(workerDef.configPath, { config: auxConfig, name: workerName })
+					const auxEntry = auxConfigs.get(workerDef.configPath)
+					if (!auxEntry) continue
+					const { config: auxConfig, name: workerName } = auxEntry
 					console.log(`[lopata:vite] Auxiliary worker: ${workerName}`)
 
 					// Aux workers run in their own Bun Worker thread (GenerationManager's

@@ -22,7 +22,10 @@ export interface DOAbortPolicy {
 export interface ExecutorConfig {
 	id: DurableObjectIdImpl
 	db: Database
+	/** Storage key of the class's data (see doStorageKey). */
 	namespaceName: string
+	/** The exported class to instantiate. */
+	className: string
 	cls: new(ctx: any, env: unknown) => DurableObjectBase
 	env: Record<string, unknown>
 	dataDir?: string

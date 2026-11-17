@@ -848,6 +848,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
   from every worker, RPC and `fetch()` in both directions, cycles; the hosting worker must also bind the class
 - ❌ environment — ignored; every worker runs with the `--env` lopata was started with
 - ✅ renamed_classes, deleted_classes — migration ops (renames storage rows + do-sql dirs)
+- ✅ Same class name in two workers — each worker keeps its own data: the main worker under the class name, an auxiliary worker under `<worker>/<class>` (do_* rows, `do-sql/` directory, migration tags)
 - ❌ transferred_classes — cross-Worker DO transfer not supported
 
 ### 5.18 DO Limits

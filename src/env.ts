@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { type BrowserConfig, createBrowserRunBinding } from './bindings/browser'
 import { ContainerBase } from './bindings/container'
@@ -6,6 +6,7 @@ import { containerLabels, registerContainer, unregisterContainer } from './bindi
 import { DockerManager } from './bindings/container-docker'
 import { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DOExecutorFactory } from './bindings/do-executor'
+import { doMigrationTag, doStorageKey } from './bindings/do-storage-key'
 import { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { SendEmailBinding } from './bindings/email'
 import { QueueConsumer, SqliteQueueProducer } from './bindings/queue'
@@ -135,6 +136,8 @@ export function buildEnv(
 	browserConfig?: BrowserConfig,
 	existingNamespaces?: Map<string, DurableObjectNamespaceImpl>,
 	baseUrls?: { artifacts?: string },
+	/** Name of an auxiliary worker, whose Durable Object data is stored apart from the main worker's; see doStorageKey() */
+	auxiliaryWorker?: string,
 ): { env: Record<string, unknown>; registry: ClassRegistry } {
 	const env: Record<string, unknown> = {}
 	const registry: ClassRegistry = {
@@ -155,22 +158,27 @@ export function buildEnv(
 	// DO migrations (renamed_classes, deleted_classes)
 	if (config.migrations) {
 		for (const migration of config.migrations) {
-			const applied = db.query('SELECT 1 FROM do_migrations WHERE tag = ?').get(migration.tag)
+			const tag = doMigrationTag(migration.tag, auxiliaryWorker)
+			const applied = db.query('SELECT 1 FROM do_migrations WHERE tag = ?').get(tag)
 			if (applied) continue
 
-			for (const { from, to } of migration.renamed_classes ?? []) {
+			for (const renamed of migration.renamed_classes ?? []) {
+				const from = doStorageKey(renamed.from, auxiliaryWorker)
+				const to = doStorageKey(renamed.to, auxiliaryWorker)
 				db.run('UPDATE do_storage SET namespace = ? WHERE namespace = ?', [to, from])
 				db.run('UPDATE do_alarms SET namespace = ? WHERE namespace = ?', [to, from])
 				db.run('UPDATE do_instances SET namespace = ? WHERE namespace = ?', [to, from])
 				const fromDir = path.join(getDataDir(), 'do-sql', from)
 				const toDir = path.join(getDataDir(), 'do-sql', to)
 				if (existsSync(fromDir)) {
+					mkdirSync(path.dirname(toDir), { recursive: true })
 					renameSync(fromDir, toDir)
 				}
-				console.log(`[lopata] Migration ${migration.tag}: renamed DO class ${from} → ${to}`)
+				console.log(`[lopata] Migration ${migration.tag}: renamed DO class ${renamed.from} → ${renamed.to}`)
 			}
 
-			for (const className of migration.deleted_classes ?? []) {
+			for (const deleted of migration.deleted_classes ?? []) {
+				const className = doStorageKey(deleted, auxiliaryWorker)
 				db.run('DELETE FROM do_storage WHERE namespace = ?', [className])
 				db.run('DELETE FROM do_alarms WHERE namespace = ?', [className])
 				db.run('DELETE FROM do_instances WHERE namespace = ?', [className])
@@ -178,10 +186,10 @@ export function buildEnv(
 				if (existsSync(classDir)) {
 					rmSync(classDir, { recursive: true })
 				}
-				console.log(`[lopata] Migration ${migration.tag}: deleted DO class ${className}`)
+				console.log(`[lopata] Migration ${migration.tag}: deleted DO class ${deleted}`)
 			}
 
-			db.run('INSERT INTO do_migrations (tag) VALUES (?)', [migration.tag])
+			db.run('INSERT INTO do_migrations (tag) VALUES (?)', [tag])
 		}
 	}
 
@@ -201,7 +209,16 @@ export function buildEnv(
 		}
 		console.log(`[lopata] Durable Object: ${doBinding.name} -> ${doBinding.class_name}`)
 		const existing = existingNamespaces?.get(doBinding.class_name)
-		const namespace = existing ?? new DurableObjectNamespaceImpl(db, doBinding.class_name, getDataDir(), undefined, executorFactory)
+		const namespace = existing
+			?? new DurableObjectNamespaceImpl(
+				db,
+				doStorageKey(doBinding.class_name, auxiliaryWorker),
+				getDataDir(),
+				undefined,
+				executorFactory,
+				undefined,
+				doBinding.class_name,
+			)
 		env[doBinding.name] = instrumentDONamespace(namespace, doBinding.class_name)
 		registry.durableObjects.push({
 			bindingName: doBinding.name,
@@ -308,7 +325,16 @@ export function buildEnv(
 			const bindingName = container.name ?? container.class_name
 			console.log(`[lopata] Container: ${bindingName} -> ${container.class_name} (image: ${container.image})`)
 			const existingNs = existingNamespaces?.get(container.class_name)
-			const namespace = existingNs ?? new DurableObjectNamespaceImpl(db, container.class_name, getDataDir(), undefined, executorFactory)
+			const namespace = existingNs
+				?? new DurableObjectNamespaceImpl(
+					db,
+					doStorageKey(container.class_name, auxiliaryWorker),
+					getDataDir(),
+					undefined,
+					executorFactory,
+					undefined,
+					container.class_name,
+				)
 			env[bindingName] = instrumentDONamespace(namespace, container.class_name)
 			registry.durableObjects.push({
 				bindingName,

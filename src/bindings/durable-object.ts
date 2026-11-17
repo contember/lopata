@@ -1054,7 +1054,10 @@ export class DurableObjectNamespaceImpl {
 	private _externalAlarmHandler?: boolean
 	private _env?: Record<string, unknown>
 	private db: Database
+	/** Storage key of the class's data (see doStorageKey); equals the class name for the main worker. */
 	private namespaceName: string
+	/** The exported class this namespace instantiates. */
+	readonly className: string
 	private alarmTimers = new Map<string, ReturnType<typeof setTimeout>>()
 	/** Running alarm attempts by id; `mutated` is set when the alarm is set or deleted during the attempt. */
 	private runningAlarms = new Map<string, { mutated: boolean }>()
@@ -1071,9 +1074,18 @@ export class DurableObjectNamespaceImpl {
 	private _compatibility?: CompatibilitySelection
 	private clock: Clock
 
-	constructor(db: Database, namespaceName: string, dataDir?: string, limits?: DurableObjectLimits, factory?: DOExecutorFactory, clock?: Clock) {
+	constructor(
+		db: Database,
+		namespaceName: string,
+		dataDir?: string,
+		limits?: DurableObjectLimits,
+		factory?: DOExecutorFactory,
+		clock?: Clock,
+		className = namespaceName,
+	) {
 		this.db = db
 		this.namespaceName = namespaceName
+		this.className = className
 		this.dataDir = dataDir
 		this.limits = limits
 		this._factoryOverride = factory
@@ -1082,6 +1094,11 @@ export class DurableObjectNamespaceImpl {
 		if (this._evictionTimeoutMs > 0) {
 			this._evictionTimer = setInterval(() => this._evictIdle(), 30_000)
 		}
+	}
+
+	/** The key this namespace's data is stored under (do_* tables, do-sql directory). */
+	get storageKey(): string {
+		return this.namespaceName
 	}
 
 	private _getFactory(): DOExecutorFactory {
@@ -1288,6 +1305,7 @@ export class DurableObjectNamespaceImpl {
 			id,
 			db: this.db,
 			namespaceName: this.namespaceName,
+			className: this.className,
 			cls: this._class ?? (_externalClassSentinel as any),
 			env: this._env ?? {},
 			dataDir: this.dataDir,

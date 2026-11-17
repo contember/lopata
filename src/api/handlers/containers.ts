@@ -4,7 +4,7 @@ import { unregisterContainer } from '../../bindings/container-cleanup'
 import { DockerManager } from '../../bindings/container-docker'
 import { getDatabase } from '../../db'
 import type { ContainerDetail, ContainerInstance, ContainerSummary, HandlerContext, OkResponse } from '../types'
-import { getAllConfigs, getDoNamespace } from '../types'
+import { getAllConfigs, getDoNamespace, getDoStorageKeys } from '../types'
 
 interface DockerPsEntry {
 	Names: string
@@ -34,6 +34,11 @@ function parsePorts(portsStr: string): Record<string, string> {
 	return ports
 }
 
+/** Container pages are keyed by class name, as Docker container names are; DO data is stored under the hosting worker's key. */
+function containerStorageKey(ctx: HandlerContext, className: string): string {
+	return getDoStorageKeys(ctx).find(entry => entry.className === className)?.storageKey ?? className
+}
+
 export const handlers = {
 	async 'containers.list'(_input: {}, ctx: HandlerContext): Promise<ContainerSummary[]> {
 		const seen = new Map<string, ContainerSummary>()
@@ -45,7 +50,7 @@ export const handlers = {
 
 				const row = db.query<{ count: number }, [string]>(
 					'SELECT COUNT(*) as count FROM do_instances WHERE namespace = ?',
-				).get(c.class_name)
+				).get(containerStorageKey(ctx, c.class_name))
 
 				seen.set(c.class_name, {
 					className: c.class_name,
@@ -67,13 +72,13 @@ export const handlers = {
 		return Array.from(seen.values())
 	},
 
-	async 'containers.listInstances'({ className }: { className: string }, _ctx: HandlerContext): Promise<ContainerInstance[]> {
+	async 'containers.listInstances'({ className }: { className: string }, ctx: HandlerContext): Promise<ContainerInstance[]> {
 		const db = getDatabase()
 
 		// Primary source: DO instances from SQLite
 		const doInstances = db.query<{ id: string; name: string | null }, [string]>(
 			'SELECT id, name FROM do_instances WHERE namespace = ? ORDER BY id',
-		).all(className)
+		).all(containerStorageKey(ctx, className))
 
 		// Secondary source: Docker containers for state info
 		const dockerEntries = await listDockerContainers(`lopata-${className}-`)
@@ -122,7 +127,7 @@ export const handlers = {
 		// Get DO instance info
 		const inst = db.query<{ id: string; name: string | null }, [string, string]>(
 			'SELECT id, name FROM do_instances WHERE namespace = ? AND id = ?',
-		).get(className, id)
+		).get(containerStorageKey(ctx, className), id)
 
 		const containerName = `lopata-${className}-${id.slice(0, 12)}`
 
@@ -148,7 +153,7 @@ export const handlers = {
 		}
 
 		// Try to get config from live DO instance
-		const namespace = getDoNamespace(ctx, className)
+		const namespace = getDoNamespace(ctx, containerStorageKey(ctx, className))
 		if (namespace) {
 			const instance = (namespace as any)._getInstance(id) as ContainerBase | null
 			if (instance) {
