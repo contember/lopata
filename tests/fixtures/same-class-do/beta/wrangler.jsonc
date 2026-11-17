@@ -11,6 +11,7 @@
 	},
 	"migrations": [
 		{ "tag": "v1", "new_sqlite_classes": ["Counter", "Solo"] },
-		{ "tag": "v2", "renamed_classes": [{ "from": "OldCounter", "to": "Counter" }] }
+		{ "tag": "v2", "renamed_classes": [{ "from": "OldCounter", "to": "Counter" }] },
+		{ "tag": "v3", "deleted_classes": ["Gone"] }
 	]
 }

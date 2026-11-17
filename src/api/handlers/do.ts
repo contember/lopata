@@ -13,8 +13,8 @@ export const handlers = {
 			'SELECT namespace, COUNT(*) as count FROM do_instances GROUP BY namespace ORDER BY namespace',
 		).all()
 		const rowMap = new Map(rows.map(r => [r.namespace, r]))
-		for (const { storageKey } of getDoStorageKeys(ctx)) {
-			if (!rowMap.has(storageKey)) {
+		for (const { storageKey, binding } of getDoStorageKeys(ctx)) {
+			if (binding && !rowMap.has(storageKey)) {
 				rowMap.set(storageKey, { namespace: storageKey, count: 0 })
 				rows.push({ namespace: storageKey, count: 0 })
 			}

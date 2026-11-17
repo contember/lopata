@@ -424,19 +424,25 @@ export function getAllConfigs(ctx: HandlerContext): WranglerConfig[] {
 	return ctx.config ? [ctx.config] : []
 }
 
-/** Durable Object classes each worker hosts, with the key their data is stored under (see doStorageKey()). */
-export function getDoStorageKeys(ctx: HandlerContext): { className: string; storageKey: string }[] {
+/**
+ * Durable Object classes each worker hosts, with the key their data is stored under (see doStorageKey()): `binding`
+ * marks a class with a local durable_objects binding, `container` one declared in `containers`.
+ */
+export function getDoStorageKeys(ctx: HandlerContext): { className: string; storageKey: string; binding: boolean; container: boolean }[] {
 	const workers = ctx.registry
 		? Array.from(ctx.registry.listManagers().values(), m => ({ config: m.config, auxiliaryWorker: m.auxiliaryWorker }))
 		: ctx.config
 		? [{ config: ctx.config, auxiliaryWorker: undefined }]
 		: []
 	return workers.flatMap(({ config, auxiliaryWorker }) => {
-		const classes = new Set([
-			...localDurableObjectBindings(config).map(b => b.class_name),
-			...(config.containers ?? []).map(c => c.class_name),
-		])
-		return Array.from(classes, className => ({ className, storageKey: doStorageKey(className, auxiliaryWorker) }))
+		const bindings = new Set(localDurableObjectBindings(config).map(b => b.class_name))
+		const containers = new Set((config.containers ?? []).map(c => c.class_name))
+		return Array.from(new Set([...bindings, ...containers]), className => ({
+			className,
+			storageKey: doStorageKey(className, auxiliaryWorker),
+			binding: bindings.has(className),
+			container: containers.has(className),
+		}))
 	})
 }
 

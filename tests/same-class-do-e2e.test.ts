@@ -51,13 +51,19 @@ function cleanup() {
 
 /** Data as an earlier lopata, which stored every worker's classes under the bare class name, left it. */
 function seedLegacyData() {
-	mkdirSync(join(DATA_DIR, 'do-sql', 'Solo'), { recursive: true })
-	writeFileSync(join(DATA_DIR, 'do-sql', 'Solo', 'solo-id.sqlite'), '')
+	for (const { key, id } of [{ key: 'Solo', id: 'solo-id' }, { key: 'beta/OldCounter', id: 'beta-old-id' }]) {
+		mkdirSync(join(DATA_DIR, 'do-sql', key), { recursive: true })
+		writeFileSync(join(DATA_DIR, 'do-sql', key, `${id}.sqlite`), '')
+	}
 	const db = new Database(join(DATA_DIR, 'data.sqlite'), { create: true })
 	runMigrations(db)
 	const insert = db.prepare(`INSERT INTO do_storage (namespace, id, key, value) VALUES (?, ?, 'k', '1')`)
 	insert.run('OldCounter', 'old-id')
 	insert.run('Solo', 'solo-id')
+	// Keys the auxiliary worker's own migrations act on, next to bare keys they must leave alone
+	insert.run('beta/OldCounter', 'beta-old-id')
+	insert.run('beta/Gone', 'beta-gone-id')
+	insert.run('Gone', 'gone-id')
 	db.close()
 }
 
@@ -109,13 +115,22 @@ describe('Durable Object classes with the same name in two workers', () => {
 
 	test('each worker keeps its SQL storage in its own directory', () => {
 		const databases = (...dir: string[]) => readdirSync(join(DATA_DIR, 'do-sql', ...dir)).filter(file => file.endsWith('.sqlite'))
-		expect(databases('Counter')).toHaveLength(1)
-		expect(databases('beta', 'Counter')).toEqual(databases('Counter'))
+		const main = databases('Counter')
+		expect(main).toHaveLength(1)
+		expect(databases('beta', 'Counter')).toEqual(expect.arrayContaining(main))
 	})
 
 	test('the main worker keeps data stored under the bare class name; each worker applies its own migrations', () => {
 		expect(storedNamespaces()).toMatchObject({ 'old-id': 'Counter' })
-		expect(migrationTags()).toEqual(['beta/v1', 'beta/v2', 'v1', 'v2'])
+		expect(migrationTags()).toEqual(['beta/v1', 'beta/v2', 'beta/v3', 'v1', 'v2'])
+	})
+
+	test("an auxiliary worker's migrations rename and delete only its own keys", () => {
+		const stored = storedNamespaces()
+		expect(stored).toMatchObject({ 'beta-old-id': 'beta/Counter', 'gone-id': 'Gone' })
+		expect(stored['beta-gone-id']).toBeUndefined()
+		expect(existsSync(join(DATA_DIR, 'do-sql', 'beta', 'Counter', 'beta-old-id.sqlite'))).toBe(true)
+		expect(existsSync(join(DATA_DIR, 'do-sql', 'beta', 'OldCounter'))).toBe(false)
 	})
 
 	test('data of a class only an auxiliary worker hosts moves to that worker', () => {
@@ -130,7 +145,9 @@ describe('Durable Object classes with the same name in two workers', () => {
 			{ namespace: 'beta/Solo', count: 0 },
 			{ namespace: 'Counter', count: 1 },
 		])
-		expect(await dashboardRpc('do.listInstances', { ns: 'beta/Counter' })).toMatchObject([{ key_count: 1 }])
+		expect(await dashboardRpc('do.listInstances', { ns: 'beta/Counter' })).toMatchObject([{ name: 'shared', key_count: 1 }])
+		// Counter, beta/Counter, beta/Solo, and the stored bare Gone no worker hosts
+		expect(await dashboardRpc('overview.get', {})).toMatchObject({ do: 4 })
 		const workers = await dashboardRpc('workers.list', {})
 		expect(workers).toMatchObject([
 			{ name: 'alpha', bindings: [{ name: 'COUNTER', href: '#/do/Counter' }] },

@@ -21,15 +21,20 @@ afterEach(() => {
 	rmSync(dataDir, { recursive: true, force: true })
 })
 
-function worker(name: string, classes: string[]): { name: string; config: WranglerConfig } {
+function worker(name: string, classes: string[], migrationTags: string[] = []): { name: string; config: WranglerConfig } {
 	return {
 		name,
 		config: {
 			name,
 			main: 'index.ts',
 			durable_objects: { bindings: classes.map(className => ({ name: className.toUpperCase(), class_name: className })) },
+			migrations: migrationTags.map(tag => ({ tag })),
 		},
 	}
+}
+
+function appliedTags(): string[] {
+	return db.query<{ tag: string }, []>(`SELECT tag FROM do_migrations ORDER BY tag`).all().map(row => row.tag)
 }
 
 function store(namespace: string, id: string) {
@@ -73,4 +78,36 @@ test('nothing is moved onto data the auxiliary worker already stored under its o
 	expect(namespaces()).toEqual(['Solo', 'aux/Solo'])
 	expect(existsSync(join(dataDir, 'do-sql', 'Solo', 'old.sqlite'))).toBe(true)
 	expect(existsSync(join(dataDir, 'do-sql', 'aux', 'Solo', 'old.sqlite'))).toBe(false)
+})
+
+test('a key with data on both sides moves neither its rows nor its SQL files', () => {
+	store('Solo', 'old')
+	db.run(`INSERT INTO do_storage (namespace, id, key, value) VALUES ('aux/Solo', 'new', 'k', '1')`)
+	moveAuxiliaryDurableObjectData(db, dataDir, worker('main', []).config, [worker('aux', ['Solo'])])
+	expect(namespaces()).toEqual(['Solo', 'aux/Solo'])
+	expect(existsSync(join(dataDir, 'do-sql', 'Solo', 'old.sqlite'))).toBe(true)
+	expect(existsSync(join(dataDir, 'do-sql', 'aux', 'Solo'))).toBe(false)
+})
+
+test('a move interrupted after the rows moved finishes with the SQL files on the next start', () => {
+	store('aux/Solo', 'a')
+	rmSync(join(dataDir, 'do-sql', 'aux'), { recursive: true })
+	mkdirSync(join(dataDir, 'do-sql', 'Solo'), { recursive: true })
+	writeFileSync(join(dataDir, 'do-sql', 'Solo', 'a.sqlite'), '')
+	moveAuxiliaryDurableObjectData(db, dataDir, worker('main', []).config, [worker('aux', ['Solo'])])
+	expect(existsSync(join(dataDir, 'do-sql', 'aux', 'Solo', 'a.sqlite'))).toBe(true)
+	expect(existsSync(join(dataDir, 'do-sql', 'Solo'))).toBe(false)
+})
+
+test('migrations an earlier version applied before the move count as applied for the worker the data moves to', () => {
+	db.run(`INSERT INTO do_migrations (tag) VALUES ('v1'), ('v2')`)
+	store('Solo', 'a')
+	moveAuxiliaryDurableObjectData(db, dataDir, worker('main', []).config, [worker('aux', ['Solo'], ['v1', 'v2', 'v3'])])
+	expect(appliedTags()).toEqual(['aux/v1', 'aux/v2', 'v1', 'v2'])
+})
+
+test('without data to move, no migration counts as applied for the auxiliary worker', () => {
+	db.run(`INSERT INTO do_migrations (tag) VALUES ('v1')`)
+	moveAuxiliaryDurableObjectData(db, dataDir, worker('main', []).config, [worker('aux', ['Solo'], ['v1'])])
+	expect(appliedTags()).toEqual(['v1'])
 })

@@ -33,10 +33,23 @@ function hasRows(db: Database, key: string): boolean {
 }
 
 /**
+ * The worker's migrations an earlier version already applied under the bare tag count as applied for the worker too.
+ * Otherwise they would run again over the data just moved, and a `deleted_classes` step would delete it.
+ */
+function adoptMigrationTags(db: Database, worker: { name: string; config: WranglerConfig }): void {
+	for (const migration of worker.config.migrations ?? []) {
+		db.run(`INSERT OR IGNORE INTO do_migrations (tag) SELECT ? WHERE EXISTS (SELECT 1 FROM do_migrations WHERE tag = ?)`, [
+			doMigrationTag(migration.tag, worker.name),
+			migration.tag,
+		])
+	}
+}
+
+/**
  * Before per-worker keys, every worker stored a class under its bare name. Data under a bare name belongs to the main
  * worker, except for a class the main worker does not host and exactly one auxiliary worker does: that data moves to
- * the auxiliary worker's key. The table rows and the `do-sql` directory move separately, each only while the target
- * is still empty, so an interrupted move completes on the next start.
+ * the auxiliary worker's key. The table rows and the `do-sql` directory move separately, so a move interrupted
+ * between them completes on the next start; when both keys hold data, nothing moves.
  */
 export function moveAuxiliaryDurableObjectData(
 	db: Database,
@@ -45,29 +58,39 @@ export function moveAuxiliaryDurableObjectData(
 	auxiliaryWorkers: ReadonlyArray<{ name: string; config: WranglerConfig }>,
 ): void {
 	const mainClasses = hostedClasses(mainConfig)
-	const hosts = new Map<string, string[]>()
+	const hosts = new Map<string, Array<{ name: string; config: WranglerConfig }>>()
 	for (const worker of auxiliaryWorkers) {
 		for (const className of hostedClasses(worker.config)) {
 			if (mainClasses.has(className)) continue
-			hosts.set(className, [...(hosts.get(className) ?? []), worker.name])
+			hosts.set(className, [...(hosts.get(className) ?? []), worker])
 		}
 	}
 	for (const [className, workers] of hosts) {
 		const [worker] = workers
 		// Two auxiliary workers hosting the class shared its data; neither can claim it
 		if (workers.length !== 1 || worker === undefined) continue
-		const target = doStorageKey(className, worker)
-		if (hasRows(db, className) && !hasRows(db, target)) {
-			db.transaction(() => {
-				for (const table of DO_TABLES) db.run(`UPDATE ${table} SET namespace = ? WHERE namespace = ?`, [target, className])
-			}).immediate()
-			console.log(`[lopata] Durable Object class ${className}: data moved to worker "${worker}" (stored as ${target})`)
-		}
+		const target = doStorageKey(className, worker.name)
 		const fromDir = join(dataDir, 'do-sql', className)
 		const toDir = join(dataDir, 'do-sql', target)
-		if (existsSync(fromDir) && !existsSync(toDir)) {
+		const moveRows = hasRows(db, className)
+		const moveDir = existsSync(fromDir)
+		if ((moveRows && hasRows(db, target)) || (moveDir && existsSync(toDir))) {
+			console.warn(`[lopata] Durable Object class ${className}: data under both ${className} and ${target}; neither is moved`)
+			continue
+		}
+		if (moveRows) {
+			db.transaction(() => {
+				for (const table of DO_TABLES) db.run(`UPDATE ${table} SET namespace = ? WHERE namespace = ?`, [target, className])
+				adoptMigrationTags(db, worker)
+			}).immediate()
+		}
+		if (moveDir) {
+			adoptMigrationTags(db, worker)
 			mkdirSync(dirname(toDir), { recursive: true })
 			renameSync(fromDir, toDir)
+		}
+		if (moveRows || moveDir) {
+			console.log(`[lopata] Durable Object class ${className}: data moved to worker "${worker.name}" (stored as ${target})`)
 		}
 	}
 }

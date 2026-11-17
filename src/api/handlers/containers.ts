@@ -36,7 +36,7 @@ function parsePorts(portsStr: string): Record<string, string> {
 
 /** Container pages are keyed by class name, as Docker container names are; DO data is stored under the hosting worker's key. */
 function containerStorageKey(ctx: HandlerContext, className: string): string {
-	return getDoStorageKeys(ctx).find(entry => entry.className === className)?.storageKey ?? className
+	return getDoStorageKeys(ctx).find(entry => entry.container && entry.className === className)?.storageKey ?? className
 }
 
 export const handlers = {

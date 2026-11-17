@@ -16,11 +16,17 @@ import { extractHostname, RouteDispatcher } from '../route-matcher.ts'
 import type { SpanOptions } from '../tracing/span.ts'
 import { serializeResponseHeaders } from '../worker-thread/serialize.ts'
 
+interface AuxiliaryWorkerOption {
+	configPath: string
+	name?: string
+	hosts?: string[]
+}
+
 interface DevServerPluginOptions {
 	configPath?: string
 	envName: string
 	hosts?: string[]
-	auxiliaryWorkers?: { configPath: string; name?: string; hosts?: string[] }[]
+	auxiliaryWorkers?: AuxiliaryWorkerOption[]
 	browser?: BrowserConfig
 }
 
@@ -467,6 +473,18 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				)
 			}
 
+			// Auxiliary worker configs, one per definition. Loaded before the main worker's env applies its migrations, so
+			// Durable Object data an earlier version stored for an auxiliary worker moves first, as in `lopata dev`.
+			const auxConfigs = new Map<AuxiliaryWorkerOption, { config: any; name: string }>()
+			for (const workerDef of options.auxiliaryWorkers ?? []) {
+				const auxConfig = await configMod.loadConfig(resolve(projectRoot, workerDef.configPath))
+				auxConfigs.set(workerDef, { config: auxConfig, name: workerDef.name ?? auxConfig.name })
+			}
+			if (auxConfigs.size > 0) {
+				const { moveAuxiliaryDurableObjectData } = await import('../bindings/do-storage-key.ts')
+				moveAuxiliaryDurableObjectData(dbMod.getDatabase(), dbMod.getDataDir(), config, [...auxConfigs.values()])
+			}
+
 			// 2. Build env with bindings
 			const built = envMod.buildEnv(config, projectRoot, undefined, options.browser)
 			env = built.env
@@ -586,20 +604,10 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				workerRegistry = new WorkerRegistry()
 				workerRegistry.register(config.name, mainAdapter as any, true) // Dashboard adapter
 
-				const { moveAuxiliaryDurableObjectData } = await import('../bindings/do-storage-key.ts')
-
-				const auxConfigs = new Map<string, { config: any; name: string }>()
-				for (const workerDef of options.auxiliaryWorkers) {
-					const auxConfig = await configMod.loadConfig(resolve(projectRoot, workerDef.configPath))
-					auxConfigs.set(workerDef.configPath, { config: auxConfig, name: workerDef.name ?? auxConfig.name })
-				}
-				// Before any auxiliary worker opens its Durable Objects
-				moveAuxiliaryDurableObjectData(getDatabase(), dbMod.getDataDir(), config, [...auxConfigs.values()])
-
 				for (const workerDef of options.auxiliaryWorkers) {
 					const auxConfigPath = resolve(projectRoot, workerDef.configPath)
 					const auxBaseDir = dirname(auxConfigPath)
-					const auxEntry = auxConfigs.get(workerDef.configPath)
+					const auxEntry = auxConfigs.get(workerDef)
 					if (!auxEntry) continue
 					const { config: auxConfig, name: workerName } = auxEntry
 					console.log(`[lopata:vite] Auxiliary worker: ${workerName}`)
@@ -672,7 +680,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				}
 
 				for (const workerDef of options.auxiliaryWorkers) {
-					const cached = auxConfigs.get(workerDef.configPath)
+					const cached = auxConfigs.get(workerDef)
 					if (!cached) continue
 					const auxMgr = workerRegistry.getManager(cached.name)
 					if (!auxMgr) continue
@@ -699,7 +707,7 @@ export function devServerPlugin(options: DevServerPluginOptions): Plugin {
 				}
 				for (const workerDef of options.auxiliaryWorkers) {
 					if (!workerDef.hosts) continue
-					const cached = auxConfigs.get(workerDef.configPath)
+					const cached = auxConfigs.get(workerDef)
 					if (!cached) continue
 					for (const host of workerDef.hosts) {
 						hostRoutes.push({ pattern: host, workerName: cached.name })
