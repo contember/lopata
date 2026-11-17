@@ -227,7 +227,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `response.url` — response URL
 - 🟰 `response.body` — ReadableStream | null
 - 🟰 `response.bodyUsed` — boolean
-- ⚠️ `response.webSocket` — WebSocket | null (server reads it, but Response constructor doesn't accept webSocket in init)
+- ⚠️ `response.webSocket` — `new Response(null, { status: 101, webSocket })` keeps the socket; `undefined` rather than `null` when none was set
 - 🟰 `response.clone()` — copy the Response
 - 🟰 `response.arrayBuffer()` — read body
 - 🟰 `response.formData()` — read body
@@ -403,7 +403,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `navigator.userAgent` — "Cloudflare-Workers" (global_navigator flag)
 - ✅ `navigator.language` — "en" (enable_navigator_language flag)
 - 🟰 `performance.now()` — ms since timeOrigin (Bun native, not CF semantics)
-- 🟰 `performance.timeOrigin` — Bun native (not always 0 like CF)
+- ✅ `performance.timeOrigin` — always 0, as on Cloudflare
 
 ### 1.19 Timers & Standard APIs
 
@@ -1161,10 +1161,10 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 10.5 RPC Serializable Types
 
-- ✅ Structured cloneable: objects, arrays, strings, numbers, etc. — passed in-process
-- ✅ ReadableStream / WritableStream — passed in-process
-- ✅ Request, Response, Headers — passed in-process
-- ✅ Functions → stubs; RpcTarget subclasses → stubs — via `createRpcFunctionStub()` / `createRpcStub()`
+- ✅ Structured cloneable: objects, arrays, strings, numbers, etc. — structured-cloned when the call crosses a worker thread (service binding to another worker, Durable Object, Worker Loader); passed by reference within one thread
+- ⚠️ ReadableStream / WritableStream — passed by reference within one thread; across a worker thread the call fails with a `DataCloneError` (Bun's structured clone)
+- ⚠️ Request, Response, Headers — as streams: same thread only
+- ⚠️ Functions → stubs; RpcTarget subclasses → stubs (`createRpcFunctionStub()` / `createRpcStub()`) — same thread only; across a worker thread lopata warns and the call fails with a `DataCloneError`
 - ❌ AbortSignal — passing one to an RPC method fails (the worker thread's `postMessage` cannot clone it)
 - ⚠️ Max serialized payload: 32 MiB — limit defined but not enforced
 
