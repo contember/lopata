@@ -3,6 +3,7 @@
 
 import type { HeadersInit } from 'bun'
 import type SharpNs from 'sharp'
+import { NativeReadableStream } from './cf-streams'
 
 type ImageFormat = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/avif' | 'image/svg+xml'
 
@@ -85,7 +86,7 @@ function warnSharpMissing() {
 function passthroughResult(buf: Uint8Array, format: string): ImageOutputResult {
 	return {
 		image(): ReadableStream<Uint8Array> {
-			return new ReadableStream({
+			return new NativeReadableStream({
 				start(controller) {
 					controller.enqueue(buf)
 					controller.close()
@@ -544,7 +545,7 @@ class LazyImageTransformer {
 
 		const result: ImageOutputResult = {
 			image(): ReadableStream<Uint8Array> {
-				return new ReadableStream({
+				return new NativeReadableStream({
 					start(controller) {
 						controller.enqueue(new Uint8Array(outputBuf))
 						controller.close()

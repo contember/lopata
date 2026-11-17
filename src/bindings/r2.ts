@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { CompatibilitySelection } from '../compatibility'
 import { legacyCompatibility } from '../compatibility-context'
+import { NativeReadableStream } from './cf-streams'
 
 // --- Limits ---
 
@@ -185,7 +186,7 @@ export class R2ObjectBody extends R2Object {
 	get body(): ReadableStream<Uint8Array> {
 		if (this.isFullFile()) return Bun.file(this.filePath).stream()
 		const slice = Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength)
-		return new ReadableStream({
+		return new NativeReadableStream({
 			async start(controller) {
 				const buf = await slice.arrayBuffer()
 				controller.enqueue(new Uint8Array(buf))

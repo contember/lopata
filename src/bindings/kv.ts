@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite'
 import type { Clock } from '../testing/clock'
 import { realClock } from '../testing/clock'
+import { NativeReadableStream } from './cf-streams'
 
 export interface KVLimits {
 	maxKeySize?: number // default 512 (bytes)
@@ -432,7 +433,7 @@ export class SqliteKVNamespace {
 		}
 		if (type === 'stream') {
 			const buf = Buffer.from(blob)
-			return new ReadableStream({
+			return new NativeReadableStream({
 				start(controller) {
 					controller.enqueue(new Uint8Array(buf))
 					controller.close()

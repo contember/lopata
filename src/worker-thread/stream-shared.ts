@@ -13,6 +13,7 @@
  * envelope messages until the body completes or errors.
  */
 
+import { NativeReadableStream } from '../bindings/cf-streams'
 import type { SerializedError } from './protocol'
 import { serializeError } from './protocol'
 
@@ -225,9 +226,9 @@ export class StreamReceiver {
 				source.pull = () => {
 					onCredit(streamId)
 				}
-				return new ReadableStream<Uint8Array>(source, new CountQueuingStrategy({ highWaterMark: this._window }))
+				return new NativeReadableStream<Uint8Array>(source, new CountQueuingStrategy({ highWaterMark: this._window }))
 			})()
-			: new ReadableStream<Uint8Array>(source)
+			: new NativeReadableStream<Uint8Array>(source)
 		// Cancel the sender's pump if this stream is dropped without being read.
 		this._finalizer.register(stream, streamId)
 		return stream

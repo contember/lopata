@@ -1,5 +1,5 @@
 import { SqliteCacheStorage } from './bindings/cache'
-import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-streams'
+import { FixedLengthStream, IdentityTransformStream, installByobReading } from './bindings/cf-streams'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
@@ -130,6 +130,8 @@ export function setupCloudflareGlobals() {
 		writable: false,
 		configurable: true,
 	})
+
+	installByobReading()
 
 	// Patch crypto with CF-specific extensions (timingSafeEqual, DigestStream)
 	patchGlobalCrypto()

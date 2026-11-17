@@ -1,5 +1,6 @@
 import { HTMLRewriter as LolHtmlRewriter } from 'html-rewriter-wasm'
 import type { DocumentHandlers, Element, ElementHandlers } from 'html-rewriter-wasm'
+import { NativeReadableStream } from './cf-streams'
 
 type Handler<T> = (arg: T) => void | Promise<void>
 
@@ -38,7 +39,7 @@ export class HTMLRewriter {
 		const documentHandlers = this.documentHandlers
 		const encoder = new TextEncoder()
 
-		const body = new ReadableStream<Uint8Array>({
+		const body = new NativeReadableStream<Uint8Array>({
 			async start(controller) {
 				const rewriter = new LolHtmlRewriter(chunk => controller.enqueue(chunk))
 				const handlerErrors = new HandlerErrors()

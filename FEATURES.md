@@ -285,13 +285,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `ReadableStream.cancel(reason?)` — cancel
 - 🟰 `ReadableStream.values()` — async iterator
 - 🟰 `ReadableStreamDefaultReader` — read(), cancel(), releaseLock()
-- ⚠️ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); only on `type: 'bytes'` streams, not on Request/Response bodies or transform streams
-- ❌ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
+- ✅ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); on every stream of bytes, Request/Response bodies and transform streams included (a stream without a byte source is read through an adapter that stays locked to it)
+- ✅ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
 - 🟰 `WritableStream` — accessed via TransformStream.writable
 - 🟰 `WritableStreamDefaultWriter` — write(), close(), abort(), releaseLock()
 - 🟰 `new TransformStream()` — identity transform (CF default)
 - 🟰 `transformstream_enable_standard_constructor` flag — spec-compliant constructor
-- ⚠️ `new IdentityTransformStream()` — forwards bytes; a BYOB reader on its readable side throws
+- ✅ `new IdentityTransformStream()` — forwards bytes; its readable side gives a BYOB reader
 - ✅ `new FixedLengthStream(length)` — limits total bytes, sets Content-Length
 - 🟰 PipeToOptions: preventClose, preventAbort, preventCancel, signal
 
