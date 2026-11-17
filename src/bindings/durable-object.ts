@@ -52,17 +52,9 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 		return this._rowsWritten
 	}
 
+	// As in workerd, next(), iteration, toArray(), one() and raw() all read from one position, so each row is read once
 	[Symbol.iterator](): Iterator<Record<string, unknown>> {
-		let i = 0
-		const rows = this._rows
-		return {
-			next(): IteratorResult<Record<string, unknown>> {
-				if (i < rows.length) {
-					return { done: false, value: rows[i++]! }
-				}
-				return { done: true, value: undefined }
-			},
-		}
+		return { next: () => this.next() }
 	}
 
 	next(): IteratorResult<Record<string, unknown>> {
@@ -73,20 +65,28 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 	}
 
 	toArray(): Record<string, unknown>[] {
-		return [...this._rows]
+		return this._rows.slice(this._take(this._rows.length))
 	}
 
 	one(): Record<string, unknown> {
-		if (this._rows.length !== 1) {
-			throw new Error(
-				`Expected exactly one row, got ${this._rows.length}`,
-			)
+		const remaining = this._rows.length - this._index
+		if (remaining === 0) throw new Error('Expected exactly one result from SQL query, but got no results.')
+		if (remaining > 1) {
+			this._index = this._rows.length
+			throw new Error('Expected exactly one result from SQL query, but got multiple results.')
 		}
-		return this._rows[0]!
+		return this._rows[this._index++]!
 	}
 
 	raw(): unknown[][] {
-		return [...this._rawRows]
+		return this._rawRows.slice(this._take(this._rawRows.length))
+	}
+
+	/** Marks every remaining row as read and returns the position the unread rows started at. */
+	private _take(end: number): number {
+		const start = this._index
+		this._index = end
+		return start
 	}
 }
 
