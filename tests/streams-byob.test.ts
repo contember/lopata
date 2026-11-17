@@ -78,6 +78,17 @@ describe('BYOB readers on native streams without a byte source', () => {
 		expect(decode((await stream.getReader({ mode: 'byob' }).read(new Uint8Array(16))).value)).toBe('kv value')
 	})
 
+	test('empty chunks from the source are skipped', async () => {
+		const { readable, writable } = new IdentityTransformStream()
+		const writer = writable.getWriter()
+		void writer.write(new Uint8Array(0))
+		void writer.write(new TextEncoder().encode('after'))
+		void writer.close()
+		const reader = readable.getReader({ mode: 'byob' })
+		expect(decode((await reader.read(new Uint8Array(8))).value)).toBe('after')
+		expect((await reader.read(new Uint8Array(8))).done).toBe(true)
+	})
+
 	test('a locked stream still refuses a second reader', () => {
 		const stream = chunked('x')
 		stream.getReader()
@@ -122,6 +133,16 @@ describe('ReadableStreamBYOBReader.readAtLeast', () => {
 		const result = await readAtLeast(stream.getReader({ mode: 'byob' }), 2, new Uint16Array(3))
 		expect(result.value).toBeInstanceOf(Uint16Array)
 		expect([...new Uint8Array(result.value!.buffer, result.value!.byteOffset, result.value!.byteLength)]).toEqual([1, 0, 2, 0, 3, 0])
+	})
+
+	test('reads on until the bytes fill whole elements of the view', async () => {
+		const result = await readAtLeast(chunked('abc', 'd').getReader({ mode: 'byob' }), 3, new Uint16Array(4))
+		expect(result.value).toBeInstanceOf(Uint16Array)
+		expect(decode(result.value)).toBe('abcd')
+	})
+
+	test('a stream that ends inside an element rejects', async () => {
+		await expect(readAtLeast(chunked('abc').getReader({ mode: 'byob' }), 2, new Uint16Array(4))).rejects.toThrow(TypeError)
 	})
 
 	test('rejects a min outside 1..view.byteLength', async () => {

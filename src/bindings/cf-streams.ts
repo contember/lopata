@@ -118,14 +118,20 @@ function byteSourceOver(stream: ReadableStream): WebReadableStream<Uint8Array> {
 	return new WebReadableStream({
 		type: 'bytes',
 		async pull(controller) {
-			const { done, value } = await reader.read()
-			if (done) {
-				controller.close()
-				controller.byobRequest?.respond(0)
+			for (;;) {
+				const { done, value } = await reader.read()
+				if (done) {
+					controller.close()
+					controller.byobRequest?.respond(0)
+					return
+				}
+				// A copy: enqueue() detaches the chunk's buffer, which still belongs to whoever wrote it.
+				const chunk = chunkCopy(value)
+				// A byte stream refuses an empty chunk; the source may still send one.
+				if (chunk.byteLength === 0) continue
+				controller.enqueue(chunk)
 				return
 			}
-			// A copy: enqueue() detaches the chunk's buffer, which still belongs to whoever wrote it.
-			controller.enqueue(chunkCopy(value))
 		},
 		cancel(reason) {
 			return reader.cancel(reason)
@@ -146,7 +152,10 @@ function chunkCopy(chunk: unknown): Uint8Array<ArrayBuffer> {
 	return copy
 }
 
-/** Reads until at least `min` bytes are in `view` or the stream ends; a short final read is not `done`. */
+/**
+ * Reads until at least `min` bytes are in `view` or the stream ends; a short final read is not `done`. Reading goes on
+ * until the bytes fill whole elements of `view`, so a stream that ends inside an element is an error.
+ */
 async function readAtLeast(this: WebBYOBReader, min: number, view: ArrayBufferView): Promise<ReadableStreamReadResult<ArrayBufferView>> {
 	if (!ArrayBuffer.isView(view)) throw new TypeError('readAtLeast() requires an ArrayBufferView.')
 	if (!(min >= 1)) throw new TypeError(`Requested invalid minimum number of bytes to read (${min}).`)
@@ -164,7 +173,8 @@ async function readAtLeast(this: WebBYOBReader, min: number, view: ArrayBufferVi
 			buffer = result.value.buffer
 			filled += result.value.byteLength
 		}
-		if (result.done || filled >= min) {
+		if (result.done && filled % elementSize !== 0) throw new TypeError('The stream ended in the middle of an element of the view.')
+		if (result.done || (filled >= min && filled % elementSize === 0)) {
 			const value: ArrayBufferView = Reflect.construct(view.constructor, [buffer, start, filled / elementSize])
 			return result.done && filled === 0 ? { done: true, value } : { done: false, value }
 		}
