@@ -1,6 +1,8 @@
 import type { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import type { CompatibilitySelection } from '../compatibility'
+import { legacyCompatibility } from '../compatibility-context'
 
 // --- Limits ---
 
@@ -195,6 +197,10 @@ export class R2ObjectBody extends R2Object {
 	async arrayBuffer(): Promise<ArrayBuffer> {
 		if (this.isFullFile()) return Bun.file(this.filePath).arrayBuffer()
 		return Bun.file(this.filePath).slice(this.rangeOffset, this.rangeOffset + this.rangeLength).arrayBuffer()
+	}
+
+	async bytes(): Promise<Uint8Array> {
+		return new Uint8Array(await this.arrayBuffer())
 	}
 
 	async text(): Promise<string> {
@@ -857,9 +863,11 @@ export class FileR2Bucket {
 	private baseDir: string
 	private tmpDir: string
 	private limits: Required<R2Limits>
+	private listHonorsInclude: boolean
 
-	constructor(db: Database, bucket: string, dataDir: string, limits?: R2Limits) {
+	constructor(db: Database, bucket: string, dataDir: string, limits?: R2Limits, compatibility: CompatibilitySelection = legacyCompatibility) {
 		this.db = db
+		this.listHonorsInclude = compatibility.r2ListHonorInclude !== 'disabled'
 		this.bucket = bucket
 		this.baseDir = join(dataDir, 'r2', bucket)
 		// R2 bucket names cannot start with a dot, so this never collides with a bucket directory
@@ -1049,7 +1057,8 @@ export class FileR2Bucket {
 	async list(options?: R2ListOptions) {
 		const limit = options?.limit ?? MAX_LIST_KEYS
 		if (limit < 1 || limit > MAX_LIST_KEYS) throw r2Error('list', ...INVALID_MAX_KEYS)
-		const include = parseListInclude(options?.include)
+		const requested = parseListInclude(options?.include)
+		const include = this.listHonorsInclude ? requested : { httpMetadata: true, customMetadata: true }
 		const params = {
 			$bucket: this.bucket,
 			$prefix: options?.prefix ?? '',
@@ -1194,7 +1203,7 @@ function parseListInclude(include: R2ListOptions['include']): ListInclude {
 	return result
 }
 
-/** Metadata is omitted unless requested, as under r2_list_honor_include (default since 2022-08-04). */
+/** Metadata is omitted unless requested, as under r2_list_honor_include (default since 2022-08-04); without it list returns both. */
 function buildListObject(meta: R2ObjectMeta, include: ListInclude): R2Object {
 	return new R2Object({
 		...meta,

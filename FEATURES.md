@@ -628,8 +628,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
-- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()`
-- ❌ `bytes()`
+- ✅ `arrayBuffer()` / `bytes()` / `text()` / `json()` / `blob()`
 - ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
 
 ### 4.4 R2GetOptions
@@ -654,7 +653,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `cursor` — pagination token (key-based)
 - ✅ `delimiter` — grouping character (e.g. "/"); `limit` counts delimited prefixes too
 - ✅ `startAfter` — lexicographic start (exclusive)
-- ✅ `include` — ["httpMetadata", "customMetadata"]; metadata is returned only when included (as with compatibility dates from 2022-08-04, regardless of the date)
+- ✅ `include` — ["httpMetadata", "customMetadata"]; metadata is returned only when included from compatibility date 2022-08-04 or with `r2_list_honor_include`; before that list returns both
 
 ### 4.7 R2 List Result
 

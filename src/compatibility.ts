@@ -15,11 +15,13 @@ export interface CompatibilitySelection {
 	readonly websocketAutoReplyToClose: CompatibilityMode
 	readonly ctxExports: CompatibilityMode
 	readonly queuesJsonMessages: CompatibilityMode
+	readonly r2ListHonorInclude: CompatibilityMode
 }
 
 interface CompatibilityRule {
 	readonly enable: string
-	readonly disable: string
+	/** Absent when workerd defines no flag that turns the behaviour off. */
+	readonly disable?: string
 	readonly date: string
 }
 
@@ -39,7 +41,9 @@ const rules = {
 	websocketAutoReplyToClose: { enable: 'web_socket_auto_reply_to_close', disable: 'web_socket_manual_reply_to_close', date: '2026-04-07' },
 	ctxExports: { enable: 'enable_ctx_exports', disable: 'disable_ctx_exports', date: '2025-11-17' },
 	queuesJsonMessages: { enable: 'queues_json_messages', disable: 'no_queues_json_messages', date: '2024-03-18' },
+	r2ListHonorInclude: { enable: 'r2_list_honor_include', date: '2022-08-04' },
 } satisfies Record<string, CompatibilityRule>
+const ruleList: readonly CompatibilityRule[] = Object.values(rules)
 
 function parseDate(value: unknown): string | undefined {
 	if (value === undefined) return undefined
@@ -74,8 +78,8 @@ export function parseCompatibility(input: unknown): CompatibilityInput {
 			seen.add(flag)
 			flags.push(flag)
 		}
-		for (const rule of Object.values(rules)) {
-			if (seen.has(rule.enable) && seen.has(rule.disable)) {
+		for (const rule of ruleList) {
+			if (rule.disable !== undefined && seen.has(rule.enable) && seen.has(rule.disable)) {
 				throw new TypeError(`Conflicting compatibility flags: ${rule.enable} and ${rule.disable}`)
 			}
 		}
@@ -89,19 +93,20 @@ export function resolveCompatibility(input: CompatibilityInput): CompatibilitySe
 	const flags = Object.freeze([...(parsed.flags ?? [])])
 	function select(rule: CompatibilityRule): CompatibilityMode {
 		if (flags.includes(rule.enable)) return 'enabled'
-		if (flags.includes(rule.disable)) return 'disabled'
+		if (rule.disable !== undefined && flags.includes(rule.disable)) return 'disabled'
 		if (date === null) return 'legacy-local'
 		return date >= rule.date ? 'enabled' : 'disabled'
 	}
 	return Object.freeze({
 		date,
 		flags,
-		unimplementedFlags: Object.freeze(flags.filter(flag => !Object.values(rules).some(rule => rule.enable === flag || rule.disable === flag))),
+		unimplementedFlags: Object.freeze(flags.filter(flag => !ruleList.some(rule => rule.enable === flag || rule.disable === flag))),
 		deleteAllDeletesAlarm: select(rules.deleteAllDeletesAlarm),
 		websocketCloseReasonByteLimit: select(rules.websocketCloseReasonByteLimit),
 		websocketStandardBinaryType: select(rules.websocketStandardBinaryType),
 		websocketAutoReplyToClose: select(rules.websocketAutoReplyToClose),
 		ctxExports: select(rules.ctxExports),
 		queuesJsonMessages: select(rules.queuesJsonMessages),
+		r2ListHonorInclude: select(rules.r2ListHonorInclude),
 	})
 }
