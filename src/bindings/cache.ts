@@ -12,10 +12,6 @@ const CACHE_DEFAULTS: Required<CacheLimits> = {
 	maxHeaderSize: 32 * 1024,
 }
 
-/**
- * Parse Cache-Control into lower-cased directive names mapped to their unquoted value (null when bare).
- * Commas inside quoted values (e.g. `private="set-cookie, x"`) do not split directives.
- */
 /** The entry key: `request.cf.cacheKey` when the request sets one (Enterprise custom cache keys), else its URL. */
 function cacheKey(request: Request): string {
 	const cf: unknown = Reflect.get(request, 'cf')
@@ -23,6 +19,10 @@ function cacheKey(request: Request): string {
 	return typeof key === 'string' ? key : request.url
 }
 
+/**
+ * Parse Cache-Control into lower-cased directive names mapped to their unquoted value (null when bare).
+ * Commas inside quoted values (e.g. `private="set-cookie, x"`) do not split directives.
+ */
 function parseCacheControl(header: string | null): Map<string, string | null> {
 	const directives = new Map<string, string | null>()
 	if (!header) return directives
