@@ -1,5 +1,1 @@
-{
-	"delete: waits for in-progress multipart gets before deleting part blobs": "ENOENT: no such file or directory, open '/tmp/lopata-conformance-r2-qGbhcT/r2/bucket/key'",
-	"list: accepts long prefix": "ENAMETOOLONG: name too long, rename '/tmp/lopata-conformance-r2-qxm2zt/r2/.tmp/e539593e-ae09-45d5-ad2b-4414cf1d9100' -> '/tmp/lopata-conformance-r2-qxm2zt/r2/bucket/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...",
-	"operations permit empty key": "EISDIR: illegal operation on a directory, rename '/tmp/lopata-conformance-r2-3ItsxT/r2/.tmp/c4c1a028-0cbc-470c-8c21-739aa345eec2' -> '/tmp/lopata-conformance-r2-3ItsxT/r2/bucket'"
-}
+{}

@@ -14,7 +14,7 @@
 | **Workers Core API**      | ~90%      | Native Web APIs via Bun; HTMLRewriter, WebSocketPair, streams; see gaps below |
 | **KV**                    | 100%      | All methods, bulk ops, limits, validation                                     |
 | **D1**                    | ~90%      | Missing named params, some meta fields, session is stub                       |
-| **R2**                    | ~95%      | Missing SSE-C, storageClass only "Standard"; keys stored as file paths        |
+| **R2**                    | ~95%      | Missing SSE-C, storageClass only "Standard"                                   |
 | **Durable Objects**       | ~95%      | Sync KV + transactionSync; state.abort supported; no point-in-time recovery   |
 | **Queues**                | ~95%      | Full push + pull consumers; max_concurrency + retry_delay supported           |
 | **Workflows**             | 100%      | Full lifecycle, checkpointing, concurrency                                    |
@@ -52,7 +52,7 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 | miniflare-queues | queues          |                4 / 10 |                9 / 10 |
 | miniflare-queues | queues delay    |                 3 / 5 |                 5 / 5 |
 | miniflare-queues | Queues: retry   |                 0 / 2 |                 2 / 2 |
-| miniflare-r2     | r2              |               17 / 49 |               46 / 49 |
+| miniflare-r2     | r2              |               17 / 49 |               49 / 49 |
 | workerd          | crypto          |                7 / 15 |               11 / 15 |
 | workerd          | durable-objects |                4 / 11 |                4 / 11 |
 | workerd          | encoding-url    |               33 / 39 |               33 / 39 |
@@ -62,11 +62,11 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 | workerd          | htmlrewriter    |               21 / 33 |               25 / 33 |
 | workerd          | streams         |             141 / 269 |             203 / 269 |
 | workerd          | websocket       |               11 / 18 |               14 / 18 |
-| **all**          |                 | **313 / 657 (47.6%)** | **495 / 657 (75.3%)** |
+| **all**          |                 | **313 / 657 (47.6%)** | **498 / 657 (75.8%)** |
 
-Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers). The remaining failures:
+Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers) and R2 blob storage. The remaining failures:
 
-- **Bindings (4):** R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`).
+- **Bindings (1):** Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`).
 - **workerd (158):** mostly Bun's native streams (byte-stream controller details, `new ReadableStreamBYOBReader()` on a body), `AbortSignal` over RPC, `MessagePort` and `Event` details, V8 error positions in `reportError()`, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`).
 
 ---
@@ -587,7 +587,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 3.9 D1 Limits
 
 - ❌ Max DB size: 500 MB (free), 10 GB (paid) — not enforced
-- ⚠️ Database names: a name containing `/` is used as a file path and fails to open
+- ✅ Database names: any name; `%`, `/` and `\` are percent-encoded in the file name, and a database created before under its verbatim name keeps its file
 - ❌ Queries per invocation: 50 (free), 1,000 (paid) — not enforced
 - ❌ SQL statement length: 100 KB — not enforced
 - ❌ Max bound parameters: 100 — not enforced
@@ -631,7 +631,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
 - ✅ `arrayBuffer()` / `bytes()` / `text()` / `json()` / `blob()`
-- ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
+- ✅ A body is a snapshot: the blob of a deleted or overwritten object is kept for 60 s, so a body fetched before the change still reads the old bytes (a stream already reading it is unaffected after that too)
 
 ### 4.4 R2GetOptions
 
@@ -693,7 +693,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 4.11 R2 Limits
 
 - ✅ Max key length: 1,024 bytes — validated
-- ⚠️ Key layout: each key is stored as a file path, so an empty key, a key with a path segment longer than the filesystem allows, and both `a` and `a/b` in one bucket are not supported, nor any key containing `..`
+- ✅ Key layout: keys are opaque strings in SQLite and bodies are blobs in `.lopata/r2/.blobs/`, so an empty key, long key segments, `a` next to `a/b` and keys containing `..` all work. Objects stored by earlier versions at `.lopata/r2/<bucket>/<key>` move to blobs when the bucket opens
 - ✅ Max metadata size: 2,048 bytes (custom) — validated
 - ✅ Max keys per delete(): 1,000 — validated
 - ✅ All limits configurable via R2Limits
