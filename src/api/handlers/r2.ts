@@ -1,6 +1,5 @@
 import type { SQLQueryBindings } from 'bun:sqlite'
-import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { FileR2Bucket, R2ObjectBody } from '../../bindings/r2'
 import { getDatabase, getDataDir } from '../../db'
 import type { HandlerContext, OkResponse, Paginated, R2Bucket, R2Object } from '../types'
 import { getAllConfigs } from '../types'
@@ -48,33 +47,19 @@ export const handlers = {
 		return { items, cursor: hasMore && last ? last.key : null }
 	},
 
-	'r2.deleteObject'({ bucket, key }: { bucket: string; key: string }): OkResponse {
-		const db = getDatabase()
-		db.prepare('DELETE FROM r2_objects WHERE bucket = ? AND key = ?').run(bucket, key)
-		const filePath = join(getDataDir(), 'r2', bucket, key)
-		if (existsSync(filePath)) unlinkSync(filePath)
+	async 'r2.deleteObject'({ bucket, key }: { bucket: string; key: string }): Promise<OkResponse> {
+		await new FileR2Bucket(getDatabase(), bucket, getDataDir()).delete(key)
 		return { ok: true }
 	},
 
 	async 'r2.renameObject'({ bucket, oldKey, newKey }: { bucket: string; oldKey: string; newKey: string }): Promise<OkResponse> {
-		const db = getDatabase()
-		const oldPath = join(getDataDir(), 'r2', bucket, oldKey)
-		const newPath = join(getDataDir(), 'r2', bucket, newKey)
-
-		if (!existsSync(oldPath)) {
+		const r2 = new FileR2Bucket(getDatabase(), bucket, getDataDir())
+		const object = await r2.get(oldKey)
+		if (!(object instanceof R2ObjectBody)) {
 			throw new Error(`Object "${oldKey}" not found in bucket "${bucket}"`)
 		}
-
-		mkdirSync(dirname(newPath), { recursive: true })
-		const data = await Bun.file(oldPath).arrayBuffer()
-		await Bun.write(newPath, data)
-
-		db.run(
-			'UPDATE r2_objects SET key = ? WHERE bucket = ? AND key = ?',
-			[newKey, bucket, oldKey],
-		)
-
-		unlinkSync(oldPath)
+		await r2.put(newKey, object.body, { httpMetadata: object.httpMetadata, customMetadata: object.customMetadata })
+		await r2.delete(oldKey)
 		return { ok: true }
 	},
 }

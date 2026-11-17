@@ -1,9 +1,9 @@
 import { Database } from 'bun:sqlite'
-import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { afterEach, beforeEach, expect, setSystemTime, test } from 'bun:test'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FileR2Bucket, R2Object, R2ObjectBody } from '../src/bindings/r2'
+import { FileR2Bucket, R2_BLOB_GRACE_MS, R2Object, R2ObjectBody } from '../src/bindings/r2'
 import { resolveCompatibility } from '../src/compatibility'
 import { runMigrations } from '../src/db'
 
@@ -214,8 +214,88 @@ test('put returns etag', async () => {
 	expect(typeof result!.etag).toBe('string')
 })
 
-test('path traversal is rejected', async () => {
-	expect(r2.put('../escape', 'bad')).rejects.toThrow('path traversal')
+// --- Keys are opaque: objects are stored as blobs, not at a path built from the key ---
+
+const blobFiles = () => {
+	const dir = join(tmpDir, 'r2', '.blobs')
+	return existsSync(dir) ? readdirSync(dir) : []
+}
+
+test('keys that are not valid paths are stored like any other', async () => {
+	const keys = ['', 'a', 'a/b', '../escape', 'x/../../y', 'x'.repeat(1024)]
+	for (const key of keys) await r2.put(key, `value of ${key}`)
+	for (const key of keys) expect(await (await r2.get(key) as R2ObjectBody).text()).toBe(`value of ${key}`)
+	expect((await r2.list()).objects.map(o => o.key).sort()).toEqual([...keys].sort())
+	expect(readdirSync(tmpDir)).toEqual(['r2'])
+	await r2.delete('')
+	expect(await r2.head('')).toBeNull()
+	expect(await r2.head('a')).not.toBeNull()
+})
+
+test('a body stays readable after its key is deleted or overwritten', async () => {
+	await r2.put('key', 'first')
+	const beforeOverwrite = await r2.get('key') as R2ObjectBody
+	const ranged = await r2.get('key', { range: { offset: 2 } }) as R2ObjectBody
+	await r2.put('key', 'second')
+	const beforeDelete = await r2.get('key') as R2ObjectBody
+	await r2.delete('key')
+	expect(await beforeOverwrite.text()).toBe('first')
+	expect(await ranged.text()).toBe('rst')
+	expect(await beforeDelete.text()).toBe('second')
+})
+
+test('the blob of a deleted or replaced object is removed once the grace period has passed', async () => {
+	const start = Date.now()
+	try {
+		await r2.put('key', 'first')
+		await r2.put('key', 'second')
+		await r2.put('gone', 'x')
+		await r2.delete('gone')
+		expect(blobFiles()).toHaveLength(3)
+		setSystemTime(new Date(start + R2_BLOB_GRACE_MS + 1000))
+		await r2.put('other', 'y')
+		expect(blobFiles()).toHaveLength(2)
+		expect(await (await r2.get('key') as R2ObjectBody).text()).toBe('second')
+	} finally {
+		setSystemTime()
+	}
+})
+
+test('completing a multipart upload leaves one blob, for the object', async () => {
+	const upload = await r2.createMultipartUpload('big')
+	const part1 = await upload.uploadPart(1, 'abc')
+	const part2 = await upload.uploadPart(2, 'de')
+	await upload.complete([part1, part2])
+	expect(blobFiles()).toHaveLength(1)
+	expect(await (await r2.get('big') as R2ObjectBody).text()).toBe('abcde')
+})
+
+test('aborting a multipart upload removes its part blobs', async () => {
+	const upload = await r2.createMultipartUpload('big')
+	await upload.uploadPart(1, 'abc')
+	await upload.abort()
+	expect(blobFiles()).toHaveLength(0)
+})
+
+test('objects stored at <bucket>/<key> by earlier versions move to blobs and keep their data', async () => {
+	const legacyDir = join(tmpDir, 'r2', 'legacy')
+	mkdirSync(join(legacyDir, 'dir'), { recursive: true })
+	await Bun.write(join(legacyDir, 'top'), 'top value')
+	await Bun.write(join(legacyDir, 'dir', 'file'), 'nested value')
+	const insert = db.prepare(
+		`INSERT INTO r2_objects (bucket, key, size, etag, version, uploaded) VALUES ('legacy', ?, ?, 'etag', 'v', '2024-01-01T00:00:00.000Z')`,
+	)
+	insert.run('top', 9)
+	insert.run('dir/file', 12)
+
+	const bucket = new FileR2Bucket(db, 'legacy', tmpDir)
+	// A second instance (another thread opening the same bucket) finds the migration done
+	const again = new FileR2Bucket(db, 'legacy', tmpDir)
+	expect(await (await bucket.get('top') as R2ObjectBody).text()).toBe('top value')
+	expect(await (await again.get('dir/file') as R2ObjectBody).text()).toBe('nested value')
+	expect(existsSync(join(legacyDir, 'top'))).toBe(false)
+	expect(existsSync(join(legacyDir, 'dir', 'file'))).toBe(false)
+	expect(blobFiles()).toHaveLength(2)
 })
 
 test('bucket isolation', async () => {
