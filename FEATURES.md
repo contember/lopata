@@ -333,7 +333,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ Text: text, lastInTextNode, removed, before, after, replace, remove
 - ✅ Comment: text, removed, before, after, replace, remove
 - ✅ Document: doctype, comments, text, end
-- ❌ Streamed content: a `ReadableStream` or `Response` as the content of before/after/prepend/append/replace
+- ⚠️ Streamed content: a `ReadableStream` or `Response` as the content of before/after/prepend/append/replace/setInnerContent; it is read to the end (UTF-8) before the rewriter continues, not streamed through
 
 > **Note:** HTMLRewriter runs on `html-rewriter-wasm` (the lol-html engine that Cloudflare uses, built to WASM), which lopata installs as a regular dependency. The output streams, and async handlers can await any binding, including Durable Object calls.
 

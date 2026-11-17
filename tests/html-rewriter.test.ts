@@ -598,3 +598,43 @@ describe('HTMLRewriter', () => {
 		})
 	})
 })
+
+describe('streamed content', () => {
+	const stream = (text: string) => new Response(text).body
+	// The wasm typings declare string content only; workerd also takes a ReadableStream or a Response.
+	function call(target: object, method: string, ...args: unknown[]): void {
+		const fn: unknown = Reflect.get(target, method)
+		if (typeof fn !== 'function') throw new Error(`missing ${method}`)
+		Reflect.apply(fn, target, args)
+	}
+
+	test('content methods accept a ReadableStream or a Response, in call order', async () => {
+		const result = await new HTMLRewriter()
+			.on('p', {
+				async element(element) {
+					call(element, 'prepend', stream('alpha '))
+					call(element, 'append', new Response(' gamma'))
+					element.append(' delta')
+				},
+			})
+			.transform(new Response('<p>beta</p>'))
+			.text()
+		expect(result).toBe('<p>alpha beta gamma delta</p>')
+	})
+
+	test('streamed content is escaped unless html is set, and replace() takes a stream', async () => {
+		const result = await new HTMLRewriter()
+			.on('i', { element: element => call(element, 'replace', stream('<b>bold</b>'), { html: true }) })
+			.on('u', { element: element => call(element, 'setInnerContent', stream('<x>')) })
+			.transform(new Response('<i>old</i><u>old</u>'))
+			.text()
+		expect(result).toBe('<b>bold</b><u>&lt;x&gt;</u>')
+	})
+
+	test('streamed content that is not UTF-8 fails the body', async () => {
+		const response = new HTMLRewriter()
+			.on('p', { element: element => call(element, 'prepend', new Response(new Uint8Array([0xe2, 0x28, 0xa1]))) })
+			.transform(new Response('<p>x</p>'))
+		await expect(response.text()).rejects.toThrow('Parser error: Invalid UTF-8')
+	})
+})
