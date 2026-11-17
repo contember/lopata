@@ -157,14 +157,27 @@ export function setupCloudflareGlobals() {
 		configurable: true,
 	})
 
-	// Register scheduler.wait(ms) — await-able setTimeout alternative
+	// Register scheduler.wait(ms, { signal }) — await-able setTimeout alternative. Writable: workerd lets code replace it.
 	Object.defineProperty(globalThis, 'scheduler', {
-		value: {
-			wait(ms: number): Promise<void> {
-				return new Promise((resolve) => setTimeout(resolve, ms))
-			},
-		},
-		writable: false,
+		value: { wait: schedulerWait },
+		writable: true,
 		configurable: true,
+	})
+}
+
+/** workerd's scheduler.wait(): rejects with the signal's reason when it aborts, and clears the timer then. */
+function schedulerWait(delay: unknown, options?: { signal?: AbortSignal }): Promise<void> {
+	const signal = options?.signal
+	if (signal?.aborted) return Promise.reject(signal.reason)
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer)
+			reject(signal?.reason)
+		}
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort)
+			resolve()
+		}, Number(delay))
+		signal?.addEventListener('abort', onAbort, { once: true })
 	})
 }

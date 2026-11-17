@@ -409,7 +409,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - 🟰 `setTimeout(fn, delay)` / `clearTimeout(id)`
 - 🟰 `setInterval(fn, delay)` / `clearInterval(id)`
-- ⚠️ `scheduler.wait(ms)` — await-able setTimeout alternative; the `signal` option is ignored
+- ✅ `scheduler.wait(ms, { signal })` — await-able setTimeout alternative; an aborted `signal` rejects with its reason and clears the timer
 - 🟰 `atob()` / `btoa()` — Base64 encode/decode
 - 🟰 `AbortController` / `AbortSignal` — standard
 - 🟰 `AbortSignal.timeout(delay)`, `AbortSignal.abort()`, `AbortSignal.any(signals)`
