@@ -121,6 +121,7 @@ export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView |
 	readonly digest: Promise<ArrayBuffer>
 	private written = 0n
 	private disposed = false
+	private readonly rejectDigest: (reason: unknown) => void
 
 	constructor(algorithm: string | { name: string }) {
 		const hasher = createHasher(typeof algorithm === 'string' ? algorithm : algorithm.name)
@@ -144,6 +145,7 @@ export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView |
 			},
 		})
 		this.digest = digest.promise
+		this.rejectDigest = digest.reject
 	}
 
 	get bytesWritten(): bigint {
@@ -153,7 +155,10 @@ export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView |
 	[Symbol.dispose](): void {
 		if (this.disposed) return
 		this.disposed = true
-		this.abort(new TypeError('The DigestStream was disposed.')).catch(() => {})
+		const reason = new TypeError('The DigestStream was disposed.')
+		// abort() rejects while a writer holds the lock, so the digest is settled here too.
+		this.rejectDigest(reason)
+		this.abort(reason).catch(() => {})
 	}
 }
 
@@ -255,12 +260,16 @@ export function patchGlobalCrypto(): void {
 	// workerd's digest() also accepts MD5, which Bun's rejects as unrecognized.
 	const origDigest = subtle.digest.bind(subtle)
 	Object.defineProperty(subtle, 'digest', {
-		value(algorithm: string | { name: string }, data: Parameters<typeof origDigest>[1]): Promise<ArrayBuffer> {
-			const name = typeof algorithm === 'string' ? algorithm : algorithm.name
-			if (name.toLowerCase() !== 'md5') return origDigest(algorithm, data)
+		// async: invalid arguments reject, as the native digest() does, instead of throwing synchronously.
+		async value(algorithm: Parameters<typeof origDigest>[0], data: Parameters<typeof origDigest>[1]): Promise<ArrayBuffer> {
+			const name: unknown = typeof algorithm === 'object' && algorithm !== null ? Reflect.get(algorithm, 'name') : algorithm
+			if (typeof name !== 'string' || name.toLowerCase() !== 'md5') return origDigest(algorithm, data)
+			if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) {
+				throw new TypeError("Failed to execute 'digest' on 'SubtleCrypto': parameter 2 is not of type 'ArrayBuffer or ArrayBufferView'.")
+			}
 			const hasher = createHasher('md5')
 			hasher.update(toUint8Array(data))
-			return Promise.resolve(hasher.digest())
+			return hasher.digest()
 		},
 		writable: true,
 		configurable: true,

@@ -205,6 +205,13 @@ describe('crypto.DigestStream workerd extensions', () => {
 		await expect(stream.digest).rejects.toThrow('boom')
 	})
 
+	test('disposing a stream whose writer holds the lock rejects its digest', async () => {
+		const stream = new DigestStream('md5')
+		stream.getWriter()
+		stream[Symbol.dispose]()
+		await expect(stream.digest).rejects.toThrow('The DigestStream was disposed.')
+	})
+
 	test('a disposed stream rejects writes, and disposing twice is harmless', async () => {
 		const stream = new DigestStream('md5')
 		stream[Symbol.dispose]()
@@ -224,5 +231,17 @@ describe('crypto.subtle.digest MD5', () => {
 	test('other algorithms still go to the native implementation', async () => {
 		expect(Buffer.from(await crypto.subtle.digest('SHA-1', new ArrayBuffer(0))).toString('hex')).toBe('da39a3ee5e6b4b0d3255bfef95601890afd80709')
 		await expect(crypto.subtle.digest('SHA-3', new ArrayBuffer(0))).rejects.toThrow()
+	})
+
+	test('invalid arguments reject instead of throwing or hashing nothing', async () => {
+		const digest: (algorithm: unknown, data: unknown) => Promise<ArrayBuffer> = (algorithm, data) =>
+			Reflect.apply(crypto.subtle.digest, crypto.subtle, [algorithm, data])
+		let pending: Promise<ArrayBuffer> | undefined
+		expect(() => {
+			pending = digest(null, new ArrayBuffer(0))
+		}).not.toThrow()
+		await expect(pending).rejects.toThrow()
+		await expect(digest({}, new ArrayBuffer(0))).rejects.toThrow()
+		await expect(digest('MD5', 'hello')).rejects.toThrow(TypeError)
 	})
 })
