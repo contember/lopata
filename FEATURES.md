@@ -417,7 +417,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `structuredClone(value)` — deep copy
 - ✅ `queueMicrotask(fn)` — a callback that throws dispatches an `ErrorEvent` named `error` on the global scope, then is logged unless a listener calls `preventDefault()`
 - ⚠️ `reportError(error)` — dispatches an `ErrorEvent` named `error` and logs the error unless cancelled; `filename`, `lineno` and `colno` are left empty
-- ❌ Known limit: the workerd `reportErrorTest` case fails because it expects V8's column numbers and workerd's `worker` script name in `filename`, `lineno` and `colno`, while lopata runs on JavaScriptCore and loads modules from their real paths
+- ❌ Known limit: the workerd `reportErrorTest` case expects `filename` `worker` and V8's line and column numbers; lopata leaves these empty and could not match them, as it runs on JavaScriptCore and loads modules from their real paths
 - ⚠️ `Cloudflare.compatibilityFlags` — read-only map of enable flags: those lopata models, resolved from the compatibility date and flags, plus every flag the config lists as `true`; flags lopata does not model that only the date would enable are absent
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
@@ -736,9 +736,9 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `storage.sql.exec(query, ...bindings)` — execute SQL, returns SqlStorageCursor (synchronous)
 - ✅ `storage.sql.databaseSize` — current DB size in bytes
-- ✅ SqlStorageCursor: columnNames, rowsRead, rowsWritten, [Symbol.iterator], next(), toArray(), one(), raw() — all read from one position, so each row is read once, as in workerd; `raw()` returns an array of the remaining rows, not an iterator
+- ✅ SqlStorageCursor: columnNames, rowsRead, rowsWritten, [Symbol.iterator], next(), toArray(), one(), raw() — all read from one position, so each row is read once, as in workerd; `raw()` returns a lazy iterator
 - ❌ Point-in-time recovery: `storage.getCurrentBookmark()`, `getBookmarkForTime()`, `onNextSessionRestoreBookmark()`
-- ❌ Known limit: 6 workerd conformance cases depend on what lopata does not provide. The 5 SQLITE_FULL critical-error and automatic-rollback cases in `sql-test` and `sync-kv-test` need workerd's test-only `setMaxPageCountForTest()` hook, and `testSessionsAPIBookmark` needs point-in-time recovery. The remaining failing case, `sql-test/default`, is one test of the whole SQL API; it stops at workerd's experimental-only `sql.ingest()` and, past that, at SQLite error messages, which workerd rewrites (`syntax error at offset 7`).
+- ❌ Known limit: 6 workerd conformance cases depend on what lopata does not provide. The 5 SQLITE_FULL critical-error and automatic-rollback cases in `sql-test` and `sync-kv-test` need workerd's test-only `setMaxPageCountForTest()` hook, and `testSessionsAPIBookmark` needs point-in-time recovery. The remaining failing case, `sql-test/default`, is one test of the whole SQL API; it stops at workerd's experimental-only `sql.ingest()` and, past that, at SQLite error messages, to which workerd appends the error offset and code (`syntax error at offset 7`).
 
 > **Note:** Each DO instance gets its own SQLite file at `.lopata/do-sql/<namespace>/<id>.sqlite`
 

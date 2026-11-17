@@ -1535,7 +1535,10 @@ describe('DurableObject SQL Storage', () => {
 			sql.exec('CREATE TABLE multi (v INTEGER)')
 			sql.exec('INSERT INTO multi VALUES (1)')
 			sql.exec('INSERT INTO multi VALUES (2)')
-			expect(() => sql.exec('SELECT v FROM multi').one()).toThrow('Expected exactly one result from SQL query, but got multiple results.')
+			const cursor = sql.exec('SELECT v FROM multi')
+			expect(() => cursor.one()).toThrow('Expected exactly one result from SQL query, but got multiple results.')
+			// As in workerd, the failed one() ends the query
+			expect([...cursor]).toEqual([])
 		})
 
 		test('every way of reading a cursor consumes the same rows', () => {
@@ -1547,9 +1550,26 @@ describe('DurableObject SQL Storage', () => {
 				expect(row).toEqual({ v: 2 })
 				break
 			}
-			expect(cursor.raw()).toEqual([[3], [4]])
+			expect(cursor.raw().toArray()).toEqual([[3], [4]])
 			expect(cursor.toArray()).toEqual([])
 			expect([...cursor]).toEqual([])
+		})
+
+		test('cursor raw() reads lazily from the shared position', () => {
+			sql.exec('CREATE TABLE lazy (v INTEGER)')
+			sql.exec('INSERT INTO lazy VALUES (1)')
+			sql.exec('INSERT INTO lazy VALUES (2)')
+			const cursor = sql.exec('SELECT v FROM lazy ORDER BY v')
+			const raw = cursor.raw()
+			expect(cursor.next()).toEqual({ done: false, value: { v: 1 } })
+			expect([...raw]).toEqual([[2]])
+		})
+
+		test('the iterator a cursor returns is itself iterable', () => {
+			sql.exec('CREATE TABLE iter (v INTEGER)')
+			sql.exec('INSERT INTO iter VALUES (1)')
+			const iterator = sql.exec('SELECT v FROM iter')[Symbol.iterator]()
+			expect([...iterator]).toEqual([{ v: 1 }])
 		})
 
 		test('cursor one() consumes its row', () => {
@@ -1574,7 +1594,7 @@ describe('DurableObject SQL Storage', () => {
 			sql.exec('CREATE TABLE raw_t (a TEXT, b INTEGER)')
 			sql.exec('INSERT INTO raw_t VALUES (?, ?)', 'hello', 99)
 			const raw = sql.exec('SELECT a, b FROM raw_t').raw()
-			expect(raw).toEqual([['hello', 99]])
+			expect([...raw]).toEqual([['hello', 99]])
 		})
 
 		test('cursor rowsRead for SELECT', () => {

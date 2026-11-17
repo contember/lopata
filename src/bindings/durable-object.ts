@@ -53,8 +53,8 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 	}
 
 	// As in workerd, next(), iteration, toArray(), one() and raw() all read from one position, so each row is read once
-	[Symbol.iterator](): Iterator<Record<string, unknown>> {
-		return { next: () => this.next() }
+	*[Symbol.iterator](): Generator<Record<string, unknown>, void, undefined> {
+		while (this._index < this._rows.length) yield this._rows[this._index++]!
 	}
 
 	next(): IteratorResult<Record<string, unknown>> {
@@ -65,7 +65,7 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 	}
 
 	toArray(): Record<string, unknown>[] {
-		return this._rows.slice(this._take(this._rows.length))
+		return [...this]
 	}
 
 	one(): Record<string, unknown> {
@@ -78,15 +78,9 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 		return this._rows[this._index++]!
 	}
 
-	raw(): unknown[][] {
-		return this._rawRows.slice(this._take(this._rawRows.length))
-	}
-
-	/** Marks every remaining row as read and returns the position the unread rows started at. */
-	private _take(end: number): number {
-		const start = this._index
-		this._index = end
-		return start
+	/** Reads lazily: a row is consumed only when the returned iterator yields it. */
+	*raw(): Generator<unknown[], void, undefined> {
+		while (this._index < this._rawRows.length) yield this._rawRows[this._index++]!
 	}
 }
 
