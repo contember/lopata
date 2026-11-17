@@ -421,8 +421,8 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
 - ✅ Global `addEventListener` for `error` (from `reportError()` and `queueMicrotask()`), `unhandledrejection`, `rejectionhandled` and custom events; an uncaught exception from a timer or listener is not dispatched as `error`
-- ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread keeps serving
-- ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads still terminate
+- ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread (user worker, Durable Object or Worker Loader) keeps serving
+- ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads behave the same
 - 🟰 `Blob`, `File`, `FormData`
 - 🟰 `MessageChannel`, `MessagePort` (expose_global_message_channel flag)
 - 🟰 `AsyncLocalStorage` (nodejs_als / nodejs_compat flag)

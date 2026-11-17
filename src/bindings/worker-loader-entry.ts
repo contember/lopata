@@ -22,12 +22,15 @@ import { generateId, generateTraceId, runWithContext, type SpanContext } from '.
 import { setGlobalExports } from '../worker-exports'
 import { deserializeError } from '../worker-thread/protocol'
 import { serializeResponseHeaders } from '../worker-thread/serialize'
+import { installUncaughtErrorHandlers, runFailableCommand } from '../worker-thread/uncaught-errors'
 import { buildLoopbackExports, isStatelessEntrypointExport } from './loopback-exports'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
 import { type DispatchExecutionContext, isWorkerResponse, WorkerDispatcher } from './worker-dispatcher'
 import { ENV_FETCHER_KEY, type LoaderEnvReply, type LoaderEnvRequest, type LoaderEnvResult } from './worker-loader-env'
 
 declare var self: Worker
+
+installUncaughtErrorHandlers()
 
 export interface LoaderInitMessage {
 	type: 'init'
@@ -254,7 +257,7 @@ async function handleCommand(cmd: LoaderCommand): Promise<LoaderResult> {
 		const { compatibility } = dispatcher
 		const ctx = dispatcher.context(decodeEnvObject(cmd.props))
 		const invocation = () => runWithCompatibility(compatibility, () => runWithExecutionContext(ctx, () => invoke(module, cmd, ctx)))
-		return await runWithContext(invocationSpanContext(cmd.parent), invocation)
+		return await runFailableCommand(() => runWithContext(invocationSpanContext(cmd.parent), invocation))
 	} catch (err) {
 		const error = err instanceof Error ? err : new Error(String(err))
 		return { type: 'error', message: error.message, stack: error.stack, name: error.name }
