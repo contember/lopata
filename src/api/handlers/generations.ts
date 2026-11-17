@@ -48,7 +48,7 @@ export const handlers = {
 		return { ok: true, generation: gen.getInfo() }
 	},
 
-	'generations.drain'(input: { workerName?: string }, ctx: HandlerContext): { ok: true; stoppedGeneration: number } {
+	async 'generations.drain'(input: { workerName?: string }, ctx: HandlerContext): Promise<{ ok: true; stoppedGeneration: number }> {
 		let manager = ctx.manager
 		if (input.workerName && ctx.registry) {
 			manager = ctx.registry.getManager(input.workerName) ?? null
@@ -57,7 +57,7 @@ export const handlers = {
 		const gens = manager.list().filter(g => g.state === 'draining')
 		if (gens.length === 0) throw new Error('No draining generations')
 		const oldest = gens.reduce((a, b) => a.createdAt < b.createdAt ? a : b)
-		manager.stop(oldest.id)
+		await manager.stop(oldest.id)
 		return { ok: true, stoppedGeneration: oldest.id }
 	},
 

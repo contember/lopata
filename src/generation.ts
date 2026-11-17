@@ -44,6 +44,7 @@ export interface GenerationInfo {
 export class Generation {
 	readonly id: number
 	state: GenerationState = 'active'
+	private _stopped: Promise<void> | null = null
 	readonly createdAt: number
 	readonly env: Record<string, unknown>
 	readonly registry: ClassRegistry
@@ -256,9 +257,16 @@ export class Generation {
 		}
 	}
 
-	/** Force-stop: drain + destroy all DO namespaces + abort workflows + terminate the worker. */
-	stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): void {
-		if (this.state === 'stopped') return
+	/**
+	 * Force-stop: drain + destroy all DO namespaces + abort workflows + terminate the worker. Resolves once the
+	 * worker thread has exited; every call returns the first call's promise.
+	 */
+	stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): Promise<void> {
+		this._stopped ??= this._stop(sharedNamespaces)
+		return this._stopped
+	}
+
+	private async _stop(sharedNamespaces?: Set<DurableObjectNamespaceImpl>): Promise<void> {
 		this.drain(sharedNamespaces)
 		this.state = 'stopped'
 		for (const entry of this.registry.durableObjects) {
@@ -273,7 +281,7 @@ export class Generation {
 		// live in the worker.) Their DB rows stay 'running' and the next generation
 		// resumes them once this worker is gone — see GenerationManager's
 		// resumeInterrupted control op.
-		this.threadExecutor?.dispose()
+		await this.threadExecutor?.dispose()
 	}
 
 	isIdle(): boolean {
