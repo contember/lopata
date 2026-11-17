@@ -19,52 +19,141 @@ export function cfTimingSafeEqual(a: ArrayBuffer | ArrayBufferView, b: ArrayBuff
 	return timingSafeEqual(bufA, bufB)
 }
 
+interface Hasher {
+	update(bytes: Uint8Array): void
+	digest(): ArrayBuffer
+}
+
+const NATIVE_DIGESTS: Record<string, 'md5' | 'sha1' | 'sha256' | 'sha384' | 'sha512'> = {
+	'md5': 'md5',
+	'sha-1': 'sha1',
+	'sha-256': 'sha256',
+	'sha-384': 'sha384',
+	'sha-512': 'sha512',
+}
+
+/** A reflected CRC-32 variant with all-ones init and final XOR, written out big-endian as workerd does. */
+function crc32Hasher(table: Uint32Array): Hasher {
+	let crc = 0xffffffff
+	return {
+		update(bytes) {
+			for (const byte of bytes) crc = table[(crc ^ byte) & 0xff]! ^ (crc >>> 8)
+		},
+		digest() {
+			const out = new DataView(new ArrayBuffer(4))
+			out.setUint32(0, (crc ^ 0xffffffff) >>> 0)
+			return out.buffer
+		},
+	}
+}
+
+function crc32Table(poly: number): Uint32Array {
+	return Uint32Array.from({ length: 256 }, (_, byte) => {
+		let crc = byte
+		for (let bit = 0; bit < 8; bit++) crc = crc & 1 ? (crc >>> 1) ^ poly : crc >>> 1
+		return crc >>> 0
+	})
+}
+
+/** CRC-64/NVME (reflected, all-ones init and final XOR), big-endian. */
+function crc64Hasher(table: BigUint64Array): Hasher {
+	const mask = 0xffffffffffffffffn
+	let crc = mask
+	return {
+		update(bytes) {
+			for (const byte of bytes) crc = table[Number((crc ^ BigInt(byte)) & 0xffn)]! ^ (crc >> 8n)
+		},
+		digest() {
+			const out = new DataView(new ArrayBuffer(8))
+			out.setBigUint64(0, crc ^ mask)
+			return out.buffer
+		},
+	}
+}
+
+function crc64Table(poly: bigint): BigUint64Array {
+	return BigUint64Array.from({ length: 256 }, (_, byte) => {
+		let crc = BigInt(byte)
+		for (let bit = 0; bit < 8; bit++) crc = crc & 1n ? (crc >> 1n) ^ poly : crc >> 1n
+		return crc
+	})
+}
+
+function lazy<T>(create: () => T): () => T {
+	let value: T | undefined
+	return () => (value ??= create())
+}
+
+const crc32IeeeTable = lazy(() => crc32Table(0xedb88320))
+const crc32cTable = lazy(() => crc32Table(0x82f63b78))
+const crc64NvmeTable = lazy(() => crc64Table(0x9a6c9329ac4bc9b5n))
+
+const CRC_HASHERS: Record<string, () => Hasher> = {
+	crc32: () => crc32Hasher(crc32IeeeTable()),
+	crc32c: () => crc32Hasher(crc32cTable()),
+	crc64nvme: () => crc64Hasher(crc64NvmeTable()),
+}
+
+function createHasher(algorithm: string): Hasher {
+	const name = algorithm.toLowerCase()
+	const native = NATIVE_DIGESTS[name]
+	if (native) {
+		const hasher = new Bun.CryptoHasher(native)
+		return { update: bytes => hasher.update(bytes), digest: () => new Uint8Array(hasher.digest()).buffer }
+	}
+	const crc = CRC_HASHERS[name]
+	if (crc) return crc()
+	throw new TypeError(`Unsupported algorithm: ${algorithm}`)
+}
+
+function chunkBytes(chunk: unknown): Uint8Array {
+	if (typeof chunk === 'string') return new TextEncoder().encode(chunk)
+	if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk)
+	if (ArrayBuffer.isView(chunk)) return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+	throw new TypeError('DigestStream is a byte stream but received an object of non-ArrayBuffer/ArrayBufferView/string type on its writable side.')
+}
+
 /**
- * DigestStream — a WritableStream that computes a cryptographic hash of all written data.
- * `digest` property is a Promise<ArrayBuffer> that resolves when the stream closes.
+ * DigestStream — a WritableStream that computes a hash (MD5, SHA-1/256/384/512, CRC32, CRC32C or CRC64/NVME) of all
+ * written bytes. `digest` resolves when the stream closes and rejects when it is aborted.
  */
-export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView> {
+export class DigestStream extends WritableStream<ArrayBuffer | ArrayBufferView | string> {
 	readonly digest: Promise<ArrayBuffer>
+	private written = 0n
+	private disposed = false
 
 	constructor(algorithm: string | { name: string }) {
-		const algo = typeof algorithm === 'string' ? algorithm : algorithm.name
-
-		// Map CF algorithm names to Bun.CryptoHasher names
-		const algoMap: Record<string, string> = {
-			'SHA-1': 'sha1',
-			'SHA-256': 'sha256',
-			'SHA-384': 'sha384',
-			'SHA-512': 'sha512',
-			'MD5': 'md5',
+		const hasher = createHasher(typeof algorithm === 'string' ? algorithm : algorithm.name)
+		const digest = Promise.withResolvers<ArrayBuffer>()
+		// Nobody has to read the digest of an aborted stream.
+		digest.promise.catch(() => {})
+		const counted = (bytes: number) => {
+			this.written += BigInt(bytes)
 		}
-
-		const hashName = algoMap[algo.toUpperCase()]
-		if (!hashName) {
-			throw new TypeError(`Unsupported algorithm: ${algo}`)
-		}
-
-		const hasher = new Bun.CryptoHasher(hashName as 'sha1' | 'sha256' | 'sha384' | 'sha512' | 'md5')
-		let resolveDigest: (value: ArrayBuffer) => void
-
-		const digestPromise = new Promise<ArrayBuffer>((resolve) => {
-			resolveDigest = resolve
-		})
-
 		super({
 			write(chunk) {
-				if (ArrayBuffer.isView(chunk)) {
-					hasher.update(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength))
-				} else {
-					hasher.update(new Uint8Array(chunk))
-				}
+				const bytes = chunkBytes(chunk)
+				hasher.update(bytes)
+				counted(bytes.byteLength)
 			},
 			close() {
-				const result = hasher.digest()
-				resolveDigest(result.buffer as ArrayBuffer)
+				digest.resolve(hasher.digest())
+			},
+			abort(reason) {
+				digest.reject(reason)
 			},
 		})
+		this.digest = digest.promise
+	}
 
-		this.digest = digestPromise
+	get bytesWritten(): bigint {
+		return this.written
+	}
+
+	[Symbol.dispose](): void {
+		if (this.disposed) return
+		this.disposed = true
+		this.abort(new TypeError('The DigestStream was disposed.')).catch(() => {})
 	}
 }
 
@@ -160,6 +249,20 @@ export function patchGlobalCrypto(): void {
 	Object.defineProperty(crypto, 'DigestStream', {
 		value: DigestStream,
 		writable: false,
+		configurable: true,
+	})
+
+	// workerd's digest() also accepts MD5, which Bun's rejects as unrecognized.
+	const origDigest = subtle.digest.bind(subtle)
+	Object.defineProperty(subtle, 'digest', {
+		value(algorithm: string | { name: string }, data: Parameters<typeof origDigest>[1]): Promise<ArrayBuffer> {
+			const name = typeof algorithm === 'string' ? algorithm : algorithm.name
+			if (name.toLowerCase() !== 'md5') return origDigest(algorithm, data)
+			const hasher = createHasher('md5')
+			hasher.update(toUint8Array(data))
+			return Promise.resolve(hasher.digest())
+		},
+		writable: true,
 		configurable: true,
 	})
 

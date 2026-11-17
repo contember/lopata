@@ -160,3 +160,69 @@ describe('native modern algorithms', () => {
 		expect(new Uint8Array(decapsulated)).toEqual(new Uint8Array(sharedKey))
 	})
 })
+
+describe('crypto.DigestStream workerd extensions', () => {
+	async function digestOf(algorithm: string, ...chunks: (string | ArrayBuffer | ArrayBufferView)[]): Promise<string> {
+		const stream = new DigestStream(algorithm)
+		const writer = stream.getWriter()
+		for (const chunk of chunks) await writer.write(chunk)
+		await writer.close()
+		return Buffer.from(await stream.digest).toString('base64')
+	}
+
+	test('CRC algorithms, with AWS SDK test vectors', async () => {
+		expect(await digestOf('crc32', '')).toBe('AAAAAA==')
+		expect(await digestOf('crc32', 'Hello world')).toBe('i9aeUg==')
+		expect(await digestOf('crc32c', 'abc')).toBe('Nks/tw==')
+		expect(await digestOf('crc64nvme', 'Hello world')).toBe('OOJZ0D8xKts=')
+		expect(await digestOf('crc64nvme', '')).toBe('AAAAAAAAAAA=')
+	})
+
+	test('a CRC is computed across chunks', async () => {
+		expect(await digestOf('crc32', 'Hello', ' ', 'world')).toBe('i9aeUg==')
+	})
+
+	test('strings are hashed as UTF-8, and bytesWritten counts the bytes as a bigint', async () => {
+		const stream = new DigestStream('md5')
+		const writer = stream.getWriter()
+		await writer.write('hello')
+		await writer.write(new TextEncoder().encode('there'))
+		await writer.close()
+		await stream.digest
+		expect(stream.bytesWritten).toBe(10n)
+	})
+
+	test('a chunk that is not bytes or a string is rejected', async () => {
+		const writer: WritableStreamDefaultWriter<unknown> = new DigestStream('md5').getWriter()
+		await expect(writer.write(123)).rejects.toThrow(
+			'DigestStream is a byte stream but received an object of non-ArrayBuffer/ArrayBufferView/string type on its writable side.',
+		)
+	})
+
+	test('aborting the stream rejects the digest', async () => {
+		const stream = new DigestStream('md5')
+		await stream.getWriter().abort(new Error('boom'))
+		await expect(stream.digest).rejects.toThrow('boom')
+	})
+
+	test('a disposed stream rejects writes, and disposing twice is harmless', async () => {
+		const stream = new DigestStream('md5')
+		stream[Symbol.dispose]()
+		const writer = stream.getWriter()
+		await expect(writer.write('hello')).rejects.toThrow('The DigestStream was disposed.')
+		stream[Symbol.dispose]()
+	})
+})
+
+describe('crypto.subtle.digest MD5', () => {
+	test('hashes with MD5, by name or algorithm object, as workerd does', async () => {
+		const hex = (buffer: ArrayBuffer) => Buffer.from(buffer).toString('hex')
+		expect(hex(await crypto.subtle.digest('MD5', new ArrayBuffer(0)))).toBe('d41d8cd98f00b204e9800998ecf8427e')
+		expect(hex(await crypto.subtle.digest({ name: 'md5' }, new TextEncoder().encode('hello')))).toBe('5d41402abc4b2a76b9719d911017c592')
+	})
+
+	test('other algorithms still go to the native implementation', async () => {
+		expect(Buffer.from(await crypto.subtle.digest('SHA-1', new ArrayBuffer(0))).toString('hex')).toBe('da39a3ee5e6b4b0d3255bfef95601890afd80709')
+		await expect(crypto.subtle.digest('SHA-3', new ArrayBuffer(0))).rejects.toThrow()
+	})
+})

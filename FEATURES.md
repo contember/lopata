@@ -309,7 +309,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.decrypt()` — decrypt data
 - 🟰 `crypto.subtle.sign()` — sign data
 - 🟰 `crypto.subtle.verify()` — verify signature
-- 🟰 `crypto.subtle.digest()` — compute hash
+- ✅ `crypto.subtle.digest()` — compute hash; also MD5, as in workerd
 - 🟰 `crypto.subtle.generateKey()` — generate key/pair
 - 🟰 `crypto.subtle.deriveKey()` — derive key
 - 🟰 `crypto.subtle.deriveBits()` — derive bits
@@ -318,7 +318,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.wrapKey()` — wrap key
 - 🟰 `crypto.subtle.unwrapKey()` — unwrap key
 - ✅ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
-- ⚠️ `crypto.DigestStream` — WritableStream that computes hash digest; no `bytesWritten`, no CRC32 algorithms, no `Symbol.dispose`
+- ✅ `crypto.DigestStream` — WritableStream that computes a digest (MD5, SHA-1/256/384/512, CRC32, CRC32C, CRC64/NVME) of the written bytes or strings; `bytesWritten`, `Symbol.dispose`; aborting rejects `digest`
 - 🟰 Algorithms: RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA, ECDH, Ed25519, X25519, AES-CTR/CBC/GCM/KW, SHA-1/256/384/512, MD5, HKDF, PBKDF2, HMAC
 
 ### 1.12 HTMLRewriter
