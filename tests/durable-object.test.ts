@@ -1528,21 +1528,73 @@ describe('DurableObject SQL Storage', () => {
 
 		test('cursor one() throws on zero rows', () => {
 			sql.exec('CREATE TABLE empty_t (v INTEGER)')
-			expect(() => sql.exec('SELECT v FROM empty_t').one()).toThrow('Expected exactly one row, got 0')
+			expect(() => sql.exec('SELECT v FROM empty_t').one()).toThrow('Expected exactly one result from SQL query, but got no results.')
 		})
 
 		test('cursor one() throws on multiple rows', () => {
 			sql.exec('CREATE TABLE multi (v INTEGER)')
 			sql.exec('INSERT INTO multi VALUES (1)')
 			sql.exec('INSERT INTO multi VALUES (2)')
-			expect(() => sql.exec('SELECT v FROM multi').one()).toThrow('Expected exactly one row, got 2')
+			const cursor = sql.exec('SELECT v FROM multi')
+			expect(() => cursor.one()).toThrow('Expected exactly one result from SQL query, but got multiple results.')
+			// As in workerd, the failed one() ends the query
+			expect([...cursor]).toEqual([])
+		})
+
+		test('every way of reading a cursor consumes the same rows', () => {
+			sql.exec('CREATE TABLE shared (v INTEGER)')
+			for (const v of [1, 2, 3, 4]) sql.exec('INSERT INTO shared VALUES (?)', v)
+			const cursor = sql.exec('SELECT v FROM shared ORDER BY v')
+			expect(cursor.next()).toEqual({ done: false, value: { v: 1 } })
+			for (const row of cursor) {
+				expect(row).toEqual({ v: 2 })
+				break
+			}
+			expect(cursor.raw().toArray()).toEqual([[3], [4]])
+			expect(cursor.toArray()).toEqual([])
+			expect([...cursor]).toEqual([])
+		})
+
+		test('cursor raw() reads lazily from the shared position', () => {
+			sql.exec('CREATE TABLE lazy (v INTEGER)')
+			sql.exec('INSERT INTO lazy VALUES (1)')
+			sql.exec('INSERT INTO lazy VALUES (2)')
+			const cursor = sql.exec('SELECT v FROM lazy ORDER BY v')
+			const raw = cursor.raw()
+			expect(cursor.next()).toEqual({ done: false, value: { v: 1 } })
+			expect([...raw]).toEqual([[2]])
+		})
+
+		test('the iterator a cursor returns is itself iterable', () => {
+			sql.exec('CREATE TABLE iter (v INTEGER)')
+			sql.exec('INSERT INTO iter VALUES (1)')
+			const iterator = sql.exec('SELECT v FROM iter')[Symbol.iterator]()
+			expect([...iterator]).toEqual([{ v: 1 }])
+		})
+
+		test('cursor one() consumes its row', () => {
+			sql.exec('CREATE TABLE once (v INTEGER)')
+			sql.exec('INSERT INTO once VALUES (1)')
+			const cursor = sql.exec('SELECT v FROM once')
+			expect(cursor.one()).toEqual({ v: 1 })
+			expect([...cursor]).toEqual([])
+			expect(() => cursor.one()).toThrow('but got no results')
+		})
+
+		test('cursor one() counts only the rows not yet read', () => {
+			sql.exec('CREATE TABLE rest (v INTEGER)')
+			sql.exec('INSERT INTO rest VALUES (1)')
+			sql.exec('INSERT INTO rest VALUES (2)')
+			const cursor = sql.exec('SELECT v FROM rest ORDER BY v')
+			cursor.next()
+			expect(cursor.one()).toEqual({ v: 2 })
 		})
 
 		test('cursor raw() returns arrays without column names', () => {
 			sql.exec('CREATE TABLE raw_t (a TEXT, b INTEGER)')
 			sql.exec('INSERT INTO raw_t VALUES (?, ?)', 'hello', 99)
 			const raw = sql.exec('SELECT a, b FROM raw_t').raw()
-			expect(raw).toEqual([['hello', 99]])
+			expect([...raw]).toEqual([['hello', 99]])
 		})
 
 		test('cursor rowsRead for SELECT', () => {

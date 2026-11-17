@@ -89,7 +89,7 @@
 	"response-used-body-test/abortInternalStreamsTest": "AssertionError [ERR_ASSERTION]: Missing expected rejection.",
 	"scheduler-test/sequentialAbort": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
 	"scheduler-test/wait": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
-	"sql-test/default": "AssertionError [ERR_ASSERTION]: Expected values to be loosely deep-equal:",
+	"sql-test/default": "TypeError: sql.ingest is not a function. (In 'sql.ingest(\"SELECT 123; SELECT 456;    \")', 'sql.ingest' is undefined)",
 	"sql-test/testAutoRollBackOnCriticalError": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^Error: database or disk is full: SQLITE_FULL/. Input:",
 	"sql-test/testCriticalErrorOnTransactionRollback": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^Error: database or disk is full: SQLITE_FULL/. Input:",
 	"sql-test/testCriticalErrorOnTransactionSyncCommit": "AssertionError [ERR_ASSERTION]: The input did not match the regular expression /^Error: database or disk is full: SQLITE_FULL/. Input:",

@@ -52,17 +52,9 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 		return this._rowsWritten
 	}
 
-	[Symbol.iterator](): Iterator<Record<string, unknown>> {
-		let i = 0
-		const rows = this._rows
-		return {
-			next(): IteratorResult<Record<string, unknown>> {
-				if (i < rows.length) {
-					return { done: false, value: rows[i++]! }
-				}
-				return { done: true, value: undefined }
-			},
-		}
+	// As in workerd, next(), iteration, toArray(), one() and raw() all read from one position, so each row is read once
+	*[Symbol.iterator](): Generator<Record<string, unknown>, void, undefined> {
+		while (this._index < this._rows.length) yield this._rows[this._index++]!
 	}
 
 	next(): IteratorResult<Record<string, unknown>> {
@@ -73,20 +65,22 @@ export class SqlStorageCursor implements Iterable<Record<string, unknown>> {
 	}
 
 	toArray(): Record<string, unknown>[] {
-		return [...this._rows]
+		return [...this]
 	}
 
 	one(): Record<string, unknown> {
-		if (this._rows.length !== 1) {
-			throw new Error(
-				`Expected exactly one row, got ${this._rows.length}`,
-			)
+		const remaining = this._rows.length - this._index
+		if (remaining === 0) throw new Error('Expected exactly one result from SQL query, but got no results.')
+		if (remaining > 1) {
+			this._index = this._rows.length
+			throw new Error('Expected exactly one result from SQL query, but got multiple results.')
 		}
-		return this._rows[0]!
+		return this._rows[this._index++]!
 	}
 
-	raw(): unknown[][] {
-		return [...this._rawRows]
+	/** Reads lazily: a row is consumed only when the returned iterator yields it. */
+	*raw(): Generator<unknown[], void, undefined> {
+		while (this._index < this._rawRows.length) yield this._rawRows[this._index++]!
 	}
 }
 
