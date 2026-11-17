@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, expect, setSystemTime, test } from 'bun:test'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileR2Bucket, R2_BLOB_GRACE_MS, R2Object, R2ObjectBody } from '../src/bindings/r2'
@@ -216,15 +216,24 @@ test('put returns etag', async () => {
 
 // --- Keys are opaque: objects are stored as blobs, not at a path built from the key ---
 
-const blobFiles = () => {
-	const dir = join(tmpDir, 'r2', '.blobs')
+const blobFiles = (dataDir = tmpDir) => {
+	const dir = join(dataDir, 'r2', '.blobs')
 	return existsSync(dir) ? readdirSync(dir) : []
+}
+
+function bodyOf(object: R2Object | R2ObjectBody | null): R2ObjectBody {
+	if (!(object instanceof R2ObjectBody)) throw new Error('expected an object with a body')
+	return object
+}
+
+async function textOf(bucket: FileR2Bucket, key: string): Promise<string> {
+	return (await bodyOf(await bucket.get(key))).text()
 }
 
 test('keys that are not valid paths are stored like any other', async () => {
 	const keys = ['', 'a', 'a/b', '../escape', 'x/../../y', 'x'.repeat(1024)]
 	for (const key of keys) await r2.put(key, `value of ${key}`)
-	for (const key of keys) expect(await (await r2.get(key) as R2ObjectBody).text()).toBe(`value of ${key}`)
+	for (const key of keys) expect(await textOf(r2, key)).toBe(`value of ${key}`)
 	expect((await r2.list()).objects.map(o => o.key).sort()).toEqual([...keys].sort())
 	expect(readdirSync(tmpDir)).toEqual(['r2'])
 	await r2.delete('')
@@ -234,10 +243,10 @@ test('keys that are not valid paths are stored like any other', async () => {
 
 test('a body stays readable after its key is deleted or overwritten', async () => {
 	await r2.put('key', 'first')
-	const beforeOverwrite = await r2.get('key') as R2ObjectBody
-	const ranged = await r2.get('key', { range: { offset: 2 } }) as R2ObjectBody
+	const beforeOverwrite = await bodyOf(await r2.get('key'))
+	const ranged = await bodyOf(await r2.get('key', { range: { offset: 2 } }))
 	await r2.put('key', 'second')
-	const beforeDelete = await r2.get('key') as R2ObjectBody
+	const beforeDelete = await bodyOf(await r2.get('key'))
 	await r2.delete('key')
 	expect(await beforeOverwrite.text()).toBe('first')
 	expect(await ranged.text()).toBe('rst')
@@ -255,7 +264,7 @@ test('the blob of a deleted or replaced object is removed once the grace period 
 		setSystemTime(new Date(start + R2_BLOB_GRACE_MS + 1000))
 		await r2.put('other', 'y')
 		expect(blobFiles()).toHaveLength(2)
-		expect(await (await r2.get('key') as R2ObjectBody).text()).toBe('second')
+		expect(await textOf(r2, 'key')).toBe('second')
 	} finally {
 		setSystemTime()
 	}
@@ -267,7 +276,7 @@ test('completing a multipart upload leaves one blob, for the object', async () =
 	const part2 = await upload.uploadPart(2, 'de')
 	await upload.complete([part1, part2])
 	expect(blobFiles()).toHaveLength(1)
-	expect(await (await r2.get('big') as R2ObjectBody).text()).toBe('abcde')
+	expect(await textOf(r2, 'big')).toBe('abcde')
 })
 
 test('aborting a multipart upload removes its part blobs', async () => {
@@ -291,11 +300,95 @@ test('objects stored at <bucket>/<key> by earlier versions move to blobs and kee
 	const bucket = new FileR2Bucket(db, 'legacy', tmpDir)
 	// A second instance (another thread opening the same bucket) finds the migration done
 	const again = new FileR2Bucket(db, 'legacy', tmpDir)
-	expect(await (await bucket.get('top') as R2ObjectBody).text()).toBe('top value')
-	expect(await (await again.get('dir/file') as R2ObjectBody).text()).toBe('nested value')
+	expect(await textOf(bucket, 'top')).toBe('top value')
+	expect(await textOf(again, 'dir/file')).toBe('nested value')
 	expect(existsSync(join(legacyDir, 'top'))).toBe(false)
 	expect(existsSync(join(legacyDir, 'dir', 'file'))).toBe(false)
 	expect(blobFiles()).toHaveLength(2)
+})
+
+test('a legacy object whose file is missing stays unmigrated and fails to read', async () => {
+	db.run(
+		`INSERT INTO r2_objects (bucket, key, size, etag, version, uploaded) VALUES ('legacy', 'lost', 1, 'etag', 'v', '2024-01-01T00:00:00.000Z')`,
+	)
+	const bucket = new FileR2Bucket(db, 'legacy', tmpDir)
+	expect(db.query(`SELECT blob FROM r2_objects WHERE key = 'lost'`).get()).toEqual({ blob: null })
+	await expect(bucket.get('lost')).rejects.toThrow('(10001)')
+	expect(blobFiles()).toHaveLength(0)
+})
+
+test('a part whose upload is aborted while it is written is rejected and leaves no blob', async () => {
+	const upload = await r2.createMultipartUpload('big')
+	let finishPart = () => {}
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode('abc'))
+			finishPart = () => controller.close()
+		},
+	})
+	const part = upload.uploadPart(1, body)
+	await Bun.sleep(10)
+	await upload.abort()
+	finishPart()
+	await expect(part).rejects.toThrow('(10024)')
+	expect(blobFiles()).toHaveLength(0)
+})
+
+test('the sweep of a copied data directory leaves the original files alone', async () => {
+	const start = Date.now()
+	const copyDir = mkdtempSync(join(tmpdir(), 'r2-copy-'))
+	try {
+		await r2.put('key', 'first')
+		await r2.put('key', 'second')
+		cpSync(tmpDir, copyDir, { recursive: true })
+		setSystemTime(new Date(start + R2_BLOB_GRACE_MS + 1000))
+		new FileR2Bucket(db, 'test-bucket', copyDir)
+		expect(blobFiles(copyDir)).toHaveLength(1)
+		expect(blobFiles()).toHaveLength(2)
+	} finally {
+		setSystemTime()
+		rmSync(copyDir, { recursive: true, force: true })
+	}
+})
+
+// --- Dashboard rename ---
+
+test('renaming an object keeps its body and stored attributes', async () => {
+	await r2.put('old', 'body', {
+		httpMetadata: { contentType: 'text/plain' },
+		customMetadata: { tag: 'a' },
+		sha256: await crypto.subtle.digest('SHA-256', new TextEncoder().encode('body')),
+	})
+	const before = await r2.head('old')
+	expect(r2.renameObject('old', 'new')).toBe(true)
+	expect(await r2.head('old')).toBeNull()
+	const after = await bodyOf(await r2.get('new'))
+	expect(await after.text()).toBe('body')
+	expect({ ...after, key: 'old' }).toMatchObject({
+		etag: before?.etag,
+		version: before?.version,
+		uploaded: before?.uploaded,
+		httpMetadata: before?.httpMetadata,
+		customMetadata: before?.customMetadata,
+	})
+	expect(after.checksums.toJSON()).toEqual(before?.checksums.toJSON() ?? {})
+	expect(blobFiles()).toHaveLength(1)
+})
+
+test('renaming onto an existing key replaces that object', async () => {
+	await r2.put('old', 'moved')
+	await r2.put('new', 'replaced')
+	expect(r2.renameObject('old', 'new')).toBe(true)
+	expect(await textOf(r2, 'new')).toBe('moved')
+	expect((await r2.list()).objects.map(o => o.key)).toEqual(['new'])
+})
+
+test('renaming an object to its own key keeps it', async () => {
+	await r2.put('same', 'data')
+	expect(r2.renameObject('same', 'same')).toBe(true)
+	expect(await textOf(r2, 'same')).toBe('data')
+	expect(r2.renameObject('missing', 'missing')).toBe(false)
+	expect(r2.renameObject('missing', 'other')).toBe(false)
 })
 
 test('bucket isolation', async () => {

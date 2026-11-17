@@ -1,5 +1,5 @@
 import type { SQLQueryBindings } from 'bun:sqlite'
-import { FileR2Bucket, R2ObjectBody } from '../../bindings/r2'
+import { FileR2Bucket } from '../../bindings/r2'
 import { getDatabase, getDataDir } from '../../db'
 import type { HandlerContext, OkResponse, Paginated, R2Bucket, R2Object } from '../types'
 import { getAllConfigs } from '../types'
@@ -53,13 +53,9 @@ export const handlers = {
 	},
 
 	async 'r2.renameObject'({ bucket, oldKey, newKey }: { bucket: string; oldKey: string; newKey: string }): Promise<OkResponse> {
-		const r2 = new FileR2Bucket(getDatabase(), bucket, getDataDir())
-		const object = await r2.get(oldKey)
-		if (!(object instanceof R2ObjectBody)) {
+		if (!new FileR2Bucket(getDatabase(), bucket, getDataDir()).renameObject(oldKey, newKey)) {
 			throw new Error(`Object "${oldKey}" not found in bucket "${bucket}"`)
 		}
-		await r2.put(newKey, object.body, { httpMetadata: object.httpMetadata, customMetadata: object.customMetadata })
-		await r2.delete(oldKey)
 		return { ok: true }
 	},
 }
