@@ -18,7 +18,7 @@
 | **Durable Objects**       | ~95%      | Sync KV + transactionSync; state.abort supported; no point-in-time recovery   |
 | **Queues**                | ~95%      | Full push + pull consumers; max_concurrency + retry_delay supported           |
 | **Workflows**             | 100%      | Full lifecycle, checkpointing, concurrency                                    |
-| **Cache API**             | ~95%      | put/match/delete, TTL, conditional + range match; cf.cacheKey ignored         |
+| **Cache API**             | ~95%      | put/match/delete, TTL, conditional + range match, cf.cacheKey                 |
 | **Static Assets**         | ~98%      | Full _redirects + _headers with !Header removal                               |
 | **Service Bindings**      | ~95%      | Full RPC stubs, using/dup; instance property filtering relaxed                |
 | **Scheduled (Cron)**      | 100%      | Full cron parser with L/W/# support, aliases, manual trigger                  |
@@ -46,28 +46,28 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 
 | Corpus           | Area            |                Before |                 After |
 | ---------------- | --------------- | --------------------: | --------------------: |
-| miniflare-cache  | cache           |               15 / 22 |               21 / 22 |
-| miniflare-d1     | d1              |                 2 / 9 |                 8 / 9 |
+| miniflare-cache  | cache           |               15 / 22 |               22 / 22 |
+| miniflare-d1     | d1              |                 2 / 9 |                 9 / 9 |
 | miniflare-kv     | kv              |               18 / 44 |               44 / 44 |
 | miniflare-queues | queues          |                4 / 10 |                9 / 10 |
 | miniflare-queues | queues delay    |                 3 / 5 |                 5 / 5 |
 | miniflare-queues | Queues: retry   |                 0 / 2 |                 2 / 2 |
 | miniflare-r2     | r2              |               17 / 49 |               46 / 49 |
-| workerd          | crypto          |                7 / 15 |                7 / 15 |
+| workerd          | crypto          |                7 / 15 |               11 / 15 |
 | workerd          | durable-objects |                4 / 11 |                4 / 11 |
 | workerd          | encoding-url    |               33 / 39 |               33 / 39 |
 | workerd          | events          |               12 / 57 |               26 / 57 |
 | workerd          | fetch           |               15 / 43 |               20 / 43 |
-| workerd          | globals         |               10 / 31 |               19 / 31 |
-| workerd          | htmlrewriter    |               21 / 33 |               21 / 33 |
-| workerd          | streams         |             141 / 269 |             190 / 269 |
-| workerd          | websocket       |               11 / 18 |               11 / 18 |
-| **all**          |                 | **313 / 657 (47.6%)** | **466 / 657 (70.9%)** |
+| workerd          | globals         |               10 / 31 |               22 / 31 |
+| workerd          | htmlrewriter    |               21 / 33 |               25 / 33 |
+| workerd          | streams         |             141 / 269 |             203 / 269 |
+| workerd          | websocket       |               11 / 18 |               14 / 18 |
+| **all**          |                 | **313 / 657 (47.6%)** | **495 / 657 (75.3%)** |
 
-Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: `main` at `3562887`, with the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes. The remaining failures:
+Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers). The remaining failures:
 
-- **Bindings (6):** D1 database names containing `/`; R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`); Cache ignores `cf.cacheKey` (Bun's `Request` drops `init.cf`).
-- **workerd (185):** mostly Bun's native streams (BYOB readers on body and transform streams, `readAtLeast()`), `AbortSignal` over RPC, streamed HTMLRewriter content, `MessagePort` and `Event` details, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`). Two modules (`fetch-test`, `reporterror-test`) do not load at all.
+- **Bindings (4):** R2 empty keys and key segments longer than the filesystem allows (keys stored as file paths), and bodies read after their key is deleted or overwritten (read lazily from disk); Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`).
+- **workerd (158):** mostly Bun's native streams (byte-stream controller details, `new ReadableStreamBYOBReader()` on a body), `AbortSignal` over RPC, `MessagePort` and `Event` details, V8 error positions in `reportError()`, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`).
 
 ---
 
@@ -227,7 +227,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `response.url` — response URL
 - 🟰 `response.body` — ReadableStream | null
 - 🟰 `response.bodyUsed` — boolean
-- ⚠️ `response.webSocket` — WebSocket | null (server reads it, but Response constructor doesn't accept webSocket in init)
+- ⚠️ `response.webSocket` — `new Response(null, { status: 101, webSocket })` keeps the socket; `undefined` rather than `null` when none was set
 - 🟰 `response.clone()` — copy the Response
 - 🟰 `response.arrayBuffer()` — read body
 - 🟰 `response.formData()` — read body
@@ -285,13 +285,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `ReadableStream.cancel(reason?)` — cancel
 - 🟰 `ReadableStream.values()` — async iterator
 - 🟰 `ReadableStreamDefaultReader` — read(), cancel(), releaseLock()
-- ⚠️ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); only on `type: 'bytes'` streams, not on Request/Response bodies or transform streams
-- ❌ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
+- ⚠️ `ReadableStreamBYOBReader` — read(view), cancel(), releaseLock(); on `type: 'bytes'` streams and on native streams (Request/Response bodies, binding bodies, IdentityTransformStream and FixedLengthStream readables, their tee branches), which are read through an adapter that stays locked to them. A stream constructed in JS without a byte source refuses one, as in workerd; the readable side of a plain `new TransformStream()` accepts one, which workerd refuses under the standard constructor. `new ReadableStreamBYOBReader(stream)` works only on `type: 'bytes'` streams
+- ✅ `ReadableStreamBYOBReader.readAtLeast(min, view)` — CF extension
 - 🟰 `WritableStream` — accessed via TransformStream.writable
 - 🟰 `WritableStreamDefaultWriter` — write(), close(), abort(), releaseLock()
 - 🟰 `new TransformStream()` — identity transform (CF default)
 - 🟰 `transformstream_enable_standard_constructor` flag — spec-compliant constructor
-- ⚠️ `new IdentityTransformStream()` — forwards bytes; a BYOB reader on its readable side throws
+- ✅ `new IdentityTransformStream()` — forwards bytes; its readable side gives a BYOB reader
 - ✅ `new FixedLengthStream(length)` — limits total bytes, sets Content-Length
 - 🟰 PipeToOptions: preventClose, preventAbort, preventCancel, signal
 
@@ -309,7 +309,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.decrypt()` — decrypt data
 - 🟰 `crypto.subtle.sign()` — sign data
 - 🟰 `crypto.subtle.verify()` — verify signature
-- 🟰 `crypto.subtle.digest()` — compute hash
+- ✅ `crypto.subtle.digest()` — compute hash; also MD5, as in workerd
 - 🟰 `crypto.subtle.generateKey()` — generate key/pair
 - 🟰 `crypto.subtle.deriveKey()` — derive key
 - 🟰 `crypto.subtle.deriveBits()` — derive bits
@@ -318,7 +318,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - 🟰 `crypto.subtle.wrapKey()` — wrap key
 - 🟰 `crypto.subtle.unwrapKey()` — unwrap key
 - ✅ `crypto.subtle.timingSafeEqual(a, b)` — non-standard, timing-safe compare
-- ⚠️ `crypto.DigestStream` — WritableStream that computes hash digest; no `bytesWritten`, no CRC32 algorithms, no `Symbol.dispose`
+- ✅ `crypto.DigestStream` — WritableStream that computes a digest (MD5, SHA-1/256/384/512, CRC32, CRC32C, CRC64/NVME) of the written bytes or strings; `bytesWritten`, `Symbol.dispose`; aborting rejects `digest`
 - 🟰 Algorithms: RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA, ECDH, Ed25519, X25519, AES-CTR/CBC/GCM/KW, SHA-1/256/384/512, MD5, HKDF, PBKDF2, HMAC
 
 ### 1.12 HTMLRewriter
@@ -333,13 +333,13 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ Text: text, lastInTextNode, removed, before, after, replace, remove
 - ✅ Comment: text, removed, before, after, replace, remove
 - ✅ Document: doctype, comments, text, end
-- ❌ Streamed content: a `ReadableStream` or `Response` as the content of before/after/prepend/append/replace
+- ⚠️ Streamed content: a `ReadableStream` or `Response` as the content of before/after/prepend/append/replace/setInnerContent; it is read to the end (UTF-8) before the rewriter continues, not streamed through
 
 > **Note:** HTMLRewriter runs on `html-rewriter-wasm` (the lol-html engine that Cloudflare uses, built to WASM), which lopata installs as a regular dependency. The output streams, and async handlers can await any binding, including Durable Object calls.
 
 ### 1.13 WebSocket
 
-- ⚠️ `new WebSocketPair()` — create client/server pair; `Object.values()` works, array destructuring (`const [client, server] = …`) throws
+- ✅ `new WebSocketPair()` — create client/server pair; `const [client, server] = …` and `Object.values()` both work, and both sockets are `instanceof WebSocket`
 - ✅ `ws.accept()` — begin handling (CF-specific)
 - 🟰 `ws.send(message)` — send data
 - 🟰 `ws.close(code?, reason?)` — close connection
@@ -403,24 +403,26 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `navigator.userAgent` — "Cloudflare-Workers" (global_navigator flag)
 - ✅ `navigator.language` — "en" (enable_navigator_language flag)
 - 🟰 `performance.now()` — ms since timeOrigin (Bun native, not CF semantics)
-- 🟰 `performance.timeOrigin` — Bun native (not always 0 like CF)
+- ✅ `performance.timeOrigin` — always 0, as on Cloudflare
 
 ### 1.19 Timers & Standard APIs
 
 - 🟰 `setTimeout(fn, delay)` / `clearTimeout(id)`
 - 🟰 `setInterval(fn, delay)` / `clearInterval(id)`
-- ⚠️ `scheduler.wait(ms)` — await-able setTimeout alternative; the `signal` option is ignored
+- ✅ `scheduler.wait(ms, { signal })` — await-able setTimeout alternative; an aborted `signal` rejects with its reason and clears the timer
 - 🟰 `atob()` / `btoa()` — Base64 encode/decode
 - 🟰 `AbortController` / `AbortSignal` — standard
 - 🟰 `AbortSignal.timeout(delay)`, `AbortSignal.abort()`, `AbortSignal.any(signals)`
 - 🟰 `CompressionStream` / `DecompressionStream` — gzip, deflate, deflate-raw
 - 🟰 `structuredClone(value)` — deep copy
-- 🟰 `queueMicrotask(fn)`
+- ✅ `queueMicrotask(fn)` — a callback that throws dispatches an `ErrorEvent` named `error` on the global scope, then is logged unless a listener calls `preventDefault()`
+- ⚠️ `reportError(error)` — dispatches an `ErrorEvent` named `error` and logs the error unless cancelled; `filename`, `lineno` and `colno` are left empty
+- ⚠️ `Cloudflare.compatibilityFlags` — read-only map of enable flags: those lopata models, resolved from the compatibility date and flags, plus every flag the config lists as `true`; flags lopata does not model that only the date would enable are absent
 - 🟰 `console.log/debug/info/warn/error/trace/dir/table`
 - 🟰 `EventTarget`, `Event`, `CustomEvent`
-- ✅ Global `addEventListener` for `unhandledrejection`, `rejectionhandled` and custom events; `error` listeners register but no `error` event is dispatched
-- ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread keeps serving
-- ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads still terminate
+- ✅ Global `addEventListener` for `error` (from `reportError()` and `queueMicrotask()`), `unhandledrejection`, `rejectionhandled` and custom events; an uncaught exception from a timer or listener is not dispatched as `error`
+- ✅ Unhandled rejection: logged and dispatched as `unhandledrejection`; the worker thread (user worker, Durable Object or Worker Loader) keeps serving
+- ✅ Uncaught exception (e.g. thrown from a timer): logged; the request, RPC call or Durable Object call that scheduled it fails with the error, others are not affected. A Durable Object alarm only logs it. Worker-loader threads behave the same
 - 🟰 `Blob`, `File`, `FormData`
 - 🟰 `MessageChannel`, `MessagePort` (expose_global_message_channel flag)
 - 🟰 `AsyncLocalStorage` (nodejs_als / nodejs_compat flag)
@@ -628,8 +630,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 - ✅ `body` — ReadableStream
 - ✅ `bodyUsed` — boolean
-- ✅ `arrayBuffer()` / `text()` / `json()` / `blob()`
-- ❌ `bytes()`
+- ✅ `arrayBuffer()` / `bytes()` / `text()` / `json()` / `blob()`
 - ⚠️ A body is read from disk lazily: deleting or overwriting the key before the body is consumed makes the read fail (ENOENT) or return the new object's bytes
 
 ### 4.4 R2GetOptions
@@ -654,7 +655,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `cursor` — pagination token (key-based)
 - ✅ `delimiter` — grouping character (e.g. "/"); `limit` counts delimited prefixes too
 - ✅ `startAfter` — lexicographic start (exclusive)
-- ✅ `include` — ["httpMetadata", "customMetadata"]; metadata is returned only when included (as with compatibility dates from 2022-08-04, regardless of the date)
+- ✅ `include` — ["httpMetadata", "customMetadata"]; metadata is returned only when included from compatibility date 2022-08-04 or with `r2_list_honor_include`; before that list returns both
 
 ### 4.7 R2 List Result
 
@@ -1025,7 +1026,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `cache.match(request, options?)` — retrieve response; options: { ignoreMethod }
 - ✅ `match()` conditional requests: `If-None-Match` / `If-Modified-Since` → 304
 - ✅ `match()` range requests: 206 for one range, `multipart/byteranges` for several, 416 when unsatisfiable
-- ❌ `cf.cacheKey` on the request — ignored by put/match/delete (Bun's `Request` drops `init.cf`)
+- ✅ `cf.cacheKey` on the request — put/match/delete key the entry by it instead of the URL (`new Request(url, { cf })` keeps `init.cf` as `request.cf`)
 - ✅ `cache.delete(request, options?)` — remove response; options: { ignoreMethod }
 
 ### 8.3 Cache Constraints
@@ -1160,10 +1161,10 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 10.5 RPC Serializable Types
 
-- ✅ Structured cloneable: objects, arrays, strings, numbers, etc. — passed in-process
-- ✅ ReadableStream / WritableStream — passed in-process
-- ✅ Request, Response, Headers — passed in-process
-- ✅ Functions → stubs; RpcTarget subclasses → stubs — via `createRpcFunctionStub()` / `createRpcStub()`
+- ✅ Structured cloneable: objects, arrays, strings, numbers, etc. — structured-cloned when the call crosses a worker thread (service binding to another worker, Durable Object, Worker Loader); passed by reference within one thread
+- ⚠️ ReadableStream / WritableStream — passed by reference within one thread; across a worker thread the call fails with a `DataCloneError` (Bun's structured clone)
+- ⚠️ Request, Response, Headers — as streams: same thread only
+- ⚠️ Functions → stubs; RpcTarget subclasses → stubs (`createRpcFunctionStub()` / `createRpcStub()`) — same thread only; across a worker thread lopata warns and the call fails with a `DataCloneError`
 - ❌ AbortSignal — passing one to an RPC method fails (the worker thread's `postMessage` cannot clone it)
 - ⚠️ Max serialized payload: 32 MiB — limit defined but not enforced
 

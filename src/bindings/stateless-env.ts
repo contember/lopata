@@ -10,6 +10,7 @@
 
 import type { Database } from 'bun:sqlite'
 import path from 'node:path'
+import { resolveCompatibility } from '../compatibility'
 import type { WranglerConfig } from '../config'
 import { instrumentBinding, instrumentD1 } from '../tracing/instrument'
 import { AiBinding } from './ai'
@@ -65,6 +66,7 @@ export function createStaticAssets(config: WranglerConfig, baseDir: string): Sta
 export function addStatelessBindings(env: Record<string, unknown>, opts: StatelessEnvOptions): void {
 	const { config, db, dataDir, baseDir, artifactsBaseUrl } = opts
 	const log = opts.log ?? (() => {})
+	const compatibility = resolveCompatibility({ date: config.compatibility_date, flags: config.compatibility_flags })
 
 	for (const kv of config.kv_namespaces ?? []) {
 		log(`KV namespace: ${kv.binding}`)
@@ -77,7 +79,7 @@ export function addStatelessBindings(env: Record<string, unknown>, opts: Statele
 
 	for (const r2 of config.r2_buckets ?? []) {
 		log(`R2 bucket: ${r2.binding} (${r2.bucket_name})`)
-		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, dataDir), {
+		env[r2.binding] = instrumentBinding(new FileR2Bucket(db, r2.bucket_name, dataDir, undefined, compatibility), {
 			type: 'r2',
 			name: r2.binding,
 			methods: ['get', 'put', 'delete', 'list', 'head', 'createMultipartUpload'],

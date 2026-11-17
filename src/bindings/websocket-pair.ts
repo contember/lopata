@@ -258,4 +258,10 @@ export class WebSocketPair {
 		this[0] = a
 		this[1] = b
 	}
+
+	/** `const [client, server] = new WebSocketPair()`, as in workerd. */
+	*[Symbol.iterator](): IterableIterator<CFWebSocket> {
+		yield this[0]
+		yield this[1]
+	}
 }

@@ -2,6 +2,7 @@ import { randomUUIDv7 } from 'bun'
 import type { Database } from 'bun:sqlite'
 import { startSpan } from '../tracing/span'
 import { registerCloneable } from '../worker-thread/rpc-shared'
+import { NativeReadableStream } from './cf-streams'
 
 export class EmailMessage {
 	readonly from: string
@@ -126,7 +127,7 @@ export class ForwardableEmailMessage {
 		this.rawBytes = rawBytes
 		this.rawSize = rawBytes.byteLength
 		this.headers = parseEmailHeaders(rawBytes)
-		this.raw = new ReadableStream({
+		this.raw = new NativeReadableStream({
 			start(controller) {
 				controller.enqueue(rawBytes)
 				controller.close()

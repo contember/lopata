@@ -12,6 +12,13 @@ const CACHE_DEFAULTS: Required<CacheLimits> = {
 	maxHeaderSize: 32 * 1024,
 }
 
+/** The entry key: `request.cf.cacheKey` when the request sets one (Enterprise custom cache keys), else its URL. */
+function cacheKey(request: Request): string {
+	const cf: unknown = Reflect.get(request, 'cf')
+	const key: unknown = typeof cf === 'object' && cf !== null ? Reflect.get(cf, 'cacheKey') : undefined
+	return typeof key === 'string' ? key : request.url
+}
+
 /**
  * Parse Cache-Control into lower-cased directive names mapped to their unquoted value (null when bare).
  * Commas inside quoted values (e.g. `private="set-cookie, x"`) do not split directives.
@@ -169,7 +176,7 @@ export class SqliteCache {
 			return undefined
 		}
 
-		const url = req.url
+		const url = cacheKey(req)
 		const row = this.db.query<{ status: number; headers: string; body: Uint8Array; expires_at: number | null }, [string, string]>(
 			'SELECT status, headers, body, expires_at FROM cache_entries WHERE cache_name = ? AND url = ?',
 		).get(this.cacheName, url)
@@ -244,7 +251,7 @@ export class SqliteCache {
 			storedHeaders.delete('set-cookie')
 		}
 
-		const url = req.url
+		const url = cacheKey(req)
 		const status = response.status
 		const expiresAt = policy.expiresAt
 		const headers = JSON.stringify(Array.from(storedHeaders))
@@ -268,7 +275,7 @@ export class SqliteCache {
 			return false
 		}
 
-		const url = req.url
+		const url = cacheKey(req)
 		const result = this.db.query(
 			'DELETE FROM cache_entries WHERE cache_name = ? AND url = ?',
 		).run(this.cacheName, url)

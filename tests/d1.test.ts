@@ -1,6 +1,17 @@
 import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { LocalD1Database, LocalD1DatabaseSession, LocalD1PreparedStatement } from '../src/bindings/d1'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { runConsoleQuery } from '../src/api/handlers/d1'
+import {
+	d1DatabaseNameFromFile,
+	d1DatabasePath,
+	LocalD1Database,
+	LocalD1DatabaseSession,
+	LocalD1PreparedStatement,
+	openD1Database,
+} from '../src/bindings/d1'
 
 let db: Database
 let d1: LocalD1Database
@@ -484,5 +495,79 @@ describe('D1Database', () => {
 			expect(result.results).toHaveLength(1)
 			expect(result.results[0]!.name).toBe('Alice')
 		})
+	})
+})
+
+describe('database files', () => {
+	test('names with path separators and percent signs map to one file inside d1/ and back', async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'd1-names-'))
+		try {
+			const names = ['my/ Database', '../escape', 'a\\b', '100%', 'plain-name']
+			for (const name of names) {
+				const db = openD1Database(dataDir, name)
+				await db.exec(`CREATE TABLE t (name TEXT); INSERT INTO t VALUES ('${name.replace(/'/g, "''")}')`)
+			}
+			expect(readdirSync(dataDir)).toEqual(['d1'])
+			const files = readdirSync(join(dataDir, 'd1')).filter(f => f.endsWith('.sqlite'))
+			expect(files.map(d1DatabaseNameFromFile).sort()).toEqual([...names].sort())
+			for (const name of names) {
+				const row = await openD1Database(dataDir, name).prepare('SELECT name FROM t').first<{ name: string }>()
+				expect(row).toEqual({ name })
+			}
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
+	})
+
+	test('a database created under its verbatim name keeps its file', async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'd1-legacy-'))
+		try {
+			mkdirSync(join(dataDir, 'd1'))
+			for (const name of ['100%', 'a\\b']) {
+				const legacy = new Database(join(dataDir, 'd1', `${name}.sqlite`))
+				legacy.run(`CREATE TABLE t (name TEXT); INSERT INTO t VALUES ('${name}')`)
+				legacy.close()
+				const row = await openD1Database(dataDir, name).prepare('SELECT name FROM t').first<{ name: string }>()
+				expect(row).toEqual({ name })
+			}
+			expect(readdirSync(join(dataDir, 'd1')).filter(f => f.endsWith('.sqlite')).sort()).toEqual(['100%.sqlite', 'a\\b.sqlite'])
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
+	})
+
+	test('a name that leaves d1/ never resolves to a file outside it', () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'd1-escape-'))
+		try {
+			writeFileSync(join(dataDir, 'escape.sqlite'), '')
+			expect(dirname(d1DatabasePath(dataDir, '../escape'))).toBe(join(dataDir, 'd1'))
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
+	})
+
+	test('a file that is not a database has no name', () => {
+		expect(d1DatabaseNameFromFile('db.sqlite-wal')).toBeNull()
+	})
+})
+
+describe('dashboard console', () => {
+	test('runs every statement and returns the result of the last', () => {
+		const db = new Database(':memory:')
+		const result = runConsoleQuery(db, "CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('a'), ('b'); SELECT v FROM t ORDER BY v")
+		expect(result).toEqual({ columns: ['v'], rows: [{ v: 'a' }, { v: 'b' }], count: 2 })
+	})
+
+	test('reports the changes of a trailing write', () => {
+		const db = new Database(':memory:')
+		const result = runConsoleQuery(db, "CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('a'), ('b')")
+		expect(result).toEqual({ columns: [], rows: [], count: 2, message: '2 row(s) affected' })
+	})
+
+	test('rolls back the leading statements when a later one fails', () => {
+		const db = new Database(':memory:')
+		db.run('CREATE TABLE t (v TEXT)')
+		expect(() => runConsoleQuery(db, "INSERT INTO t VALUES ('a'); SELECT * FROM missing")).toThrow('no such table')
+		expect(db.query('SELECT count(*) AS c FROM t').get()).toEqual({ c: 0 })
 	})
 })

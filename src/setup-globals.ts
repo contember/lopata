@@ -1,9 +1,9 @@
 import { SqliteCacheStorage } from './bindings/cache'
-import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-streams'
+import { FixedLengthStream, IdentityTransformStream, installByobReading } from './bindings/cf-streams'
 import { patchGlobalCrypto } from './bindings/crypto-extras'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
-import { WebSocketPair } from './bindings/websocket-pair'
+import { CFWebSocket, WebSocketPair } from './bindings/websocket-pair'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
 // The Vite plugin and the CLI run the main worker and its in-process Durable Objects in this
@@ -72,6 +72,16 @@ export function setupCloudflareGlobals() {
 		configurable: true,
 	})
 
+	// workerd's WebSocketPair sockets are WebSockets; Bun's global WebSocket is its outbound client, a different class.
+	const NativeWebSocket = globalThis.WebSocket
+	Object.defineProperty(NativeWebSocket, Symbol.hasInstance, {
+		value(this: unknown, value: unknown): boolean {
+			if (this === NativeWebSocket && value instanceof CFWebSocket) return true
+			return Function.prototype[Symbol.hasInstance].call(this, value)
+		},
+		configurable: true,
+	})
+
 	// Register global `WebSocketRequestResponsePair` class (used by DO hibernation API)
 	Object.defineProperty(globalThis, 'WebSocketRequestResponsePair', {
 		value: WebSocketRequestResponsePair,
@@ -121,6 +131,8 @@ export function setupCloudflareGlobals() {
 		configurable: true,
 	})
 
+	installByobReading()
+
 	// Patch crypto with CF-specific extensions (timingSafeEqual, DigestStream)
 	patchGlobalCrypto()
 
@@ -147,14 +159,27 @@ export function setupCloudflareGlobals() {
 		configurable: true,
 	})
 
-	// Register scheduler.wait(ms) — await-able setTimeout alternative
+	// Register scheduler.wait(ms, { signal }) — await-able setTimeout alternative. Writable: workerd lets code replace it.
 	Object.defineProperty(globalThis, 'scheduler', {
-		value: {
-			wait(ms: number): Promise<void> {
-				return new Promise((resolve) => setTimeout(resolve, ms))
-			},
-		},
-		writable: false,
+		value: { wait: schedulerWait },
+		writable: true,
 		configurable: true,
+	})
+}
+
+/** workerd's scheduler.wait(): rejects with the signal's reason when it aborts, and clears the timer then. */
+function schedulerWait(delay: unknown, options?: { signal?: AbortSignal }): Promise<void> {
+	const signal = options?.signal
+	if (signal?.aborted) return Promise.reject(signal.reason)
+	return new Promise((resolve, reject) => {
+		const onAbort = () => {
+			clearTimeout(timer)
+			reject(signal?.reason)
+		}
+		const timer = setTimeout(() => {
+			signal?.removeEventListener('abort', onAbort)
+			resolve()
+		}, Number(delay))
+		signal?.addEventListener('abort', onAbort, { once: true })
 	})
 }

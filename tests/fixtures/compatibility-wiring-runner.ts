@@ -120,7 +120,7 @@ try {
 	console.log('compatibility wiring passed')
 } finally {
 	await Promise.all(dos.map(executor => executor.dispose()))
-	for (const manager of [caller, target]) for (const generation of manager.list()) manager.stop(generation.id)
+	for (const manager of [caller, target]) for (const generation of manager.list()) await manager.stop(generation.id)
 	db.close()
 }
 process.exit(0)

@@ -7,7 +7,9 @@ test('Images response preserves passthrough bytes and headers when Sharp is unav
 	// Isolate resolution from repository dependencies and disable Bun's automatic package installation.
 	const directory = mkdtempSync(join(tmpdir(), 'images-response-fallback-'))
 	try {
-		await Bun.write(join(directory, 'images.ts'), Bun.file(resolve(import.meta.dir, '../src/bindings/images.ts')))
+		for (const source of ['images.ts', 'cf-streams.ts']) {
+			await Bun.write(join(directory, source), Bun.file(resolve(import.meta.dir, '../src/bindings', source)))
+		}
 		const child = Bun.spawn([
 			process.execPath,
 			'--no-install',

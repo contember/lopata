@@ -103,6 +103,22 @@ describe('Worker Loader threads end with their owner', () => {
 		await expectRemoved(loaderDir)
 	}, 15_000)
 
+	test('dispose() resolves once the worker thread has exited', async () => {
+		const executor = new WorkerThreadExecutor({ modulePath: FIXTURE, config: CONFIG, baseDir: directory, mainEnv: {} })
+		let loaderDir = ''
+		try {
+			await executor.ready()
+			const response = await executor.executeFetch(new Request(`http://localhost/?file=${encodeURIComponent(tickFile)}`))
+			expect(await response.text()).toBe('ticking')
+			await untilTicking()
+			loaderDir = ownerLoaderDir()
+		} finally {
+			await executor.dispose()
+		}
+		// The directory is removed by the thread's close event, after the thread closed its data.sqlite connection.
+		expect(existsSync(loaderDir)).toBe(false)
+	}, 15_000)
+
 	function doHarness() {
 		const db = new Database(join(directory, 'data.sqlite'))
 		db.run('PRAGMA journal_mode=WAL')

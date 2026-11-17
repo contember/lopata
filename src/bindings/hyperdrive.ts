@@ -4,6 +4,8 @@
  * connect() creates a raw TCP socket via Bun.connect().
  */
 
+import { NativeReadableStream } from './cf-streams'
+
 interface HyperdriveSocket {
 	readable: ReadableStream<Uint8Array>
 	writable: WritableStream<Uint8Array>
@@ -67,7 +69,7 @@ export class HyperdriveBinding {
 		let rejectClosed: (err: Error) => void
 		let bunSocket: ReturnType<typeof Bun.connect> extends Promise<infer T> ? T : never
 
-		const readable = new ReadableStream<Uint8Array>({
+		const readable = new NativeReadableStream<Uint8Array>({
 			start(controller) {
 				readableController = controller
 			},

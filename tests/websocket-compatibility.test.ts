@@ -327,3 +327,19 @@ describe('socket-owned event delivery', () => {
 		expect(pending).toHaveLength(2)
 	})
 })
+
+describe('WebSocketPair shape', () => {
+	test('destructures into its two sockets', () => {
+		const pair = new WebSocketPair()
+		const [client, server] = pair
+		expect(client).toBe(pair[0])
+		expect(server).toBe(pair[1])
+		expect(Object.values(pair)).toEqual([pair[0], pair[1]])
+	})
+
+	test('its sockets are instances of the global WebSocket', () => {
+		const [client] = new WebSocketPair()
+		expect(client instanceof WebSocket).toBe(true)
+		expect({} instanceof WebSocket).toBe(false)
+	})
+})

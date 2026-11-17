@@ -1,5 +1,6 @@
 import { HTMLRewriter as LolHtmlRewriter } from 'html-rewriter-wasm'
 import type { DocumentHandlers, Element, ElementHandlers } from 'html-rewriter-wasm'
+import { NativeReadableStream } from './cf-streams'
 
 type Handler<T> = (arg: T) => void | Promise<void>
 
@@ -38,7 +39,7 @@ export class HTMLRewriter {
 		const documentHandlers = this.documentHandlers
 		const encoder = new TextEncoder()
 
-		const body = new ReadableStream<Uint8Array>({
+		const body = new NativeReadableStream<Uint8Array>({
 			async start(controller) {
 				const rewriter = new LolHtmlRewriter(chunk => controller.enqueue(chunk))
 				const handlerErrors = new HandlerErrors()
@@ -125,13 +126,14 @@ class HandlerErrors {
 		el.onEndTag = handler => onEndTag(this.guard(handler.bind(el)))
 	}
 
-	private guard<T>(handler: Handler<T>): Handler<T> {
+	private guard<T extends object>(handler: Handler<T>): Handler<T> {
 		return arg => {
 			if (this.failure) return
+			const streamed = new StreamedContent(arg)
 			try {
 				const result = handler(arg)
-				if (result instanceof Promise) {
-					return result.catch(error => this.record(error))
+				if (result instanceof Promise || streamed.isPending()) {
+					return Promise.resolve(result).then(() => streamed.flush()).catch(error => this.record(error))
 				}
 			} catch (error) {
 				this.record(error)
@@ -141,5 +143,55 @@ class HandlerErrors {
 
 	private record(error: unknown): void {
 		this.failure ??= { error }
+	}
+}
+
+const CONTENT_METHODS = ['before', 'after', 'prepend', 'append', 'replace', 'setInnerContent']
+
+/**
+ * workerd's content methods also take a ReadableStream or a Response; lol-html's take strings. Once a handler passes a
+ * stream, that call and every later content call on the same object are queued, and applied in order after the
+ * handler has finished, each stream read to text first. The rewriter awaits the returned promise.
+ */
+class StreamedContent {
+	private queue: Array<() => Promise<void>> | null = null
+
+	constructor(target: object) {
+		for (const method of CONTENT_METHODS) {
+			const original: unknown = Reflect.get(target, method)
+			if (typeof original !== 'function') continue
+			Reflect.set(target, method, (content: unknown, options?: unknown) => {
+				if (this.queue === null && !isStreamedContent(content)) return Reflect.apply(original, target, [content, options])
+				this.queue ??= []
+				this.queue.push(async () => {
+					Reflect.apply(original, target, [isStreamedContent(content) ? await readContent(content) : content, options])
+				})
+				return target
+			})
+		}
+	}
+
+	isPending(): boolean {
+		return this.queue !== null
+	}
+
+	async flush(): Promise<void> {
+		// Reset first: the same object may reach another handler, whose calls must not land in this finished queue.
+		const queue = this.queue ?? []
+		this.queue = null
+		for (const apply of queue) await apply()
+	}
+}
+
+function isStreamedContent(content: unknown): content is ReadableStream | Response {
+	return content instanceof ReadableStream || content instanceof Response
+}
+
+async function readContent(content: ReadableStream | Response): Promise<string> {
+	const bytes = await (content instanceof Response ? content : new Response(content)).arrayBuffer()
+	try {
+		return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+	} catch {
+		throw new Error('Parser error: Invalid UTF-8')
 	}
 }

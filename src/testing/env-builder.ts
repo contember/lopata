@@ -64,7 +64,7 @@ export function buildTestEnv(
 		} else if (spec === 'r2') {
 			const tmpDir = mkdtempSync(join(tmpdir(), 'lopata-test-r2-'))
 			tmpDirs.push(tmpDir)
-			env[bindingName] = new FileR2Bucket(db, bindingName, tmpDir)
+			env[bindingName] = new FileR2Bucket(db, bindingName, tmpDir, undefined, compatibility)
 		} else if (spec === 'd1') {
 			env[bindingName] = new LocalD1Database(new Database(':memory:'))
 		} else if (spec === 'queue') {

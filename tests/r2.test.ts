@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FileR2Bucket, R2Object, R2ObjectBody } from '../src/bindings/r2'
+import { resolveCompatibility } from '../src/compatibility'
 import { runMigrations } from '../src/db'
 
 let r2: FileR2Bucket
@@ -34,6 +35,19 @@ test('put string and get', async () => {
 	const obj = await r2.get('key')
 	expect(obj).not.toBeNull()
 	expect(await (obj as R2ObjectBody).text()).toBe('hello world')
+})
+
+test('bytes() returns the body as a Uint8Array, including for ranges', async () => {
+	await r2.put('key', 'hello world')
+	const full = await r2.get('key')
+	if (!(full instanceof R2ObjectBody)) throw new Error('expected an object body')
+	const bytes = await full.bytes()
+	expect(bytes).toBeInstanceOf(Uint8Array)
+	expect(new TextDecoder().decode(bytes)).toBe('hello world')
+
+	const ranged = await r2.get('key', { range: { offset: 6, length: 5 } })
+	if (!(ranged instanceof R2ObjectBody)) throw new Error('expected an object body')
+	expect(new TextDecoder().decode(await ranged.bytes())).toBe('world')
 })
 
 test('put and get as arrayBuffer', async () => {
@@ -452,6 +466,35 @@ test('list with include filters metadata', async () => {
 	const withBoth = await r2.list({ include: ['httpMetadata', 'customMetadata'] })
 	expect(withBoth.objects[0]!.httpMetadata).toEqual({ contentType: 'text/plain' })
 	expect(withBoth.objects[0]!.customMetadata).toEqual({ tag: 'test' })
+})
+
+test('list returns all metadata regardless of include before r2_list_honor_include', async () => {
+	const legacy = new FileR2Bucket(db, 'legacy-bucket', tmpDir, undefined, resolveCompatibility({ date: '2022-08-03' }))
+	await legacy.put('key', 'data', {
+		httpMetadata: { contentType: 'text/plain' },
+		customMetadata: { tag: 'test' },
+	})
+
+	const { objects } = await legacy.list()
+	expect(objects[0]!.httpMetadata).toEqual({ contentType: 'text/plain' })
+	expect(objects[0]!.customMetadata).toEqual({ tag: 'test' })
+})
+
+test('list honors include from the r2_list_honor_include date or flag', async () => {
+	const dated = new FileR2Bucket(db, 'dated-bucket', tmpDir, undefined, resolveCompatibility({ date: '2022-08-04' }))
+	const flagged = new FileR2Bucket(
+		db,
+		'flagged-bucket',
+		tmpDir,
+		undefined,
+		resolveCompatibility({ date: '2022-01-01', flags: ['r2_list_honor_include'] }),
+	)
+	for (const bucket of [dated, flagged]) {
+		await bucket.put('key', 'data', { httpMetadata: { contentType: 'text/plain' }, customMetadata: { tag: 'test' } })
+		const { objects } = await bucket.list()
+		expect(objects[0]!.httpMetadata).toEqual({})
+		expect(objects[0]!.customMetadata).toEqual({})
+	}
 })
 
 // --- New: Multipart upload ---

@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { beforeEach, describe, expect, test } from 'bun:test'
 import { SqliteCache, SqliteCacheStorage } from '../src/bindings/cache'
 import { runMigrations } from '../src/db'
+import '../src/worker-thread/request-clone-fix'
 
 let db: Database
 let cache: SqliteCache
@@ -326,4 +327,24 @@ test('match serves the whole body when the requested ranges add up to more than 
 	const res = await storage.default.match(new Request('http://localhost/r', { headers: { Range: `bytes=${Array(50).fill('0-').join(',')}` } }))
 	expect(res?.status).toBe(200)
 	expect(await res?.text()).toBe('0123456789')
+})
+
+describe('cf.cacheKey', () => {
+	const keyed = (url: string, cacheKey: string) => {
+		const init: RequestInit & { cf: { cacheKey: string } } = { cf: { cacheKey } }
+		return new Request(url, init)
+	}
+
+	test('requests with the same cacheKey share an entry whatever their URLs', async () => {
+		await cache.put(keyed('https://example.com/a?v=1', 'shared'), new Response('cached'))
+		const hit = await cache.match(keyed('https://example.com/b?v=2', 'shared'))
+		expect(await hit?.text()).toBe('cached')
+		expect(await cache.match('https://example.com/a?v=1')).toBeUndefined()
+	})
+
+	test('delete() uses the cacheKey too', async () => {
+		await cache.put(keyed('https://example.com/a', 'k'), new Response('cached'))
+		expect(await cache.delete(keyed('https://example.com/other', 'k'))).toBe(true)
+		expect(await cache.match(keyed('https://example.com/a', 'k'))).toBeUndefined()
+	})
 })

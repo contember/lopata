@@ -71,7 +71,7 @@ describe('GenerationManager.reload()', () => {
 		expect(unhandledRejections).toEqual([])
 	})
 
-	test('workflow resume waits until every older generation is stopped', () => {
+	test('workflow resume waits until every older generation is stopped and its thread has exited', async () => {
 		// Rapid reloads leave several older generations in overlapping grace
 		// windows. Resuming when the FIRST of them finishes would re-execute
 		// instances another older generation is still running (their DB rows
@@ -79,16 +79,21 @@ describe('GenerationManager.reload()', () => {
 		const config = { main: 'index.ts' } as unknown as WranglerConfig
 		const manager = new GenerationManager(config, '/tmp', {})
 
-		type FakeGen = { id: number; state: string; isIdle: () => boolean; drain: () => void; stop: () => void }
-		const makeGen = (id: number, state: string): FakeGen => ({
-			id,
-			state,
-			isIdle: () => true,
-			drain: () => {},
-			stop() {
-				this.state = 'stopped'
-			},
-		})
+		type FakeGen = { id: number; state: string; isIdle: () => boolean; drain: () => void; stop: () => Promise<void>; exit: () => void }
+		const makeGen = (id: number, state: string): FakeGen => {
+			const exited = Promise.withResolvers<void>()
+			return {
+				id,
+				state,
+				isIdle: () => true,
+				drain: () => {},
+				stop() {
+					this.state = 'stopped'
+					return exited.promise
+				},
+				exit: () => exited.resolve(),
+			}
+		}
 		const gen1 = makeGen(1, 'draining')
 		const gen2 = makeGen(2, 'draining')
 		const gen3 = makeGen(3, 'active')
@@ -109,10 +114,18 @@ describe('GenerationManager.reload()', () => {
 		// gen1's grace window elapses first — gen2 is still alive, so no resume yet
 		m._scheduleDrainAndStop(1, gen1)
 		expect(gen1.state).toBe('stopped')
+		gen1.exit()
+		await Bun.sleep(0)
 		expect(resumed).toEqual([])
 
-		// gen2 finishes — every older generation is stopped → resume on the active gen
+		// gen2 finishes, but its thread is still exiting — no resume yet
 		m._scheduleDrainAndStop(2, gen2)
+		await Bun.sleep(0)
+		expect(resumed).toEqual([])
+
+		// every older generation's thread is gone → resume on the active gen
+		gen2.exit()
+		await Bun.sleep(0)
 		expect(resumed).toEqual([3])
 	})
 })

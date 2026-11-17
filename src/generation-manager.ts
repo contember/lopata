@@ -155,7 +155,7 @@ export class GenerationManager {
 		try {
 			readyInfo = await executor.ready()
 		} catch (err) {
-			executor.dispose()
+			await executor.dispose()
 			throw err
 		}
 
@@ -270,8 +270,9 @@ export class GenerationManager {
 	}
 
 	private _scheduleDrainAndStop(genId: number, gen: Generation): void {
-		const finish = () => {
-			this._stopGeneration(genId)
+		const finish = async () => {
+			// Awaited: the old worker thread must be gone before its workflows resume elsewhere.
+			await this._stopGeneration(genId)
 			// Resume only once EVERY older generation's worker is gone, not just
 			// the one whose grace window elapsed here. Rapid reloads leave several
 			// older generations in overlapping grace windows; one of them may
@@ -280,13 +281,14 @@ export class GenerationManager {
 			// resuming then would run one workflow in two threads at once.
 			const active = this.active
 			if (!active) return
-			for (const [id, g] of this.generations) {
-				if (id < active.id && g.state !== 'stopped') return
-			}
+			const older = [...this.generations].filter(([id]) => id < active.id).map(([, g]) => g)
+			if (older.some(g => g.state !== 'stopped')) return
+			// A generation stopped by another path may still be waiting for its thread to exit.
+			await Promise.all(older.map(g => g.stop()))
 			this._resumeWorkflows(active)
 		}
 		if (gen.isIdle()) {
-			finish()
+			void finish()
 			return
 		}
 		void Promise.race([
@@ -295,16 +297,18 @@ export class GenerationManager {
 		]).then(finish)
 	}
 
-	private _stopGeneration(genId: number): void {
+	private async _stopGeneration(genId: number): Promise<void> {
 		const gen = this.generations.get(genId)
-		if (!gen || gen.state === 'stopped') return
-		gen.stop(new Set(this._doNamespaces.values()))
-		// Clean up reference (keep for dashboard listing briefly)
-		// Remove after another grace period to let dashboard show it
-		setTimeout(() => {
-			this.generations.delete(genId)
-			this._resumedGenIds.delete(genId)
-		}, 60_000)
+		if (!gen) return
+		if (gen.state !== 'stopped') {
+			// Clean up reference (keep for dashboard listing briefly)
+			// Remove after another grace period to let dashboard show it
+			setTimeout(() => {
+				this.generations.delete(genId)
+				this._resumedGenIds.delete(genId)
+			}, 60_000)
+		}
+		await gen.stop(new Set(this._doNamespaces.values()))
 	}
 
 	/** Force-drain a specific generation */
@@ -314,9 +318,9 @@ export class GenerationManager {
 		gen.drain(new Set(this._doNamespaces.values()))
 	}
 
-	/** Force-stop a specific generation */
-	stop(genId: number): void {
-		this._stopGeneration(genId)
+	/** Force-stop a specific generation; resolves once its worker thread has exited. */
+	stop(genId: number): Promise<void> {
+		return this._stopGeneration(genId)
 	}
 
 	/** Update the grace period for future reloads */

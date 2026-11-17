@@ -73,6 +73,8 @@ export class WorkerThreadExecutor {
 	private _pendingWorkflowControl = new Map<number, Pending<WorkflowControlResult>>()
 	private _nextId = 1
 	private _disposed = false
+	/** Resolves on the Worker's `close` event, i.e. once the thread has closed its SQLite connection. */
+	private _exited: Promise<void>
 	private _initConfig: WorkerThreadExecutorOptions
 	private _mainEnv: Record<string, unknown>
 	private _pendingWaitUntil = new Set<number>()
@@ -138,6 +140,8 @@ export class WorkerThreadExecutor {
 		this._workerLoaderDir = workerLoaderDir
 		// Fires on terminate and on a crash; the thread's dynamic workers end with it on Bun 1.4.
 		this._worker.addEventListener('close', () => removeLoaderDir(workerLoaderDir))
+		const worker = this._worker
+		this._exited = new Promise<void>(resolve => worker.addEventListener('close', () => resolve(), { once: true }))
 		this._wsBridge = new WsHostBridge<WorkerCommand>(cmd => this._send(cmd), {
 			clientMessage: (wsId, data) => ({ type: 'ws-client-message', wsId, data }),
 			clientClose: (wsId, code, reason, wasClean) => ({ type: 'ws-client-close', wsId, code, reason, wasClean }),
@@ -573,10 +577,16 @@ export class WorkerThreadExecutor {
 		}
 	}
 
-	dispose(): void {
-		if (this._disposed) return
-		this._disposed = true
-		this._worker.terminate()
-		this._failAll(new Error('Worker thread terminated'))
+	/**
+	 * Terminates the thread and resolves once it has exited. terminate() returns earlier; the thread's
+	 * last-connection close checkpoints data.sqlite under an exclusive lock, so callers must not reopen it before.
+	 */
+	async dispose(): Promise<void> {
+		if (!this._disposed) {
+			this._disposed = true
+			this._worker.terminate()
+			this._failAll(new Error('Worker thread terminated'))
+		}
+		await this._exited
 	}
 }

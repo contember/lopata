@@ -13,7 +13,7 @@ import type { ContainerContext } from './container'
 import type { ContainerConfig } from './container'
 import type { DOAbortPolicy, DOExecutor, DOExecutorFactory } from './do-executor'
 import { NON_RPC_PROPS, wrapRpcReturnValue } from './rpc-stub'
-import { mayHaveMultipleStatements, splitStatements } from './sql-split'
+import { runStatements } from './sql-split'
 import { CFWebSocket } from './websocket-pair'
 
 // --- SQL Storage Cursor ---
@@ -159,39 +159,10 @@ export class SqlStorage {
 			},
 			() => {
 				const db = this._getDb()
-				// workerd accepts several semicolon-separated statements and returns the
-				// cursor of the last one. bun:sqlite's prepare() compiles only the first
-				// statement and silently drops the rest, so the leading ones run here.
-				// A single statement skips the splitter and goes to SQLite verbatim.
-				const statements = mayHaveMultipleStatements(query) ? splitStatements(query) : []
-				if (statements.length <= 1) return this._execOne(db, statements[0] ?? query, bindings)
-
-				// On Cloudflare the implicit transaction around the event rolls back a
-				// failed exec(); a savepoint gives the same all-or-nothing outcome here.
-				db.run('SAVEPOINT lopata_sql_exec')
-				try {
-					const last = statements.pop()!
-					// Bindings belong to the last statement. Each leading statement is
-					// compiled only after the previous one ran, since it may depend on its DDL.
-					for (const sql of statements) {
-						const leading = db.prepare(sql)
-						try {
-							if (leading.paramsCount > 0) {
-								throw new Error('When executing multiple SQL statements in a single call, only the last statement can have parameters.')
-							}
-							leading.run()
-						} finally {
-							leading.finalize()
-						}
-					}
-					const cursor = this._execOne(db, last, bindings)
-					db.run('RELEASE lopata_sql_exec')
-					return cursor
-				} catch (err) {
-					db.run('ROLLBACK TO lopata_sql_exec')
-					db.run('RELEASE lopata_sql_exec')
-					throw err
-				}
+				// workerd accepts several semicolon-separated statements and returns the cursor of the last one.
+				// On Cloudflare the implicit transaction around the event rolls back a failed exec(); runStatements'
+				// savepoint gives the same all-or-nothing outcome here.
+				return runStatements(db, query, lastSql => this._execOne(db, lastSql, bindings))
 			},
 		)
 	}

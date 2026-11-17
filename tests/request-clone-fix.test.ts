@@ -46,3 +46,35 @@ describe('request-clone-fix (Bun stream-body re-wrap shim)', () => {
 		expect(new Request('http://example.test/') instanceof Request).toBe(true)
 	})
 })
+
+describe('request.cf from RequestInit', () => {
+	const cf = { cacheKey: 'custom-key' }
+	const init: RequestInit & { cf: { cacheKey: string } } = { cf }
+
+	test('new Request(url, { cf }) exposes it as request.cf', () => {
+		expect(Reflect.get(new Request('http://example.test/', init), 'cf')).toEqual(cf)
+	})
+
+	test('a request built from another request inherits its cf unless init sets one', () => {
+		const source = new Request('http://example.test/', init)
+		expect(Reflect.get(new Request(source), 'cf')).toEqual(cf)
+		expect(Reflect.get(new Request(source, { headers: { x: '1' } }), 'cf')).toEqual(cf)
+		const other: RequestInit & { cf: { cacheKey: string } } = { cf: { cacheKey: 'other' } }
+		expect(Reflect.get(new Request(source, other), 'cf')).toEqual({ cacheKey: 'other' })
+	})
+
+	test('clone() keeps cf', () => {
+		expect(Reflect.get(new Request('http://example.test/', init).clone(), 'cf')).toEqual(cf)
+	})
+
+	test('clone() of a native request keeps the cf the runtime gave it', () => {
+		const NativeRequest = Object.getPrototypeOf(Request)
+		const incoming: Request = Reflect.construct(NativeRequest, ['http://example.test/'])
+		Object.defineProperty(incoming, 'cf', { value: cf, enumerable: false })
+		expect(Reflect.get(incoming.clone(), 'cf')).toEqual(cf)
+	})
+
+	test('a request without cf has none', () => {
+		expect(Reflect.get(new Request('http://example.test/'), 'cf')).toBeUndefined()
+	})
+})
