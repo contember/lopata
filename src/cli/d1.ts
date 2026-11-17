@@ -1,7 +1,7 @@
 import { Database } from 'bun:sqlite'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { openD1Database } from '../bindings/d1'
+import { d1DatabasePath, openD1Database } from '../bindings/d1'
 import { splitStatements } from '../bindings/sql-split'
 import type { CliContext } from './context'
 import { parseArgs } from './context'
@@ -116,8 +116,7 @@ export async function applyMigrations(
 			continue
 		}
 
-		const dbPath = join(d1Dir, `${database_name}.sqlite`)
-		const db = new Database(dbPath, { create: true })
+		const db = new Database(d1DatabasePath(dataDir, database_name), { create: true })
 		db.run('PRAGMA journal_mode=WAL')
 
 		db.run(`

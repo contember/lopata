@@ -1,3 +1,5 @@
+import type { Database } from 'bun:sqlite'
+
 /** Opening quote → closing quote. SQLite accepts all four for literals/identifiers. */
 const QUOTES: Record<string, string> = { "'": "'", '"': '"', '`': '`', '[': ']' }
 
@@ -115,4 +117,49 @@ export function splitStatements(sql: string): string[] {
 export function mayHaveMultipleStatements(sql: string): boolean {
 	const idx = sql.indexOf(';')
 	return idx !== -1 && sql.slice(idx + 1).replace(/;/g, '').trim().length > 0
+}
+
+const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in a single call, only the last statement can have parameters.'
+
+/**
+ * Runs every statement in `sql`, all or nothing, and returns what `runLast` makes of the last one, as workerd's
+ * D1 and DO SQL do. bun:sqlite compiles only the first statement and silently drops the rest, so the leading
+ * ones run here without parameters, each compiled after the previous one ran (it may depend on its DDL).
+ * `ranLeading` tells `runLast` whether any statement ran before it.
+ */
+export function runStatements<T>(db: Database, sql: string, runLast: (lastSql: string, ranLeading: boolean) => T): T {
+	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
+	const lastSql = statements.pop() ?? sql
+	if (statements.length === 0) return runLast(lastSql, false)
+
+	return inSavepoint(db, () => {
+		for (const leadingSql of statements) {
+			const stmt = db.prepare(leadingSql)
+			try {
+				if (stmt.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
+				stmt.run()
+			} finally {
+				stmt.finalize()
+			}
+		}
+		return runLast(lastSql, true)
+	})
+}
+
+/** Runs `fn` all or nothing. Savepoints nest, so this works inside an open transaction or another savepoint. */
+export function inSavepoint<T>(db: Database, fn: () => T): T {
+	db.run('SAVEPOINT lopata_statements')
+	try {
+		const result = fn()
+		db.run('RELEASE lopata_statements')
+		return result
+	} catch (e) {
+		try {
+			db.run('ROLLBACK TO lopata_statements')
+			db.run('RELEASE lopata_statements')
+		} catch {
+			// ON CONFLICT ROLLBACK and similar failures already unwound the whole transaction, savepoint included.
+		}
+		throw e
+	}
 }

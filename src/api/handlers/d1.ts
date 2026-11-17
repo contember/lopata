@@ -1,6 +1,8 @@
 import { Database } from 'bun:sqlite'
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { d1DatabaseNameFromFile, d1DatabasePath } from '../../bindings/d1'
+import { runStatements } from '../../bindings/sql-split'
 import { getDataDir } from '../../db'
 import { generateSqlFromPrompt } from '../generate-sql'
 import type { D1Database as D1DatabaseInfo, D1Table, HandlerContext, QueryResult } from '../types'
@@ -13,9 +15,9 @@ export const handlers = {
 		const seen = new Set<string>()
 
 		if (existsSync(d1Dir)) {
-			const files = readdirSync(d1Dir).filter(f => f.endsWith('.sqlite'))
-			for (const f of files) {
-				const name = f.replace('.sqlite', '')
+			for (const f of readdirSync(d1Dir)) {
+				const name = d1DatabaseNameFromFile(f)
+				if (name === null) continue
 				seen.add(name)
 				const d1db = new Database(join(d1Dir, f))
 				try {
@@ -43,7 +45,7 @@ export const handlers = {
 	},
 
 	'd1.listTables'({ dbName }: { dbName: string }): D1Table[] {
-		const dbPath = join(getDataDir(), 'd1', `${dbName}.sqlite`)
+		const dbPath = d1DatabasePath(getDataDir(), dbName)
 		if (!existsSync(dbPath)) throw new Error('Database not found')
 
 		const d1db = new Database(dbPath)
@@ -62,7 +64,7 @@ export const handlers = {
 	},
 
 	async 'd1.generateSql'({ dbName, prompt }: { dbName: string; prompt: string }, ctx: HandlerContext): Promise<{ sql: string }> {
-		const dbPath = join(getDataDir(), 'd1', `${dbName}.sqlite`)
+		const dbPath = d1DatabasePath(getDataDir(), dbName)
 		if (!existsSync(dbPath)) throw new Error('Database not found')
 		const sql = await generateSqlFromPrompt(new Database(dbPath), prompt, ctx.lopataConfig)
 		return { sql }
@@ -71,22 +73,28 @@ export const handlers = {
 	'd1.query'({ dbName, sql }: { dbName: string; sql: string }): QueryResult {
 		if (!sql) throw new Error('Missing sql field')
 
-		const dbPath = join(getDataDir(), 'd1', `${dbName}.sqlite`)
+		const dbPath = d1DatabasePath(getDataDir(), dbName)
 		if (!existsSync(dbPath)) throw new Error('Database not found')
 
 		const d1db = new Database(dbPath)
 		try {
-			const stmt = d1db.prepare(sql)
-			if (stmt.columnNames.length > 0) {
-				const rows = stmt.all() as Record<string, unknown>[]
-				return { columns: stmt.columnNames, rows, count: rows.length }
-			} else {
-				stmt.run()
-				const changes = d1db.query<{ c: number }, []>('SELECT changes() as c').get()?.c ?? 0
-				return { columns: [], rows: [], count: changes, message: `${changes} row(s) affected` }
-			}
+			return runConsoleQuery(d1db, sql)
 		} finally {
 			d1db.close()
 		}
 	},
+}
+
+/** Runs every statement of a console query, as a D1 query does, and shows the result of the last one. */
+export function runConsoleQuery(db: Database, sql: string): QueryResult {
+	return runStatements(db, sql, lastSql => {
+		const stmt = db.prepare<Record<string, unknown>, []>(lastSql)
+		if (stmt.columnNames.length > 0) {
+			const rows = stmt.all()
+			return { columns: stmt.columnNames, rows, count: rows.length }
+		}
+		stmt.run()
+		const changes = db.query<{ c: number }, []>('SELECT changes() as c').get()?.c ?? 0
+		return { columns: [], rows: [], count: changes, message: `${changes} row(s) affected` }
+	})
 }

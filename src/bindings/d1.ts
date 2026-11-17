@@ -1,7 +1,7 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { mayHaveMultipleStatements, splitStatements } from './sql-split'
+import { inSavepoint, runStatements, splitStatements } from './sql-split'
 
 interface D1Meta {
 	duration: number
@@ -72,26 +72,16 @@ function connectionState(db: Database): ConnectionState {
 		.get()!
 }
 
-const MULTI_STATEMENT_PARAMS_ERROR = 'When executing multiple SQL statements in a single call, only the last statement can have parameters.'
-
-/**
- * Runs `sql` the way a D1 query runs: every statement in it, all or nothing, returning the rows of the last
- * one (workerd SqliteDatabase::prepareSql, MULTI mode). bun:sqlite compiles only the first statement and
- * silently drops the rest, so the leading ones run here, each compiled after the previous one ran.
- */
+/** Runs `sql` the way a D1 query runs (workerd SqliteDatabase::prepareSql, MULTI mode), returning the rows of the last statement. */
 function executeQuery(db: Database, sql: string, params: D1Value[]): QueryOutput {
 	const start = performance.now()
 	const before = connectionState(db)
-	const statements = mayHaveMultipleStatements(sql) ? splitStatements(sql) : []
-	const lastSql = statements.pop() ?? sql
-	const execute = () => {
-		for (const leadingSql of statements) runLeadingStatement(db, leadingSql)
-		const beforeLast = statements.length > 0 ? connectionState(db) : before
+	const { columns, rows, beforeLast } = runStatements(db, sql, (lastSql, ranLeading) => {
+		const beforeLast = ranLeading ? connectionState(db) : before
 		const stmt = db.query(lastSql)
 		const rows = stmt.values(...params.map(toSqliteBinding)).map(row => row.map(fromSqliteValue))
 		return { columns: stmt.columnNames, rows, beforeLast }
-	}
-	const { columns, rows, beforeLast } = statements.length > 0 ? inSavepoint(db, execute) : execute()
+	})
 
 	// Counted with total_changes(): changes() keeps the last write's count through later reads.
 	const after = connectionState(db)
@@ -112,33 +102,6 @@ function executeQuery(db: Database, sql: string, params: D1Value[]): QueryOutput
 			size_after: after.size,
 			changed_db: changes !== 0 || after.lastRowId !== before.lastRowId || after.size !== before.size,
 		},
-	}
-}
-
-function runLeadingStatement(db: Database, sql: string): void {
-	const stmt = db.prepare(sql)
-	try {
-		if (stmt.paramsCount > 0) throw new Error(MULTI_STATEMENT_PARAMS_ERROR)
-		stmt.run()
-	} finally {
-		stmt.finalize()
-	}
-}
-
-function inSavepoint<T>(db: Database, fn: () => T): T {
-	db.run('SAVEPOINT lopata_d1_query')
-	try {
-		const result = fn()
-		db.run('RELEASE lopata_d1_query')
-		return result
-	} catch (e) {
-		try {
-			db.run('ROLLBACK TO lopata_d1_query')
-			db.run('RELEASE lopata_d1_query')
-		} catch {
-			// ON CONFLICT ROLLBACK and similar failures already unwound the whole transaction, savepoint included.
-		}
-		throw e
 	}
 }
 
@@ -371,11 +334,28 @@ export class LocalD1PreparedStatement {
 	}
 }
 
+const D1_FILE_SUFFIX = '.sqlite'
+const ENCODED_NAME_CHARS = /[%/\\]/g
+const ENCODED_NAME_ESCAPES = /%(25|2F|5C)/g
+
+/**
+ * The SQLite file of a D1 database. Names may contain `/` (Cloudflare treats them as opaque), so `%`, `/` and
+ * `\` are percent-encoded: every name maps to one file directly inside `d1/` and the dashboard can read it back.
+ */
+export function d1DatabasePath(dataDir: string, databaseName: string): string {
+	const fileName = databaseName.replace(ENCODED_NAME_CHARS, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+	return join(dataDir, 'd1', `${fileName}${D1_FILE_SUFFIX}`)
+}
+
+/** The database name a file in `d1/` belongs to, or null for files that are not databases (WAL, SHM). */
+export function d1DatabaseNameFromFile(fileName: string): string | null {
+	if (!fileName.endsWith(D1_FILE_SUFFIX)) return null
+	return fileName.slice(0, -D1_FILE_SUFFIX.length).replace(ENCODED_NAME_ESCAPES, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
 export function openD1Database(dataDir: string, databaseName: string): LocalD1Database {
-	const d1Dir = join(dataDir, 'd1')
-	mkdirSync(d1Dir, { recursive: true })
-	const dbPath = join(d1Dir, `${databaseName}.sqlite`)
-	const db = new Database(dbPath, { create: true })
+	mkdirSync(join(dataDir, 'd1'), { recursive: true })
+	const db = new Database(d1DatabasePath(dataDir, databaseName), { create: true })
 	db.run('PRAGMA journal_mode=WAL')
 	// The in-process lock above only covers one connection. `openD1Database` is called separately
 	// from env, worker threads, DO workers and the CLI, so several connections hit the same file;
