@@ -3,7 +3,7 @@ import { FixedLengthStream, IdentityTransformStream } from './bindings/cf-stream
 import { patchGlobalCrypto } from './bindings/crypto-extras'
 import { WebSocketRequestResponsePair } from './bindings/durable-object'
 import { HTMLRewriter } from './bindings/html-rewriter'
-import { WebSocketPair } from './bindings/websocket-pair'
+import { CFWebSocket, WebSocketPair } from './bindings/websocket-pair'
 import { getDatabase } from './db'
 import { instrumentBinding } from './tracing/instrument'
 // The Vite plugin and the CLI run the main worker and its in-process Durable Objects in this
@@ -69,6 +69,16 @@ export function setupCloudflareGlobals() {
 	Object.defineProperty(globalThis, 'WebSocketPair', {
 		value: WebSocketPair,
 		writable: false,
+		configurable: true,
+	})
+
+	// workerd's WebSocketPair sockets are WebSockets; Bun's global WebSocket is its outbound client, a different class.
+	const NativeWebSocket = globalThis.WebSocket
+	Object.defineProperty(NativeWebSocket, Symbol.hasInstance, {
+		value(this: unknown, value: unknown): boolean {
+			if (this === NativeWebSocket && value instanceof CFWebSocket) return true
+			return Function.prototype[Symbol.hasInstance].call(this, value)
+		},
 		configurable: true,
 	})
 

@@ -339,7 +339,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### 1.13 WebSocket
 
-- ⚠️ `new WebSocketPair()` — create client/server pair; `Object.values()` works, array destructuring (`const [client, server] = …`) throws
+- ✅ `new WebSocketPair()` — create client/server pair; `const [client, server] = …` and `Object.values()` both work, and both sockets are `instanceof WebSocket`
 - ✅ `ws.accept()` — begin handling (CF-specific)
 - 🟰 `ws.send(message)` — send data
 - 🟰 `ws.close(code?, reason?)` — close connection
