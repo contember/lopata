@@ -3,3 +3,8 @@ plugins = ["bun-plugin-tailwind"]
 
 [test]
 preload = ["./src/testing/setup.ts"]
+
+[install]
+# bun-plugin-tailwind peers on the npm `bun` package; installed, its node_modules/.bin/bun would shadow
+# the pinned Bun inside every `bun run` script.
+peer = false
