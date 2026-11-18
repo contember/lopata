@@ -6,5 +6,5 @@ preload = ["./src/testing/setup.ts"]
 
 [install]
 # bun-plugin-tailwind peers on the npm `bun` package; installed, its node_modules/.bin/bun would shadow
-# the pinned Bun inside every `bun run` script.
+# the pinned Bun inside every `bun run` script. A peer a dependency requires must be listed in package.json.
 peer = false
