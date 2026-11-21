@@ -1137,7 +1137,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 ### 10.1 Fetcher Interface (HTTP Mode)
 
 - ✅ `binding.fetch(input, init?)` — forward HTTP request to bound Worker
-- ⚠️ `binding.connect(address, options?)` — TCP socket connection (throws "not supported in local dev")
+- ✅ `binding.connect(address, options?)` — TCP socket to the target's `connect()` handler; no TLS or `startTls()` over the binding
 - ~~`binding.queue(queueName, messages)`~~ — does not exist in CF Workers API
 - ~~`binding.scheduled(options?)`~~ — does not exist in CF Workers API
 

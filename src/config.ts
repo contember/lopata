@@ -95,6 +95,8 @@ export interface WranglerConfig {
 	}[]
 	services?: { binding: string; service: string; entrypoint?: string; props?: Record<string, unknown> }[]
 	triggers?: { crons?: string[] }
+	/** Raw sockets whose connections reach the worker's `connect()` handler (validated by {@link validateConnectConfig}). */
+	connect?: ConnectListenerConfig[]
 	vars?: Record<string, string>
 	assets?: {
 		directory: string
@@ -133,6 +135,10 @@ export interface WranglerConfig {
 	rules?: ModuleRule[]
 	env?: Record<string, Partial<Omit<WranglerConfig, 'env'>>>
 }
+
+export type ConnectListenerConfig =
+	| { protocol: 'tcp'; port: number; address?: string }
+	| { protocol: 'udp'; port: number; address?: string; idle_timeout_ms?: number; max_pending_bytes?: number }
 
 export interface DurableObjectBindingConfig {
 	name: string
@@ -178,7 +184,25 @@ export async function loadConfig(path: string, envName?: string): Promise<Wrangl
 	if (compatibility.date !== undefined) merged.compatibility_date = compatibility.date
 	if (compatibility.flags !== undefined) merged.compatibility_flags = [...compatibility.flags]
 	validateWorkerCacheConfig(merged)
+	validateConnectConfig(merged)
 	return merged
+}
+
+/** Wrangler's `connect` listeners: `{ protocol: 'tcp' | 'udp', port, address? }`, see the connect handler docs. */
+export function validateConnectConfig(config: WranglerConfig): void {
+	const entries: unknown = config.connect
+	if (entries === undefined) return
+	if (!Array.isArray(entries)) throw new TypeError('connect must be an array')
+	entries.forEach((entry: unknown, i) => {
+		const path = `connect[${i}]`
+		if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) throw new TypeError(`${path} must be an object`)
+		const { protocol, port, address } = Object.fromEntries(Object.entries(entry))
+		if (protocol !== 'tcp' && protocol !== 'udp') throw new TypeError(`${path}.protocol must be "tcp" or "udp"`)
+		if (typeof port !== 'number' || !Number.isInteger(port) || port < 0 || port > 65535) {
+			throw new TypeError(`${path}.port must be an integer between 0 and 65535`)
+		}
+		if (address !== undefined && typeof address !== 'string') throw new TypeError(`${path}.address must be a string`)
+	})
 }
 
 export function validateWorkerCacheConfig(config: WranglerConfig): void {

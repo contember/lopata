@@ -32,6 +32,7 @@ import type { AckRequest, PullRequest } from '../bindings/queue'
 import { CFWebSocket, copyWebSocketBytes } from '../bindings/websocket-pair'
 import type { WranglerConfig } from '../config'
 import { findConfigPath, hasScript, loadConfig } from '../config'
+import { startConnectListeners } from '../connect-listeners'
 import { handleDashboardRequest } from '../dashboard-serve'
 import { getDatabase, getDataDir } from '../db'
 import { FileWatcher } from '../file-watcher'
@@ -135,6 +136,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			baseUrls,
 		})
 		registry.register(mainConfig.name, mainManager, true)
+		watchers.push(startConnectListeners(mainManager))
 
 		// Load auxiliary worker configs (also used for route setup)
 		const auxConfigs = new Map<string, WranglerConfig>()
@@ -166,6 +168,7 @@ export async function run(ctx: CliContext, args: string[]) {
 				baseUrls,
 			})
 			registry.register(workerDef.name, auxManager)
+			watchers.push(startConnectListeners(auxManager))
 
 			// Load aux worker first so main's service bindings can resolve
 			try {
@@ -321,6 +324,7 @@ export async function run(ctx: CliContext, args: string[]) {
 			baseUrls,
 		})
 		registry.register(config.name, manager, true)
+		watchers.push(startConnectListeners(manager))
 		const firstGen = await manager.reload()
 		console.log(`[lopata] Generation ${firstGen.id} loaded`)
 		setGenerationManager(manager)
