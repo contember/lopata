@@ -5,6 +5,7 @@ import { ForwardableEmailMessage } from '../bindings/email'
 import { buildLoopbackExports, durableObjectNamespaceBindings } from '../bindings/loopback-exports'
 import { createScheduledController } from '../bindings/scheduled'
 import { entrypointExport, resolveEntrypointTarget } from '../bindings/service-binding'
+import { serveConnection } from '../bindings/sockets'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { type DispatchExecutionContext, WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { resolveCompatibility } from '../compatibility'
@@ -43,8 +44,8 @@ declare var self: Worker
 
 installUncaughtErrorHandlers()
 
-function post(msg: WorkerMessage): void {
-	postMessage(msg)
+function post(msg: WorkerMessage, transfer: Bun.Transferable[] = []): void {
+	postMessage(msg, transfer)
 }
 
 /** Outbound response-body pumps for the top-level fetch response (worker →
@@ -401,6 +402,20 @@ async function initRuntime(init: WorkerInitConfig) {
 					else post({ type: 'email-result', id: cmd.id })
 				} catch (e) {
 					post({ type: 'email-error', id: cmd.id, error: serializeError(e) })
+				}
+				break
+			case 'connect':
+				try {
+					const info = { remoteAddress: cmd.remoteAddress, localAddress: cmd.localAddress }
+					await runFailableCommand(() =>
+						runWithParentContext(
+							cmd.parent,
+							() => serveConnection(cmd.port, info, (socket, accept) => dispatcher.connect(socket, accept, cmd.entrypoint, cmd.props)),
+						)
+					)
+					post({ type: 'connect-result', id: cmd.id })
+				} catch (e) {
+					post({ type: 'connect-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
 			case 'ws-client-message':

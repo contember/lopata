@@ -10,6 +10,7 @@
 import { dirname, resolve } from 'node:path'
 import type { BrowserConfig } from '../bindings/browser'
 import { DurableObjectIdImpl } from '../bindings/durable-object'
+import { refuseConnection } from '../bindings/sockets'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { createOwnerLoaderDir, removeLoaderDir } from '../bindings/worker-loader-dirs'
 import { type CompatibilitySelection, resolveCompatibility } from '../compatibility'
@@ -71,6 +72,8 @@ export class WorkerThreadExecutor {
 	private _pendingRpc = new Map<number, Pending<unknown>>()
 	private _pendingRpcGet = new Map<number, Pending<{ kind: 'value'; value: unknown } | { kind: 'function' }>>()
 	private _pendingWorkflowControl = new Map<number, Pending<WorkflowControlResult>>()
+	/** connect() handlers still serving a connection. */
+	private _pendingConnect = new Map<number, Pending<void>>()
 	private _nextId = 1
 	private _disposed = false
 	/** Resolves on the Worker's `close` event, i.e. once the thread has closed its SQLite connection. */
@@ -177,11 +180,13 @@ export class WorkerThreadExecutor {
 		for (const [, pending] of this._pendingRpc) pending.reject(err)
 		for (const [, pending] of this._pendingRpcGet) pending.reject(err)
 		for (const [, pending] of this._pendingWorkflowControl) pending.reject(err)
+		for (const [, pending] of this._pendingConnect) pending.reject(err)
 		this._pending.clear()
 		this._pendingHandlers.clear()
 		this._pendingRpc.clear()
 		this._pendingRpcGet.clear()
 		this._pendingWorkflowControl.clear()
+		this._pendingConnect.clear()
 		this._pendingWaitUntil.clear()
 		this._responseStreams.disposeAll(err)
 		this._rpcChannel.disposeAll(err)
@@ -190,8 +195,8 @@ export class WorkerThreadExecutor {
 		this._envBindingWsBridge.disposeAll()
 	}
 
-	private _send(cmd: WorkerCommand): void {
-		this._worker.postMessage(cmd)
+	private _send(cmd: WorkerCommand, transfer: Bun.Transferable[] = []): void {
+		this._worker.postMessage(cmd, transfer)
 	}
 
 	private _handleMessage(msg: WorkerMessage): void {
@@ -288,6 +293,21 @@ export class WorkerThreadExecutor {
 				p.reject(deserializeError(msg.error))
 				break
 			}
+			case 'connect-result': {
+				const p = this._pendingConnect.get(msg.id)
+				if (p) {
+					this._pendingConnect.delete(msg.id)
+					p.resolve()
+				}
+				break
+			}
+			case 'connect-error': {
+				const p = this._pendingConnect.get(msg.id)
+				if (!p) break
+				this._pendingConnect.delete(msg.id)
+				p.reject(deserializeError(msg.error))
+				break
+			}
 			case 'workflow-control-result': {
 				const p = this._pendingWorkflowControl.get(msg.id)
 				if (p) {
@@ -357,12 +377,14 @@ export class WorkerThreadExecutor {
 		return this._pendingWaitUntil.size
 	}
 
-	/** In-flight scheduled/email handlers and inbound entrypoint RPC/property-get
-	 *  calls (another worker calling `env.THIS.method()`). Reload drain consults
-	 *  this so a cron/email handler or inbound RPC firing just before reload isn't
-	 *  force-terminated mid-execution. */
+	/** In-flight scheduled/email handlers, inbound entrypoint RPC/property-get
+	 *  calls (another worker calling `env.THIS.method()`) and open connect()
+	 *  connections. Reload drain consults this so a cron/email handler or inbound
+	 *  RPC firing just before reload isn't force-terminated mid-execution, and an
+	 *  open TCP connection gets the grace period. */
 	pendingHandlerWork(): number {
 		return this._pendingHandlers.size + this._pendingRpc.size + this._pendingRpcGet.size + this._pendingWorkflowControl.size
+			+ this._pendingConnect.size
 	}
 
 	/** In-flight streamed bodies for the top-level fetch path: response bodies the
@@ -431,6 +453,7 @@ export class WorkerThreadExecutor {
 		map: Map<number, Pending<T>>,
 		build: (id: number, parent: ParentSpanContext | undefined) => WorkerCommand,
 		afterPost?: () => void,
+		transfer?: Bun.Transferable[],
 	): Promise<T> {
 		if (this._disposed) throw new Error('Worker-thread executor disposed')
 		await this._ready
@@ -445,7 +468,7 @@ export class WorkerThreadExecutor {
 		return new Promise<T>((resolve, reject) => {
 			map.set(id, { resolve, reject })
 			try {
-				this._send(build(id, parent))
+				this._send(build(id, parent), transfer)
 				afterPost?.()
 			} catch (e) {
 				// A synchronous postMessage throw (DataCloneError on a non-cloneable
@@ -530,6 +553,33 @@ export class WorkerThreadExecutor {
 
 	executeScheduled(cronExpr: string, scheduledTime: number): Promise<HandlerResult> {
 		return this._sendAndAwait(this._pendingHandlers, (id, parent) => ({ type: 'scheduled', id, cronExpr, scheduledTime, parent }))
+	}
+
+	/**
+	 * Serve a connection with the worker's connect() handler; the connection runs over `port`. Resolves once the
+	 * handler settled. Before the handler runs (worker still starting, or gone), the port is refused.
+	 */
+	async executeConnect(
+		port: MessagePort,
+		info: { remoteAddress?: string; localAddress?: string },
+		entrypoint?: string,
+		props?: Record<string, unknown>,
+	): Promise<void> {
+		let posted = false
+		try {
+			await this._sendAndAwait(
+				this._pendingConnect,
+				(id, parent) => ({ type: 'connect', id, port, ...info, entrypoint, props, parent }),
+				() => {
+					posted = true
+				},
+				[port],
+			)
+		} catch (e) {
+			// Not delivered: the worker never saw the port, so tell the caller here.
+			if (!posted) refuseConnection(port, e instanceof Error ? e.message : String(e))
+			throw e
+		}
 	}
 
 	executeEntrypointRpc(

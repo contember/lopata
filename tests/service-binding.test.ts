@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { createServiceBinding } from '../src/bindings/service-binding'
+import type { Socket } from '../src/bindings/sockets'
 import { runWithContext } from '../src/tracing/context'
 
 describe('Service Binding', () => {
@@ -517,12 +518,35 @@ describe('Service Binding', () => {
 	})
 
 	describe('TCP connect()', () => {
-		test('connect() throws not supported error', () => {
+		test("connect() reaches the target's connect() handler with the caller's address", async () => {
+			const workerModule: Record<string, unknown> = {
+				default: {
+					async connect(socket: Socket) {
+						const { localAddress } = await socket.opened
+						const writer = socket.writable.getWriter()
+						await writer.write(new TextEncoder().encode(`to ${localAddress}`))
+						await writer.close()
+					},
+				},
+			}
+			const proxy = createServiceBinding('my-worker')
+			;(proxy._wire as Function)(workerModule, mockEnv)
+
+			const connect = proxy.connect as (address: string) => Socket
+			const socket = connect('example.com:443')
+			let text = ''
+			for await (const chunk of socket.readable) text += new TextDecoder().decode(chunk)
+			expect(text).toBe('to example.com:443')
+			await socket.closed
+		})
+
+		test('connect() to a worker without a connect() handler is refused', async () => {
 			const proxy = createServiceBinding('my-worker')
 			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
 
-			const connect = proxy.connect as Function
-			expect(() => connect('example.com:443')).toThrow('not supported in local dev mode')
+			const connect = proxy.connect as (address: string) => Socket
+			const socket = connect('example.com:443')
+			await expect(socket.opened).rejects.toThrow('proxy request failed, cannot connect to the specified address')
 		})
 	})
 

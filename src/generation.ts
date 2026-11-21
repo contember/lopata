@@ -2,6 +2,7 @@ import { randomUUIDv7, type Server } from 'bun'
 import type { CrossScriptDurableObjectNamespace } from './bindings/cross-script-durable-object'
 import type { DurableObjectNamespaceImpl } from './bindings/durable-object'
 import { startCronTimer } from './bindings/scheduled'
+import { refuseConnection, type SocketInfo } from './bindings/sockets'
 import { type AssetRouting, assetsOnlyRejection, canServeAssets, isAssetMethod, methodNotAllowed, routeBeforeAssets } from './bindings/static-assets'
 import { CFWebSocket, type ResponseWithWebSocket } from './bindings/websocket-pair'
 import type { SqliteWorkflowBinding } from './bindings/workflow'
@@ -209,6 +210,34 @@ export class Generation {
 				return new Response(`Email handled (from: ${from}, to: ${to})`, { status: 200 })
 			} catch (err) {
 				this._persistAndRethrow('email', err)
+			}
+		})
+	}
+
+	/**
+	 * Serve an inbound TCP connection, relayed over `port`, with the worker's connect() handler. Resolves once the
+	 * handler settled; a handler error is logged, as the connection has nobody to report it to.
+	 */
+	async callConnect(port: MessagePort, info: SocketInfo): Promise<void> {
+		return startSpan({
+			name: 'connect',
+			kind: 'server',
+			attributes: {
+				'net.peer.address': info.remoteAddress ?? null,
+				'net.local.address': info.localAddress ?? null,
+				'lopata.generation_id': this.id,
+			},
+			workerName: this.workerName,
+		}, async () => {
+			if (!this.threadExecutor) {
+				refuseConnection(port, 'Handler does not export a connect() function.')
+				return
+			}
+			try {
+				await this.threadExecutor.executeConnect(port, info)
+			} catch (err) {
+				console.error('[lopata] connect handler error:', err)
+				persistError(err, 'connect', this.workerName)
 			}
 		})
 	}
