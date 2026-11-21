@@ -13,6 +13,7 @@ interface Socket {
 interface Env {
 	SELF: { connect(address: string): Socket }
 	GREETER: { connect(address: string): Socket }
+	CRASHER: { connect(address: string): Socket }
 }
 
 const encoder = new TextEncoder()
@@ -52,6 +53,18 @@ export class Greeter extends WorkerEntrypoint {
 		const writer = socket.writable.getWriter()
 		await writer.write(encoder.encode(JSON.stringify({ localAddress: localAddress ?? null, remoteAddress: remoteAddress ?? null })))
 		await writer.close()
+	}
+}
+
+/** Throws an uncaught error while it still holds the connection. */
+export class Crasher extends WorkerEntrypoint {
+	async connect(socket: Socket): Promise<void> {
+		const writer = socket.writable.getWriter()
+		await writer.write(encoder.encode('partial'))
+		setTimeout(() => {
+			throw new Error('uncaught in connect()')
+		})
+		await new Promise(() => {})
 	}
 }
 
@@ -99,6 +112,13 @@ export default {
 					return Response.json({ reply: await exchange(env.SELF.connect('example.com:1234'), 'ping') })
 				case '/entrypoint':
 					return Response.json(JSON.parse(await readAll(env.GREETER.connect('example.com:1234'))))
+				case '/crash': {
+					const socket = env.CRASHER.connect('example.com:1234')
+					const reply = await readAll(socket)
+					// Whether it closes cleanly or breaks is not pinned; it must not stay open.
+					const closed = await socket.closed.then(() => true, () => true)
+					return Response.json({ reply, closed })
+				}
 			}
 			return new Response('not found', { status: 404 })
 		} catch (error) {

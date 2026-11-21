@@ -5,7 +5,7 @@ import { ForwardableEmailMessage } from '../bindings/email'
 import { buildLoopbackExports, durableObjectNamespaceBindings } from '../bindings/loopback-exports'
 import { createScheduledController } from '../bindings/scheduled'
 import { entrypointExport, resolveEntrypointTarget } from '../bindings/service-binding'
-import { serveConnection } from '../bindings/sockets'
+import { abandonConnection, serveConnection, type Socket } from '../bindings/sockets'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { type DispatchExecutionContext, WorkerDispatcher } from '../bindings/worker-dispatcher'
 import { resolveCompatibility } from '../compatibility'
@@ -404,20 +404,25 @@ async function initRuntime(init: WorkerInitConfig) {
 					post({ type: 'email-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
-			case 'connect':
+			case 'connect': {
+				let served: Socket | undefined
 				try {
 					const info = { remoteAddress: cmd.remoteAddress, localAddress: cmd.localAddress }
 					await runFailableCommand(() =>
-						runWithParentContext(
-							cmd.parent,
-							() => serveConnection(cmd.port, info, (socket, accept) => dispatcher.connect(socket, accept, cmd.entrypoint, cmd.props)),
-						)
+						runWithParentContext(cmd.parent, () =>
+							serveConnection(cmd.port, info, (socket, accept) => {
+								served = socket
+								return dispatcher.connect(socket, accept, cmd.entrypoint, cmd.props)
+							}))
 					)
 					post({ type: 'connect-result', id: cmd.id })
 				} catch (e) {
+					// An uncaught error fails the command while the handler may still hold the connection.
+					if (served) abandonConnection(served)
 					post({ type: 'connect-error', id: cmd.id, error: serializeError(e) })
 				}
 				break
+			}
 			case 'ws-client-message':
 				wsBridge.deliverClientMessage(cmd.wsId, cmd.data)
 				break

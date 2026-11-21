@@ -82,6 +82,8 @@ export function parseSocketAddress(address: SocketAddress | string): ParsedAddre
 		throw new TypeError('Specified address is empty string, contains unsupported characters or is too long.')
 	}
 	const portNumber = Number(port)
+	// URL parsing bounds a string's port; an object's port is checked here so Bun never sees an invalid one.
+	if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) throw new TypeError('Specified address could not be parsed.')
 	return {
 		address: text,
 		hostname: hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname,
@@ -138,6 +140,8 @@ interface Transport {
 	pause(): void
 	/** Prepare a TLS upgrade: `transport` carries the secured connection once `begin()` hands it over. */
 	upgrade(): { transport: Transport; begin(serverName: string): void }
+	/** The connection could not be established: `opened` rejects with `error`. */
+	fail(error: Error): void
 }
 
 type BunSocket = import('bun').Socket<TcpTransport>
@@ -155,9 +159,8 @@ const TCP_HANDLERS: import('bun').SocketHandler<TcpTransport> = {
 
 /** A TCP connection; with `tls`, `opened` waits for a handshake whose certificate verified (system CAs plus `NODE_EXTRA_CA_CERTS`). */
 class TcpTransport implements Transport {
-	readonly opened: Promise<void>
-	private resolveOpened!: () => void
-	private rejectOpened!: (error: Error) => void
+	private readonly openedResolvers = Promise.withResolvers<void>()
+	readonly opened = this.openedResolvers.promise
 	private socket: BunSocket | null = null
 	private events: TransportEvents | null = null
 	private drainWaiters: (() => void)[] = []
@@ -167,18 +170,18 @@ class TcpTransport implements Transport {
 	private detached = false
 
 	constructor(private readonly tls: boolean) {
-		this.opened = new Promise<void>((resolve, reject) => {
-			this.resolveOpened = resolve
-			this.rejectOpened = reject
-		})
 		this.opened.catch(() => {})
 	}
 
 	static connect(hostname: string, port: number, tls: { serverName: string } | null): TcpTransport {
 		const transport = new TcpTransport(tls !== null)
-		Bun.connect({ hostname, port, tls: tls ?? undefined, allowHalfOpen: true, data: transport, socket: TCP_HANDLERS }).catch(error => {
-			transport.fail(error)
-		})
+		try {
+			Bun.connect({ hostname, port, tls: tls ?? undefined, allowHalfOpen: true, data: transport, socket: TCP_HANDLERS }).catch(error => {
+				transport.fail(error)
+			})
+		} catch (error) {
+			transport.fail(error instanceof Error ? error : new Error(String(error)))
+		}
 		return transport
 	}
 
@@ -203,7 +206,7 @@ class TcpTransport implements Transport {
 		}
 		if (this.tls) return
 		this.isOpen = true
-		this.resolveOpened()
+		this.openedResolvers.resolve()
 	}
 
 	onHandshake(success: boolean, authorizationError: Error | null): void {
@@ -214,7 +217,7 @@ class TcpTransport implements Transport {
 			return
 		}
 		this.isOpen = true
-		this.resolveOpened()
+		this.openedResolvers.resolve()
 	}
 
 	onData(data: Uint8Array): void {
@@ -250,7 +253,7 @@ class TcpTransport implements Transport {
 	fail(error: Error): void {
 		if (this.isOpen || this.isClosed) return
 		this.isClosed = true
-		this.rejectOpened(error)
+		this.openedResolvers.reject(error)
 		this.onDrain()
 	}
 
@@ -324,18 +327,15 @@ export function tcpListenerHandlers(onConnection: (socket: BunSocket) => void): 
 
 /** The secured half of a STARTTLS upgrade on a connection that cannot run a TLS handshake. */
 class NoTlsTransport implements Transport {
-	readonly opened: Promise<void>
-	private rejectOpened!: (error: Error) => void
+	private readonly openedResolvers = Promise.withResolvers<void>()
+	readonly opened = this.openedResolvers.promise
 
 	constructor() {
-		this.opened = new Promise<void>((_, reject) => {
-			this.rejectOpened = reject
-		})
 		this.opened.catch(() => {})
 	}
 
 	fail(error: Error): void {
-		this.rejectOpened(error)
+		this.openedResolvers.reject(error)
 	}
 
 	attach(): void {}
@@ -378,9 +378,8 @@ type PortMessage =
  * chunk; the receiver returns one each time its readable has room, so a peer that stops reading stops the writer.
  */
 class PortTransport implements Transport {
-	readonly opened: Promise<void>
-	private resolveOpened!: () => void
-	private rejectOpened!: (error: Error) => void
+	private readonly openedResolvers = Promise.withResolvers<void>()
+	readonly opened = this.openedResolvers.promise
 	private events: TransportEvents | null = null
 	private credits = PORT_WINDOW
 	private creditWaiters: (() => void)[] = []
@@ -390,10 +389,6 @@ class PortTransport implements Transport {
 
 	/** `accepting`: the end handed to a connect() handler, already open. Otherwise `opened` waits for the handler's `accept`. */
 	constructor(private readonly port: MessagePort, accepting: boolean) {
-		this.opened = new Promise<void>((resolve, reject) => {
-			this.resolveOpened = resolve
-			this.rejectOpened = reject
-		})
 		this.opened.catch(() => {})
 		if (accepting) this.markOpen()
 		port.onmessage = event => this.onMessage(event.data)
@@ -421,14 +416,14 @@ class PortTransport implements Transport {
 	fail(error: Error): void {
 		if (this.isOpen || this.isClosed) return
 		this.isClosed = true
-		this.rejectOpened(error)
+		this.openedResolvers.reject(error)
 		this.wakeWriters()
 		this.closePort()
 	}
 
 	private markOpen(): void {
 		this.isOpen = true
-		this.resolveOpened()
+		this.openedResolvers.resolve()
 	}
 
 	private onMessage(message: PortMessage): void {
@@ -558,10 +553,9 @@ export class Socket {
 	#upgraded = false
 	#closing = false
 	#closedSettled = false
-	#resolveClosed!: () => void
-	#rejectClosed!: (error: Error) => void
-	#readController!: ReadableStreamDefaultController<Uint8Array>
-	#writeController!: WritableStreamDefaultController
+	#closedResolvers = Promise.withResolvers<void>()
+	#readController: ReadableStreamDefaultController<Uint8Array>
+	#writeController: WritableStreamDefaultController
 	/** No more data reaches `readable`: the peer finished, the reader cancelled, or the socket closed. */
 	#readDone = false
 	/** `writable` accepts no more chunks: closed by its owner, by `allowHalfOpen: false`, or with the socket. */
@@ -578,16 +572,14 @@ export class Socket {
 		this.#allowHalfOpen = init.allowHalfOpen
 		this.#domain = init.domain
 
-		this.closed = new Promise<void>((resolve, reject) => {
-			this.#resolveClosed = resolve
-			this.#rejectClosed = reject
-		})
+		this.closed = this.#closedResolvers.promise
 		this.closed.catch(() => {})
+		const controllers: { read?: ReadableStreamDefaultController<Uint8Array>; write?: WritableStreamDefaultController } = {}
 
 		this.readable = new NativeReadableStream<Uint8Array>(
 			{
 				start: controller => {
-					this.#readController = controller
+					controllers.read = controller
 				},
 				pull: () => {
 					if (!this.#readDone) this.#transport.resume()
@@ -603,7 +595,7 @@ export class Socket {
 		this.writable = new WritableStream<Uint8Array>(
 			{
 				start: controller => {
-					this.#writeController = controller
+					controllers.write = controller
 				},
 				write: (chunk: unknown) => {
 					const write = this.#write(chunk)
@@ -623,6 +615,10 @@ export class Socket {
 			},
 			init.highWaterMark === undefined ? undefined : new ByteLengthQueuingStrategy({ highWaterMark: init.highWaterMark }),
 		)
+		// Both constructors call start() synchronously.
+		if (!controllers.read || !controllers.write) throw new Error('stream start() did not run during construction')
+		this.#readController = controllers.read
+		this.#writeController = controllers.write
 
 		this.opened = transport.opened.then(
 			() => ({ remoteAddress: this.#init.remoteAddress, localAddress: this.#init.localAddress }),
@@ -683,6 +679,12 @@ export class Socket {
 		})
 		const serverName = options?.expectedServerHostname ?? domain
 		void (async () => {
+			// startTls() may be called right after connect(); the handshake needs the connection.
+			const failure = await this.opened.then(() => null, (error: Error) => error)
+			if (failure) {
+				upgrade.transport.fail(failure)
+				return
+			}
 			await this.#flush()
 			// The plaintext streams end here; the bytes that follow are the handshake.
 			this.#upgraded = true
@@ -787,8 +789,8 @@ export class Socket {
 	#settleClosed(error?: Error): void {
 		if (this.#closedSettled) return
 		this.#closedSettled = true
-		if (error) this.#rejectClosed(error)
-		else this.#resolveClosed()
+		if (error) this.#closedResolvers.reject(error)
+		else this.#closedResolvers.resolve()
 	}
 }
 
@@ -877,6 +879,11 @@ export async function serveConnection(
 	} finally {
 		socket[NEUTER]()
 	}
+}
+
+/** End the connection of a connect() handler that was abandoned (its command failed), as if the handler had returned. */
+export function abandonConnection(socket: Socket): void {
+	socket[NEUTER]()
 }
 
 /**

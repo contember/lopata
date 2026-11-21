@@ -80,7 +80,11 @@ describe('TCP sockets in a worker run by lopata dev', () => {
 				name: 'sockets',
 				main: WORKER,
 				compatibility_date: '2026-11-01',
-				services: [{ binding: 'SELF', service: 'sockets' }, { binding: 'GREETER', service: 'sockets', entrypoint: 'Greeter' }],
+				services: [{ binding: 'SELF', service: 'sockets' }, { binding: 'GREETER', service: 'sockets', entrypoint: 'Greeter' }, {
+					binding: 'CRASHER',
+					service: 'sockets',
+					entrypoint: 'Crasher',
+				}],
 				connect: [{ protocol: 'tcp', port: connectPort }],
 			}),
 		)
@@ -136,6 +140,10 @@ describe('TCP sockets in a worker run by lopata dev', () => {
 	test("connect() on a service binding reaches the target's connect() handler", async () => {
 		expect(await call('/service')).toEqual({ reply: 'hello undefined -> example.com:1234\npingbye\n' })
 		expect(await call('/entrypoint')).toEqual({ localAddress: 'example.com:1234', remoteAddress: null })
+	})
+
+	test('an uncaught error in a connect() handler ends its connection', async () => {
+		expect(await call('/crash')).toEqual({ reply: 'partial', closed: true })
 	})
 
 	test('the connect listener hands a raw TCP connection to the connect() handler', async () => {

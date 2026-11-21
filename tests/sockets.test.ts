@@ -4,6 +4,8 @@ import { connect, connectThroughPort, serveConnection, type Socket } from '../sr
 
 const encoder = new TextEncoder()
 const PROXY_FAILED = 'proxy request failed, cannot connect to the specified address'
+const CERT_PATH = new URL('fixtures/tls/localhost.pem', import.meta.url).pathname
+const KEY_PATH = new URL('fixtures/tls/localhost.key', import.meta.url).pathname
 
 async function readAll(socket: Socket): Promise<string> {
 	const decoder = new TextDecoder()
@@ -136,6 +138,8 @@ describe('connect() from cloudflare:sockets', () => {
 		expect(() => connect({ hostname: 'bad/host', port: 80 })).toThrow(
 			new TypeError('Specified address is empty string, contains unsupported characters or is too long.'),
 		)
+		expect(() => connect({ hostname: '127.0.0.1', port: Number.NaN })).toThrow(new TypeError('Specified address could not be parsed.'))
+		expect(() => connect({ hostname: '127.0.0.1', port: 70000 })).toThrow(new TypeError('Specified address could not be parsed.'))
 		expect(() => connect('localhost:1', { secureTransport: 'maybe' })).toThrow(
 			new TypeError('Unsupported value in secureTransport socket option: maybe'),
 		)
@@ -162,6 +166,26 @@ describe('connect() from cloudflare:sockets', () => {
 		await expect(secured.opened).rejects.toThrow()
 		await plain.close()
 		await tls.closed.catch(() => {})
+	})
+
+	test('startTls() right after connect() waits for the connection, then runs the handshake', async () => {
+		const server = Bun.listen({
+			hostname: '127.0.0.1',
+			port: 0,
+			tls: { key: Bun.file(KEY_PATH), cert: Bun.file(CERT_PATH) },
+			socket: { data() {} },
+		})
+		listeners.push(server)
+		// `localhost` needs a lookup, so the connection is not open yet when startTls() runs.
+		const socket = connect({ hostname: 'localhost', port: server.port }, { secureTransport: 'starttls' })
+		const error = await socket.startTls().opened.then(() => null, (e: unknown) => e)
+		// The handshake ran and rejected the certificate this process does not trust (the e2e test trusts it and talks).
+		expect(error).toMatchObject({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT' })
+	})
+
+	test('startTls() on a connection that failed rejects the secured socket with the connect error', async () => {
+		const socket = connect('127.0.0.1:1', { secureTransport: 'starttls' })
+		await expect(socket.startTls().opened).rejects.toThrow(PROXY_FAILED)
 	})
 
 	test('the writable takes only bytes', async () => {
