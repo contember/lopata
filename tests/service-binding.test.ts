@@ -540,7 +540,7 @@ describe('Service Binding', () => {
 			await socket.closed
 		})
 
-		test("connect() from a worker thread counts against the calling request, not the binding's lifetime", async () => {
+		test("connect() from a worker thread is not counted against the binding's lifetime", async () => {
 			const workerModule: Record<string, unknown> = {
 				default: {
 					async connect(socket: Socket) {

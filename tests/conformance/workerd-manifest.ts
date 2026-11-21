@@ -17,7 +17,8 @@ export interface WorkerdModule {
 
 /** Vendored modules without test exports that test modules bind to. */
 export const helperModules: Record<string, { flags: string[] }> = {
-	'connect-handler-test-proxy': { flags: ['nodejs_compat_v2', 'experimental'] },
+	// The flags of `connect-handler-test-local-address-endpoint`, the service of this module that connect-handler-test binds to.
+	'connect-handler-test-proxy': { flags: ['nodejs_compat_v2'] },
 }
 
 const STREAMS = ['nodejs_compat', 'streams_enable_constructors', 'transformstream_enable_standard_constructor']
