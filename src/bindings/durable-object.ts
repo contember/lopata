@@ -1,6 +1,6 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { types } from 'node:util'
 import type { CompatibilitySelection } from '../compatibility'
@@ -105,6 +105,10 @@ async function acquireDbTxnLock(db: Database): Promise<() => void> {
 
 // --- SQL Storage API ---
 
+function removeSqliteFiles(dbPath: string): void {
+	for (const suffix of ['', '-wal', '-shm']) rmSync(dbPath + suffix, { force: true })
+}
+
 export class SqlStorage {
 	private _dbPath: string | null
 	private _db: Database | null = null
@@ -135,6 +139,13 @@ export class SqlStorage {
 			}
 		}
 		return this._db
+	}
+
+	/** @internal Like workerd's `SqliteDatabase::reset()`: the database is gone and the next use starts an empty one. */
+	_reset(): void {
+		this._db?.close()
+		this._db = null
+		if (this._dbPath) removeSqliteFiles(this._dbPath)
 	}
 
 	exec(query: string, ...values: (SQLQueryBindings | ArrayBuffer)[]): SqlStorageCursor {
@@ -472,6 +483,8 @@ export class SqliteDurableObjectStorage {
 				this.db.query('DELETE FROM do_alarms WHERE namespace = ? AND id = ?').run(this.namespace, this.id)
 			}
 		})()
+		// workerd keeps KV and SQL in one database and deleteAll() resets it, dropping every SQL table too.
+		this.sql._reset()
 		if (deleteAlarm) this._onAlarmSet?.(null)
 	}
 
@@ -1579,17 +1592,7 @@ export class DurableObjectNamespaceImpl {
 		}
 
 		// Delete SQL storage database files
-		if (this.dataDir) {
-			const sqlDbPath = join(this.dataDir, 'do-sql', this.namespaceName, `${idStr}.sqlite`)
-			if (existsSync(sqlDbPath)) {
-				rmSync(sqlDbPath, { force: true })
-				// Clean up WAL/SHM files
-				for (const suffix of ['-wal', '-shm']) {
-					const walPath = sqlDbPath + suffix
-					if (existsSync(walPath)) rmSync(walPath, { force: true })
-				}
-			}
-		}
+		if (this.dataDir) removeSqliteFiles(join(this.dataDir, 'do-sql', this.namespaceName, `${idStr}.sqlite`))
 	}
 
 	newUniqueId(_options?: { jurisdiction?: string }): DurableObjectIdImpl {

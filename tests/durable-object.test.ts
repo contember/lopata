@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -111,6 +111,37 @@ describe('DurableObjectStorage', () => {
 		await selected.deleteAll()
 		expect(await selected.getAlarm()).toBeNull()
 		expect(notifications).toEqual([null])
+	})
+
+	const tableNames = (sql: SqlStorage) => sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").toArray().map(row => row.name)
+
+	test('deleteAll drops SQL tables and KV data', async () => {
+		storage.sql.exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT); CREATE INDEX items_name ON items (name)')
+		storage.sql.exec("INSERT INTO items (name) VALUES ('a')")
+		storage.kv.put('kv-key', 1)
+		await storage.put('key', 2)
+		await storage.deleteAll()
+		expect(tableNames(storage.sql)).toEqual([])
+		expect(storage.kv.get('kv-key')).toBeUndefined()
+		expect(await storage.get('key')).toBeUndefined()
+		// The object can rebuild its schema from scratch, with AUTOINCREMENT starting over.
+		storage.sql.exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)')
+		expect(storage.sql.exec("INSERT INTO items (name) VALUES ('b') RETURNING id").one()).toEqual({ id: 1 })
+	})
+
+	test('deleteAll on a restarted object drops tables persisted by an earlier run, of that object only', async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'lopata-do-delete-all-'))
+		const open = (id: string) => new SqliteDurableObjectStorage(db, 'TestDO', id, dataDir)
+		try {
+			open('selected').sql.exec('CREATE TABLE items (id INTEGER)')
+			open('other').sql.exec('CREATE TABLE items (id INTEGER)')
+			// A fresh instance that has not touched sql yet, as after eviction or a reload.
+			await open('selected').deleteAll()
+			expect(tableNames(open('selected').sql)).toEqual([])
+			expect(tableNames(open('other').sql)).toEqual(['items'])
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
 	})
 
 	for (const enabled of [true, false]) {
@@ -2087,10 +2118,18 @@ describe('DO Cooperative Concurrency', () => {
 	})
 
 	test('concurrent requests run in parallel, not serially', async () => {
+		// Overlap is observed directly: wall-clock bounds flaked on loaded CI runners.
+		let active = 0
+		let maxActive = 0
+		const allInside = Promise.withResolvers<void>()
 		class TimedDO extends DurableObjectBase {
-			async wait(ms: number): Promise<number> {
-				await new Promise((r) => setTimeout(r, ms))
-				return ms
+			async wait(): Promise<void> {
+				active++
+				maxActive = Math.max(maxActive, active)
+				if (active === 3) allInside.resolve()
+				// Serialized requests never reach 3 at once; the fallback lets them finish so the assertion reports it.
+				await Promise.race([allInside.promise, new Promise((r) => setTimeout(r, 1000))])
+				active--
 			}
 		}
 
@@ -2098,12 +2137,8 @@ describe('DO Cooperative Concurrency', () => {
 		ns._setClass(TimedDO, {})
 		const stub = ns.get(ns.idFromName('test')) as any
 
-		const start = Date.now()
-		await Promise.all([stub.wait(50), stub.wait(50), stub.wait(50)])
-		const elapsed = Date.now() - start
-
-		// If serialized, would take ~150ms. If concurrent, ~50ms.
-		expect(elapsed).toBeLessThan(120)
+		await Promise.all([stub.wait(), stub.wait(), stub.wait()])
+		expect(maxActive).toBe(3)
 	})
 
 	test('concurrent transaction() calls do not corrupt data', async () => {
