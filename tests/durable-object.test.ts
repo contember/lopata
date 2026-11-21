@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -111,6 +111,38 @@ describe('DurableObjectStorage', () => {
 		await selected.deleteAll()
 		expect(await selected.getAlarm()).toBeNull()
 		expect(notifications).toEqual([null])
+	})
+
+	const tableNames = (sql: SqlStorage) => sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").toArray().map(row => row.name)
+
+	test('deleteAll drops SQL tables and KV data', async () => {
+		storage.sql.exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT); CREATE INDEX items_name ON items (name)')
+		storage.sql.exec("INSERT INTO items (name) VALUES ('a')")
+		storage.kv.put('kv-key', 1)
+		await storage.put('key', 2)
+		await storage.deleteAll()
+		expect(tableNames(storage.sql)).toEqual([])
+		expect(storage.kv.get('kv-key')).toBeUndefined()
+		expect(await storage.get('key')).toBeUndefined()
+		// The object can rebuild its schema from scratch, with AUTOINCREMENT starting over.
+		storage.sql.exec('CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)')
+		expect(storage.sql.exec("INSERT INTO items (name) VALUES ('b') RETURNING id").one()).toEqual({ id: 1 })
+	})
+
+	test('deleteAll removes the SQL database file of the object only', async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), 'lopata-do-delete-all-'))
+		try {
+			const selected = new SqliteDurableObjectStorage(db, 'TestDO', 'selected', dataDir)
+			const other = new SqliteDurableObjectStorage(db, 'TestDO', 'other', dataDir)
+			selected.sql.exec('CREATE TABLE items (id INTEGER)')
+			other.sql.exec('CREATE TABLE items (id INTEGER)')
+			await selected.deleteAll()
+			expect(existsSync(join(dataDir, 'do-sql', 'TestDO', 'selected.sqlite'))).toBe(false)
+			expect(tableNames(new SqliteDurableObjectStorage(db, 'TestDO', 'selected', dataDir).sql)).toEqual([])
+			expect(tableNames(new SqliteDurableObjectStorage(db, 'TestDO', 'other', dataDir).sql)).toEqual(['items'])
+		} finally {
+			rmSync(dataDir, { recursive: true, force: true })
+		}
 	})
 
 	for (const enabled of [true, false]) {

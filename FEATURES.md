@@ -123,7 +123,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 
 ### Durable Objects: `deleteAll()` and `ctx.abort()`
 
-- `storage.deleteAll()` also deletes the alarm from compatibility date `2026-02-24` or with `delete_all_deletes_alarm` (`delete_all_preserves_alarm` disables it).
+- `storage.deleteAll()` deletes the KV data and the object's SQL database, tables included, as on Cloudflare. It also deletes the alarm from compatibility date `2026-02-24` or with `delete_all_deletes_alarm` (`delete_all_preserves_alarm` disables it).
 - `deleteAll()` throws inside a transaction. Objects in the same process can share a SQLite connection, so a call can also throw while another object has a transaction open.
 - `ctx.abort(reason, { retryAlarm })` throws `reason`, rejects pending calls and replaces the instance on the next request. An aborted alarm is retried unless `retryAlarm: false` or the alarm changed during the attempt.
 - Limitation: an in-process object (testing helpers and the main worker under the Vite plugin) keeps running detached from its callers, and a `storage.transaction()` it has open is not rolled back. Container-backed objects do not throw.
@@ -759,7 +759,7 @@ Short overview of Cloudflare Workers features added in 2026. Each entry lists wh
 - ✅ `storage.put(entries, options?)` — batch put (max 128 pairs)
 - ✅ `storage.delete(key, options?)` — single delete
 - ✅ `storage.delete(keys, options?)` — batch delete (max 128 keys)
-- ✅ `storage.deleteAll(options?)` — delete all storage
+- ✅ `storage.deleteAll(options?)` — delete all storage: KV data and the object's SQL database with every table in it
 - ✅ `storage.list(options?)` — list all pairs
 - ✅ List options: start, startAfter, end, prefix, reverse, limit
 
