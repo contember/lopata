@@ -13,6 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const VIRTUAL_MODULES: Record<string, string> = {
 	'cloudflare:workers': '\0cloudflare:workers',
 	'cloudflare:workflows': '\0cloudflare:workflows',
+	'cloudflare:sockets': '\0cloudflare:sockets',
 	'@cloudflare/containers': '\0@cloudflare/containers',
 }
 
@@ -22,7 +23,7 @@ function resolvePath(relativePath: string): string {
 
 /**
  * Resolves Cloudflare virtual modules (cloudflare:workers, cloudflare:workflows,
- * @cloudflare/containers) to re-exports from Lopata runtime binding implementations.
+ * cloudflare:sockets, @cloudflare/containers) to re-exports from Lopata runtime binding implementations.
  *
  * Only active in the SSR environment.
  */
@@ -108,6 +109,10 @@ export const cache = {
 			if (id === '\0cloudflare:workflows') {
 				const workflow = resolvePath('bindings/workflow')
 				return `export { NonRetryableError } from "${workflow}";`
+			}
+
+			if (id === '\0cloudflare:sockets') {
+				return `export { connect } from "${resolvePath('bindings/sockets')}";`
 			}
 
 			if (id === '\0@cloudflare/containers') {

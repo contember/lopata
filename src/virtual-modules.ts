@@ -4,6 +4,7 @@ import { DurableObjectBase, WebSocketRequestResponsePair } from './bindings/dura
 import { EmailMessage } from './bindings/email'
 import type { ImageTransformOptions, OutputOptions } from './bindings/images'
 import { WORKER_ENTRYPOINT_BRAND } from './bindings/rpc-stub'
+import { connect } from './bindings/sockets'
 import { WebSocketPair } from './bindings/websocket-pair'
 import { cache } from './bindings/worker-cache'
 import { NonRetryableError, WorkflowEntrypointBase } from './bindings/workflow'
@@ -14,7 +15,7 @@ import { globalExports } from './worker-exports'
 
 /**
  * Registers virtual modules for `cloudflare:workers`, `cloudflare:workflows`,
- * `cloudflare:email`, `@cloudflare/containers`, and `@cloudflare/puppeteer`.
+ * `cloudflare:email`, `cloudflare:sockets`, `@cloudflare/containers`, and `@cloudflare/puppeteer`.
  *
  * Shared between `src/plugin.ts` (dev server) and `src/testing/setup.ts` (test preload).
  */
@@ -77,6 +78,15 @@ export function registerVirtualModules(build: { module: (name: string, fn: () =>
 		return {
 			exports: {
 				EmailMessage,
+			},
+			loader: 'object',
+		}
+	})
+
+	build.module('cloudflare:sockets', () => {
+		return {
+			exports: {
+				connect,
 			},
 			loader: 'object',
 		}
