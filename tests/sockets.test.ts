@@ -1,6 +1,6 @@
 import type { TCPSocketListener } from 'bun'
 import { afterEach, describe, expect, test } from 'bun:test'
-import { connect, connectThroughPort, serveConnection, type Socket } from '../src/bindings/sockets'
+import { connect, connectThroughPort, parseSocketAddress, serveConnection, type Socket } from '../src/bindings/sockets'
 
 const encoder = new TextEncoder()
 const PROXY_FAILED = 'proxy request failed, cannot connect to the specified address'
@@ -138,8 +138,15 @@ describe('connect() from cloudflare:sockets', () => {
 		expect(() => connect({ hostname: 'bad/host', port: 80 })).toThrow(
 			new TypeError('Specified address is empty string, contains unsupported characters or is too long.'),
 		)
-		expect(() => connect({ hostname: '127.0.0.1', port: Number.NaN })).toThrow(new TypeError('Specified address could not be parsed.'))
-		expect(() => connect({ hostname: '127.0.0.1', port: 70000 })).toThrow(new TypeError('Specified address could not be parsed.'))
+		// An object's port converts as workerd's uint16_t struct field does.
+		expect(() => connect({ hostname: '127.0.0.1', port: Number.NaN })).toThrow(
+			new TypeError('The value cannot be converted because it is not an integer.'),
+		)
+		expect(() => connect({ hostname: '127.0.0.1', port: -1 })).toThrow(
+			new TypeError('The value cannot be converted because it is negative and this API expects a positive number.'),
+		)
+		expect(() => connect({ hostname: '127.0.0.1', port: 70000 })).toThrow(new TypeError('Value out of range. Must be less than or equal to 65535.'))
+		expect(parseSocketAddress({ hostname: '127.0.0.1', port: 80.5 })).toMatchObject({ address: '127.0.0.1:80', port: 80 })
 		expect(() => connect('localhost:1', { secureTransport: 'maybe' })).toThrow(
 			new TypeError('Unsupported value in secureTransport socket option: maybe'),
 		)

@@ -73,7 +73,7 @@ export function parseSocketAddress(address: SocketAddress | string): ParsedAddre
 		text = address
 	} else if (typeof address === 'object' && address !== null) {
 		hostname = String(address.hostname)
-		port = String(Number(address.port))
+		port = String(toUint16(address.port))
 		text = `${hostname}:${port}`
 	} else {
 		throw new TypeError('Specified address could not be parsed.')
@@ -82,14 +82,21 @@ export function parseSocketAddress(address: SocketAddress | string): ParsedAddre
 		throw new TypeError('Specified address is empty string, contains unsupported characters or is too long.')
 	}
 	const portNumber = Number(port)
-	// URL parsing bounds a string's port; an object's port is checked here so Bun never sees an invalid one.
-	if (!Number.isInteger(portNumber) || portNumber < 0 || portNumber > 65535) throw new TypeError('Specified address could not be parsed.')
 	return {
 		address: text,
 		hostname: hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname,
 		port: portNumber,
 		isDefaultFetchPort: portNumber === 80 || portNumber === 443,
 	}
+}
+
+/** workerd's conversion of a `uint16_t` struct field (jsg/value.h): finite, non-negative, at most 65535, truncated. */
+function toUint16(value: unknown): number {
+	const number = Number(value)
+	if (!Number.isFinite(number)) throw new TypeError('The value cannot be converted because it is not an integer.')
+	if (number < 0) throw new TypeError('The value cannot be converted because it is negative and this API expects a positive number.')
+	if (number > 65535) throw new TypeError('Value out of range. Must be less than or equal to 65535.')
+	return Math.trunc(number)
 }
 
 function isValidHost(host: string): boolean {
