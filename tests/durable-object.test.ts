@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite'
 import { afterEach, beforeEach, describe, expect, jest, test } from 'bun:test'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runInNewContext } from 'node:vm'
@@ -129,17 +129,16 @@ describe('DurableObjectStorage', () => {
 		expect(storage.sql.exec("INSERT INTO items (name) VALUES ('b') RETURNING id").one()).toEqual({ id: 1 })
 	})
 
-	test('deleteAll removes the SQL database file of the object only', async () => {
+	test('deleteAll on a restarted object drops tables persisted by an earlier run, of that object only', async () => {
 		const dataDir = mkdtempSync(join(tmpdir(), 'lopata-do-delete-all-'))
+		const open = (id: string) => new SqliteDurableObjectStorage(db, 'TestDO', id, dataDir)
 		try {
-			const selected = new SqliteDurableObjectStorage(db, 'TestDO', 'selected', dataDir)
-			const other = new SqliteDurableObjectStorage(db, 'TestDO', 'other', dataDir)
-			selected.sql.exec('CREATE TABLE items (id INTEGER)')
-			other.sql.exec('CREATE TABLE items (id INTEGER)')
-			await selected.deleteAll()
-			expect(existsSync(join(dataDir, 'do-sql', 'TestDO', 'selected.sqlite'))).toBe(false)
-			expect(tableNames(new SqliteDurableObjectStorage(db, 'TestDO', 'selected', dataDir).sql)).toEqual([])
-			expect(tableNames(new SqliteDurableObjectStorage(db, 'TestDO', 'other', dataDir).sql)).toEqual(['items'])
+			open('selected').sql.exec('CREATE TABLE items (id INTEGER)')
+			open('other').sql.exec('CREATE TABLE items (id INTEGER)')
+			// A fresh instance that has not touched sql yet, as after eviction or a reload.
+			await open('selected').deleteAll()
+			expect(tableNames(open('selected').sql)).toEqual([])
+			expect(tableNames(open('other').sql)).toEqual(['items'])
 		} finally {
 			rmSync(dataDir, { recursive: true, force: true })
 		}
