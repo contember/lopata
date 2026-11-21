@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { conformanceTest, loadKnownFailures } from './harness'
-import { type WorkerdModule, workerdModules } from './workerd-manifest'
+import { helperModules, type WorkerdModule, workerdModules } from './workerd-manifest'
 import type { RunResult } from './workerd-runner'
 
 const VENDOR_DIR = resolve(import.meta.dir, 'workerd')
@@ -27,34 +27,57 @@ function hostFor(module: string): string {
 }
 
 function wranglerConfig(module: string, spec: WorkerdModule): object {
+	const vars: Record<string, string> = { ...spec.vars }
+	const connect: Array<{ protocol: 'tcp'; port: number }> = []
+	if (spec.connectListenerPortVar) {
+		const port = freePort()
+		vars[spec.connectListenerPortVar] = String(port)
+		connect.push({ protocol: 'tcp', port })
+	}
 	return {
 		name: module,
 		main: './entry.js',
 		compatibility_date: COMPATIBILITY_DATE,
 		compatibility_flags: spec.flags,
-		services: (spec.selfServices ?? []).map(s => ({ binding: s.binding, service: module, entrypoint: s.entrypoint })),
+		vars,
+		connect,
+		services: [
+			...(spec.selfServices ?? []).map(s => ({ binding: s.binding, service: module, entrypoint: s.entrypoint })),
+			...(spec.services ?? []).map(s => ({ binding: s.binding, service: s.module, entrypoint: s.entrypoint })),
+		],
 		durable_objects: { bindings: (spec.durableObjects ?? []).map(d => ({ name: d.binding, class_name: d.className })) },
 		migrations: spec.durableObjects ? [{ tag: 'v1', new_sqlite_classes: spec.durableObjects.map(d => d.className) }] : [],
 	}
 }
 
+function writeWorker(root: string, module: string, config: object): void {
+	const dir = join(root, module)
+	mkdirSync(dir)
+	const source = JSON.stringify(join(VENDOR_DIR, `${module}.js`))
+	writeFileSync(
+		join(dir, 'entry.js'),
+		[
+			`import * as mod from ${source}`,
+			`import { wrapDefault } from ${JSON.stringify(RUNNER)}`,
+			`export * from ${source}`,
+			'export default wrapDefault(mod)',
+			'',
+		].join('\n'),
+	)
+	writeFileSync(join(dir, 'wrangler.json'), JSON.stringify(config, null, '\t'))
+}
+
 function generateProject(root: string): void {
 	const workers: Array<{ name: string; config: string; hosts: string[] }> = []
 	for (const [module, spec] of selectedModules) {
-		const dir = join(root, module)
-		mkdirSync(dir)
-		const source = JSON.stringify(join(VENDOR_DIR, `${module}.js`))
-		writeFileSync(
-			join(dir, 'entry.js'),
-			[
-				`import * as mod from ${source}`,
-				`import { wrapDefault } from ${JSON.stringify(RUNNER)}`,
-				`export * from ${source}`,
-				'export default wrapDefault(mod)',
-				'',
-			].join('\n'),
-		)
-		writeFileSync(join(dir, 'wrangler.json'), JSON.stringify(wranglerConfig(module, spec), null, '\t'))
+		writeWorker(root, module, wranglerConfig(module, spec))
+		workers.push({ name: module, config: `./${module}/wrangler.json`, hosts: [hostFor(module)] })
+	}
+	const helpers = new Set(selectedModules.flatMap(([, spec]) => (spec.services ?? []).map(s => s.module)))
+	for (const module of helpers) {
+		const helper = helperModules[module]
+		if (!helper) throw new Error(`unknown helper module: ${module}`)
+		writeWorker(root, module, { name: module, main: './entry.js', compatibility_date: COMPATIBILITY_DATE, compatibility_flags: helper.flags })
 		workers.push({ name: module, config: `./${module}/wrangler.json`, hosts: [hostFor(module)] })
 	}
 	const mainDir = join(root, '__main')

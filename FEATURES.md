@@ -37,7 +37,7 @@
 
 The [conformance harness](tests/conformance/README.md) runs two corpora:
 
-- 45 modules of workerd's own API tests, each as a worker inside `lopata dev`: fetch, streams, encoding and URL, crypto, HTMLRewriter, events, globals, WebSocket and Durable Object storage.
+- 49 modules of workerd's own API tests, each as a worker inside `lopata dev`: fetch, streams, encoding and URL, crypto, HTMLRewriter, events, globals, WebSocket, TCP sockets and Durable Object storage.
 - Ports of Miniflare's KV, R2, D1, Cache and Queues binding tests, run against lopata's binding classes.
 
 Run it with `bun scripts/conformance-report.ts`. Each failing case is listed with its error in `tests/conformance/known-failures/`.
@@ -60,14 +60,15 @@ The pass rates are of these selected suites, not of Cloudflare's whole API. The 
 | workerd          | fetch           |               15 / 43 |               20 / 43 |
 | workerd          | globals         |               10 / 31 |               22 / 31 |
 | workerd          | htmlrewriter    |               21 / 33 |               25 / 33 |
+| workerd          | sockets         |                     — |                 5 / 6 |
 | workerd          | streams         |             141 / 269 |             203 / 269 |
 | workerd          | websocket       |               11 / 18 |               14 / 18 |
-| **all**          |                 | **313 / 657 (47.6%)** | **498 / 657 (75.8%)** |
+| **all**          |                 | **313 / 657 (47.6%)** | **503 / 663 (75.9%)** |
 
-Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers) and R2 blob storage. The remaining failures:
+Before: when the harness was added; 3 of the 18 KV passes asserted nothing. After: the KV, D1, R2, Queues, Cache, `Response` and worker-thread fixes, then the follow-up round (R2 `bytes()`, D1 names and multi-statement console, `cf.cacheKey`, `reportError()`, `DigestStream`, streamed HTMLRewriter content, BYOB readers), R2 blob storage, and TCP sockets (the `sockets` area, added with them). The remaining failures:
 
 - **Bindings (1):** Queues `v8` bodies lose `Error.cause` (Bun's `v8.serialize`).
-- **workerd (158):** mostly Bun's native streams (byte-stream controller details, `new ReadableStreamBYOBReader()` on a body), `AbortSignal` over RPC, `MessagePort` and `Event` details, V8 error positions in `reportError()`, Durable Object point-in-time recovery, and workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`).
+- **workerd (159):** mostly Bun's native streams (byte-stream controller details, `new ReadableStreamBYOBReader()` on a body), `AbortSignal` over RPC, `MessagePort` and `Event` details, V8 error positions in `reportError()`, Durable Object point-in-time recovery, workerd-only test hooks (`gc()`, `setMaxPageCountForTest()`), and `socket.proxyTo()`.
 
 ---
 

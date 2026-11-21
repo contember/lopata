@@ -39,5 +39,6 @@ CONFORMANCE_KEEP=1 ...                       # keep the generated project and th
 
 - workerd, commit `8ae9e49a5` (2026-03-12). Copyright Cloudflare, Inc., Apache License 2.0; the licence text is in
   `workerd/LICENSE`. The files in `workerd/` are unmodified copies and keep their original copyright headers.
+  The socket tests (`sockets-connect-error-test.js`, `connect-*.js`) come from the later commit `42ee37e` (2026-11-21).
 - workers-sdk, commit `6ee18e1bd` (2026-03-12). Copyright (c) 2020 Cloudflare, Inc., MIT licence (the project is dual-licensed
   MIT or Apache-2.0); the MIT licence text is in `LICENSE-workers-sdk`. The `miniflare-*.test.ts` files are adapted from it, as each file's header says.
