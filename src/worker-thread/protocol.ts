@@ -280,6 +280,7 @@ export interface RpcConnectRequest {
 	/** The address the caller passed to `connect()`; the handler sees it as `localAddress`. */
 	address: string
 	port: MessagePort
+	parent?: ParentSpanContext
 }
 
 export interface RpcCallReply {

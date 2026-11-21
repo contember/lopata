@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { createServiceBinding } from '../src/bindings/service-binding'
-import type { Socket } from '../src/bindings/sockets'
+import { createServiceBinding, ServiceBinding } from '../src/bindings/service-binding'
+import { connectThroughPort, type Socket } from '../src/bindings/sockets'
 import { runWithContext } from '../src/tracing/context'
+import { RpcClient, RpcHostChannel } from '../src/worker-thread/rpc-shared'
 
 describe('Service Binding', () => {
 	// Mock worker module with default fetch handler
@@ -529,23 +530,41 @@ describe('Service Binding', () => {
 					},
 				},
 			}
-			const proxy = createServiceBinding('my-worker')
-			;(proxy._wire as Function)(workerModule, mockEnv)
+			const binding = new ServiceBinding('my-worker')
+			binding._wire(workerModule, mockEnv)
 
-			const connect = proxy.connect as (address: string) => Socket
-			const socket = connect('example.com:443')
+			const socket = binding.connect('example.com:443')
 			let text = ''
 			for await (const chunk of socket.readable) text += new TextDecoder().decode(chunk)
 			expect(text).toBe('to example.com:443')
 			await socket.closed
 		})
 
-		test('connect() to a worker without a connect() handler is refused', async () => {
-			const proxy = createServiceBinding('my-worker')
-			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
+		test("connect() from a worker thread counts against the calling request, not the binding's lifetime", async () => {
+			const workerModule: Record<string, unknown> = {
+				default: {
+					async connect(socket: Socket) {
+						await socket.close()
+					},
+				},
+			}
+			const binding = new ServiceBinding('my-worker', undefined, { maxSubrequests: 2 })
+			binding._wire(workerModule, mockEnv)
+			const host = new RpcHostChannel({ resolveBinding: () => binding.toProxy(), post: () => {}, isAlive: () => true })
+			// Each call stands for a separate request of the calling worker thread.
+			const client = new RpcClient(msg => host.handle(msg), () => ({ traceId: 'trace', spanId: 'span' }))
+			for (let i = 0; i < 3; i++) {
+				const socket = connectThroughPort('example.com:1', undefined, (port, address) => client.connect({ binding: 'SVC' }, port, address))
+				await socket.opened
+				await socket.closed
+			}
+		})
 
-			const connect = proxy.connect as (address: string) => Socket
-			const socket = connect('example.com:443')
+		test('connect() to a worker without a connect() handler is refused', async () => {
+			const binding = new ServiceBinding('my-worker')
+			binding._wire(mockWorkerModule, mockEnv)
+
+			const socket = binding.connect('example.com:443')
 			await expect(socket.opened).rejects.toThrow('proxy request failed, cannot connect to the specified address')
 		})
 	})

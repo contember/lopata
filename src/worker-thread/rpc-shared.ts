@@ -140,7 +140,8 @@ function dispatchRpcConnect(req: RpcConnectRequest, hooks: RpcDispatchHooks): vo
 		const resolved = hooks.resolveBinding(req.target)
 		const connectPort = resolved._connectPort
 		if (typeof connectPort !== 'function') throw new Error(`Binding "${req.target.binding}" does not support connect()`)
-		connectPort.call(resolved, req.port, req.address)
+		// The caller's request context carries the subrequest budget and links the handler's span to the caller's trace.
+		runWithParentContext(req.parent, () => connectPort.call(resolved, req.port, req.address))
 	} catch (e) {
 		refuseConnection(req.port, e instanceof Error ? e.message : String(e))
 	}
@@ -435,7 +436,7 @@ export class RpcClient {
 
 	/** `connect()` on a service binding: hand `port` to the binding's worker; the connection runs over the port. */
 	connect(target: BindingTarget, port: MessagePort, address: string): void {
-		this._post({ type: 'rpc-connect', target, address, port }, [port])
+		this._post({ type: 'rpc-connect', target, address, port, parent: this._getParent() }, [port])
 	}
 
 	callFetch(target: BindingTarget, request: Request): Promise<SerializedResponse> {
