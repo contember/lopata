@@ -91,7 +91,7 @@ async function initWorker(workerConfig: WorkerConfig) {
 	initializeIsolateCompatibility(compatibility)
 	// Per-worker dir for `.dev.vars`/`.env`/assets — the config file's directory.
 	const baseDir = dirname(workerConfig.configPath)
-	const envRpc = createDoEnvRpc(msg => postMessage(msg))
+	const envRpc = createDoEnvRpc((msg, transfer = []) => postMessage(msg, transfer))
 
 	/**
 	 * Bridge for `Response{webSocket}` returned from env-binding fetches the

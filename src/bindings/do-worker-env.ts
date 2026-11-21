@@ -27,18 +27,19 @@ import { durableObjectIdFromString, DurableObjectIdImpl, hashIdFromName, randomU
 import { EmailMessage } from './email'
 import { SqliteQueueProducer } from './queue'
 import { FETCHER_BRAND, makeBindingProxy } from './rpc-stub'
+import { connectThroughPort, type SocketAddress, type SocketOptions } from './sockets'
 import { addStatelessBindings } from './stateless-env'
 import type { ResponseWithWebSocket } from './websocket-pair'
 import { createOwnerLoaderDir } from './worker-loader-dirs'
 import type { WorkflowRestartOptions } from './workflow'
 
 /** Build an RpcClient that bridges DO-worker → main over the DO executor channel. */
-export function createDoEnvRpc(post: (msg: DOMainMessage) => void): RpcClient {
+export function createDoEnvRpc(post: (msg: DOMainMessage, transfer?: Bun.Transferable[]) => void): RpcClient {
 	const getParent = (): ParentSpanContext | undefined => {
 		const active = getActiveContext()
 		return active ? { traceId: active.traceId, spanId: active.spanId } : undefined
 	}
-	return new RpcClient(req => post(req as DOMainMessage), getParent)
+	return new RpcClient((req, transfer) => post(req as DOMainMessage, transfer), getParent)
 }
 
 function buildBridgedFetchResponse(
@@ -78,7 +79,12 @@ function makeRpcProxy(
 }
 
 function makeEnvBindingProxy(binding: string, rpc: RpcClient, envWsBridge: WsGuestBridge<DOMainMessage>): Record<string, unknown> {
-	return makeRpcProxy({ binding }, rpc, envWsBridge, { [FETCHER_BRAND]: true })
+	const target: BindingTarget = { binding }
+	return makeRpcProxy(target, rpc, envWsBridge, {
+		connect: (address: SocketAddress | string, options?: SocketOptions) =>
+			connectThroughPort(address, options, (port, authority) => rpc.connect(target, port, authority)),
+		[FETCHER_BRAND]: true,
+	})
 }
 
 function makeBrowserRunProxy(

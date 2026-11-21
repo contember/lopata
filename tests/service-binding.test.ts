@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { createServiceBinding } from '../src/bindings/service-binding'
+import { createServiceBinding, ServiceBinding } from '../src/bindings/service-binding'
+import { connectThroughPort, type Socket } from '../src/bindings/sockets'
 import { runWithContext } from '../src/tracing/context'
+import { RpcClient, RpcHostChannel } from '../src/worker-thread/rpc-shared'
 
 describe('Service Binding', () => {
 	// Mock worker module with default fetch handler
@@ -517,12 +519,53 @@ describe('Service Binding', () => {
 	})
 
 	describe('TCP connect()', () => {
-		test('connect() throws not supported error', () => {
-			const proxy = createServiceBinding('my-worker')
-			;(proxy._wire as Function)(mockWorkerModule, mockEnv)
+		test("connect() reaches the target's connect() handler with the caller's address", async () => {
+			const workerModule: Record<string, unknown> = {
+				default: {
+					async connect(socket: Socket) {
+						const { localAddress } = await socket.opened
+						const writer = socket.writable.getWriter()
+						await writer.write(new TextEncoder().encode(`to ${localAddress}`))
+						await writer.close()
+					},
+				},
+			}
+			const binding = new ServiceBinding('my-worker')
+			binding._wire(workerModule, mockEnv)
 
-			const connect = proxy.connect as Function
-			expect(() => connect('example.com:443')).toThrow('not supported in local dev mode')
+			const socket = binding.connect('example.com:443')
+			let text = ''
+			for await (const chunk of socket.readable) text += new TextDecoder().decode(chunk)
+			expect(text).toBe('to example.com:443')
+			await socket.closed
+		})
+
+		test("connect() from a worker thread is not counted against the binding's lifetime", async () => {
+			const workerModule: Record<string, unknown> = {
+				default: {
+					async connect(socket: Socket) {
+						await socket.close()
+					},
+				},
+			}
+			const binding = new ServiceBinding('my-worker', undefined, { maxSubrequests: 2 })
+			binding._wire(workerModule, mockEnv)
+			const host = new RpcHostChannel({ resolveBinding: () => binding.toProxy(), post: () => {}, isAlive: () => true })
+			// Each call stands for a separate request of the calling worker thread.
+			const client = new RpcClient(msg => host.handle(msg), () => ({ traceId: 'trace', spanId: 'span' }))
+			for (let i = 0; i < 3; i++) {
+				const socket = connectThroughPort('example.com:1', undefined, (port, address) => client.connect({ binding: 'SVC' }, port, address))
+				await socket.opened
+				await socket.closed
+			}
+		})
+
+		test('connect() to a worker without a connect() handler is refused', async () => {
+			const binding = new ServiceBinding('my-worker')
+			binding._wire(mockWorkerModule, mockEnv)
+
+			const socket = binding.connect('example.com:443')
+			await expect(socket.opened).rejects.toThrow('proxy request failed, cannot connect to the specified address')
 		})
 	})
 

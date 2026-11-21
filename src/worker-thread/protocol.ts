@@ -269,6 +269,20 @@ export interface RpcGetRequest {
 	parent?: ParentSpanContext
 }
 
+/**
+ * `connect()` on a service binding. The caller keeps one end of a MessageChannel as its socket and transfers `port`,
+ * which main hands on to the target worker's connect() handler. No reply: the connection's outcome travels over the
+ * port (see `src/bindings/sockets.ts`).
+ */
+export interface RpcConnectRequest {
+	type: 'rpc-connect'
+	target: BindingTarget
+	/** The address the caller passed to `connect()`; the handler sees it as `localAddress`. */
+	address: string
+	port: MessagePort
+	parent?: ParentSpanContext
+}
+
 export interface RpcCallReply {
 	type: 'rpc-call-result'
 	id: number
@@ -406,6 +420,17 @@ export type WorkerCommand =
 	}
 	| { type: 'scheduled'; id: number; cronExpr: string; scheduledTime: number; parent?: ParentSpanContext }
 	| { type: 'email'; id: number; messageId: string; from: string; to: string; raw: Uint8Array; parent?: ParentSpanContext }
+	// An inbound connection for the connect() handler, carried over `port` (transferred with the message).
+	| {
+		type: 'connect'
+		id: number
+		port: MessagePort
+		remoteAddress?: string
+		localAddress?: string
+		entrypoint?: string
+		props?: Record<string, unknown>
+		parent?: ParentSpanContext
+	}
 	| RpcCallReply
 	| RpcCallErrorReply
 	| RpcFetchReply
@@ -511,6 +536,9 @@ export type WorkerMessage =
 	| { type: 'scheduled-error'; id: number; error: SerializedError; noHandler?: boolean }
 	| { type: 'email-result'; id: number }
 	| { type: 'email-error'; id: number; error: SerializedError; noHandler?: boolean }
+	// The connect() handler settled; the connection is closed.
+	| { type: 'connect-result'; id: number }
+	| { type: 'connect-error'; id: number; error: SerializedError }
 	| { type: 'entrypoint-rpc-result'; id: number; value: unknown }
 	| { type: 'entrypoint-rpc-error'; id: number; error: SerializedError }
 	| { type: 'entrypoint-rpc-get-result'; id: number; kind: 'value'; value: unknown }
@@ -521,6 +549,7 @@ export type WorkerMessage =
 	| RpcCallRequest
 	| RpcGetRequest
 	| RpcFetchRequest
+	| RpcConnectRequest
 	| RpcStreamCancel
 	| RpcStreamAck
 	| RpcReqStreamChunk

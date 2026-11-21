@@ -7,6 +7,18 @@ export interface WorkerdModule {
 	/** Service bindings to the module's own worker (`service = "<self>"` in the .wd-test). */
 	selfServices?: Array<{ binding: string; entrypoint?: string }>
 	durableObjects?: Array<{ binding: string; className: string }>
+	/** Service bindings to a helper module (`helperModules`), which runs as a worker of its own. */
+	services?: Array<{ binding: string; module: string; entrypoint?: string }>
+	/** Bindings the .wd-test reads with `fromEnvironment`, as plain-text vars. */
+	vars?: Record<string, string>
+	/** A TCP listener (`sockets` in the .wd-test) served by the module's default `connect()`; the var named here gets its port. */
+	connectListenerPortVar?: string
+}
+
+/** Vendored modules without test exports that test modules bind to. */
+export const helperModules: Record<string, { flags: string[] }> = {
+	// The flags of `connect-handler-test-local-address-endpoint`, the service of this module that connect-handler-test binds to.
+	'connect-handler-test-proxy': { flags: ['nodejs_compat_v2'] },
 }
 
 const STREAMS = ['nodejs_compat', 'streams_enable_constructors', 'transformstream_enable_standard_constructor']
@@ -112,5 +124,17 @@ export const workerdModules: Record<string, WorkerdModule> = {
 		area: 'durable-objects',
 		flags: ['experimental', 'nodejs_compat'],
 		durableObjects: [{ binding: 'ns', className: 'DurableObjectExample' }],
+	},
+	// TCP sockets: cloudflare:sockets connect(), the connect() handler, service-binding connect()
+	'sockets-connect-error-test': { area: 'sockets', flags: ['nodejs_compat'] },
+	'connect-half-open-test': { area: 'sockets', flags: ['nodejs_compat_v2'], selfServices: [{ binding: 'SELF' }] },
+	'connect-neuter-test': { area: 'sockets', flags: ['nodejs_compat_v2'], selfServices: [{ binding: 'SELF' }] },
+	'connect-handler-test': {
+		area: 'sockets',
+		flags: ['nodejs_compat_v2'],
+		services: [{ binding: 'TARGET', module: 'connect-handler-test-proxy', entrypoint: 'LocalAddressEndpoint' }],
+		// CONNECT_PROXY_PORT stays unset: its listener is served by a named entrypoint, which the wrangler `connect` config cannot select.
+		vars: { SIDECAR_HOSTNAME: '127.0.0.1' },
+		connectListenerPortVar: 'CONNECT_HANDLER_PORT',
 	},
 }

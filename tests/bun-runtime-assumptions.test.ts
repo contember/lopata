@@ -187,6 +187,74 @@ describe('Bun runtime assumptions', () => {
 		expect(result).toEqual({ isMap: true, value: 1, isBuffer: true, bytes: [1, 2, 3] })
 	})
 
+	test("a MessagePort closes its peer, after delivering queued messages, when the peer's Worker terminates", () => {
+		// Service-binding and inbound TCP sockets detect a thread that went away this way (src/bindings/sockets.ts).
+		const result = probe({
+			'holder.ts': `
+				onmessage = event => {
+					const port: MessagePort = event.data.port
+					port.postMessage('before')
+					postMessage('ready')
+				}
+			`,
+			'probe.ts': `
+				const holder = new Worker(new URL('./holder.ts', import.meta.url).href)
+				const channel = new MessageChannel()
+				const events: string[] = []
+				const closed = new Promise(resolve => channel.port1.addEventListener('close', () => { events.push('close'); resolve(null) }))
+				channel.port1.onmessage = event => events.push(event.data)
+				const ready = new Promise(resolve => { holder.onmessage = resolve })
+				holder.postMessage({ port: channel.port2 }, [channel.port2])
+				await ready
+				holder.terminate()
+				await closed
+				console.log(JSON.stringify(events))
+				process.exit(0)
+			`,
+		})
+		expect(result).toEqual(['before', 'close'])
+	})
+
+	test('Socket#shutdown() without an argument half-closes the write side and keeps reading', async () => {
+		// Its docs say `shutdown(true)` does that, but in Bun 1.4 `shutdown(true)` stops the reading side instead.
+		// TcpTransport.shutdownWrite() relies on the argumentless form.
+		const listener = Bun.listen({
+			hostname: '127.0.0.1',
+			port: 0,
+			allowHalfOpen: true,
+			socket: {
+				data() {},
+				end(socket) {
+					socket.write('reply after end')
+					socket.end()
+				},
+			},
+		})
+		try {
+			const received = await new Promise<string>((resolve, reject) => {
+				let text = ''
+				Bun.connect({
+					hostname: '127.0.0.1',
+					port: listener.port,
+					allowHalfOpen: true,
+					socket: {
+						open(socket) {
+							socket.shutdown()
+						},
+						data(_socket, data) {
+							text += data.toString()
+						},
+						close: () => resolve(text),
+						connectError: (_socket, error) => reject(error),
+					},
+				})
+			})
+			expect(received).toBe('reply after end')
+		} finally {
+			listener.stop(true)
+		}
+	})
+
 	test('structuredClone() copies a compiled WebAssembly.Module', () => {
 		// The smallest valid module: magic number and version.
 		const module = new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))

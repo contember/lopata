@@ -15,6 +15,7 @@ import type { DOAbortPolicy } from '../bindings/do-executor'
 import type {
 	ParentSpanContext,
 	RpcCallRequest,
+	RpcConnectRequest,
 	RpcFetchRequest,
 	RpcGetRequest,
 	RpcReply,
@@ -219,6 +220,7 @@ export type DOMainMessage =
 	| RpcCallRequest
 	| RpcGetRequest
 	| RpcFetchRequest
+	| RpcConnectRequest
 	| RpcStreamCancel
 	| RpcStreamAck
 	| RpcReqStreamChunk

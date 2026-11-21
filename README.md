@@ -22,13 +22,14 @@ Lopata takes a different approach: it implements all Cloudflare bindings nativel
 ## Features
 
 - **All major bindings** — KV, R2, D1, Durable Objects (with SQL API and WebSocket Hibernation), Workflows, Queues, Cache, Service Bindings, Static Assets, Images, Hyperdrive, Analytics Engine, Rate Limiting, Browser Run, Containers, Scheduled (Cron), Email
+- **TCP sockets** — outbound `connect()` from `cloudflare:sockets` (TLS and `startTls()`), and inbound connections to the worker's `connect()` handler
 - **Persistent local state** — data lives in `.lopata/` (SQLite + filesystem), survives restarts
 - **Dashboard** — browse bindings, inspect data, view request traces in real-time
 - **Vite plugin** — integrates with React Router and other Vite-based frameworks
 - **Multi-worker support** — run multiple workers with service bindings between them
 - **Hot-reload** — file changes trigger instant reload with zero downtime
 - **Request tracing** — hierarchical spans for every request, binding call, and outbound fetch
-- **Cloudflare module shims** — `cloudflare:workers`, `cloudflare:workflows`, `@cloudflare/containers`, `@cloudflare/puppeteer` all work out of the box
+- **Cloudflare module shims** — `cloudflare:workers`, `cloudflare:workflows`, `cloudflare:sockets`, `@cloudflare/containers`, `@cloudflare/puppeteer` all work out of the box
 - **Global API compatibility** — `caches`, `HTMLRewriter`, `WebSocketPair`, `scheduler.wait()`, `crypto.timingSafeEqual`, and more
 
 ## Requirements
@@ -386,28 +387,54 @@ The built-in dashboard is available at `/__dashboard` and provides:
 
 ## Supported bindings
 
-| Binding              | Storage                      | Coverage    |
-| -------------------- | ---------------------------- | ----------- |
-| **KV**               | SQLite                       | 100%        |
-| **R2**               | Filesystem (`.lopata/r2/`)   | ~95%        |
-| **D1**               | SQLite files (`.lopata/d1/`) | ~90%        |
-| **Durable Objects**  | SQLite (KV + SQL API)        | ~90%        |
-| **Workflows**        | SQLite                       | 100%        |
-| **Queues**           | SQLite                       | ~90%        |
-| **Cache API**        | SQLite                       | 100%        |
-| **Static Assets**    | Filesystem                   | ~90%        |
-| **Service Bindings** | In-process                   | ~85%        |
-| **Scheduled (Cron)** | In-memory timer              | 100%        |
-| **Images**           | Sharp                        | ~80%        |
-| **Hyperdrive**       | TCP via `Bun.connect()`      | Passthrough |
-| **Workers AI**       | Proxies to Cloudflare API    | Passthrough |
-| **Analytics Engine** | SQLite                       | Full        |
-| **Rate Limiting**    | SQLite (fixed window)        | Full        |
-| **Browser Run**      | Local Chrome via Puppeteer   | Partial     |
-| **Containers**       | Docker                       | Full        |
-| **Send Email**       | SQLite (captured)            | Full        |
+| Binding              | Storage                         | Coverage    |
+| -------------------- | ------------------------------- | ----------- |
+| **KV**               | SQLite                          | 100%        |
+| **R2**               | Filesystem (`.lopata/r2/`)      | ~95%        |
+| **D1**               | SQLite files (`.lopata/d1/`)    | ~90%        |
+| **Durable Objects**  | SQLite (KV + SQL API)           | ~90%        |
+| **Workflows**        | SQLite                          | 100%        |
+| **Queues**           | SQLite                          | ~90%        |
+| **Cache API**        | SQLite                          | 100%        |
+| **Static Assets**    | Filesystem                      | ~90%        |
+| **Service Bindings** | In-process                      | ~85%        |
+| **Scheduled (Cron)** | In-memory timer                 | 100%        |
+| **Images**           | Sharp                           | ~80%        |
+| **Hyperdrive**       | TCP via `Bun.connect()`         | Passthrough |
+| **TCP sockets**      | `Bun.connect()`, `Bun.listen()` | ~90%        |
+| **Workers AI**       | Proxies to Cloudflare API       | Passthrough |
+| **Analytics Engine** | SQLite                          | Full        |
+| **Rate Limiting**    | SQLite (fixed window)           | Full        |
+| **Browser Run**      | Local Chrome via Puppeteer      | Partial     |
+| **Containers**       | Docker                          | Full        |
+| **Send Email**       | SQLite (captured)               | Full        |
 
 Overall compatibility: **~90–95%** of the Cloudflare Workers API surface.
+
+### TCP sockets
+
+`connect()` from `cloudflare:sockets` opens a real TCP connection with `Bun.connect()`. `secureTransport: 'on'` speaks TLS
+from the first byte; `'starttls'` lets `socket.startTls()` upgrade the connection later. `opened`, `closed`, `close()`,
+`allowHalfOpen` and the errors follow workerd: a refused connection rejects `opened` and `closed` with
+`proxy request failed, cannot connect to the specified address`. TLS verifies certificates against the system store; to trust
+a local self-signed certificate, start lopata with `NODE_EXTRA_CA_CERTS=/path/to/cert.pem`.
+
+A worker accepts TCP connections with a `connect(socket, env, ctx)` handler, on its default export or on a
+`WorkerEntrypoint`. A service binding reaches it with `env.SERVICE.connect('host:port')`, and the handler sees that string
+as `localAddress`. To accept raw TCP clients, add a listener to the wrangler config:
+
+```jsonc
+{
+	"connect": [{ "protocol": "tcp", "port": 9000 }], // "address" defaults to 127.0.0.1
+}
+```
+
+`lopata dev` then serves each connection to `127.0.0.1:9000` with the worker's default `connect()` handler; `remoteAddress` is
+the client's `ip:port` and `localAddress` the listener's. The connection ends when the handler's promise settles. After a
+reload, new connections go to the new generation; open ones are dropped once the old generation's grace period (10 s) ends.
+
+Not supported: `udp` listeners (skipped with a warning), listeners in the Vite plugin, TLS on inbound connections and on
+service-binding `connect()` (`secureTransport: 'on'` is refused, `startTls()` fails), and `socket.proxyTo()`.
 
 ### Browser Run
 

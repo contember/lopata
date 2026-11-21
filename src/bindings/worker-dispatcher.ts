@@ -3,6 +3,7 @@ import { legacyCompatibility, runWithCompatibility } from '../compatibility-cont
 import { callEntrypointMethod, resolveEntrypointHandler } from '../entrypoint-handler'
 import { getActiveExecutionContext, runWithExecutionContext } from '../execution-context'
 import { createRpcFunctionStub, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
+import type { Socket } from './sockets'
 import type { WorkerCacheApi } from './worker-cache'
 
 export interface DispatchExecutionContext {
@@ -37,6 +38,15 @@ export class MissingFetchHandlerError extends Error {
 		super(`Entrypoint "${entrypoint}" does not export a fetch handler`)
 	}
 }
+
+/** workerd's error for a connection to a worker without a `connect()` handler (global-scope.c++). */
+export class MissingConnectHandlerError extends Error {
+	constructor() {
+		super('Handler does not export a connect() function.')
+	}
+}
+
+let warnedMissingConnect = false
 
 type ContextFactory = (props?: Record<string, unknown>) => DispatchExecutionContext
 const dispatchers = new WeakMap<object, WeakMap<object, WorkerDispatcher>>()
@@ -102,6 +112,28 @@ export class WorkerDispatcher {
 			const response = await handler(request, this.env, ctx)
 			if (!isWorkerResponse(response)) throw new TypeError('Worker fetch must return a Response')
 			return response
+		})
+	}
+
+	/**
+	 * Run the entrypoint's `connect(socket, env, ctx)` handler; resolves when it settles. `accept` runs once the
+	 * handler exists, before it is called: workerd accepts the connection first.
+	 */
+	async connect(socket: Socket, accept: () => void, entrypoint = 'default', props?: Record<string, unknown>): Promise<void> {
+		return runWithCompatibility(this.compatibility, async () => {
+			const ctx = this.context(props)
+			await runWithExecutionContext(ctx, async () => {
+				const handler = resolveEntrypointHandler(this.module[entrypoint], 'connect', ctx, this.env)
+				if (!handler) {
+					if (!warnedMissingConnect) {
+						warnedMissingConnect = true
+						console.warn('Received a connect event but we lack a handler. Did you remember to export a connect() function?')
+					}
+					throw new MissingConnectHandlerError()
+				}
+				accept()
+				await handler(socket, this.env, ctx)
+			})
 		})
 	}
 

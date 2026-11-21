@@ -5,7 +5,7 @@
  * - `.fetch(request | url, init?)` — calls the target worker's fetch() handler
  * - `.myMethod(args)` — RPC call to the target's entrypoint class method (always returns Promise)
  * - `.myProperty` — RPC property access (returns thenable/Promise)
- * - `.connect()` — stub for TCP socket (throws — not supported in dev)
+ * - `.connect(address, options?)` — TCP socket to the target's `connect()` handler
  */
 
 import type { CompatibilitySelection } from '../compatibility'
@@ -16,8 +16,9 @@ import { warnInvalidRpcArgs } from '../rpc-validate'
 import { getActiveContext } from '../tracing/context'
 import type { ResolvedTarget } from '../worker-registry'
 import { createRpcFunctionStub, FETCHER_BRAND, NON_RPC_PROPS, type RpcExecutionScope, wrapRpcReturnValue } from './rpc-stub'
+import { connectThroughPort, refuseConnection, serveConnection, type Socket, type SocketAddress, type SocketOptions } from './sockets'
 import { assetsOnlyRejection } from './static-assets'
-import { getWorkerDispatcher, isWorkerResponse, toRequest } from './worker-dispatcher'
+import { getWorkerDispatcher, isWorkerResponse, MissingConnectHandlerError, toRequest } from './worker-dispatcher'
 
 type WorkerModule = Record<string, unknown>
 
@@ -34,12 +35,7 @@ const SERVICE_BINDING_DEFAULTS: Required<ServiceBindingLimits> = {
 }
 
 // Internal properties that should be forwarded to the ServiceBinding instance
-const INTERNAL_PROPS = new Set(['_wire', 'isWired', '_subrequestCount'])
-
-/** Error thrown by `connect()` (both in-process and worker-thread paths). */
-export function serviceBindingConnectError(name: string): Error {
-	return new Error(`Service binding "${name}": connect() (TCP sockets) is not supported in local dev mode`)
-}
+const INTERNAL_PROPS = new Set(['_wire', 'isWired', '_subrequestCount', '_connectPort'])
 
 /** The export a binding's `entrypoint` names; an empty or missing name is the default export. */
 export function entrypointExport(workerModule: Record<string, unknown>, entrypoint: string | undefined): unknown {
@@ -214,8 +210,53 @@ export class ServiceBinding {
 		})
 	}
 
-	connect(_address: string | { hostname: string; port: number }): never {
-		throw serviceBindingConnectError(this._serviceName)
+	connect(address: SocketAddress | string, options?: SocketOptions): Socket {
+		return connectThroughPort(address, options, (port, authority) => this._connectPort(port, authority))
+	}
+
+	/**
+	 * Serve a connection whose caller holds the other end of `port` with the target's connect() handler. The handler
+	 * sees the caller's `address` as `localAddress` and no `remoteAddress`, as in workerd. Also the landing point of a
+	 * `connect()` made in a worker thread (`rpc-connect`).
+	 */
+	_connectPort(port: MessagePort, address: string): void {
+		let resolved: ResolvedTarget
+		try {
+			resolved = this._resolve()
+			this._checkSubrequestLimit()
+		} catch (e) {
+			refuseConnection(port, e instanceof Error ? e.message : String(e))
+			return
+		}
+		const info = { localAddress: address }
+		const served = resolved.kind === 'thread'
+			? resolved.executor.executeConnect(port, info, this._entrypoint, this._props)
+			: resolved.kind === 'assets'
+			? Promise.reject(
+				new Error(`Service binding "${this._serviceName}": the target is an assets-only worker (no "main"), so it has no connect() handler`),
+			)
+			: this._serveInProcess(resolved, port, info)
+		served.catch(error => {
+			console.error(`[lopata] Service binding "${this._serviceName}" connect() handler error:`, error)
+		})
+	}
+
+	private _serveInProcess(
+		resolved: Extract<ResolvedTarget, { kind: 'in-process' }>,
+		port: MessagePort,
+		info: { localAddress: string },
+	): Promise<void> {
+		const dispatcher = getWorkerDispatcher(resolved.workerModule, resolved.env)
+		if (dispatcher) return serveConnection(port, info, (socket, accept) => dispatcher.connect(socket, accept, this._entrypoint, this._props))
+		return serveConnection(port, info, (socket, accept) =>
+			this._invokeFallback(resolved, async ctx => {
+				const target = resolveEntrypointTarget(resolved.workerModule, this._entrypoint, ctx, resolved.env)
+				const handler = target?.connect
+				if (typeof handler !== 'function') throw new MissingConnectHandlerError()
+				accept()
+				const isInstance = target !== entrypointExport(resolved.workerModule, this._entrypoint)
+				await Reflect.apply(handler, target, isInstance ? [socket] : [socket, resolved.env, ctx])
+			}))
 	}
 
 	toProxy(): Record<string, unknown> {

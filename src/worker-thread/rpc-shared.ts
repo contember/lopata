@@ -19,6 +19,7 @@ import type {
 	RpcCallErrorReply,
 	RpcCallReply,
 	RpcCallRequest,
+	RpcConnectRequest,
 	RpcFetchErrorReply,
 	RpcFetchReply,
 	RpcFetchRequest,
@@ -41,6 +42,7 @@ import { deserializeError, serializeError } from './protocol'
 import { deserializeRequest, serializeRequestShell, serializeResponseHeaders } from './serialize'
 import { OutboundStreamRegistry, pumpStream, STREAM_BACKPRESSURE_WINDOW, StreamReceiver } from './stream-shared'
 
+import { refuseConnection } from '../bindings/sockets'
 import { CFWebSocket, type ResponseWithWebSocket } from '../bindings/websocket-pair'
 
 /**
@@ -126,6 +128,22 @@ export async function dispatchRpcGet(req: RpcGetRequest, hooks: RpcDispatchHooks
 	} catch (e) {
 		if (!hooks.isAlive()) return
 		hooks.post({ type: 'rpc-call-error', id: req.id, error: serializeError(e) } satisfies RpcCallErrorReply)
+	}
+}
+
+/**
+ * Hand a service-binding `connect()` to the binding: its `_connectPort` serves the connection over the transferred
+ * port. A binding that cannot take it refuses the connection on the port, which rejects the caller's `opened`.
+ */
+function dispatchRpcConnect(req: RpcConnectRequest, hooks: RpcDispatchHooks): void {
+	try {
+		const resolved = hooks.resolveBinding(req.target)
+		const connectPort = resolved._connectPort
+		if (typeof connectPort !== 'function') throw new Error(`Binding "${req.target.binding}" does not support connect()`)
+		// The caller's request context carries the subrequest budget and links the handler's span to the caller's trace.
+		runWithParentContext(req.parent, () => connectPort.call(resolved, req.port, req.address))
+	} catch (e) {
+		refuseConnection(req.port, e instanceof Error ? e.message : String(e))
 	}
 }
 
@@ -279,6 +297,9 @@ export class RpcHostChannel {
 			case 'rpc-fetch':
 				void dispatchRpcFetch(msg as RpcFetchRequest, this._hooks, this._streams, this._requestStreams)
 				return true
+			case 'rpc-connect':
+				dispatchRpcConnect(msg as RpcConnectRequest, this._hooks)
+				return true
 			case 'rpc-stream-cancel':
 				this._streams.cancel((msg as RpcStreamCancel).streamId)
 				return true
@@ -314,16 +335,19 @@ interface PendingCall {
 	reject: (error: Error) => void
 }
 
+/** `transfer` carries the MessagePort of an {@link RpcConnectRequest}. */
 type RpcClientPost = (
 	req:
 		| RpcCallRequest
 		| RpcGetRequest
 		| RpcFetchRequest
+		| RpcConnectRequest
 		| RpcStreamCancel
 		| RpcStreamAck
 		| RpcReqStreamChunk
 		| RpcReqStreamEnd
 		| RpcReqStreamError,
+	transfer?: Bun.Transferable[],
 ) => void
 
 /**
@@ -408,6 +432,11 @@ export class RpcClient {
 			this._pending.set(id, { resolve, reject })
 			this._post({ type: 'rpc-call-get', id, target, property, parent: this._getParent() })
 		})
+	}
+
+	/** `connect()` on a service binding: hand `port` to the binding's worker; the connection runs over the port. */
+	connect(target: BindingTarget, port: MessagePort, address: string): void {
+		this._post({ type: 'rpc-connect', target, address, port, parent: this._getParent() }, [port])
 	}
 
 	callFetch(target: BindingTarget, request: Request): Promise<SerializedResponse> {

@@ -19,7 +19,7 @@
  * Class methods ignore any trailing (env, ctx) arguments, so callers can invoke the
  * returned function with one calling convention regardless of the shape it came from.
  */
-export type EntrypointHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue'
+export type EntrypointHandlerName = 'fetch' | 'scheduled' | 'email' | 'queue' | 'connect'
 
 /** True when the default export is a class-style entrypoint rather than a handler object. */
 export function isClassEntrypoint(defaultExport: unknown): boolean {

@@ -13,7 +13,7 @@ import { type BrowserConfig, createBrowserRunMethods, createRemoteBrowserRunBack
 import { durableObjectIdFromString, DurableObjectIdImpl, hashIdFromName, randomUniqueIdHex } from '../bindings/durable-object'
 import { EmailMessage } from '../bindings/email'
 import { FETCHER_BRAND, makeBindingProxy } from '../bindings/rpc-stub'
-import { serviceBindingConnectError } from '../bindings/service-binding'
+import { connectThroughPort, type SocketAddress, type SocketOptions } from '../bindings/sockets'
 import { addStatelessBindings } from '../bindings/stateless-env'
 import type { ResponseWithWebSocket } from '../bindings/websocket-pair'
 import { toRequest } from '../bindings/worker-dispatcher'
@@ -233,9 +233,11 @@ function makeDONamespaceProxy(bindingName: string, rpc: RpcClient, envWsBridge: 
 }
 
 function makeServiceBindingProxy(bindingName: string, rpc: RpcClient, envWsBridge: WsGuestBridge<WorkerMessage>): unknown {
-	return makeRpcProxy({ binding: bindingName }, rpc, envWsBridge, {
-		connect: () => {
-			throw serviceBindingConnectError(bindingName)
+	const target: BindingTarget = { binding: bindingName }
+	return makeRpcProxy(target, rpc, envWsBridge, {
+		connect: (address: SocketAddress | string, options?: SocketOptions) => {
+			checkSubrequestLimit()
+			return connectThroughPort(address, options, (port, authority) => rpc.connect(target, port, authority))
 		},
 		[FETCHER_BRAND]: true,
 	})
