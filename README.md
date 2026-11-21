@@ -431,7 +431,7 @@ as `localAddress`. To accept raw TCP clients, add a listener to the wrangler con
 
 `lopata dev` then serves each connection to `127.0.0.1:9000` with the worker's default `connect()` handler; `remoteAddress` is
 the client's `ip:port` and `localAddress` the listener's. The connection ends when the handler's promise settles. After a
-reload, new connections go to the new generation.
+reload, new connections go to the new generation; open ones are dropped once the old generation's grace period (10 s) ends.
 
 Not supported: `udp` listeners (skipped with a warning), listeners in the Vite plugin, TLS on inbound connections and on
 service-binding `connect()` (`secureTransport: 'on'` is refused, `startTls()` fails), and `socket.proxyTo()`.

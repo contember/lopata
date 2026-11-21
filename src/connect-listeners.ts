@@ -1,6 +1,7 @@
 /**
  * Raw TCP listeners from the wrangler `connect` config. Each accepted connection is served by the `connect()` handler
- * of the worker's active generation; a reload sends new connections to the new generation while open ones keep theirs.
+ * of the worker's active generation. A reload sends new connections to the new generation; open ones keep the old one
+ * until its grace period ends and its thread is terminated, which drops them.
  */
 
 import { refuseConnection, relayTcpConnection, tcpListenerHandlers } from './bindings/sockets'
